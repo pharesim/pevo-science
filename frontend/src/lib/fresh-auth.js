@@ -245,11 +245,7 @@ function persistWindow(entry) {
     // without the removal the stale copy would shadow the fresher one. With
     // it, a non-empty storage read always implies a current entry by
     // construction.
-    try {
-      sessionStorage.removeItem(PROOF_KEY);
-    } catch {
-      /* unreadable storage falls back to the mirror on read anyway */
-    }
+    dropWindow();
     _memoryWindow = entry;
   }
 }
@@ -606,11 +602,15 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
   if (_acquireInFlight[slot]) return _acquireInFlight[slot];
 
   const flight = (async () => {
+    // The navigation policy for the passwordless outcome, applied in one
+    // place: the known-passwordless branch and the assumed-password fallback
+    // below share it, so the two cannot diverge on when a redirect may fire.
+    const orcidOrRefuse = () =>
+      allowRedirect ? beginSessionAuthOrcidRedirect() : FRESH_AUTH_REAUTH_REQUIRED;
+
     const factor = await resolvePasswordFactor();
-    if (!factor.usesPassword) {
-      if (!allowRedirect) return FRESH_AUTH_REAUTH_REQUIRED;
-      return beginSessionAuthOrcidRedirect();
-    }
+    if (!factor.usesPassword) return orcidOrRefuse();
+
     const minted = await mintViaPasswordFactor(
       async (password) => {
         const issued = await mintSessionAuthProof(password);
@@ -624,12 +624,8 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
       { message: passwordPromptMessage(), assumed: factor.assumed },
     );
     // The assumed factor turned out to be the wrong guess: the account has no
-    // password to prompt for, so the ORCID round-trip is the way through —
-    // under the same navigation policy as the known-passwordless branch above.
-    if (minted === FRESH_AUTH_ORCID_FALLBACK) {
-      if (!allowRedirect) return FRESH_AUTH_REAUTH_REQUIRED;
-      return beginSessionAuthOrcidRedirect();
-    }
+    // password to prompt for, so the ORCID round-trip is the way through.
+    if (minted === FRESH_AUTH_ORCID_FALLBACK) return orcidOrRefuse();
     return minted;
   })();
 
