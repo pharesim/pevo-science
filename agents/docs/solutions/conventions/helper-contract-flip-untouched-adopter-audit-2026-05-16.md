@@ -97,7 +97,7 @@ Run this audit whenever a helper's internal defaulting semantics change. Concret
 - Timeout, retry, or numeric default changed inside a helper rather than at call sites
 - Any change where the helper previously provided a safe fallback value and now delegates that responsibility to callers
 
-**Does NOT apply** to purely additive changes (new field added, new optional param with backward-compatible default, helper signature widened without changing behavior for existing payloads). Applies to any change in what the helper does when a field is absent or undefined.
+**Does NOT apply** to purely additive changes (new field added, new optional param with backward-compatible default, helper signature widened without changing behavior for existing payloads). Applies to any change in what the helper does when a field is absent or undefined. Additive widening of an outcome or error vocabulary has its own entry: `conventions/outcome-vocabulary-widening-requires-a-consumer-audit-2026-08-31.md`.
 
 ### Timing
 

@@ -176,6 +176,12 @@ Related, and deliberately distinct:
   dropped mutation, so sample structural state from inside the call. Same underlying
   theme, that an assertion's *shape* decides what it can detect.
 
+- `conventions/fail-closed-does-not-transfer-from-set-equality-to-pairing-canaries-2026-08-31.md`
+  — the next rung on this ladder. Once the collected unit is a call site rather than a
+  container, a *pairing* assertion over those keys can still fail open: the resolver's
+  module-scope fallback satisfies itself on both sides, which is file-granularity
+  reasoning wearing a symbol-shaped key. Granularity correct, comparison shape unsound.
+
 ## Source
 
 Surfaced by a `/ce-code-review` pass over the windowed session fresh-auth work, where
