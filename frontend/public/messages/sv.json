@@ -155,6 +155,7 @@
     "publishing": "Publicerar...",
     "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "Beräknar filhashar...",
+    "stepAuthorizing": "Confirming your identity...",
     "stepUploading": "Laddar upp PDF till IPFS...",
     "stepBroadcasting": "Publicerar till det permanenta registret...",
     "stepSuccess": "Artikeln publicerad! Omdirigerar...",
@@ -193,6 +194,7 @@
     "publishRevision": "Publicera revision",
     "saving": "Sparar...",
     "stepDiffing": "Beräknar ändringar...",
+    "stepAuthorizing": "Confirming your identity...",
     "stepUploading": "Laddar upp till IPFS...",
     "stepBroadcasting": "Sänder till nätverket...",
     "stepSuccess": "Artikeln har uppdaterats!",
@@ -771,6 +773,7 @@
     "cancel": "Avbryt",
     "loading": "Laddar...",
     "uploadFailed": "Uppladdning misslyckades",
+    "reauthRequired": "Please confirm your identity again, then try once more.",
     "publishingFailed": "Publicering misslyckades",
     "loadVersionFailed": "Kunde inte ladda version",
     "diffLoadFailed": "Kunde inte ladda versioner för jämförelse",
@@ -786,7 +789,8 @@
     "alreadySignedIn": "Du är redan inloggad.",
     "goToPapers": "Gå till publikationer",
     "confirm": "Confirm",
-    "uploadCancelled": "Upload cancelled."
+    "uploadCancelled": "Upload cancelled.",
+    "reauthPromptOpen": "Finish the confirmation already open, then try again."
   },
   "reauth": {
     "title": "Confirm your password",

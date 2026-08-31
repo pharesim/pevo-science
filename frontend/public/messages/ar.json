@@ -155,6 +155,7 @@
     "publishing": "جارٍ النشر...",
     "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "جارٍ حساب بصمات الملفات...",
+    "stepAuthorizing": "Confirming your identity...",
     "stepUploading": "جارٍ رفع PDF إلى IPFS...",
     "stepBroadcasting": "جارٍ النشر على السجل العام الدائم...",
     "stepSuccess": "تم نشر البحث بنجاح! جارٍ إعادة التوجيه...",
@@ -193,6 +194,7 @@
     "publishRevision": "نشر المراجعة",
     "saving": "جارٍ الحفظ...",
     "stepDiffing": "جارٍ حساب التغييرات...",
+    "stepAuthorizing": "Confirming your identity...",
     "stepUploading": "جارٍ الرفع إلى IPFS...",
     "stepBroadcasting": "جارٍ البث إلى الشبكة...",
     "stepSuccess": "تم تحديث البحث بنجاح!",
@@ -771,6 +773,7 @@
     "cancel": "إلغاء",
     "loading": "جارٍ التحميل...",
     "uploadFailed": "فشل الرفع",
+    "reauthRequired": "Please confirm your identity again, then try once more.",
     "publishingFailed": "فشل النشر",
     "loadVersionFailed": "تعذّر تحميل الإصدار",
     "diffLoadFailed": "تعذّر تحميل الإصدارات للمقارنة",
@@ -786,7 +789,8 @@
     "alreadySignedIn": "أنت مسجّل الدخول بالفعل.",
     "goToPapers": "تصفح الأوراق البحثية",
     "confirm": "Confirm",
-    "uploadCancelled": "Upload cancelled."
+    "uploadCancelled": "Upload cancelled.",
+    "reauthPromptOpen": "Finish the confirmation already open, then try again."
   },
   "reauth": {
     "title": "Confirm your password",

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Minimal test harness for frontend/src/pages/edit.js focused on the
 // error-message-sanitization catch-block behavior.
@@ -20,11 +20,21 @@ vi.mock('../../src/editor.js', () => ({
   createEditor: (...args) => mockCreateEditor(...args),
 }));
 
+// The real lib/fresh-auth.js runs in these tests (only its api.js dependencies
+// are stubbed), so the acquire-before-commit ordering the page relies on is
+// exercised end to end rather than asserted against a stubbed gate.
+const mockFetchEmailStatus = vi.fn(() => Promise.resolve({ data: { hasPassword: true } }));
+const mockMintSessionAuthProof = vi.fn();
+const mockStartOrcid = vi.fn();
 vi.mock('../../src/api.js', () => ({
   fetchPaper: vi.fn(),
   fetchPaperEnrichment: vi.fn(),
   invalidatePaperCache: vi.fn(),
   fetchAccreditations: vi.fn(() => Promise.resolve({ data: [] })),
+  fetchEmailStatus: (...a) => mockFetchEmailStatus(...a),
+  mintSessionAuthProof: (...a) => mockMintSessionAuthProof(...a),
+  startOrcid: (...a) => mockStartOrcid(...a),
+  consentOpRequestFields: (t) => t,
 }));
 
 // Supplementary-file upload goes through `uploadFile` in lib/ipfs-upload.js
@@ -61,6 +71,8 @@ const mockStores = {
   auth: { isConnected: true, isAccredited: true, username: 'alice' },
   toast: { show: vi.fn() },
   broadcastConfirm: { request: vi.fn(() => Promise.resolve(true)) },
+  reauthModal: { request: vi.fn(() => Promise.resolve('hunter2')) },
+  i18n: { messages: {} },
 };
 
 vi.mock('alpinejs', () => ({
@@ -766,10 +778,12 @@ describe('editPage handleSubmit sanitization', () => {
     comp.keywordsText = 'quantum';
 
     const pending = comp.handleSubmit();
-    // Let the flow progress into the pending broadcastOps.
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    // Let the flow progress into the pending broadcastOps. The submit sequence
+    // crosses several awaits (re-auth gate, upload leg) before it reaches the
+    // broadcast, so drain until the broadcast is genuinely in flight rather
+    // than counting a fixed number of microtask hops.
+    for (let i = 0; i < 100 && !rejectFn; i++) await Promise.resolve();
+    expect(typeof rejectFn).toBe('function');
     comp.destroy();
     rejectFn(new Error('post-teardown boom'));
     await pending;
@@ -1651,3 +1665,106 @@ describe('editPage handleSubmit supplementary-file upload', () => {
     warnSpy.mockRestore();
   });
 });
+
+describe('editPage re-auth window ordering', () => {
+  function unchangedLightComponent() {
+    const comp = createComponent();
+    mockStores.auth.custody = 'light';
+    mockStores.auth.username = 'alice';
+    comp.paper = {
+      author: 'alice',
+      permlink: 'p1',
+      head_author: 'alice',
+      head_permlink: 'p1',
+      canonical_author: 'alice',
+      canonical_permlink: 'p1',
+      body: 'body text',
+      // Parsed, the way `_prefillForm` leaves it: the page reads
+      // `paper.json_metadata[APP_TAG]`, so a raw string would read as empty
+      // metadata and every field would look changed.
+      json_metadata: {
+        pevotest: {
+          version: 1,
+          keywords: ['quantum'],
+          authors: [{ name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' }],
+        },
+      },
+      title: 'Same Title',
+    };
+    comp._originalBody = '## Abstract\n\nsame abstract\n\n---\n\nbody text';
+    comp._primaryIndex = -1;
+    comp.title = 'Same Title';
+    comp.abstract = 'same abstract';
+    comp.body = 'body text';
+    comp.discipline = 'Physics';
+    comp.authorName = 'Alice';
+    comp.authorAffiliation = 'MIT';
+    comp.authorOrcid = '';
+    comp.keywordsText = 'quantum';
+    return comp;
+  }
+
+  beforeEach(() => {
+    mockStores.reauthModal.request.mockResolvedValue('hunter2');
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: true } });
+    mockMintSessionAuthProof.mockResolvedValue({
+      fresh_auth_proof: 'window-proof',
+      expires_at: new Date(Date.now() + 900_000).toISOString(),
+      absolute_expires_at: new Date(Date.now() + 7_200_000).toISOString(),
+      mechanism: 'password',
+    });
+    sessionStorage.clear();
+  });
+
+  afterEach(() => {
+    delete mockStores.auth.custody;
+    sessionStorage.clear();
+  });
+
+  it('an unchanged form costs no re-auth act at all', async () => {
+    // The no-op detection reads only values already in hand. Running the gate
+    // first charges a password prompt — or, for a passwordless account, a
+    // full-page round-trip — to come back and say nothing changed.
+    const comp = unchangedLightComponent();
+
+    await comp.handleSubmit();
+
+    expect(comp.step).toBe('error');
+    expect(comp.errorMessage).toBe('edit.noChanges');
+    expect(mockStores.reauthModal.request).not.toHaveBeenCalled();
+    expect(mockMintSessionAuthProof).not.toHaveBeenCalled();
+    expect(broadcastOps).not.toHaveBeenCalled();
+  });
+
+  it('a real change still acquires the window before the broadcast', async () => {
+    const { invalidatePaperCache } = await import('../../src/api.js');
+    invalidatePaperCache.mockResolvedValue({});
+    broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+    const comp = unchangedLightComponent();
+    comp.title = 'A New Title';
+
+    await comp.handleSubmit();
+
+    expect(comp.step).toBe('success');
+    expect(mockMintSessionAuthProof).toHaveBeenCalledTimes(1);
+    expect(broadcastOps.mock.calls[0][2]).toMatchObject({ freshAuthProof: 'window-proof' });
+  });
+
+  it('disables the submit button before the first await, not after it', async () => {
+    // Same double-submit hazard as the publish page: `isSubmitting` derives
+    // from `step` and drives the button's :disabled, so taking the re-auth
+    // await while still 'idle' leaves the button live for a second click.
+    const { invalidatePaperCache } = await import('../../src/api.js');
+    invalidatePaperCache.mockResolvedValue({});
+    broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+    const comp = unchangedLightComponent();
+    comp.title = 'A New Title';
+
+    const pending = comp.handleSubmit();
+    expect(comp.isSubmitting).toBe(true);
+
+    await pending;
+    expect(comp.step).toBe('success');
+  });
+});
+

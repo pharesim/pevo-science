@@ -59,9 +59,11 @@ vi.mock('alpinejs', () => ({
   },
 }));
 
+const { REAUTH_PROMPT_BUSY } = await import('../../src/components/reauth-modal.js');
 const {
   broadcastWithFreshAuth,
   ensureSessionWindow,
+  freshAuthWindowReady,
   cacheSessionProof,
   slideSessionWindow,
   clearCachedSessionProof,
@@ -80,6 +82,19 @@ function issuance(token, { idleMs = IDLE_MS, absoluteMs = ABSOLUTE_MS } = {}) {
   };
 }
 
+// Seed a window that has already been open for a while. Issuance anchors and
+// clamps what it is handed (a freshly minted window always spans a full
+// period), so an aged or nearly-closed window can only be produced by writing
+// the entry the way elapsed time would have left it.
+function seedWindow(token, { idleInMs, absoluteInMs = ABSOLUTE_MS, idlePeriodMs = IDLE_MS } = {}) {
+  sessionStorage.setItem(PROOF_KEY, JSON.stringify({
+    token,
+    expiresAt: new Date(Date.now() + idleInMs).toISOString(),
+    absoluteExpiresAt: new Date(Date.now() + absoluteInMs).toISOString(),
+    idlePeriodMs,
+  }));
+}
+
 function cached() {
   const raw = sessionStorage.getItem(PROOF_KEY);
   return raw ? JSON.parse(raw) : null;
@@ -88,6 +103,7 @@ function cached() {
 beforeEach(() => {
   vi.clearAllMocks();
   sessionStorage.clear();
+  clearCachedSessionProof();
   mockAuthStore.custody = 'light';
   // A fresh username per test defeats the tab-lifetime password-factor memo,
   // which would otherwise carry a `hasPassword: true` answer from one test's
@@ -248,14 +264,19 @@ describe('window model', () => {
   it('the slide never pushes past the absolute cap', async () => {
     // The cap is the security property: a proof exfiltrated alongside a JWT is
     // worth at most the cap, no matter how much activity is manufactured.
+    // The fixture only exercises the clamp when a full idle period would land
+    // BEYOND the cap — a window nearly two hours old with its idle deadline
+    // still open. With the cap further out than the period, `Math.min` never
+    // selects it and deleting the clamp keeps the assertion green.
     const capAt = Date.now() + 5_000;
-    cacheSessionProof(
-      'w', new Date(Date.now() + 1_000).toISOString(), new Date(capAt).toISOString(),
-    );
+    seedWindow('w', { idleInMs: 1_000, absoluteInMs: 5_000 });
 
     slideSessionWindow();
 
-    expect(new Date(cached().expiresAt).getTime()).toBeLessThanOrEqual(capAt);
+    const slid = new Date(cached().expiresAt).getTime();
+    expect(slid).toBeLessThanOrEqual(capAt);
+    // An unclamped slide would land a full idle period out, far past the cap.
+    expect(slid).toBeLessThan(Date.now() + IDLE_MS);
   });
 
   it('a reached absolute cap closes the window even with idle time left', async () => {
@@ -295,6 +316,63 @@ describe('window model', () => {
     }
   });
 
+  it('the idle period is learned from the issuance, not hardcoded', async () => {
+    // Every other fixture mints with the same period the client would assume,
+    // so a hardcoded constant would keep them all green while the client
+    // silently diverged from a backend that changed its idle seconds. Mint a
+    // deliberately different (but plausible) period and watch it survive into
+    // the slide.
+    const shorterPeriod = 600_000;
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+    mockMintSessionAuthProof.mockResolvedValue(
+      issuance('short-window', { idleMs: shorterPeriod }),
+    );
+
+    await ensureSessionWindow();
+
+    expect(cached().idlePeriodMs).toBeGreaterThan(shorterPeriod - 5_000);
+    expect(cached().idlePeriodMs).toBeLessThanOrEqual(shorterPeriod);
+
+    slideSessionWindow();
+    const slid = new Date(cached().expiresAt).getTime() - Date.now();
+    expect(slid).toBeGreaterThan(shorterPeriod - 5_000);
+    expect(slid).toBeLessThanOrEqual(shorterPeriod);
+  });
+
+  it('a client clock behind the server does not infer an over-long window', () => {
+    // The server's deadlines are in ITS clock. A client five minutes behind
+    // measures twenty minutes to a fifteen-minute deadline; believing that
+    // buys a mid-flow 401 exactly where the pre-flight margin exists to
+    // prevent one. Both clocks tick at the same rate, so the real window is
+    // one period of wall time regardless of the offset.
+    cacheSessionProof(
+      'skewed',
+      new Date(Date.now() + IDLE_MS + 300_000).toISOString(),
+      new Date(Date.now() + ABSOLUTE_MS + 300_000).toISOString(),
+    );
+
+    expect(cached().idlePeriodMs).toBeLessThanOrEqual(IDLE_MS);
+    expect(new Date(cached().expiresAt).getTime() - Date.now()).toBeLessThanOrEqual(IDLE_MS);
+  });
+
+  it('a badly-ahead client clock degrades to a full window, not a lockout', async () => {
+    // A client thirteen or more minutes ahead measures a span under the
+    // pre-flight margin. Honouring it would make every acquisition read as
+    // instantly stale, and for a passwordless account that is an ORCID
+    // redirect loop: the round-trip caches a window the next gate rejects.
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+    cacheSessionProof(
+      'skewed-ahead',
+      new Date(Date.now() + 60_000).toISOString(),
+      new Date(Date.now() + ABSOLUTE_MS - 780_000).toISOString(),
+    );
+
+    const outcome = await ensureSessionWindow();
+
+    expect(outcome).toEqual({ ready: true, proof: 'skewed-ahead' });
+    expect(mockReauthModal.request).not.toHaveBeenCalled();
+  });
+
   it('caching records the idle period the issuance implies', () => {
     cacheSessionProof(
       'w',
@@ -318,11 +396,7 @@ describe('acquire-before-commit', () => {
     // Discovering the window closed after the upload has been paid for is the
     // loss this gate exists to prevent, so a window with only seconds left
     // reads as already spent.
-    cacheSessionProof(
-      'nearly-closed',
-      new Date(Date.now() + 5_000).toISOString(),
-      new Date(Date.now() + ABSOLUTE_MS).toISOString(),
-    );
+    seedWindow('nearly-closed', { idleInMs: 5_000 });
 
     const outcome = await ensureSessionWindow();
 
@@ -333,11 +407,7 @@ describe('acquire-before-commit', () => {
   it('a cancelled proactive re-auth leaves the still-live window usable', async () => {
     // The margin is a preference, not an eviction: the user declining to
     // re-auth early must not lose the window they already hold.
-    cacheSessionProof(
-      'nearly-closed',
-      new Date(Date.now() + 5_000).toISOString(),
-      new Date(Date.now() + ABSOLUTE_MS).toISOString(),
-    );
+    seedWindow('nearly-closed', { idleInMs: 5_000 });
     mockReauthModal.request.mockResolvedValue(null);
 
     expect(await ensureSessionWindow()).toEqual({ ready: false, cancelled: true });
@@ -359,5 +429,84 @@ describe('acquire-before-commit', () => {
     expect(outcome).toEqual({ ready: true, proof: 'wide-open' });
     expect(mockReauthModal.request).not.toHaveBeenCalled();
     expect(mockFetchEmailStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe('the gate never fails open into silence', () => {
+  beforeEach(() => {
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+  });
+
+  it('a non-auth mint failure refuses the work instead of escaping', async () => {
+    // The gate runs AHEAD of the caller's own try, so a rejection escapes into
+    // nothing: the step machine never leaves idle, no toast fires, and the user
+    // re-clicks a dead-looking button. A 503 one layer later at the broadcast
+    // is handled, so an unhandled one here is strictly worse than no gate.
+    mockMintSessionAuthProof.mockRejectedValue(
+      Object.assign(new Error('service unavailable'), { code: 'SERVICE_UNAVAILABLE' }),
+    );
+
+    await expect(freshAuthWindowReady()).resolves.toBe(false);
+    expect(mockToastStore.show).toHaveBeenCalledWith(expect.any(String), 'error');
+  });
+
+  it('a window survives a failed sessionStorage write', async () => {
+    // A swallowed write leaves the gate reporting a window nothing recorded:
+    // one publish then pays for three acquisitions, and a passwordless
+    // account's submit gate can never be satisfied. The in-memory mirror is
+    // what keeps the page load coherent when storage is blocked.
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('quota exceeded');
+    });
+    try {
+      expect(await freshAuthWindowReady()).toBe(true);
+      expect(await freshAuthWindowReady()).toBe(true);
+      await broadcastWithFreshAuth('alice', [['vote', {}]]);
+    } finally {
+      setItem.mockRestore();
+    }
+
+    expect(mockReauthModal.request).toHaveBeenCalledTimes(1);
+    expect(mockBroadcastOps.mock.calls[0][2]).toMatchObject({ freshAuthProof: 'window-proof' });
+  });
+});
+
+describe('collisions and suppressed navigation', () => {
+  it('a prompt already open is not silently dropped as a cancel', async () => {
+    // Two orchestrators that share the singleton modal but not an in-flight
+    // coalescer — a vote and an authorship action on one paper page — collide
+    // here. Collapsing the refusal into a cancel loses one action with no
+    // feedback at all.
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+    mockReauthModal.request.mockResolvedValue(REAUTH_PROMPT_BUSY);
+
+    const outcome = await ensureSessionWindow();
+
+    expect(outcome).toEqual({ ready: false, busy: true });
+    expect(await freshAuthWindowReady()).toBe(false);
+    expect(mockToastStore.show).toHaveBeenCalledWith(expect.any(String), 'error');
+  });
+
+  it('a suppressed round-trip refuses instead of navigating away', async () => {
+    // Callers already holding work the user would lose (a picked image, a
+    // batch of completed pins) ask for acquisition without navigation. A
+    // passwordless account gets a refusal it can act on, not a full-page
+    // round-trip fired out from under the composition.
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+
+    const outcome = await ensureSessionWindow({ allowRedirect: false });
+
+    expect(outcome).toEqual({ ready: false, reauthRequired: true });
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+    expect(window.location.href).toBe('');
+  });
+
+  it('suppressing navigation still lets a password account prompt inline', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+
+    const outcome = await ensureSessionWindow({ allowRedirect: false });
+
+    expect(outcome).toEqual({ ready: true, proof: 'window-proof' });
+    expect(window.location.href).toBe('');
   });
 });

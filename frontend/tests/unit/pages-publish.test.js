@@ -564,13 +564,119 @@ describe('publishPage', () => {
 
     it('does not record a selected PDF when acquisition is declined', async () => {
       // A dismissed modal (or, for a passwordless account, a redirect in
-      // flight) leaves the form untouched rather than half-committed.
+      // flight) leaves the form untouched rather than half-committed. The
+      // input is cleared alongside: browsers fire no `change` for an unchanged
+      // selection, so a refused file left sitting in the input is unpickable —
+      // the UI shows nothing attached and re-choosing it does nothing.
+      mockStores.reauthModal.request.mockResolvedValue(null);
+      const comp = lightComponent();
+      const target = { files: [{ name: 'paper.pdf', size: 1024 }], value: 'C:\\fakepath\\paper.pdf' };
+
+      await comp.handlePdfChange({ target });
+
+      expect(comp.pdfFile).toBeNull();
+      expect(target.value).toBe('');
+    });
+
+    it('confirms the publish before paying for any upload', async () => {
+      // The dialog confirms an intent to publish, not an intent to upload, and
+      // asking first spares the user paying for pins on a publish they cancel.
+      // It also keeps a long dwell on the dialog from closing the window after
+      // the uploads have already been paid for.
+      const order = [];
+      mockStores.broadcastConfirm.request.mockImplementation(async () => {
+        order.push('confirm');
+        return true;
+      });
+      mockSessionUpload.mockImplementation(async () => {
+        order.push('upload');
+        return { data: { cid: 'bafy', filename: 'paper.pdf' } };
+      });
+      broadcastOps.mockImplementation(async () => {
+        order.push('broadcast');
+        return { tx_id: 'tx' };
+      });
+
+      const comp = lightComponent();
+      comp.pdfFile = { name: 'paper.pdf', size: 1024 };
+      await comp.handleSubmit();
+
+      expect(order).toEqual(['confirm', 'upload', 'broadcast']);
+    });
+
+    it('a declined confirmation costs no upload at all', async () => {
+      mockStores.broadcastConfirm.request.mockResolvedValue(false);
+      const comp = lightComponent();
+      comp.pdfFile = { name: 'paper.pdf', size: 1024 };
+
+      await comp.handleSubmit();
+
+      expect(mockSessionUpload).not.toHaveBeenCalled();
+      expect(broadcastOps).not.toHaveBeenCalled();
+      expect(comp.step).toBe('idle');
+    });
+
+    it('disables the submit button before the first await, not after it', async () => {
+      // `isSubmitting` derives from `step` and drives the button's :disabled.
+      // Taking the re-auth await while still 'idle' leaves the button live, and
+      // a second click re-enters handleSubmit: both calls coalesce onto one
+      // acquisition, both resolve, and the user pays for two uploads and two
+      // broadcasts.
+      mockSessionUpload.mockResolvedValue({ data: { cid: 'bafy', filename: 'paper.pdf' } });
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      const comp = lightComponent();
+      comp.pdfFile = { name: 'paper.pdf', size: 1024 };
+
+      const pending = comp.handleSubmit();
+      expect(comp.isSubmitting).toBe(true);
+
+      await pending;
+      expect(comp.step).toBe('success');
+    });
+
+    it('a declined submit gate returns the form to idle', async () => {
       mockStores.reauthModal.request.mockResolvedValue(null);
       const comp = lightComponent();
 
-      await comp.handlePdfChange({ target: { files: [{ name: 'paper.pdf', size: 1024 }] } });
+      await comp.handleSubmit();
 
-      expect(comp.pdfFile).toBeNull();
+      expect(comp.step).toBe('idle');
+      expect(broadcastOps).not.toHaveBeenCalled();
+    });
+
+    it('re-auths before the broadcast when the uploads outlasted the window', async () => {
+      // The margin is applied at the gates, and the broadcast is the last one.
+      // Uploads are already paid for, so a window that closed while they ran is
+      // worth one deliberate re-auth rather than a 401 mid-broadcast.
+      mockSessionUpload.mockImplementation(async () => {
+        // Stand in for a slow upload: leave the window with seconds on it.
+        const raw = JSON.parse(sessionStorage.getItem('pevo_fresh_auth_session_proof'));
+        raw.expiresAt = new Date(Date.now() + 5_000).toISOString();
+        sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify(raw));
+        return { data: { cid: 'bafy', filename: 'paper.pdf' } };
+      });
+      mockMintSessionAuthProof
+        .mockResolvedValueOnce({
+          fresh_auth_proof: 'window-1',
+          expires_at: new Date(Date.now() + 900_000).toISOString(),
+          absolute_expires_at: new Date(Date.now() + 7_200_000).toISOString(),
+          mechanism: 'password',
+        })
+        .mockResolvedValueOnce({
+          fresh_auth_proof: 'window-2',
+          expires_at: new Date(Date.now() + 900_000).toISOString(),
+          absolute_expires_at: new Date(Date.now() + 7_200_000).toISOString(),
+          mechanism: 'password',
+        });
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+
+      const comp = lightComponent();
+      comp.pdfFile = { name: 'paper.pdf', size: 1024 };
+      await comp.handleSubmit();
+
+      expect(comp.step).toBe('success');
+      expect(mockMintSessionAuthProof).toHaveBeenCalledTimes(2);
+      expect(broadcastOps.mock.calls[0][2]).toMatchObject({ freshAuthProof: 'window-2' });
     });
 
     it('acquires the window before the upload leg, not after it', async () => {
@@ -598,6 +704,24 @@ describe('publishPage', () => {
       await comp.handleSubmit();
 
       expect(order).toEqual(['acquire', 'upload', 'broadcast']);
+    });
+
+    it('the whole submit sequence runs on one window with no second mint', async () => {
+      mockSessionUpload.mockResolvedValue({ data: { cid: 'bafy', filename: 'paper.pdf' } });
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+
+      const comp = lightComponent();
+      comp.pdfFile = { name: 'paper.pdf', size: 1024 };
+      comp.supplementaryFiles = [
+        { file: { name: 's1.csv', size: 10 }, fileName: 's1.csv', description: '', uploading: false, cid: null, error: null },
+        { file: { name: 's2.csv', size: 10 }, fileName: 's2.csv', description: '', uploading: false, cid: null, error: null },
+      ];
+
+      await comp.handleSubmit();
+
+      expect(comp.step).toBe('success');
+      expect(mockSessionUpload).toHaveBeenCalledTimes(3);
+      expect(mockMintSessionAuthProof).toHaveBeenCalledTimes(1);
     });
 
     it('one re-auth act covers both the upload and the broadcast', async () => {

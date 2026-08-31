@@ -155,6 +155,7 @@
     "publishing": "发表中...",
     "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "正在计算文件哈希...",
+    "stepAuthorizing": "Confirming your identity...",
     "stepUploading": "正在上传 PDF 至 IPFS...",
     "stepBroadcasting": "正在发布至永久公共记录...",
     "stepSuccess": "论文发表成功！正在跳转...",
@@ -193,6 +194,7 @@
     "publishRevision": "发布修订版",
     "saving": "保存中...",
     "stepDiffing": "正在计算更改...",
+    "stepAuthorizing": "Confirming your identity...",
     "stepUploading": "正在上传到IPFS...",
     "stepBroadcasting": "正在广播到网络...",
     "stepSuccess": "论文更新成功！",
@@ -771,6 +773,7 @@
     "cancel": "取消",
     "loading": "加载中...",
     "uploadFailed": "上传失败",
+    "reauthRequired": "Please confirm your identity again, then try once more.",
     "publishingFailed": "发表失败",
     "loadVersionFailed": "版本加载失败",
     "diffLoadFailed": "无法加载版本进行比较",
@@ -786,7 +789,8 @@
     "alreadySignedIn": "您已登录。",
     "goToPapers": "浏览论文",
     "confirm": "Confirm",
-    "uploadCancelled": "Upload cancelled."
+    "uploadCancelled": "Upload cancelled.",
+    "reauthPromptOpen": "Finish the confirmation already open, then try again."
   },
   "reauth": {
     "title": "Confirm your password",

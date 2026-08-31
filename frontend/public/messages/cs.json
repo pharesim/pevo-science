@@ -155,6 +155,7 @@
     "publishing": "Publikování...",
     "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "Výpočet hashů souborů...",
+    "stepAuthorizing": "Confirming your identity...",
     "stepUploading": "Nahrávání PDF na IPFS...",
     "stepBroadcasting": "Publikování na trvalý záznam...",
     "stepSuccess": "Článek byl úspěšně publikován! Přesměrování...",
@@ -193,6 +194,7 @@
     "publishRevision": "Publikovat revizi",
     "saving": "Ukládání...",
     "stepDiffing": "Výpočet změn...",
+    "stepAuthorizing": "Confirming your identity...",
     "stepUploading": "Nahrávání na IPFS...",
     "stepBroadcasting": "Vysílání do sítě...",
     "stepSuccess": "Článek úspěšně aktualizován!",
@@ -771,6 +773,7 @@
     "cancel": "Zrušit",
     "loading": "Načítání...",
     "uploadFailed": "Nahrávání selhalo",
+    "reauthRequired": "Please confirm your identity again, then try once more.",
     "publishingFailed": "Publikování selhalo",
     "loadVersionFailed": "Nepodařilo se načíst verzi",
     "diffLoadFailed": "Nepodařilo se načíst verze pro porovnání",
@@ -786,7 +789,8 @@
     "alreadySignedIn": "Již jste přihlášeni.",
     "goToPapers": "Přejít na články",
     "confirm": "Confirm",
-    "uploadCancelled": "Upload cancelled."
+    "uploadCancelled": "Upload cancelled.",
+    "reauthPromptOpen": "Finish the confirmation already open, then try again."
   },
   "reauth": {
     "title": "Confirm your password",

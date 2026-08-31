@@ -17,7 +17,7 @@ vi.mock('alpinejs', () => ({
   },
 }));
 
-import { initReauthModal } from '../../src/components/reauth-modal.js';
+import { initReauthModal, REAUTH_PROMPT_BUSY } from '../../src/components/reauth-modal.js';
 
 describe('reauthModal store', () => {
   beforeEach(() => {
@@ -60,10 +60,14 @@ describe('reauthModal store', () => {
     reauthStore.cancel();
   });
 
-  it('refuses a second request while one is open, resolving null without disturbing the first', async () => {
+  it('refuses a second request with a sentinel distinct from a cancel', async () => {
+    // A refusal and a cancel need opposite handling: the user chose to stop in
+    // one and never saw a prompt in the other. Resolving both to null drops the
+    // refused action silently, with no feedback anywhere.
     const first = reauthStore.request();
     const second = reauthStore.request();
-    await expect(second).resolves.toBeNull();
+    await expect(second).resolves.toBe(REAUTH_PROMPT_BUSY);
+    expect(REAUTH_PROMPT_BUSY).not.toBeNull();
     reauthStore.password = 'first-pw';
     reauthStore.submit();
     await expect(first).resolves.toBe('first-pw');

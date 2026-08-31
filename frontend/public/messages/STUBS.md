@@ -3730,3 +3730,69 @@ pt: seedPhrase.broadcastOperatorDescription
 sv: seedPhrase.broadcastOperatorDescription
 tr: seedPhrase.broadcastOperatorDescription
 zh: seedPhrase.broadcastOperatorDescription
+
+### Added 2026-08-27 (UI-LIGHT-ACCOUNT-REAUTH-WINDOW)
+
+ar: common.reauthRequired
+cs: common.reauthRequired
+da: common.reauthRequired
+de: common.reauthRequired
+es: common.reauthRequired
+fa: common.reauthRequired
+fr: common.reauthRequired
+he: common.reauthRequired
+it: common.reauthRequired
+nl: common.reauthRequired
+pl: common.reauthRequired
+pt: common.reauthRequired
+sv: common.reauthRequired
+tr: common.reauthRequired
+zh: common.reauthRequired
+
+ar: common.reauthPromptOpen
+cs: common.reauthPromptOpen
+da: common.reauthPromptOpen
+de: common.reauthPromptOpen
+es: common.reauthPromptOpen
+fa: common.reauthPromptOpen
+fr: common.reauthPromptOpen
+he: common.reauthPromptOpen
+it: common.reauthPromptOpen
+nl: common.reauthPromptOpen
+pl: common.reauthPromptOpen
+pt: common.reauthPromptOpen
+sv: common.reauthPromptOpen
+tr: common.reauthPromptOpen
+zh: common.reauthPromptOpen
+
+ar: publish.stepAuthorizing
+cs: publish.stepAuthorizing
+da: publish.stepAuthorizing
+de: publish.stepAuthorizing
+es: publish.stepAuthorizing
+fa: publish.stepAuthorizing
+fr: publish.stepAuthorizing
+he: publish.stepAuthorizing
+it: publish.stepAuthorizing
+nl: publish.stepAuthorizing
+pl: publish.stepAuthorizing
+pt: publish.stepAuthorizing
+sv: publish.stepAuthorizing
+tr: publish.stepAuthorizing
+zh: publish.stepAuthorizing
+
+ar: edit.stepAuthorizing
+cs: edit.stepAuthorizing
+da: edit.stepAuthorizing
+de: edit.stepAuthorizing
+es: edit.stepAuthorizing
+fa: edit.stepAuthorizing
+fr: edit.stepAuthorizing
+he: edit.stepAuthorizing
+it: edit.stepAuthorizing
+nl: edit.stepAuthorizing
+pl: edit.stepAuthorizing
+pt: edit.stepAuthorizing
+sv: edit.stepAuthorizing
+tr: edit.stepAuthorizing
+zh: edit.stepAuthorizing

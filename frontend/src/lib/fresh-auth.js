@@ -6,6 +6,7 @@ import {
   mintSessionAuthProof,
 } from '../api.js';
 import { broadcastOps } from '../signer.js';
+import { REAUTH_PROMPT_BUSY } from '../components/reauth-modal.js';
 
 // In-tab cache of the session-kind fresh_auth_proof WINDOW. The proof is
 // target-less, bound to the JWT subject, and multi-use: it authorizes the
@@ -84,8 +85,18 @@ export const REMINTABLE_REASONS = Object.freeze(['missing', 'expired', 'malforme
 //                         the caller surfaces a generic re-auth failure rather
 //                         than letting the mint failure escape as the op's own
 //                         message.
+//   FRESH_AUTH_PROMPT_BUSY  a re-auth prompt for a DIFFERENT action is already
+//                         open, so this one was refused before the user ever
+//                         saw it (distinct from CANCELLED, which is the user's
+//                         own decision to stop).
+//   FRESH_AUTH_REAUTH_REQUIRED  a window was needed and none was open, but the
+//                         account's only factor is a full-page ORCID
+//                         round-trip and the caller asked for acquisition
+//                         without navigation (see `allowRedirect`).
 export const FRESH_AUTH_CANCELLED = Symbol('fresh_auth_cancelled');
 export const FRESH_AUTH_MINT_FAILED = Symbol('fresh_auth_mint_failed');
+export const FRESH_AUTH_PROMPT_BUSY = Symbol('fresh_auth_prompt_busy');
+export const FRESH_AUTH_REAUTH_REQUIRED = Symbol('fresh_auth_reauth_required');
 
 // Default re-auth modal prompt. Lib code cannot use the `$t` magic helper; read
 // the i18n store directly with an English fallback. Called by every
@@ -127,13 +138,15 @@ export function handleSessionInconsistency() {
 //   - the proof string on success;
 //   - FRESH_AUTH_CANCELLED if the modal was dismissed at either prompt;
 //   - FRESH_AUTH_MINT_FAILED if re-auth is spent (a second wrong password, or any
-//     transport error on the retry mint).
+//     transport error on the retry mint);
+//   - FRESH_AUTH_PROMPT_BUSY if another action's prompt already owns the modal.
 // A non-auth error on the FIRST attempt (transport, 503, VALIDATION_ERROR)
 // propagates so the caller's op-level handler surfaces the real cause.
 export async function mintViaPasswordFactor(mintFn, { message }) {
   const modal = Alpine.store('reauthModal');
 
   let password = await modal.request({ message });
+  if (password === REAUTH_PROMPT_BUSY) return FRESH_AUTH_PROMPT_BUSY;
   if (password === null || password === undefined) return FRESH_AUTH_CANCELLED;
 
   try {
@@ -144,6 +157,7 @@ export async function mintViaPasswordFactor(mintFn, { message }) {
     if (err?.code !== 'UNAUTHORIZED') throw err;
 
     password = await modal.request({ message });
+    if (password === REAUTH_PROMPT_BUSY) return FRESH_AUTH_PROMPT_BUSY;
     if (password === null || password === undefined) return FRESH_AUTH_CANCELLED;
     try {
       return await mintFn(password);
@@ -157,101 +171,170 @@ export async function mintViaPasswordFactor(mintFn, { message }) {
   }
 }
 
+// The session-window periods the backend publishes in
+// `agents/docs/api-contracts/custody.md`, mirrored client-side: a 15-minute
+// sliding idle deadline and a 2-hour absolute cap.
+// A freshly issued window always spans the full period, so at issuance the
+// distance the client measures to the server's deadline is that period minus
+// clock skew and round-trip latency — the deadlines carry no duration the
+// client does not already know. Both clocks tick at the same rate, so the
+// window really does last one full period of wall time from issuance no matter
+// how far apart the two clocks are set.
+const SESSION_IDLE_PERIOD_MS = 900_000;
+const SESSION_ABSOLUTE_PERIOD_MS = 7_200_000;
+
+// Reconcile one server deadline against the client clock at issuance. The
+// measured span is trusted only inside a plausible band around the mirrored
+// period:
+//   - longer than the period means the client clock trails the server's. The
+//     window is not really longer, and believing it is buys a mid-flow 401
+//     exactly where the pre-flight margin exists to prevent one.
+//   - shorter than half the period is skew, not a shorter backend period.
+//     Honouring it spends the window on prompts the user does not owe, and a
+//     span under the pre-flight margin makes every acquisition read as
+//     instantly stale — which for a passwordless account is an ORCID redirect
+//     loop, since the round-trip caches a window the next gate rejects.
+// A genuine backend period change inside the band is still honoured, so the
+// client tracks the server rather than hardcoding it outright.
+function anchoredSpan(deadline, periodMs) {
+  const measured = new Date(deadline).getTime() - Date.now();
+  if (!Number.isFinite(measured)) return NaN;
+  if (measured > periodMs || measured < periodMs / 2) return periodMs;
+  return measured;
+}
+
+// In-memory fallback copy of the window, written ONLY when the sessionStorage
+// write failed (private mode, quota, storage blocked). Without it a failed
+// write leaves the acquire-before-commit gate reporting a window that nothing
+// recorded, so a single publish pays for three acquisitions and a passwordless
+// account's submit gate can never be satisfied. A successful write clears it,
+// so storage stays the single source of truth whenever storage works at all.
+let _memoryWindow = null;
+
+function persistWindow(entry) {
+  try {
+    sessionStorage.setItem(PROOF_KEY, JSON.stringify(entry));
+    _memoryWindow = null;
+  } catch {
+    // The window still covers the rest of this page load through the mirror;
+    // only surviving the ORCID round-trip (a full page load) needs storage.
+    _memoryWindow = entry;
+  }
+}
+
+function dropWindow() {
+  _memoryWindow = null;
+  try {
+    sessionStorage.removeItem(PROOF_KEY);
+  } catch {
+    /* noop */
+  }
+}
+
+// The raw cached entry, from storage when storage holds one and from the
+// in-memory mirror when the read comes back empty or unreadable.
+function storedWindow() {
+  let raw;
+  try {
+    raw = sessionStorage.getItem(PROOF_KEY);
+  } catch {
+    return _memoryWindow;
+  }
+  if (raw === null || raw === undefined) return _memoryWindow;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    dropWindow();
+    return null;
+  }
+}
+
 // Read the cached window: the token, both deadlines, and the idle period
 // learned at issuance. `minRemainingMs` is the caller's freshness demand — a
 // window still open but closing sooner than that reads as a miss WITHOUT being
 // cleared, so a proactive re-auth the user then cancels leaves the live window
 // usable for the action they were already taking.
+//
+// Every deadline in the entry is client-anchored (see `cacheSessionProof`), so
+// comparing it to `Date.now()` is comparing two readings of the same clock.
 function readSessionWindow(minRemainingMs = 0) {
-  try {
-    const raw = sessionStorage.getItem(PROOF_KEY);
-    if (!raw) return null;
-    const { token, expiresAt, absoluteExpiresAt, idlePeriodMs } = JSON.parse(raw);
-    if (!token || !expiresAt || !absoluteExpiresAt) {
-      sessionStorage.removeItem(PROOF_KEY);
-      return null;
-    }
-    // A malformed deadline yields NaN; `Date.now() >= NaN` is false, so a naive
-    // comparison would treat the entry as never-expiring. Treat a non-finite
-    // deadline or idle period as corruption: clear the slot so the consumer
-    // re-auths rather than replaying an entry of unknown lifetime.
-    const idleTs = new Date(expiresAt).getTime();
-    const absoluteTs = new Date(absoluteExpiresAt).getTime();
-    if (
-      !Number.isFinite(idleTs) ||
-      !Number.isFinite(absoluteTs) ||
-      !Number.isFinite(idlePeriodMs)
-    ) {
-      sessionStorage.removeItem(PROOF_KEY);
-      return null;
-    }
-    // The window ends at whichever deadline arrives first.
-    const closesAt = Math.min(idleTs, absoluteTs);
-    const now = Date.now();
-    if (now >= closesAt) {
-      sessionStorage.removeItem(PROOF_KEY);
-      return null;
-    }
-    if (now + minRemainingMs >= closesAt) return null;
-    return { token, absoluteTs, idlePeriodMs };
-  } catch {
+  const entry = storedWindow();
+  if (!entry) return null;
+  const { token, expiresAt, absoluteExpiresAt, idlePeriodMs } = entry;
+  if (!token || !expiresAt || !absoluteExpiresAt) {
+    dropWindow();
     return null;
   }
+  // A malformed deadline yields NaN; `Date.now() >= NaN` is false, so a naive
+  // comparison would treat the entry as never-expiring. Treat a non-finite
+  // deadline or idle period as corruption: clear the slot so the consumer
+  // re-auths rather than replaying an entry of unknown lifetime.
+  const idleTs = new Date(expiresAt).getTime();
+  const absoluteTs = new Date(absoluteExpiresAt).getTime();
+  if (
+    !Number.isFinite(idleTs) ||
+    !Number.isFinite(absoluteTs) ||
+    !Number.isFinite(idlePeriodMs)
+  ) {
+    dropWindow();
+    return null;
+  }
+  // The window ends at whichever deadline arrives first.
+  const closesAt = Math.min(idleTs, absoluteTs);
+  const now = Date.now();
+  if (now >= closesAt) {
+    dropWindow();
+    return null;
+  }
+  if (now + minRemainingMs >= closesAt) return null;
+  return { token, absoluteTs, idlePeriodMs };
 }
 
 function getCachedSessionProof(minRemainingMs = 0) {
   return readSessionWindow(minRemainingMs)?.token ?? null;
 }
 
-// Cache a freshly issued window. `expiresAt` is the sliding idle deadline,
-// `absoluteExpiresAt` the cap. The distance from now to the idle deadline IS
-// the idle period, and this is the only place the client can learn it — the
-// backend publishes no period field — so it is stored alongside the deadlines
-// for later slides to replay.
+// Cache a freshly issued window. `expiresAt` is the server's sliding idle
+// deadline and `absoluteExpiresAt` its cap; both are re-anchored to the client
+// clock through `anchoredSpan` before being stored, so every later liveness
+// check compares two readings of one clock and the server-vs-client offset
+// drops out of the arithmetic entirely. The anchored idle span IS the idle
+// period, and this is the only place the client can learn it — the backend
+// publishes no period field — so it is stored alongside the deadlines for
+// later slides to replay.
 export function cacheSessionProof(token, expiresAt, absoluteExpiresAt) {
-  try {
-    const idlePeriodMs = new Date(expiresAt).getTime() - Date.now();
-    sessionStorage.setItem(
-      PROOF_KEY,
-      JSON.stringify({ token, expiresAt, absoluteExpiresAt, idlePeriodMs }),
-    );
-  } catch {
-    // sessionStorage may be unavailable (private mode, quota); the window
-    // simply won't be reused this session. Broadcast still proceeds on the
-    // freshly-minted token via the in-memory return value.
-  }
+  const now = Date.now();
+  const idlePeriodMs = anchoredSpan(expiresAt, SESSION_IDLE_PERIOD_MS);
+  const absoluteSpanMs = anchoredSpan(absoluteExpiresAt, SESSION_ABSOLUTE_PERIOD_MS);
+  persistWindow({
+    token,
+    expiresAt: new Date(now + idlePeriodMs).toISOString(),
+    absoluteExpiresAt: new Date(now + absoluteSpanMs).toISOString(),
+    idlePeriodMs,
+  });
 }
 
 // Replay the server-side idle slide after a successful use. The backend pushes
 // the idle deadline forward on every consume but echoes nothing back, so the
 // client repeats the same arithmetic: now plus the idle period learned at
-// issuance, never past the absolute cap. A miss (window already closed,
-// storage unavailable) is a no-op — the next acquisition re-auths.
+// issuance, never past the absolute cap. A miss (window already closed) is a
+// no-op — the next acquisition re-auths. Every consume site owes this call;
+// skipping one lets the client fall behind the server and evict a token the
+// server would still honour.
 export function slideSessionWindow() {
   const entry = readSessionWindow();
   if (!entry) return;
-  try {
-    const slidTs = Math.min(Date.now() + entry.idlePeriodMs, entry.absoluteTs);
-    sessionStorage.setItem(
-      PROOF_KEY,
-      JSON.stringify({
-        token: entry.token,
-        expiresAt: new Date(slidTs).toISOString(),
-        absoluteExpiresAt: new Date(entry.absoluteTs).toISOString(),
-        idlePeriodMs: entry.idlePeriodMs,
-      }),
-    );
-  } catch {
-    /* noop — the cached window keeps its previous deadline */
-  }
+  const slidTs = Math.min(Date.now() + entry.idlePeriodMs, entry.absoluteTs);
+  persistWindow({
+    token: entry.token,
+    expiresAt: new Date(slidTs).toISOString(),
+    absoluteExpiresAt: new Date(entry.absoluteTs).toISOString(),
+    idlePeriodMs: entry.idlePeriodMs,
+  });
 }
 
 export function clearCachedSessionProof() {
-  try {
-    sessionStorage.removeItem(PROOF_KEY);
-  } catch {
-    /* noop */
-  }
+  dropWindow();
 }
 
 // Cache a consent_op-kind proof along with its target binding: the
@@ -390,8 +473,15 @@ export async function beginSessionAuthOrcidRedirect() {
 // Returns the proof string, FRESH_AUTH_REDIRECT_PENDING when the ORCID factor
 // started a full-page round-trip (the window lands in cache when the user
 // returns via /orcid/callback), FRESH_AUTH_CANCELLED when the password modal
-// was dismissed, or FRESH_AUTH_MINT_FAILED when re-auth could not be completed.
+// was dismissed, FRESH_AUTH_MINT_FAILED when re-auth could not be completed, or
+// FRESH_AUTH_PROMPT_BUSY when another action already owns the modal.
 // Throws on transport / config errors.
+//
+// `allowRedirect: false` suppresses the navigating factor: callers already
+// holding something the user would lose (a picked image, a batch of completed
+// pins) get FRESH_AUTH_REAUTH_REQUIRED instead of a full-page ORCID round-trip
+// fired out from under them. Only the passwordless branch is suppressed — the
+// password factor's modal is inline and costs nothing to show mid-flow.
 //
 // Concurrent callers — a submit and a vote button racing in the same tick, or a
 // page batch and an inline editor image — are coalesced through the
@@ -400,14 +490,17 @@ export async function beginSessionAuthOrcidRedirect() {
 // drop its own prompt-serialization gate: the singleton reauth modal is never
 // asked twice concurrently.
 let _acquireInFlight = null;
-async function acquireSessionProof(minRemainingMs = 0) {
+async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } = {}) {
   const cached = getCachedSessionProof(minRemainingMs);
   if (cached) return cached;
   if (_acquireInFlight) return _acquireInFlight;
 
   _acquireInFlight = (async () => {
     const hasPassword = await accountHasPassword();
-    if (hasPassword === false) return beginSessionAuthOrcidRedirect();
+    if (hasPassword === false) {
+      if (!allowRedirect) return FRESH_AUTH_REAUTH_REQUIRED;
+      return beginSessionAuthOrcidRedirect();
+    }
     return mintViaPasswordFactor(
       async (password) => {
         const issued = await mintSessionAuthProof(password);
@@ -448,13 +541,25 @@ async function acquireSessionProof(minRemainingMs = 0) {
 //   { ready: false, redirect: true }  ORCID round-trip in flight; abort cleanly
 //   { ready: false, cancelled: true } the password modal was dismissed
 //   { ready: false, failed: true }    re-auth could not be completed
-export async function ensureSessionWindow({ minRemainingMs = WINDOW_PREFLIGHT_MARGIN_MS } = {}) {
+//   { ready: false, busy: true }      another action's prompt owns the modal
+//   { ready: false, reauthRequired: true }  no window is open and the only
+//                                     factor navigates, but the caller asked
+//                                     for a non-navigating acquisition
+//
+// Throws on transport / config errors, so callers that have nothing to unwind
+// go through `freshAuthWindowReady` instead, which cannot reject.
+export async function ensureSessionWindow({
+  minRemainingMs = WINDOW_PREFLIGHT_MARGIN_MS,
+  allowRedirect = true,
+} = {}) {
   if (Alpine.store('auth')?.custody !== 'light') return { ready: true, proof: null };
 
-  const proof = await acquireSessionProof(minRemainingMs);
+  const proof = await acquireSessionProof(minRemainingMs, { allowRedirect });
   if (proof === FRESH_AUTH_REDIRECT_PENDING) return { ready: false, redirect: true };
   if (proof === FRESH_AUTH_CANCELLED) return { ready: false, cancelled: true };
   if (proof === FRESH_AUTH_MINT_FAILED) return { ready: false, failed: true };
+  if (proof === FRESH_AUTH_PROMPT_BUSY) return { ready: false, busy: true };
+  if (proof === FRESH_AUTH_REAUTH_REQUIRED) return { ready: false, reauthRequired: true };
   return { ready: true, proof };
 }
 
@@ -471,6 +576,17 @@ function showReauthFailedToast() {
   Alpine.store('toast')?.show(msg, 'error');
 }
 
+// The message a refused-while-open acquisition owes the user. The action was
+// dropped before the user saw a prompt for it, so saying nothing would look
+// like the button did nothing at all. Shared by every orchestrator that prompts
+// through the singleton modal so the collision reads the same everywhere.
+export function showPromptBusyToast() {
+  const msg =
+    Alpine.store('i18n')?.messages?.common?.reauthPromptOpen ||
+    'Finish the confirmation already open, then try again.';
+  Alpine.store('toast')?.show(msg, 'error');
+}
+
 // Page-level acquire-before-commit gate: acquire the window, surface the one
 // outcome the user needs told about, and answer the only question the caller
 // has — may I start this work? Pages call this before a file selection or a
@@ -478,9 +594,22 @@ function showReauthFailedToast() {
 // while there is nothing to lose. See `ensureSessionWindow` for the ordering
 // rule and the outcome vocabulary.
 export async function freshAuthWindowReady(opts) {
-  const outcome = await ensureSessionWindow(opts);
+  let outcome;
+  try {
+    outcome = await ensureSessionWindow(opts);
+  } catch (err) {
+    // A gate that rejects is worse than the path it front-runs: it sits ahead
+    // of the caller's own try, so the rejection escapes, the step machine never
+    // leaves idle, and the user re-clicks a dead-looking button forever. Every
+    // acquisition failure the user can act on is a re-auth failure, so say so
+    // and refuse the work.
+    console.warn('[fresh-auth] window acquisition failed', err);
+    showReauthFailedToast();
+    return false;
+  }
   if (outcome.ready) return true;
   if (outcome.failed) showReauthFailedToast();
+  if (outcome.busy) showPromptBusyToast();
   return false;
 }
 
@@ -574,6 +703,7 @@ export async function beginAuthorshipOrcidFreshAuth(target) {
 function acquisitionAborted(proof) {
   if (typeof proof === 'string') return false;
   if (proof === FRESH_AUTH_MINT_FAILED) showReauthFailedToast();
+  if (proof === FRESH_AUTH_PROMPT_BUSY) showPromptBusyToast();
   return true;
 }
 
@@ -600,16 +730,22 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
     return broadcastOps(username, operations, opts);
   }
 
+  // One consume of the window: broadcast, then replay the idle slide the
+  // backend performed but echoed nothing about. Both the first attempt and the
+  // 401 retry go through here so "consume without sliding" — the bug class that
+  // lets the client fall behind the server and evict a live token — cannot be
+  // reintroduced by editing one branch and not the other.
+  const attemptOnce = async (windowProof) => {
+    const res = await broadcastOps(username, operations, { ...opts, freshAuthProof: windowProof });
+    slideSessionWindow();
+    return res;
+  };
+
   const proof = await acquireSessionProof();
   if (acquisitionAborted(proof)) return FRESH_AUTH_REDIRECT_PENDING;
 
   try {
-    const res = await broadcastOps(username, operations, { ...opts, freshAuthProof: proof });
-    // The backend slid the window's idle deadline on this consume but echoes
-    // nothing back, so replay the slide locally; otherwise the cached window
-    // would expire on its mint-time deadline while the server still honours it.
-    slideSessionWindow();
-    return res;
+    return await attemptOnce(proof);
   } catch (err) {
     // Error shape `{ status, code, details }` is produced by signer.js#broadcastOps
     // (see frontend/src/signer.js — the non-2xx branch parses the JSON envelope
@@ -638,11 +774,7 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
         try {
           const reacquired = await acquireSessionProof();
           if (acquisitionAborted(reacquired)) return FRESH_AUTH_REDIRECT_PENDING;
-          const res = await broadcastOps(
-            username, operations, { ...opts, freshAuthProof: reacquired },
-          );
-          slideSessionWindow();
-          return res;
+          return await attemptOnce(reacquired);
         } catch (retryErr) {
           // Preserve the shape if the retry's own error already follows the
           // contract (i.e., another FRESH_AUTH_REQUIRED or any signer.js-shaped

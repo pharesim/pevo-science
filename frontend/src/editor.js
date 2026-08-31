@@ -311,13 +311,12 @@ export class PevoEditor {
     this.isUploading = false;
 
     // Sequential image-upload queue. Drop/paste/file-select can hand us several
-    // images at once; uploading them concurrently would open one upload session
-    // (and one re-auth modal) per image, and the modal's refuse-while-open guard
-    // resolves every caller after the first to null — cancelling all but the
-    // first image for a light account. We drain the queue one file at a time
-    // through `_handleImageUpload` so a single shared re-auth prompt covers the
-    // whole batch. The drain is fire-and-forget so the ProseMirror handlers stay
-    // synchronous (they must return a boolean).
+    // images at once; uploading them concurrently would race the singleton
+    // re-auth modal, and the loser of that race is refused rather than served.
+    // We drain the queue one file at a time through `_handleImageUpload` so a
+    // single shared window covers the whole batch. The drain is fire-and-forget
+    // so the ProseMirror handlers stay synchronous (they must return a
+    // boolean).
     this._imageUploadQueue = [];
     this._imageUploadDraining = false;
 
@@ -1168,7 +1167,13 @@ export class PevoEditor {
   // Enqueue one or more image files for sequential upload. Safe to call from a
   // synchronous ProseMirror handler (handleDrop/handlePaste): it returns
   // immediately and the drain runs fire-and-forget. Multiple files share one
-  // re-auth prompt because they pass through `_handleImageUpload` one at a time.
+  // re-auth act because they pass through `_handleImageUpload` one at a time.
+  //
+  // Acquisition ordering is the upload layer's job, not this queue's: an image
+  // arrives mid-composition with nothing saved, so `uploadFile` acquires
+  // without navigating and refuses non-destructively when the only factor the
+  // account has would take the user off the page. The refusal reaches the user
+  // as a re-authenticate-and-retry toast with the document untouched.
   _queueImageUploads(files) {
     for (const f of files) this._imageUploadQueue.push(f);
     this._drainImageUploadQueue();

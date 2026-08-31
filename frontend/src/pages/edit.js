@@ -32,7 +32,7 @@ const ABSTRACT_MAX_CHARS = 2000;
 // against {idle, success, error} — adding a new step name without
 // updating the exclusion would have silently re-enabled the Submit
 // button mid-flight (state-machine correctness smell).
-const STEP_IN_PROGRESS = ['diffing', 'uploading', 'broadcasting'];
+const STEP_IN_PROGRESS = ['authorizing', 'diffing', 'uploading', 'broadcasting'];
 
 function composePostBody(abstract, fullText) {
   if (!fullText) return '## Abstract\n\n' + abstract;
@@ -504,6 +504,7 @@ export function initEditPage() {
     get stepMessage() {
       const msgs = {
         idle: '',
+        authorizing: this.$t('edit.stepAuthorizing'),
         diffing: this.$t('edit.stepDiffing'),
         uploading: this.$t('edit.stepUploading'),
         broadcasting: this.$t('edit.stepBroadcasting'),
@@ -983,14 +984,13 @@ export function initEditPage() {
       const isContinuation = this.isContinuation;
       const ownPost = this.userPostInChain;
 
-      // Enter the submit sequence with a window already in hand, and with enough
-      // of it left that an upload + broadcast run does not race the closing
-      // deadline. Discovering the window closed after the upload has been paid
-      // for is exactly the loss this ordering exists to prevent.
-      if (!await freshAuthWindowReady()) return;
-      if (!this._mounted) return;
-
-      this.step = 'diffing';
+      // Leave 'idle' synchronously, before the first await. `isSubmitting`
+      // derives from `step`, and it is what disables the submit button — across
+      // an await taken while still idle the button stays live, a second click
+      // re-enters here, both calls coalesce onto one acquisition, and the user
+      // pays for two uploads and two broadcasts. The flip doubles as the
+      // spinner the user watches during re-auth.
+      this.step = 'authorizing';
       this.errorMessage = '';
 
       try {
@@ -1044,6 +1044,52 @@ export function initEditPage() {
           return true;
         });
 
+        const citationsData = this.citations.filter(c => c.author && c.permlink);
+
+        const pevoMeta = this.paper.json_metadata?.[APP_TAG] || {};
+
+        // Chain head, and the post a native edit targets. ownPost MAY be null
+        // when isContinuation took the sparse-versions fallback path: the
+        // getter returns false for a single-post paper the user authored even
+        // though the version walk found no entry (versions[] entries lack
+        // author/permlink in some HAF-replay-not-run states). The `ownPost ?`
+        // guard is load-bearing for that case — DO NOT remove it.
+        const headAuthor = this.paper.head_author || this.paper.author;
+        const headPermlink = this.paper.head_permlink || this.paper.permlink;
+        const targetAuthor = ownPost ? ownPost.author : this.paper.author;
+        const targetPermlink = ownPost ? ownPost.permlink : this.paper.permlink;
+        const targetIsHead = targetAuthor === headAuthor && targetPermlink === headPermlink;
+
+        // Detect a submit that would change nothing BEFORE paying for the
+        // re-auth window. Everything it reads is already in hand and costs
+        // nothing; running the gate first would charge a password prompt, or
+        // for a passwordless account a full-page round-trip, only to come back
+        // and say the form is unchanged.
+        if (
+          !isContinuation
+          && targetIsHead
+          && newPostBody === this._originalBody
+          && this.title === this.paper.title
+          && JSON.stringify(keywords) === JSON.stringify(pevoMeta.keywords || [])
+          && JSON.stringify(allAuthors) === JSON.stringify(pevoMeta.authors || [])
+          && JSON.stringify(citationsData) === JSON.stringify(pevoMeta.citations || [])
+          && this.supplementaryFiles.length === 0
+          && this.addressedReviews.length === 0
+        ) {
+          this.step = 'error';
+          this.errorMessage = this.$t('edit.noChanges');
+          return;
+        }
+
+        // Enter the rest of the sequence with a window already in hand, and
+        // with enough of it left that an upload + broadcast run does not race
+        // the closing deadline. Discovering the window closed after the upload
+        // has been paid for is exactly the loss this ordering prevents.
+        if (!await freshAuthWindowReady()) { this.step = 'idle'; return; }
+        if (!this._mounted) return;
+
+        this.step = 'diffing';
+
         // Upload new supplementary files
         const uploadedSupplementary = [...this.existingSupplementaryFiles];
         if (this.supplementaryFiles.length > 0) {
@@ -1075,15 +1121,8 @@ export function initEditPage() {
           }
         }
 
-        const citationsData = this.citations.filter(c => c.author && c.permlink);
-
-        const pevoMeta = this.paper.json_metadata?.[APP_TAG] || {};
-
         if (isContinuation) {
           // Continuation post: new post with full body
-          const headAuthor = this.paper.head_author || this.paper.author;
-          const headPermlink = this.paper.head_permlink || this.paper.permlink;
-
           const newPermlink = slugify(this.title) + '-' + Date.now().toString(36);
 
           const jsonMetadata = {
@@ -1103,6 +1142,13 @@ export function initEditPage() {
               supplementary_files: uploadedSupplementary.length > 0 ? uploadedSupplementary : undefined,
             },
           };
+
+          // The margin is applied at the gates, never inside a leg — and the
+          // broadcast is the last gate. Uploads are already paid for, so a
+          // window that closed while they ran is worth one deliberate re-auth
+          // here rather than a 401 discovered mid-broadcast.
+          if (!await freshAuthWindowReady()) { this.step = 'idle'; return; }
+          if (!this._mounted) return;
 
           this.step = 'broadcasting';
           const continuationOps = [
@@ -1148,45 +1194,16 @@ export function initEditPage() {
             this.navigate(`/paper/${canonicalAuthor}/${canonicalPermlink}`);
           }, 1500);
         } else {
-          // Same-author native edit: target the user's own post in the
-          // chain (which may be the canonical root, or a continuation
-          // post the user previously authored). ownPost MAY be null when
-          // isContinuation took the sparse-versions fallback path: at
-          // edit.js isContinuation, when the chain pointers indicate a
-          // single-post paper (no chain) and username === paper.author,
-          // the getter returns false even though the version walk found
-          // no entry (versions[] entries lack author/permlink in some
-          // HAF-replay-not-run states). The `ownPost ?` guard below is
-          // load-bearing for that case — DO NOT remove it.
-          const targetAuthor = ownPost ? ownPost.author : this.paper.author;
-          const targetPermlink = ownPost ? ownPost.permlink : this.paper.permlink;
-
+          // Same-author native edit against the post resolved above.
+          //
           // Diff base correctness: the form pre-fills from the chain head
           // (paper.body), but Hive applies diffs against the post's own
           // current body. The diff is only correct when the target IS the
           // chain head (or when no chain exists, head ≡ root). Otherwise
           // we broadcast full body — Hive accepts it, just uses more chain
           // space than a diff would.
-          const headAuthor = this.paper.head_author || this.paper.author;
-          const headPermlink = this.paper.head_permlink || this.paper.permlink;
-          const targetIsHead = targetAuthor === headAuthor && targetPermlink === headPermlink;
-
           let broadcastBody;
           if (targetIsHead) {
-            if (newPostBody === this._originalBody && this.title === this.paper.title) {
-              // Check if metadata changed
-              const metaChanged = JSON.stringify(keywords) !== JSON.stringify(pevoMeta.keywords || [])
-                || JSON.stringify(allAuthors) !== JSON.stringify(pevoMeta.authors || [])
-                || JSON.stringify(citationsData) !== JSON.stringify(pevoMeta.citations || [])
-                || this.supplementaryFiles.length > 0
-                || this.addressedReviews.length > 0;
-
-              if (!metaChanged) {
-                this.step = 'error';
-                this.errorMessage = this.$t('edit.noChanges');
-                return;
-              }
-            }
             const diffText = computeDiff(this._originalBody, newPostBody);
             broadcastBody = diffText.length >= newPostBody.length ? newPostBody : diffText;
           } else {
@@ -1213,6 +1230,11 @@ export function initEditPage() {
               supplementary_files: uploadedSupplementary.length > 0 ? uploadedSupplementary : undefined,
             },
           };
+
+          // See the continuation branch: the margin belongs at the gates, and
+          // the broadcast is the last one.
+          if (!await freshAuthWindowReady()) { this.step = 'idle'; return; }
+          if (!this._mounted) return;
 
           this.step = 'broadcasting';
           const editOps = [

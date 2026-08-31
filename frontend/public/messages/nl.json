@@ -155,6 +155,7 @@
     "publishing": "Publiceren...",
     "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "Bestandshashes berekenen...",
+    "stepAuthorizing": "Confirming your identity...",
     "stepUploading": "PDF uploaden naar IPFS...",
     "stepBroadcasting": "Publiceren naar het permanente register...",
     "stepSuccess": "Artikel succesvol gepubliceerd! Doorverwijzen...",
@@ -193,6 +194,7 @@
     "publishRevision": "Revisie publiceren",
     "saving": "Opslaan...",
     "stepDiffing": "Wijzigingen berekenen...",
+    "stepAuthorizing": "Confirming your identity...",
     "stepUploading": "Uploaden naar IPFS...",
     "stepBroadcasting": "Uitzenden naar het netwerk...",
     "stepSuccess": "Artikel succesvol bijgewerkt!",
@@ -775,6 +777,7 @@
     "cancel": "Annuleren",
     "loading": "Laden...",
     "uploadFailed": "Upload mislukt",
+    "reauthRequired": "Please confirm your identity again, then try once more.",
     "publishingFailed": "Publiceren mislukt",
     "loadVersionFailed": "Versie laden mislukt",
     "diffLoadFailed": "Versies laden voor vergelijking mislukt",
@@ -790,7 +793,8 @@
     "alreadySignedIn": "Je bent al ingelogd.",
     "goToPapers": "Naar publicaties",
     "confirm": "Confirm",
-    "uploadCancelled": "Upload cancelled."
+    "uploadCancelled": "Upload cancelled.",
+    "reauthPromptOpen": "Finish the confirmation already open, then try again."
   },
   "reauth": {
     "title": "Confirm your password",

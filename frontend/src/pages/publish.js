@@ -421,6 +421,7 @@ export function initPublishPage() {
       const t = (key) => this.$t(`publish.${key}`);
       const msgs = {
         idle: '',
+        authorizing: t('stepAuthorizing'),
         hashing: t('stepHashing'),
         uploading: t('stepUploading'),
         broadcasting: t('stepBroadcasting'),
@@ -729,7 +730,15 @@ export function initPublishPage() {
     async handlePdfChange(e) {
       const file = e.target.files?.[0];
       if (!file) return;
-      if (!await this._windowReady()) return;
+      if (!await this._windowReady()) {
+        // Clear the input alongside the refusal. A browser fires no `change`
+        // for an unchanged selection, so leaving the refused file in the input
+        // makes the one file the user wants unpickable: the UI shows nothing
+        // attached and re-choosing it is a no-op. Mirrors the supplementary
+        // handler below.
+        e.target.value = '';
+        return;
+      }
       if (!this._mounted) return;
       this.pdfFile = file;
       this.pdfFileName = file.name;
@@ -797,17 +806,37 @@ export function initPublishPage() {
         return;
       }
 
-      // Enter the submit sequence with a window already in hand, and with
-      // enough of it left that a hash + upload + broadcast run does not race the
-      // closing deadline. Discovering the window closed after the upload has
-      // been paid for is exactly the loss this ordering exists to prevent.
-      if (!await this._windowReady()) return;
-      if (!this._mounted) return;
-
-      this.step = 'hashing';
+      // Leave 'idle' synchronously, before the first await. `isSubmitting`
+      // derives from `step`, and it is what disables the submit button — across
+      // an await taken while still idle the button stays live, a second click
+      // re-enters here, both calls coalesce onto one acquisition, and the user
+      // pays for two uploads and two broadcasts. The flip doubles as the
+      // spinner the user watches during re-auth.
+      this.step = 'authorizing';
       this.errorMessage = '';
 
       try {
+        // Enter the submit sequence with a window already in hand, and with
+        // enough of it left that a hash + upload + broadcast run does not race
+        // the closing deadline. Discovering the window closed after the upload
+        // has been paid for is exactly the loss this ordering exists to prevent.
+        if (!await this._windowReady()) { this.step = 'idle'; return; }
+        if (!this._mounted) return;
+
+        // Confirm before the upload legs, not after. The dialog confirms an
+        // intent to publish, not an intent to upload, so asking first also
+        // spares the user paying for pins on a publish they then cancel — and
+        // it keeps a long dwell on the dialog from closing the window after the
+        // uploads have already been paid for.
+        const confirmed = await Alpine.store('broadcastConfirm').request({
+          title: this.$t('confirm.publishTitle'),
+          message: this.$t('confirm.publishMessage', { title: this.title }),
+          confirmLabel: this.$t('confirm.publish'),
+        });
+        if (!this._mounted) return;
+        if (!confirmed) { this.step = 'idle'; return; }
+
+        this.step = 'hashing';
 
         let ipfsCid = null;
         let ipfsFilename = null;
@@ -909,13 +938,12 @@ export function initPublishPage() {
           },
         };
 
-        const confirmed = await Alpine.store('broadcastConfirm').request({
-          title: this.$t('confirm.publishTitle'),
-          message: this.$t('confirm.publishMessage', { title: this.title }),
-          confirmLabel: this.$t('confirm.publish'),
-        });
+        // The margin is applied at the gates, never inside a leg — and the
+        // broadcast is the last gate. Uploads are already paid for, so a window
+        // that closed while they ran is worth one deliberate re-auth here
+        // rather than a 401 discovered mid-broadcast.
+        if (!await this._windowReady()) { this.step = 'idle'; return; }
         if (!this._mounted) return;
-        if (!confirmed) { this.step = 'idle'; return; }
 
         this.step = 'broadcasting';
         const operations = [

@@ -155,6 +155,7 @@
     "publishing": "Pubblicazione in corso...",
     "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "Calcolo degli hash dei file...",
+    "stepAuthorizing": "Confirming your identity...",
     "stepUploading": "Caricamento del PDF su IPFS...",
     "stepBroadcasting": "Pubblicazione sul registro permanente...",
     "stepSuccess": "Articolo pubblicato con successo! Reindirizzamento...",
@@ -193,6 +194,7 @@
     "publishRevision": "Pubblica revisione",
     "saving": "Salvataggio...",
     "stepDiffing": "Calcolo delle modifiche...",
+    "stepAuthorizing": "Confirming your identity...",
     "stepUploading": "Caricamento su IPFS...",
     "stepBroadcasting": "Trasmissione alla rete...",
     "stepSuccess": "Articolo aggiornato con successo!",
@@ -771,6 +773,7 @@
     "cancel": "Annulla",
     "loading": "Caricamento...",
     "uploadFailed": "Caricamento non riuscito",
+    "reauthRequired": "Please confirm your identity again, then try once more.",
     "publishingFailed": "Pubblicazione non riuscita",
     "loadVersionFailed": "Impossibile caricare la versione",
     "diffLoadFailed": "Impossibile caricare le versioni per il confronto",
@@ -786,7 +789,8 @@
     "alreadySignedIn": "Hai già effettuato l’accesso.",
     "goToPapers": "Vai agli articoli",
     "confirm": "Confirm",
-    "uploadCancelled": "Upload cancelled."
+    "uploadCancelled": "Upload cancelled.",
+    "reauthPromptOpen": "Finish the confirmation already open, then try again."
   },
   "reauth": {
     "title": "Confirm your password",

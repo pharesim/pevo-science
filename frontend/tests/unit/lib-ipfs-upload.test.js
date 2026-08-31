@@ -32,9 +32,12 @@ vi.mock('../../src/api.js', async (importOriginal) => {
 
 const mockEnsureSessionWindow = vi.fn();
 const mockClearCachedSessionProof = vi.fn();
+const mockSlideSessionWindow = vi.fn();
 vi.mock('../../src/lib/fresh-auth.js', () => ({
   ensureSessionWindow: (...a) => mockEnsureSessionWindow(...a),
   clearCachedSessionProof: (...a) => mockClearCachedSessionProof(...a),
+  slideSessionWindow: (...a) => mockSlideSessionWindow(...a),
+  REMINTABLE_REASONS: ['missing', 'expired', 'malformed'],
 }));
 
 import {
@@ -42,6 +45,7 @@ import {
   describeUploadError,
   UPLOAD_CANCELLED,
   UPLOAD_REAUTH_FAILED,
+  UPLOAD_REAUTH_REQUIRED,
 } from '../../src/lib/ipfs-upload.js';
 import { ApiRequestError } from '../../src/api.js';
 
@@ -49,12 +53,16 @@ const okUpload = (cid) => ({ status: 'ok', data: { cid, filename: 'f', type: 'ap
 const file = () => new Blob(['x'], { type: 'application/pdf' });
 // Build the real ApiRequestError production throws, not a hand-rolled stand-in.
 const codedError = (code) => new ApiRequestError(code, code);
+// The pre-flight's 401 carries a structured reason; the client branches on it.
+const freshAuthRejected = (reason = 'expired') =>
+  new ApiRequestError('FRESH_AUTH_REQUIRED', 'FRESH_AUTH_REQUIRED', null, { reason });
 
 describe('uploadFile', () => {
   beforeEach(() => {
     mockUploadFileToIpfs.mockReset();
     mockEnsureSessionWindow.mockReset();
     mockClearCachedSessionProof.mockReset();
+    mockSlideSessionWindow.mockReset();
     mockEnsureSessionWindow.mockResolvedValue({ ready: true, proof: 'window-1' });
     mockUploadFileToIpfs.mockResolvedValue(okUpload('bafy'));
   });
@@ -65,6 +73,31 @@ describe('uploadFile', () => {
 
     expect(res).toEqual(okUpload('bafy'));
     expect(mockUploadFileToIpfs).toHaveBeenCalledWith(f, { freshAuthProof: 'window-1' });
+  });
+
+  it('acquires without a margin and without navigating', async () => {
+    // The margin belongs at the gates (file selection, submit entry, and
+    // immediately before the broadcast), never inside a leg: demanding it here
+    // forces a mid-sequence re-auth on a window the broadcast leg would accept.
+    // And by the time a leg runs there is always work to lose, so the ORCID
+    // round-trip must not fire out from under it.
+    await uploadFile(file());
+
+    expect(mockEnsureSessionWindow).toHaveBeenCalledWith({
+      minRemainingMs: 0,
+      allowRedirect: false,
+    });
+  });
+
+  it('replays the idle slide after every successful upload', async () => {
+    // The pre-flight consumes the window and the backend slides its deadline
+    // but echoes nothing back. Skipping the replay leaves the client behind by
+    // the whole upload duration, and it then evicts a token the server would
+    // still honour -- for a passwordless account, discarding a completed pin.
+    await uploadFile(file());
+    await uploadFile(file());
+
+    expect(mockSlideSessionWindow).toHaveBeenCalledTimes(2);
   });
 
   it('sends no proof for self-custody', async () => {
@@ -100,7 +133,7 @@ describe('uploadFile', () => {
     // Without the clear, the re-acquisition is a cache hit on the very proof the
     // backend just rejected and the retry fails identically.
     mockUploadFileToIpfs
-      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED'))
+      .mockRejectedValueOnce(freshAuthRejected('expired'))
       .mockResolvedValueOnce(okUpload('bafy2'));
     mockEnsureSessionWindow
       .mockResolvedValueOnce({ ready: true, proof: 'window-1' })
@@ -111,9 +144,14 @@ describe('uploadFile', () => {
     expect(mockClearCachedSessionProof).toHaveBeenCalledTimes(1);
     expect(res.data.cid).toBe('bafy2');
     expect(mockUploadFileToIpfs.mock.calls[1][1]).toEqual({ freshAuthProof: 'window-2' });
+    expect(mockSlideSessionWindow).toHaveBeenCalledTimes(1);
   });
 
-  it('retries once on an UNAUTHORIZED upload leg', async () => {
+  it('an aged-out upload token retries without destroying the window', async () => {
+    // UNAUTHORIZED comes from the upload leg and means the single-use upload
+    // token outlived its short TTL -- routine for a large file on a slow
+    // connection. It says nothing about the session window, so clearing the
+    // window here charges the user a full re-auth act for a stale token.
     mockUploadFileToIpfs
       .mockRejectedValueOnce(codedError('UNAUTHORIZED'))
       .mockResolvedValueOnce(okUpload('bafy3'));
@@ -122,6 +160,19 @@ describe('uploadFile', () => {
 
     expect(res.data.cid).toBe('bafy3');
     expect(mockUploadFileToIpfs).toHaveBeenCalledTimes(2);
+    expect(mockClearCachedSessionProof).not.toHaveBeenCalled();
+    expect(mockUploadFileToIpfs.mock.calls[1][1]).toEqual({ freshAuthProof: 'window-1' });
+  });
+
+  it('does not re-mint a rejection re-minting cannot fix', async () => {
+    // `wrong_mechanism` means the factor the proof was minted with is not
+    // registered on the account. A second mint of the same factor produces the
+    // same rejection, so the failure is surfaced rather than looped.
+    mockUploadFileToIpfs.mockRejectedValue(freshAuthRejected('wrong_mechanism'));
+
+    await expect(uploadFile(file())).rejects.toMatchObject({ code: 'FRESH_AUTH_REQUIRED' });
+    expect(mockUploadFileToIpfs).toHaveBeenCalledTimes(1);
+    expect(mockClearCachedSessionProof).not.toHaveBeenCalled();
   });
 
   it('does not retry a transport failure', async () => {
@@ -154,6 +205,16 @@ describe('uploadFile', () => {
     expect(mockUploadFileToIpfs).not.toHaveBeenCalled();
   });
 
+  it('a closed window mid-batch refuses instead of navigating away', async () => {
+    // Once acquisition stops navigating, a passwordless account whose window
+    // closed mid-batch must get an actionable refusal with the form intact,
+    // not a full-page round-trip that discards the pins already paid for.
+    mockEnsureSessionWindow.mockResolvedValue({ ready: false, reauthRequired: true });
+
+    await expect(uploadFile(file())).rejects.toMatchObject({ code: UPLOAD_REAUTH_REQUIRED });
+    expect(mockUploadFileToIpfs).not.toHaveBeenCalled();
+  });
+
   it('never blocks a passwordless account up front', async () => {
     // The retired State-C block ("Uploads require a password on this account")
     // dead-ended ORCID-only accounts before any prompt. A passwordless account
@@ -172,6 +233,7 @@ describe('describeUploadError', () => {
   it('maps cancel and spent-re-auth to distinct keys and everything else to the generic one', () => {
     expect(describeUploadError({ code: UPLOAD_CANCELLED })).toBe('common.uploadCancelled');
     expect(describeUploadError({ code: UPLOAD_REAUTH_FAILED })).toBe('settings.reauthFailed');
+    expect(describeUploadError({ code: UPLOAD_REAUTH_REQUIRED })).toBe('common.reauthRequired');
     expect(describeUploadError({ code: 'INTERNAL_ERROR' })).toBe('common.uploadFailed');
     expect(describeUploadError(null)).toBe('common.uploadFailed');
     expect(describeUploadError(undefined)).toBe('common.uploadFailed');

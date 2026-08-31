@@ -6,10 +6,12 @@ import {
   FRESH_AUTH_REDIRECT_PENDING,
   FRESH_AUTH_CANCELLED,
   FRESH_AUTH_MINT_FAILED,
+  FRESH_AUTH_PROMPT_BUSY,
   REMINTABLE_REASONS,
   mintViaPasswordFactor,
   passwordPromptMessage,
   handleSessionInconsistency,
+  showPromptBusyToast,
 } from './fresh-auth.js';
 
 /**
@@ -49,6 +51,15 @@ function mintViaPassword(target) {
     (password) => mintAuthorshipFreshAuthProof(target, password),
     { message: passwordPromptMessage() },
   );
+}
+
+// A prompt for a different action already owns the singleton modal, so this
+// one never reached the user. Tell them which way out there is, then unwind
+// through the existing clean-abort outcome — call sites need no new branch,
+// and the message is the whole difference from a cancel.
+function promptBusy() {
+  showPromptBusyToast();
+  return { cancelled: true };
 }
 
 function getCachedProof(target) {
@@ -102,6 +113,7 @@ export async function withAuthorshipFreshAuth(target, ctx, run) {
 
   const proof = await resolveProof(target, ctx);
   if (proof === FRESH_AUTH_REDIRECT_PENDING) return { redirect: true };
+  if (proof === FRESH_AUTH_PROMPT_BUSY) return promptBusy();
   if (proof === FRESH_AUTH_CANCELLED) return { cancelled: true };
   if (proof === FRESH_AUTH_MINT_FAILED) return { freshAuthFailed: true };
 
@@ -128,6 +140,7 @@ export async function withAuthorshipFreshAuth(target, ctx, run) {
     const remintable = REMINTABLE_REASONS.includes(err.details?.reason);
     if (remintable && ctx.hasPassword) {
       const retry = await mintViaPassword(target);
+      if (retry === FRESH_AUTH_PROMPT_BUSY) return promptBusy();
       if (retry === FRESH_AUTH_CANCELLED) return { cancelled: true };
       if (retry === FRESH_AUTH_MINT_FAILED) return { freshAuthFailed: true };
       try {

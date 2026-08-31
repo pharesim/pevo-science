@@ -104,8 +104,17 @@ test('orcid-callback session_auth caches the issued proof in sessionStorage', as
   // The whole window is cached, not just a token: dropping the absolute cap
   // would leave the client honouring a proof past the deadline no activity
   // extends, and dropping the learned idle period would break the slide.
-  expect(parsed.expiresAt).toBe(expiresAt);
-  expect(parsed.absoluteExpiresAt).toBe(absoluteExpiresAt);
+  //
+  // Both deadlines are re-anchored to the CLIENT clock at issuance, so they
+  // land near the server's values rather than on them: the server's timestamps
+  // are in the server's clock, and comparing those to `Date.now()` would fold
+  // any offset between the two straight into the window's length. A minute of
+  // tolerance covers the round-trip without admitting a skew-sized error.
+  const TOLERANCE_MS = 60_000;
+  const nearly = (actual, expected) =>
+    Math.abs(new Date(actual).getTime() - new Date(expected).getTime()) < TOLERANCE_MS;
+  expect(nearly(parsed.expiresAt, expiresAt), 'idle deadline is client-anchored near the issued one').toBe(true);
+  expect(nearly(parsed.absoluteExpiresAt, absoluteExpiresAt), 'absolute cap is client-anchored near the issued one').toBe(true);
   expect(Number.isFinite(parsed.idlePeriodMs)).toBe(true);
 
   // Mode + return path are cleared after the handler runs (both now in

@@ -155,6 +155,7 @@
     "publishing": "در حال انتشار...",
     "missingRequiredFields": "Please fill in title, abstract, and discipline before publishing.",
     "stepHashing": "محاسبه هش فایل...",
+    "stepAuthorizing": "Confirming your identity...",
     "stepUploading": "بارگذاری PDF بر IPFS...",
     "stepBroadcasting": "انتشار در سوابق دائمی...",
     "stepSuccess": "مقاله با موفقیت منتشر شد! در حال هدایت...",
@@ -193,6 +194,7 @@
     "publishRevision": "انتشار بازنگری",
     "saving": "در حال ذخیره...",
     "stepDiffing": "در حال محاسبه تغییرات...",
+    "stepAuthorizing": "Confirming your identity...",
     "stepUploading": "در حال بارگذاری به IPFS...",
     "stepBroadcasting": "در حال ارسال به شبکه...",
     "stepSuccess": "مقاله با موفقیت به‌روزرسانی شد!",
@@ -771,6 +773,7 @@
     "cancel": "لغو",
     "loading": "در حال بارگذاری...",
     "uploadFailed": "بارگذاری ناموفق بود",
+    "reauthRequired": "Please confirm your identity again, then try once more.",
     "publishingFailed": "انتشار ناموفق بود",
     "loadVersionFailed": "بارگذاری نسخه ناموفق بود",
     "diffLoadFailed": "بارگذاری نسخه‌ها برای مقایسه ناموفق بود",
@@ -786,7 +789,8 @@
     "alreadySignedIn": "شما قبلاً وارد شده‌اید.",
     "goToPapers": "رفتن به مقالات",
     "confirm": "Confirm",
-    "uploadCancelled": "Upload cancelled."
+    "uploadCancelled": "Upload cancelled.",
+    "reauthPromptOpen": "Finish the confirmation already open, then try again."
   },
   "reauth": {
     "title": "Confirm your password",
