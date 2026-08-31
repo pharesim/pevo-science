@@ -227,6 +227,7 @@ import * as redisModule from '../../src/redis.js';
 import * as appDbModule from '../../src/app-db.js';
 import { logger } from '../../src/logger.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
+import { expectNoSessionProof } from '../support/session-proof-shape.js';
 // Test-only exports — see notes at orcid.ts __test_releaseBindingLock /
 // __test_seams.
 import {
@@ -932,9 +933,14 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
       // against any error response and prove nothing about a real login.
       expect(res.body.data.token).toBeTruthy();
       expect(res.body.data.username).toBe('alice');
-      expect(res.body.data.fresh_auth_proof).toBeUndefined();
-      // The session-auth branch returns these two alongside the proof; neither
-      // may appear on a login, or a window has been opened under another name.
+      // The same deep walk the other session-establishment surfaces get, rather
+      // than a check on one documented path: a proof handed back one level
+      // deeper, renamed, or set as a header breaks the invariant just as
+      // completely, and this branch is the one most likely to drift because its
+      // licensed sibling sits in the same dispatch.
+      expectNoSessionProof(res, 'orcid login response');
+      // Kept alongside the walk: neither value is proof-shaped and neither name
+      // matches, so only an explicit check catches a window opened under them.
       expect(res.body.data.absolute_expires_at).toBeUndefined();
       expect(res.body.data.mechanism).toBeUndefined();
     },
@@ -3363,6 +3369,13 @@ describe('POST /api/orcid/callback — session_auth mode (BACKEND-CUSTODY-BROADC
     expect(res.body.data.mode).toBe('session_auth');
     expect(res.body.data.mechanism).toBe('orcid');
     expect(res.body.data.fresh_auth_proof).toMatch(/^[0-9a-f]{64}$/);
+    // Inverted control on a genuine response object. Every other planted case
+    // for this detector is a hand-built literal, so a helper that read a
+    // supertest response wrongly would report no offenders for all of them and
+    // leave every no-proof assertion in the suite vacuously green. This is the
+    // one licensed mint, so its real 200 is the only place the detector can be
+    // proven to fire against production output.
+    expect(() => expectNoSessionProof(res, 'licensed session-auth response')).toThrow();
     // Both deadlines are ISO-8601 strings per the documented wire contract. See
     // the fresh_auth-mode assertion above for the full rationale.
     //

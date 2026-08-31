@@ -418,7 +418,12 @@ export type FreshAuthKind = 'consent_op' | 'session';
 interface StoredEntry {
   username: string;
   mechanism: FreshAuthMechanism;
-  /** Epoch ms. Informational; expiry is enforced by Redis EX / map cleanup. */
+  /** Epoch ms, fixed at mint and never rewritten. Informational on consent-op
+   *  entries, where expiry is enforced by Redis EX / map cleanup. On session
+   *  entries it is the revocation anchor: `consumeSessionWindow` rejects a
+   *  window whose `issued_at` is at or before the account's
+   *  `sessions_invalidated_at`, and the slide carries it through unchanged so
+   *  the comparison cannot age out from under a revocation. */
   issued_at: number;
   /** Discriminator: `'consent_op'` (default, target-bound) or `'session'`
    *  (target-less session proof for non-consent broadcast). Stored entries
@@ -1393,11 +1398,27 @@ interface FreshAuthConsumeSurface {
    *
    *  `undefined` means "no epoch known" and applies no cut-off. That is the
    *  no-app-pool case, where `verifyHiveSignature` skips its own JWT revocation
-   *  check for the same reason: there is nothing to ask. Consent-op surfaces
-   *  leave it unset — those proofs are single-use, target-bound, and lapse
-   *  within `FRESH_AUTH_TTL_SECONDS`, so they are deliberately outside the
-   *  sweep (see `invalidateSessionFreshAuthTokens`). */
-  sessionsInvalidatedAtMs?: number | null;
+   *  check for the same reason: there is nothing to ask.
+   *
+   *  Required, not optional, even though `undefined` is an admissible value. As
+   *  an optional field a surface reached the no-cut-off branch by silence, and
+   *  the omission presented as nothing anywhere: the best-effort sweep still
+   *  closes most windows, every test still passes, and the only thing that
+   *  changed is that a window minted before a password reset keeps authorizing
+   *  broadcasts until its cap. Required-and-nullable makes the no-epoch posture
+   *  something each surface has to write down. The type system stops there,
+   *  since it cannot say that the value passed must be the request's epoch
+   *  rather than a literal `undefined`; that half is the consume-side canary
+   *  under `tests/eslint/`.
+   *
+   *  `consumeFreshAuthToken` passes `undefined`: a consent-op entry carries no
+   *  window to revoke, because those proofs are single-use, target-bound, and
+   *  lapse within `FRESH_AUTH_TTL_SECONDS`, which puts them outside both the
+   *  epoch cut-off and `invalidateSessionFreshAuthTokens`.
+   *  `consumeFreshAuthProof` builds one surface for both of its modes and
+   *  always passes the request's epoch: load-bearing when `acceptSession` is
+   *  on, inert when it is off. */
+  sessionsInvalidatedAtMs: number | null | undefined;
 }
 
 /** A stored entry after structural validation, with the per-kind fields
@@ -1450,6 +1471,11 @@ export async function consumeFreshAuthToken(
     expectedUsername,
     expectedTargetHash,
     acceptSession: false,
+    // No window to revoke: a consent-op entry is single-use and target-bound
+    // and lapses within its own TTL, so it sits outside both the revocation
+    // sweep and the epoch cut-off. Written out rather than left off, so the
+    // posture is a statement instead of an omission.
+    sessionsInvalidatedAtMs: undefined,
   });
 }
 
@@ -1473,14 +1499,17 @@ export async function consumeFreshAuthToken(
  * `sessionsInvalidatedAtMs` is the caller's copy of the account's revocation
  * epoch (`req.hiveSessionsInvalidatedAt`, read from Postgres by
  * `verifyHiveSignature` on the same request). A window minted at or before it
- * is reported `expired`. Passing `undefined` applies no cut-off; see
- * {@link FreshAuthConsumeSurface} for why that is the correct posture rather
- * than a fail-open hole.
+ * is reported `expired`. The parameter is required and explicitly nullable: a
+ * caller with no epoch to offer passes `undefined`, which applies no cut-off,
+ * but it has to say so. While it was optional, a caller that simply left it off
+ * ran with only the best-effort sweep behind it and nothing said so. See
+ * {@link FreshAuthConsumeSurface} for why `undefined` is a correct posture and
+ * not a fail-open hole.
  */
 export async function consumeSessionFreshAuthToken(
   token: string | undefined,
   expectedUsername: string,
-  sessionsInvalidatedAtMs?: number | null,
+  sessionsInvalidatedAtMs: number | null | undefined,
 ): Promise<FreshAuthVerifyResult> {
   return consumeFreshAuthTokenForSurface(token, {
     expectedUsername,
@@ -1938,10 +1967,17 @@ async function persistSessionSlide(
  *  older deploy cannot be replayed with a weaker contract:
  *   - `consent_op` MUST carry a well-shaped `target_hash` and MUST NOT carry
  *     window deadlines.
- *   - `session` MUST carry both window deadlines and MUST NOT carry a
- *     `target_hash`. A session entry predating the window (no deadlines) is
- *     rejected rather than treated as unbounded; it costs the user one re-auth
- *     during a deploy and cannot hand out an uncapped window.
+ *   - `session` MUST carry both window deadlines AND a well-shaped `issued_at`,
+ *     and MUST NOT carry a `target_hash`. A session entry predating the window
+ *     (no deadlines) is rejected rather than treated as unbounded; it costs the
+ *     user one re-auth during a deploy and cannot hand out an uncapped window.
+ *     A session entry with no usable `issued_at` is likewise rejected rather
+ *     than having its revocation anchor reconstructed from the cap. That arm is
+ *     unreachable for anything this module mints, since `issued_at` is a
+ *     required stored field written at every issue and carried through every
+ *     slide, so it costs no re-auth; it exists so a value written by something
+ *     other than the mint cannot supply the input to the revocation
+ *     comparison.
  *   - An entry with no `kind` at all predates the discriminator and is read as
  *     `consent_op`, so the target-bind check still fires. */
 function validateStoredEntry(raw: string): ValidatedEntry | null {
@@ -1986,15 +2022,25 @@ function validateStoredEntry(raw: string): ValidatedEntry | null {
   if (rawTargetHash !== undefined) return null;
   if (!isEpochMs(rawIdle) || !isEpochMs(rawAbsolute)) return null;
   const rawIssuedAt = (parsed as { issued_at?: unknown }).issued_at;
+  // Closed-default, the same posture as the two deadline guards above.
+  // `issued_at` is the revocation ANCHOR, not metadata: `consumeSessionWindow`
+  // compares it against the account's `sessions_invalidated_at` epoch, and the
+  // slide carries it through unchanged, which is what keeps that comparison
+  // stable while the idle deadline moves. Reconstructing a missing or non-epoch
+  // value from `absolute_expires_at` minus the cap would let this module invent
+  // the input to its own revocation decision, and the reconstruction is unsound
+  // in both directions: `isEpochMs` admits any finite positive deadline, so a
+  // planted far-future cap yields a mint instant no revocation epoch can reach,
+  // and shrinking `SESSION_FRESH_AUTH_ABSOLUTE_SECONDS` would reconstruct an
+  // entry as minted LATER than it was, ageing it out of a revocation that
+  // already covered it. Rejecting costs nothing: every writer sets the field,
+  // and the reject surfaces as the same re-auth 401 a closed window produces.
+  if (!isEpochMs(rawIssuedAt)) return null;
   return {
     kind,
     username,
     mechanism,
-    // Informational, so a missing or malformed value falls back to the cap
-    // minus one full window rather than rejecting the entry: nothing reads it
-    // as a deadline, and refusing a live window over a cosmetic field would be
-    // a re-auth prompt for no gain.
-    issued_at: isEpochMs(rawIssuedAt) ? rawIssuedAt : rawAbsolute - SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000,
+    issued_at: rawIssuedAt,
     idle_expires_at: rawIdle,
     absolute_expires_at: rawAbsolute,
   };

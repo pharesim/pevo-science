@@ -74,6 +74,7 @@ const { createApp } = await import('../../src/app.js');
 const { getAppPool } = await import('../../src/app-db.js');
 const { config } = await import('../../src/config.js');
 const { clearRateLimitKeys } = await import('../support/redis-helpers.js');
+const { expectNoSessionProof } = await import('../support/session-proof-shape.js');
 
 const app = createApp();
 const RUN_ID = Date.now();
@@ -263,6 +264,12 @@ describe.skipIf(!dbReachable)(
       expect(res.body.data?.custody).toBe('self');
       expect(typeof res.body.data?.token).toBe('string');
       expect(typeof res.body.data?.expires_at).toBe('string');
+      // The upgrade proof is a key-ownership proof, not one of the two re-auth
+      // acts § 6.4.1 licenses, and this handler sits in the same file as the
+      // licensed password mint, so "they just proved key control, hand them a
+      // window" is the copy-paste this pins. If the window ever becomes intended
+      // here, ARCHITECTURE.md changes first and this line goes with it.
+      expectNoSessionProof(res, 'custody-upgrade response');
 
       const { rows } = await pool.query<{ upgraded_at: Date | null; posting_key_enc: Buffer | null; iv_posting: Buffer | null; memo_key_enc: Buffer | null; iv_memo: Buffer | null }>(
         'SELECT upgraded_at, posting_key_enc, iv_posting, memo_key_enc, iv_memo FROM accounts WHERE username = $1',
@@ -287,6 +294,7 @@ describe.skipIf(!dbReachable)(
 
       expect(res.status).toBe(200);
       expect(res.body.data?.custody).toBe('self');
+      expectNoSessionProof(res, 'custody-upgrade response');
 
       const { rows } = await pool.query<{ upgraded_at: Date | null }>(
         'SELECT upgraded_at FROM accounts WHERE username = $1',
@@ -307,6 +315,7 @@ describe.skipIf(!dbReachable)(
 
       expect(res.status).toBe(200);
       expect(res.body.data?.custody).toBe('self');
+      expectNoSessionProof(res, 'custody-upgrade response');
 
       const { rows } = await pool.query<{ upgraded_at: Date | null; password_hash: string | null }>(
         'SELECT upgraded_at, password_hash FROM accounts WHERE username = $1',

@@ -34,6 +34,19 @@
  *  - Persistence rules for a slide: written back to Redis with `XX` when Redis
  *    answered the read, and NOT written to Redis at all when the in-memory tier
  *    answered, since writing there would recreate a key Redis has dropped.
+ *  - The persist is DETACHED from the authorization decision, and the in-memory
+ *    write inside it lands before the network call. A Redis write that never
+ *    settles is the only way to separate that from an awaited persist: the
+ *    consume must still resolve, and the slid deadline must still be readable
+ *    from the in-memory tier. Both halves are invisible to outcome-only
+ *    assertions, so re-attaching an `await` in `consumeSessionWindow` (a stall
+ *    on every vote, comment, post, and review) or deferring the in-memory write
+ *    until the network write confirms (windows that stop sliding whenever Redis
+ *    is slow) would otherwise leave the suite green.
+ *  - The revocation epoch: a window whose `issued_at` is at or before the
+ *    account's `sessions_invalidated_at` is dead, the boundary is inclusive, a
+ *    null or absent epoch applies no cut-off, and the slide carries `issued_at`
+ *    through unchanged so a revoked window cannot age out of its revocation.
  *  - Closed-default stored shapes: a session entry without deadlines is
  *    malformed rather than unbounded, and a consent-op entry that acquired
  *    deadlines is malformed rather than a window.
@@ -73,6 +86,20 @@
  *    the spy; the matching no-Redis real-path tests in the same describe blocks
  *    exercise the same class against real infrastructure when Redis is absent,
  *    and the custody broadcast route tests cover it end-to-end.
+ *  - The invalidation sweep's batching is additionally pinned at an index size
+ *    no fixture can plant for real: `smembers` is stubbed to return a synthetic
+ *    200k-member index and `del` is stubbed to a no-op, so only the batching
+ *    arithmetic runs and no Redis traffic is issued. The argument spread the
+ *    batching exists to avoid does not throw until roughly 125k arguments, so a
+ *    real-key fixture cannot reach the regime; the real-path companion for the
+ *    same risk class, "the sweep deletes every indexed window", is the
+ *    1202-member real-Redis test in the same describe block, which runs the real
+ *    DELs end to end.
+ *  - A `set` mocked to a promise that never settles stands in for a
+ *    connected-but-stalled server, which is the only way to separate a detached
+ *    slide persist from an awaited one. There is no way to hold a real server's
+ *    reply open from inside the test, and a command timeout long enough to
+ *    observe would dominate the suite's runtime.
  *  - Fake timers stand in for wall-clock waits on the window boundaries. The
  *    idle deadline is 15 minutes out and the cap is 2 hours out, so real waits
  *    are impractical; only `Date.now()` is faked, and Redis stays real, so the
@@ -914,14 +941,37 @@ describe('Per-op target binding', () => {
 
 // ─── session-kind primitives — issue + consume + cross-kind acceptance ───
 
+/** Session consume with no revocation epoch to supply. These specs exercise the
+ *  fresh-auth store directly, with no `accounts` row behind them, so there is no
+ *  `sessions_invalidated_at` to read and `undefined` is the honest value: it is
+ *  exactly what `verifyHiveSignature` leaves on the request when no app-DB pool
+ *  is configured. The specs that DO drive the cut-off pass an epoch to
+ *  `consumeSessionFreshAuthToken` directly. */
+const consumeSessionNoEpoch = (token: string | undefined, username: string) =>
+  consumeSessionFreshAuthToken(token, username, undefined);
+
 describe('session-kind issue / consume — issueSessionFreshAuthToken + consumeSessionFreshAuthToken', () => {
   beforeEach(() => {
     _resetFreshAuthMemStoreForTests();
   });
 
+  it('the revocation epoch is a required parameter, not an omissible one', () => {
+    // Type-level pin, never invoked. An epoch reached by omission disables the
+    // authoritative half of session invalidation while the best-effort sweep
+    // keeps the failure invisible, so the signature must refuse a two-argument
+    // call. If the parameter is ever widened back to optional this directive
+    // becomes unused and `typecheck:tests` fails on it, which is the only thing
+    // in the repo that notices: the widening changes no runtime behaviour and
+    // breaks no assertion.
+    const twoArgumentCall = () =>
+      // @ts-expect-error the account revocation epoch must be passed explicitly
+      consumeSessionFreshAuthToken('unreachable-token', 'unreachable-user');
+    expect(typeof twoArgumentCall).toBe('function');
+  });
+
   it('issue then consume session-kind → valid + mechanism preserved', async () => {
     const issued = await issueSessionFreshAuthToken('alice', 'password');
-    const result = await consumeSessionFreshAuthToken(issued.token, 'alice');
+    const result = await consumeSessionNoEpoch(issued.token, 'alice');
     expect(result.valid).toBe(true);
     if (result.valid) {
       expect(result.mechanism).toBe('password');
@@ -930,7 +980,7 @@ describe('session-kind issue / consume — issueSessionFreshAuthToken + consumeS
 
   it('session-kind via ORCID mechanism → valid + mechanism=orcid', async () => {
     const issued = await issueSessionFreshAuthToken('carl', 'orcid');
-    const result = await consumeSessionFreshAuthToken(issued.token, 'carl');
+    const result = await consumeSessionNoEpoch(issued.token, 'carl');
     expect(result.valid).toBe(true);
     if (result.valid) {
       expect(result.mechanism).toBe('orcid');
@@ -942,7 +992,7 @@ describe('session-kind issue / consume — issueSessionFreshAuthToken + consumeS
     // spends the proof on its SECOND use would also satisfy.
     const issued = await issueSessionFreshAuthToken('alice', 'password');
     for (let i = 0; i < 3; i++) {
-      const result = await consumeSessionFreshAuthToken(issued.token, 'alice');
+      const result = await consumeSessionNoEpoch(issued.token, 'alice');
       expect(result.valid).toBe(true);
     }
   });
@@ -970,7 +1020,7 @@ describe('session-kind issue / consume — issueSessionFreshAuthToken + consumeS
 
   it('cross-account: session token for bob consumed with alice → username_mismatch', async () => {
     const issued = await issueSessionFreshAuthToken('bob', 'password');
-    const result = await consumeSessionFreshAuthToken(issued.token, 'alice');
+    const result = await consumeSessionNoEpoch(issued.token, 'alice');
     expect(result.valid).toBe(false);
     if (!result.valid) {
       expect(result.reason).toBe('username_mismatch');
@@ -978,7 +1028,7 @@ describe('session-kind issue / consume — issueSessionFreshAuthToken + consumeS
   });
 
   it('missing token → missing reason', async () => {
-    const result = await consumeSessionFreshAuthToken(undefined, 'alice');
+    const result = await consumeSessionNoEpoch(undefined, 'alice');
     expect(result.valid).toBe(false);
     if (!result.valid) {
       expect(result.reason).toBe('missing');
@@ -992,7 +1042,7 @@ describe('session-kind issue / consume — issueSessionFreshAuthToken + consumeS
     // AND proves recent re-auth. Non-consent broadcast doesn't need the
     // binding, so the proof is acceptable on the session surface.
     const issued = await issueFreshAuthToken('alice', 'password', T);
-    const result = await consumeSessionFreshAuthToken(issued.token, 'alice');
+    const result = await consumeSessionNoEpoch(issued.token, 'alice');
     expect(result.valid).toBe(true);
     if (result.valid) {
       expect(result.mechanism).toBe('password');
@@ -1108,8 +1158,8 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
   it.skipIf(!redisAvailable)('consumeSessionFreshAuthToken Redis-up: Promise.all dual consume → BOTH succeed', async () => {
     const issued = await issueSessionFreshAuthToken('race-dave', 'password');
     const [a, b] = await Promise.all([
-      consumeSessionFreshAuthToken(issued.token, 'race-dave'),
-      consumeSessionFreshAuthToken(issued.token, 'race-dave'),
+      consumeSessionNoEpoch(issued.token, 'race-dave'),
+      consumeSessionNoEpoch(issued.token, 'race-dave'),
     ]);
     const winners = [a, b].filter((r) => r.valid);
     // Mutation kill for a regression back to a destructive read: a GETDEL-shaped
@@ -1131,8 +1181,8 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
     const delSpy = vi.spyOn(redis, 'del').mockResolvedValue(0);
     try {
       const [a, b] = await Promise.all([
-        consumeSessionFreshAuthToken(issued.token, 'race-eve'),
-        consumeSessionFreshAuthToken(issued.token, 'race-eve'),
+        consumeSessionNoEpoch(issued.token, 'race-eve'),
+        consumeSessionNoEpoch(issued.token, 'race-eve'),
       ]);
       expect([a, b].filter((r) => r.valid)).toHaveLength(2);
     } finally {
@@ -1146,8 +1196,8 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
     // claim is covered against real infrastructure and not only through a spy.
     const issued = await issueSessionFreshAuthToken('race-frank', 'password');
     const [a, b] = await Promise.all([
-      consumeSessionFreshAuthToken(issued.token, 'race-frank'),
-      consumeSessionFreshAuthToken(issued.token, 'race-frank'),
+      consumeSessionNoEpoch(issued.token, 'race-frank'),
+      consumeSessionNoEpoch(issued.token, 'race-frank'),
     ]);
     expect([a, b].filter((r) => r.valid)).toHaveLength(2);
   });
@@ -1221,7 +1271,7 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
       // No Redis: the slide only touches the in-memory tier, and the lock claim
       // is then covered by the no-Redis dual-consume test above.
       const issued = await issueSessionFreshAuthToken('slide-nolock', 'password');
-      await consumeSessionFreshAuthToken(issued.token, 'slide-nolock');
+      await consumeSessionNoEpoch(issued.token, 'slide-nolock');
       expect(_getInFlightConsumesSizeForTests()).toBe(0);
       return;
     }
@@ -1233,7 +1283,7 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any);
     try {
-      const result = await consumeSessionFreshAuthToken(issued.token, 'slide-nolock');
+      const result = await consumeSessionNoEpoch(issued.token, 'slide-nolock');
       expect(result.valid).toBe(true);
       expect(sizesDuringSlide).toEqual([0]);
     } finally {
@@ -1261,7 +1311,7 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
     try {
       const [a, b] = await Promise.all([
         consumeFreshAuthToken(issued.token, 'race-cross', TH),
-        consumeSessionFreshAuthToken(issued.token, 'race-cross'),
+        consumeSessionNoEpoch(issued.token, 'race-cross'),
       ]);
       const winners = [a, b].filter((r) => r.valid);
       expect(winners).toHaveLength(1);
@@ -1297,22 +1347,30 @@ describe('session-proof window', () => {
     expect(SESSION_FRESH_AUTH_ABSOLUTE_SECONDS).toBe(2 * 60 * 60);
   });
 
-  /** Plant a session entry directly in the in-memory tier with chosen deadlines.
-   *  Used for the boundary cases where minting cannot produce the shape under
-   *  test (a window already past its cap, a cap nearer than the idle deadline).
-   *  The token is absent from Redis, so the read falls through to this tier. */
+  /** Plant a session entry directly in the in-memory tier with chosen deadlines,
+   *  and optionally a chosen `issued_at`. Used for the boundary cases where
+   *  minting cannot produce the shape under test (a window already past its cap,
+   *  a cap nearer than the idle deadline, an `issued_at` that lands exactly on a
+   *  revocation instant). The token is absent from Redis, so the read falls
+   *  through to this tier. */
   function plantSessionEntry(
     token: string,
     username: string,
     idleExpiresAt: number,
     absoluteExpiresAt: number,
+    // Defaults to what a real mint would have written for this cap, so the
+    // deadline-boundary callers stay as they were. The revocation-epoch cases
+    // pass it explicitly: `issued_at` is the field the epoch comparison reads,
+    // and deriving it from the cap would make the comparison's own input an
+    // artifact of the chosen deadlines instead of the subject of the test.
+    issuedAt: number = absoluteExpiresAt - SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000,
   ): void {
     _setMemStoreEntryForTests(
       token,
       {
         username,
         mechanism: 'password',
-        issued_at: absoluteExpiresAt - SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000,
+        issued_at: issuedAt,
         kind: 'session',
         idle_expires_at: idleExpiresAt,
         absolute_expires_at: absoluteExpiresAt,
@@ -1328,7 +1386,7 @@ describe('session-proof window', () => {
     const issued = await issueSessionFreshAuthToken('idle-user', 'password');
 
     vi.setSystemTime(t0 + (SESSION_FRESH_AUTH_IDLE_SECONDS + 1) * 1000);
-    const result = await consumeSessionFreshAuthToken(issued.token, 'idle-user');
+    const result = await consumeSessionNoEpoch(issued.token, 'idle-user');
     expect(result.valid).toBe(false);
     if (!result.valid) {
       expect(result.reason).toBe('expired');
@@ -1346,11 +1404,11 @@ describe('session-proof window', () => {
     const idleMs = SESSION_FRESH_AUTH_IDLE_SECONDS * 1000;
 
     vi.setSystemTime(t0 + idleMs - 60_000);
-    expect((await consumeSessionFreshAuthToken(issued.token, 'slide-user')).valid).toBe(true);
+    expect((await consumeSessionNoEpoch(issued.token, 'slide-user')).valid).toBe(true);
 
     // Past the original deadline, inside the slid one.
     vi.setSystemTime(t0 + idleMs + 60_000);
-    expect((await consumeSessionFreshAuthToken(issued.token, 'slide-user')).valid).toBe(true);
+    expect((await consumeSessionNoEpoch(issued.token, 'slide-user')).valid).toBe(true);
   });
 
   it('the window dies at the absolute cap no matter how often it was slid', async () => {
@@ -1370,7 +1428,7 @@ describe('session-proof window', () => {
     while (elapsed <= capMs + stepMs) {
       elapsed += stepMs;
       vi.setSystemTime(t0 + elapsed);
-      const result = await consumeSessionFreshAuthToken(issued.token, 'cap-user');
+      const result = await consumeSessionNoEpoch(issued.token, 'cap-user');
       if (result.valid) {
         lastValidElapsed = elapsed;
       } else {
@@ -1393,7 +1451,7 @@ describe('session-proof window', () => {
     // is the only way to observe the check itself.
     const now = Date.now();
     plantSessionEntry('cap-past-token', 'cap-past-user', now + 600_000, now - 1_000);
-    const result = await consumeSessionFreshAuthToken('cap-past-token', 'cap-past-user');
+    const result = await consumeSessionNoEpoch('cap-past-token', 'cap-past-user');
     expect(result.valid).toBe(false);
     if (!result.valid) {
       expect(result.reason).toBe('expired');
@@ -1405,7 +1463,7 @@ describe('session-proof window', () => {
     // proof usable for the full two hours after a single use.
     const now = Date.now();
     plantSessionEntry('idle-past-token', 'idle-past-user', now - 1_000, now + 3_600_000);
-    const result = await consumeSessionFreshAuthToken('idle-past-token', 'idle-past-user');
+    const result = await consumeSessionNoEpoch('idle-past-token', 'idle-past-user');
     expect(result.valid).toBe(false);
     if (!result.valid) {
       expect(result.reason).toBe('expired');
@@ -1421,10 +1479,10 @@ describe('session-proof window', () => {
     vi.setSystemTime(t0);
     plantSessionEntry('clamp-token', 'clamp-user', t0 + 10_000, t0 + 60_000);
 
-    expect((await consumeSessionFreshAuthToken('clamp-token', 'clamp-user')).valid).toBe(true);
+    expect((await consumeSessionNoEpoch('clamp-token', 'clamp-user')).valid).toBe(true);
 
     vi.setSystemTime(t0 + 61_000);
-    const afterCap = await consumeSessionFreshAuthToken('clamp-token', 'clamp-user');
+    const afterCap = await consumeSessionNoEpoch('clamp-token', 'clamp-user');
     expect(afterCap.valid).toBe(false);
     if (!afterCap.valid) {
       expect(afterCap.reason).toBe('expired');
@@ -1439,10 +1497,88 @@ describe('session-proof window', () => {
     const issued = await issueSessionFreshAuthToken('xx-user', 'password');
     const setSpy = vi.spyOn(redis, 'set');
     try {
-      expect((await consumeSessionFreshAuthToken(issued.token, 'xx-user')).valid).toBe(true);
+      expect((await consumeSessionNoEpoch(issued.token, 'xx-user')).valid).toBe(true);
       expect(setSpy).toHaveBeenCalledTimes(1);
       expect(setSpy.mock.calls[0]).toContain('XX');
     } finally {
+      setSpy.mockRestore();
+    }
+  });
+
+  it.skipIf(!redisAvailable)('a slide whose Redis write never settles neither delays the decision nor loses the slid deadline', async () => {
+    // Two properties of the same two statements, neither visible to an
+    // outcome-only assertion.
+    //
+    // The persist is detached from the authorization decision on purpose: the
+    // decision is already final, and a lost slide fails closed (the window keeps
+    // its earlier idle deadline). Re-attaching an `await` to the
+    // `persistSessionSlide` call in `consumeSessionWindow` puts a
+    // connected-but-stalled Redis on the critical path of every vote, comment,
+    // post, and review, up to the client's command timeout — and no assertion on
+    // the consume's OUTCOME can see that, because a write that resolves produces
+    // the identical result either way. Only a write that never settles separates
+    // the two shapes, so that is what is injected here.
+    //
+    // The second half pins what makes that detachment safe: the in-memory write
+    // inside `persistSessionSlide` runs BEFORE its first await, so the slid
+    // deadline is already observable while the canonical write is still in
+    // flight. Moving that write behind the network call passes every other
+    // assertion in this file (Redis answers the read on the happy path, so the
+    // backup is never consulted) and would silently stop windows sliding
+    // whenever Redis is slow, closing every active user's window at its
+    // mint-time idle deadline.
+    //
+    // Redis-served leg required throughout: a consume answered by the in-memory
+    // tier returns from `persistSessionSlide` before it ever issues the write,
+    // which is also why no Redis-free variant of this pin exists.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const t0 = new Date('2026-03-01T00:00:00Z').getTime();
+    vi.setSystemTime(t0);
+    const redis = getRedis()!;
+    // Minted BEFORE the spy: issuance writes through the same `set`.
+    const issued = await issueSessionFreshAuthToken('stalled-slide-user', 'password');
+    const idleMs = SESSION_FRESH_AUTH_IDLE_SECONDS * 1000;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const setSpy = vi.spyOn(redis, 'set').mockImplementation((() => new Promise(() => {})) as any);
+    let sentinel: ReturnType<typeof setTimeout> | undefined;
+    try {
+      vi.setSystemTime(t0 + idleMs - 60_000);
+      const outcome = await Promise.race([
+        consumeSessionNoEpoch(issued.token, 'stalled-slide-user').then((r) =>
+          r.valid ? 'valid' : 'invalid',
+        ),
+        new Promise<string>((res) => {
+          // Generous against the one real Redis GET on the read leg
+          // (sub-millisecond against the local server) while still bounding the
+          // awaited shape, which can never settle. The race is for a readable
+          // failure, not for correctness: without it the awaited shape fails as
+          // a file timeout instead, once per retry attempt.
+          sentinel = setTimeout(() => res('stalled'), 2_000);
+        }),
+      ]);
+      clearTimeout(sentinel);
+      expect(outcome).toBe('valid');
+      // Non-vacuity: the stalled write really was reached. `redis.set` is
+      // invoked before `persistSessionSlide`'s first await, so the call is
+      // recorded even though it never completes, and a read that had fallen
+      // through to the in-memory tier would leave this at zero.
+      expect(setSpy).toHaveBeenCalledTimes(1);
+
+      const getSpy = vi.spyOn(redis, 'get').mockRejectedValue(new Error('forced Redis-down'));
+      try {
+        // Past the mint-time idle deadline, inside the slid one. Redis still
+        // holds the unslid entry (its write is hanging), so this can only
+        // succeed if the in-memory tier already carries the slide.
+        vi.setSystemTime(t0 + idleMs + 60_000);
+        expect((await consumeSessionNoEpoch(issued.token, 'stalled-slide-user')).valid).toBe(true);
+        // The in-memory-served consume issues no write of its own, so the
+        // stalled one above is still the only `set` on this token.
+        expect(setSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        getSpy.mockRestore();
+      }
+    } finally {
+      if (sentinel) clearTimeout(sentinel);
       setSpy.mockRestore();
     }
   });
@@ -1455,7 +1591,7 @@ describe('session-proof window', () => {
     const getSpy = vi.spyOn(redis, 'get').mockRejectedValue(new Error('forced Redis-down'));
     const setSpy = vi.spyOn(redis, 'set');
     try {
-      expect((await consumeSessionFreshAuthToken(issued.token, 'nowrite-user')).valid).toBe(true);
+      expect((await consumeSessionNoEpoch(issued.token, 'nowrite-user')).valid).toBe(true);
       expect(setSpy).not.toHaveBeenCalled();
     } finally {
       getSpy.mockRestore();
@@ -1488,12 +1624,12 @@ describe('session-proof window', () => {
     try {
       // The in-flight consume still succeeds; it was authorized before the sweep
       // landed. What must not happen is the window surviving it.
-      expect((await consumeSessionFreshAuthToken(issued.token, 'sweep-race')).valid).toBe(true);
+      expect((await consumeSessionNoEpoch(issued.token, 'sweep-race')).valid).toBe(true);
     } finally {
       getSpy.mockRestore();
     }
 
-    const afterSweep = await consumeSessionFreshAuthToken(issued.token, 'sweep-race');
+    const afterSweep = await consumeSessionNoEpoch(issued.token, 'sweep-race');
     expect(afterSweep.valid).toBe(false);
     if (!afterSweep.valid) {
       expect(afterSweep.reason).toBe('expired');
@@ -1517,9 +1653,9 @@ describe('session-proof window', () => {
         : null;
     try {
       vi.setSystemTime(t0 + idleMs - 60_000);
-      expect((await consumeSessionFreshAuthToken(issued.token, 'memslide-user')).valid).toBe(true);
+      expect((await consumeSessionNoEpoch(issued.token, 'memslide-user')).valid).toBe(true);
       vi.setSystemTime(t0 + idleMs + 60_000);
-      expect((await consumeSessionFreshAuthToken(issued.token, 'memslide-user')).valid).toBe(true);
+      expect((await consumeSessionNoEpoch(issued.token, 'memslide-user')).valid).toBe(true);
     } finally {
       getSpy?.mockRestore();
     }
@@ -1534,10 +1670,90 @@ describe('session-proof window', () => {
       { username: 'legacy-user', mechanism: 'password', issued_at: Date.now(), kind: 'session' },
       Date.now() + 600_000,
     );
-    const result = await consumeSessionFreshAuthToken('legacy-session-token', 'legacy-user');
+    const result = await consumeSessionNoEpoch('legacy-session-token', 'legacy-user');
     expect(result.valid).toBe(false);
     if (!result.valid) {
       expect(result.reason).toBe('malformed');
+    }
+  });
+
+  it('a stored session entry with no issued_at is malformed, not reconstructed from the cap', async () => {
+    // `issued_at` is the anchor the revocation-epoch comparison in
+    // `consumeSessionWindow` reads. Reconstructing it from
+    // `absolute_expires_at` minus the cap is a fail-open, and the epoch below is
+    // what shows it: a revocation stamped at the current instant covers every
+    // window minted so far, yet the planted cap is two full windows out, so the
+    // reconstruction lands a full window in the FUTURE and escapes it. The entry
+    // has to be refused at the structural guard instead.
+    const now = Date.now();
+    const anchorless: Record<string, unknown> = {
+      username: 'anchorless-user',
+      mechanism: 'password',
+      kind: 'session',
+      idle_expires_at: now + 600_000,
+      absolute_expires_at: now + SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000 * 2,
+    };
+    _setMemStoreEntryForTests('anchorless-session-token', anchorless, now + 600_000);
+    const result = await consumeSessionFreshAuthToken(
+      'anchorless-session-token',
+      'anchorless-user',
+      now,
+    );
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.reason).toBe('malformed');
+    }
+  });
+
+  it('a stored session entry whose issued_at is not an epoch is malformed', async () => {
+    // A non-number anchor is the shape a hand-edited or foreign-serializer entry
+    // takes. Coercing it, or falling back to a reconstruction, would put a value
+    // this module invented on the revocation comparison's left-hand side; the
+    // guard refuses the entry instead. Distinct from the case above: a guard
+    // that only checked for presence would pass this one.
+    const now = Date.now();
+    const stringyAnchor: Record<string, unknown> = {
+      username: 'stringy-anchor-user',
+      mechanism: 'password',
+      issued_at: String(now),
+      kind: 'session',
+      idle_expires_at: now + 600_000,
+      absolute_expires_at: now + 3_600_000,
+    };
+    _setMemStoreEntryForTests('stringy-anchor-token', stringyAnchor, now + 600_000);
+    const result = await consumeSessionNoEpoch('stringy-anchor-token', 'stringy-anchor-user');
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.reason).toBe('malformed');
+    }
+  });
+
+  it('the revocation comparison reads the stored anchor, never one derived from the cap', async () => {
+    // The two cases above only prove a bad anchor is refused. This one proves
+    // the surviving anchor is the STORED value: a guard that rejects and THEN
+    // still hands `consumeSessionWindow` `absolute_expires_at` minus the cap
+    // passes both of them. The planted entry is deliberately cap-inconsistent
+    // (mint time an hour ago, cap only ninety minutes out) because that is the
+    // only shape that separates the two readings: the stored anchor is inside
+    // the revocation, the cap-derived one is thirty minutes clear of it. Every
+    // real mint sets the cap to the mint instant plus the window, where the two
+    // coincide, so no test built on a real mint can see the difference.
+    const now = Date.now();
+    plantSessionEntry(
+      'stored-anchor-token',
+      'stored-anchor-user',
+      now + 600_000,
+      now + 5_400_000,
+      now - 3_600_000,
+    );
+    const result = await consumeSessionFreshAuthToken(
+      'stored-anchor-token',
+      'stored-anchor-user',
+      now - 2_700_000,
+    );
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.reason).toBe('expired');
     }
   });
 
@@ -1572,9 +1788,9 @@ describe('session-proof window', () => {
     // reaches the multi-use surface. If the slide ran unconditionally it would
     // rewrite that entry with deadlines and hand the caller a two-hour window.
     const issued = await issueFreshAuthToken('crosskind-user', 'password', T);
-    const first = await consumeSessionFreshAuthToken(issued.token, 'crosskind-user');
+    const first = await consumeSessionNoEpoch(issued.token, 'crosskind-user');
     expect(first.valid).toBe(true);
-    const second = await consumeSessionFreshAuthToken(issued.token, 'crosskind-user');
+    const second = await consumeSessionNoEpoch(issued.token, 'crosskind-user');
     expect(second.valid).toBe(false);
     if (!second.valid) {
       expect(second.reason).toBe('expired');
@@ -1590,7 +1806,158 @@ describe('session-proof window', () => {
     if (!rejected.valid) {
       expect(rejected.reason).toBe('kind_mismatch');
     }
-    expect((await consumeSessionFreshAuthToken(issued.token, 'kindmiss-user')).valid).toBe(true);
+    expect((await consumeSessionNoEpoch(issued.token, 'kindmiss-user')).valid).toBe(true);
+  });
+
+  // ─── revocation epoch: the comparison boundary, the drop, the no-epoch posture ───
+
+  describe('the revocation-epoch cut-off', () => {
+    // Every case plants deadlines a real mint would have written for `now`, so
+    // an `expired` verdict can only have come from the epoch comparison. All
+    // three rejection paths in the consume report the same reason, and a
+    // boundary case that let a deadline answer instead would pass while proving
+    // nothing.
+
+    it('a window issued in the SAME millisecond as the epoch is dead', async () => {
+      // The realistic race, and the whole reason the comparison is "at or
+      // before" rather than strictly before: the reset stamps
+      // `sessions_invalidated_at` from SQL `NOW()`, the transaction-start
+      // instant, while the window it must kill was minted from `Date.now()` in
+      // the same instant. Equality is the only input that separates the two
+      // operators, and minting and then reading the clock cannot produce it,
+      // which is why the entry is planted with an exact `issued_at`.
+      const now = Date.now();
+      const issuedAt = now - 60_000;
+      plantSessionEntry(
+        'epoch-eq-token',
+        'epoch-eq-user',
+        now + SESSION_FRESH_AUTH_IDLE_SECONDS * 1000,
+        now + SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000,
+        issuedAt,
+      );
+
+      const result = await consumeSessionFreshAuthToken('epoch-eq-token', 'epoch-eq-user', issuedAt);
+
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.reason).toBe('expired');
+      }
+    });
+
+    it('the window it rejects is dropped from the tier that served it', async () => {
+      // The rejection and the eviction are separable: returning `expired`
+      // without dropping the entry looks identical on the wire, and the
+      // in-memory tier is precisely the one that answers when the Redis sweep
+      // could not run, so a dead window would sit there re-deciding itself until
+      // its cap. The second consume carries NO epoch, so it can only fail if the
+      // entry is gone.
+      const now = Date.now();
+      const issuedAt = now - 60_000;
+      plantSessionEntry(
+        'epoch-drop-token',
+        'epoch-drop-user',
+        now + SESSION_FRESH_AUTH_IDLE_SECONDS * 1000,
+        now + SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000,
+        issuedAt,
+      );
+
+      expect(
+        (await consumeSessionFreshAuthToken('epoch-drop-token', 'epoch-drop-user', issuedAt)).valid,
+      ).toBe(false);
+
+      const afterDrop = await consumeSessionNoEpoch('epoch-drop-token', 'epoch-drop-user');
+      expect(afterDrop.valid).toBe(false);
+      if (!afterDrop.valid) {
+        expect(afterDrop.reason).toBe('expired');
+      }
+    });
+
+    it('a window issued one millisecond after the epoch survives', async () => {
+      // The tight-margin control. A comparison that rounded either side to whole
+      // seconds would reject here while passing every coarser test, and it would
+      // revoke windows minted legitimately in the same second as a completed
+      // reset. The epoch is snapped to a whole second so that one millisecond
+      // later is always inside the same second: with an arbitrary epoch, one
+      // millisecond-remainder in a thousand puts the two on opposite sides of a
+      // second boundary and the rounding mutation escapes.
+      const now = Date.now();
+      const epochMs = Math.floor((now - 60_000) / 1000) * 1000;
+      plantSessionEntry(
+        'epoch-after-token',
+        'epoch-after-user',
+        now + SESSION_FRESH_AUTH_IDLE_SECONDS * 1000,
+        now + SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000,
+        epochMs + 1,
+      );
+
+      const result = await consumeSessionFreshAuthToken(
+        'epoch-after-token',
+        'epoch-after-user',
+        epochMs,
+      );
+
+      expect(result.valid).toBe(true);
+    });
+
+    it('neither a null nor an absent epoch applies a cut-off', async () => {
+      // `null` is what `verifyHiveSignature` publishes for an account whose
+      // `sessions_invalidated_at` column is NULL, which is nearly every account
+      // on nearly every request; absent is the no-app-pool branch, where the
+      // middleware skipped its own revocation lookup for the same reason.
+      // Reading either as "revoke everything" would lock the product out of
+      // broadcasting, so the fail-open direction is a deliberate posture and is
+      // pinned as one. Both producers are named here because a hardening edit
+      // that fails only the explicitly-null case closed would otherwise hide
+      // behind the absent case, which the rest of this suite already exercises
+      // everywhere.
+      const now = Date.now();
+      const idle = now + SESSION_FRESH_AUTH_IDLE_SECONDS * 1000;
+      const cap = now + SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000;
+      plantSessionEntry('epoch-null-token', 'epoch-null-user', idle, cap, now - 60_000);
+      plantSessionEntry('epoch-absent-token', 'epoch-absent-user', idle, cap, now - 60_000);
+
+      expect(
+        (await consumeSessionFreshAuthToken('epoch-null-token', 'epoch-null-user', null)).valid,
+      ).toBe(true);
+      expect((await consumeSessionNoEpoch('epoch-absent-token', 'epoch-absent-user')).valid).toBe(
+        true,
+      );
+    });
+
+    it('a slide leaves issued_at alone, so a revoked window cannot outlive its revocation', async () => {
+      // `issued_at` is the anchor the epoch comparison reads, and the slide
+      // rewrites every other field on the stored entry. A slide that refreshed
+      // it as well would let a window minted before a reset walk forward past
+      // the epoch on ordinary use and come back to life on the next consume. The
+      // epoch here is one millisecond AFTER the planted `issued_at`, so this
+      // case turns on strict-less and stays independent of the same-millisecond
+      // boundary above.
+      const now = Date.now();
+      const issuedAt = now - 60_000;
+      plantSessionEntry(
+        'epoch-slide-token',
+        'epoch-slide-user',
+        now + SESSION_FRESH_AUTH_IDLE_SECONDS * 1000,
+        now + SESSION_FRESH_AUTH_ABSOLUTE_SECONDS * 1000,
+        issuedAt,
+      );
+
+      // No epoch: an ordinary successful consume, which slides the idle deadline
+      // and rewrites the stored entry.
+      expect((await consumeSessionNoEpoch('epoch-slide-token', 'epoch-slide-user')).valid).toBe(
+        true,
+      );
+
+      const afterSlide = await consumeSessionFreshAuthToken(
+        'epoch-slide-token',
+        'epoch-slide-user',
+        issuedAt + 1,
+      );
+      expect(afterSlide.valid).toBe(false);
+      if (!afterSlide.valid) {
+        expect(afterSlide.reason).toBe('expired');
+      }
+    });
   });
 });
 
@@ -1608,7 +1975,7 @@ describe('invalidateSessionFreshAuthTokens', () => {
     await invalidateSessionFreshAuthTokens('invalidate-me');
 
     for (const issued of [first, second]) {
-      const result = await consumeSessionFreshAuthToken(issued.token, 'invalidate-me');
+      const result = await consumeSessionNoEpoch(issued.token, 'invalidate-me');
       expect(result.valid).toBe(false);
       if (!result.valid) {
         expect(result.reason).toBe('expired');
@@ -1624,8 +1991,8 @@ describe('invalidateSessionFreshAuthTokens', () => {
 
     await invalidateSessionFreshAuthTokens('invalidate-me-too');
 
-    expect((await consumeSessionFreshAuthToken(target.token, 'invalidate-me-too')).valid).toBe(false);
-    expect((await consumeSessionFreshAuthToken(victim.token, 'bystander')).valid).toBe(true);
+    expect((await consumeSessionNoEpoch(target.token, 'invalidate-me-too')).valid).toBe(false);
+    expect((await consumeSessionNoEpoch(victim.token, 'bystander')).valid).toBe(true);
   });
 
   it('leaves the same user’s consent-op proofs alone', async () => {
@@ -1637,7 +2004,7 @@ describe('invalidateSessionFreshAuthTokens', () => {
 
     await invalidateSessionFreshAuthTokens('mixed-kinds');
 
-    expect((await consumeSessionFreshAuthToken(sessionProof.token, 'mixed-kinds')).valid).toBe(false);
+    expect((await consumeSessionNoEpoch(sessionProof.token, 'mixed-kinds')).valid).toBe(false);
     expect((await consumeFreshAuthToken(consentProof.token, 'mixed-kinds', TH)).valid).toBe(true);
   });
 
@@ -1659,7 +2026,7 @@ describe('invalidateSessionFreshAuthTokens', () => {
       // is that the tier this process owns is always cleared.
       const getSpy = vi.spyOn(redis, 'get').mockRejectedValue(new Error('forced Redis-down'));
       try {
-        const result = await consumeSessionFreshAuthToken(issued.token, 'redis-down-user');
+        const result = await consumeSessionNoEpoch(issued.token, 'redis-down-user');
         expect(result.valid).toBe(false);
       } finally {
         getSpy.mockRestore();
@@ -1707,13 +2074,22 @@ describe('the per-user session index stays bounded', () => {
     }
   });
 
-  it.skipIf(!redisAvailable)('an index far past one DEL argument batch still sweeps completely', async () => {
+  it.skipIf(!redisAvailable)('an index far past one DEL argument batch is swept in bounded batches, losing nothing', async () => {
     // The sweep used to spread every member into a single `del(...members)`.
     // Past roughly 125k members that reaches the engine argument limit and
     // throws RangeError, so the sweep BROKE rather than degrading — and it
     // broke for the accounts with the most open windows. Testing at 125k is
     // impractical; testing across several chunk boundaries pins the property
     // that matters, which is that chunking happens at all and loses nothing.
+    //
+    // Survivor counting alone is blind to the batch WIDTH: a sweep whose batch
+    // was raised back above the member count deletes every member in one call
+    // and still leaves zero survivors, which is the RangeError regression
+    // walking back in unobserved. The pass-through spy below records the
+    // per-call argument widths so that mutation fails here instead of passing.
+    // The widths are written as literals rather than derived from the module's
+    // batch constant: an expectation computed from the value under test moves
+    // with it and pins nothing.
     const redis = getRedis()!;
     const username = `idx-chunk-${Date.now()}`;
     const indexKey = INDEX_PREFIX + username;
@@ -1728,8 +2104,23 @@ describe('the per-user session index stays bounded', () => {
       for (const t of planted) pipeline.set(TOKEN_PREFIX + t, '{}', 'EX', 300);
       await pipeline.exec();
       const live = await issueSessionFreshAuthToken(username, 'password');
+      // 1201 planted members plus the one real window. Asserted before the
+      // sweep so a stale index, or a mint whose best-effort index write did not
+      // land, fails with a legible cause rather than as a mystery
+      // argument-width mismatch below.
+      expect(await redis.scard(indexKey)).toBe(1202);
 
-      await expect(invalidateSessionFreshAuthTokens(username)).resolves.toBeUndefined();
+      // Pass-through spy (no mock implementation): the real DELs still run, so
+      // the survivor count below stays a real-Redis assertion. The widths are
+      // read out before `mockRestore()`, which clears the recorded calls.
+      const delSpy = vi.spyOn(redis, 'del');
+      let delWidths: number[] = [];
+      try {
+        await expect(invalidateSessionFreshAuthTokens(username)).resolves.toBeUndefined();
+        delWidths = delSpy.mock.calls.map((call) => (call as unknown[]).length);
+      } finally {
+        delSpy.mockRestore();
+      }
 
       let survivors = 0;
       for (let i = 0; i < planted.length; i += 500) {
@@ -1740,12 +2131,51 @@ describe('the per-user session index stays bounded', () => {
       expect(survivors, 'every indexed window must be deleted, not just the first batch').toBe(0);
       expect(await redis.exists(indexKey)).toBe(0);
       expect(await redis.exists(TOKEN_PREFIX + live.token)).toBe(0);
+      // 500 + 500 + 202 = 1202 members in three batches, then the index key's
+      // own single-argument DEL. Order and length are both pinned, so this one
+      // assertion carries the call count too: a widened bound collapses it to
+      // two calls, a narrowed one explodes it, and a bound of 600 (which happens
+      // to yield the same call count) still lands a different shape.
+      expect(delWidths).toEqual([500, 500, 202, 1]);
     } finally {
       await redis.del(indexKey);
       for (let i = 0; i < planted.length; i += 500) {
         await redis.del(...planted.slice(i, i + 500).map((t) => TOKEN_PREFIX + t));
       }
     }
+  });
+
+  it.skipIf(!redisAvailable)('the DEL batch stays bounded at index sizes no fixture can plant for real', async () => {
+    // Every assertion in the test above is a function of its member count, so a
+    // sweep that batched only ABOVE some size threshold and kept a "one
+    // round-trip" fast path below it would pass all of them while reinstating
+    // the unbounded spread for exactly the accounts the batching protects: the
+    // spread does not throw until roughly 125k arguments, which no fixture can
+    // plant as real keys. Stubbing SMEMBERS to a synthetic index at that scale
+    // and DEL to a no-op exercises the batching arithmetic there with no Redis
+    // traffic and no keys to clean up.
+    const redis = getRedis()!;
+    const synthetic = Array.from({ length: 200_000 }, (_, i) => `scaleprobe${i}`);
+    const smembersSpy = vi.spyOn(redis, 'smembers').mockResolvedValue(synthetic);
+    const delSpy = vi.spyOn(redis, 'del').mockResolvedValue(0);
+    let widths: number[] = [];
+    try {
+      await expect(
+        invalidateSessionFreshAuthTokens(`scale-probe-${Date.now()}`),
+      ).resolves.toBeUndefined();
+      widths = delSpy.mock.calls.map((call) => (call as unknown[]).length);
+    } finally {
+      delSpy.mockRestore();
+      smembersSpy.mockRestore();
+    }
+    // 400 member batches of exactly 500, plus the index key's own
+    // single-argument DEL. Literals, not a recomputation from the module's batch
+    // constant, which would move with the value under test. An unbounded spread
+    // at this size throws inside the sweep's own catch, so it records no batches
+    // at all and fails the count first.
+    expect(widths.length).toBe(401);
+    expect(Math.max(...widths)).toBe(500);
+    expect(widths.reduce((sum, w) => sum + w, 0)).toBe(200_001);
   });
 
   it.skipIf(!redisAvailable)('a window found dead at consume is removed from the index', async () => {

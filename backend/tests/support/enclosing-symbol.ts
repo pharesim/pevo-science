@@ -138,24 +138,69 @@ export function sourcesUnder(root: string): ScannedSource[] {
   return out;
 }
 
+/** A line that is entirely comment BY SHAPE: a `//` line, a block opener, or
+ *  the `*` continuation inside a docblock.
+ *
+ *  Which predicate a scan wants follows from what a match MEANS, and the two
+ *  answers are opposites. On a scan for a FORBIDDEN call the match IS the
+ *  violation, so every line skipped is a violation not reported: filter as
+ *  little as possible, and this shape-only test is that minimum. On a scan for
+ *  a REQUIRED call the match SATISFIES the demand, so an over-match is the
+ *  silent failure — a call read out of prose, or out of one somebody commented
+ *  out while debugging and never restored, pairs with the live code that was
+ *  supposed to need it and the canary goes quiet for exactly the omission it
+ *  exists to catch. Those scans want {@link isCommentedOut}. */
+export function isCommentLine(line: string): boolean {
+  return /^\s*(?:\*|\/\/|\/\*)/.test(line);
+}
+
+/**
+ * A line that is commented out: a comment by shape, or a line sitting inside a
+ * block comment whose opener began an earlier line and has not closed yet.
+ *
+ * The second half is not hypothetical fussiness. An editor's block-comment
+ * toggle over a multi-line selection prefixes only the FIRST line, so the
+ * commented-out call itself keeps its original indentation and its `await`,
+ * and {@link isCommentLine} reads it as live code. That is the same accident
+ * as a line-comment toggle and it must not be the one that gets through.
+ *
+ * The walk is upward from the match rather than a stateful pass over the file
+ * because `occurrencesOf` calls this only on lines that already matched the
+ * pattern, which is a handful per scan. It recognizes an opener only when it
+ * starts a line, so a block-comment opener inside a string or a URL cannot open
+ * a phantom block.
+ */
+export function isCommentedOut(line: string, lineIndex: number, lines: string[]): boolean {
+  if (isCommentLine(line)) return true;
+  for (let i = lineIndex - 1; i >= 0; i--) {
+    const trimmed = lines[i].trim();
+    // A close before an open means the nearest block already ended.
+    if (trimmed.includes('*' + '/')) return false;
+    if (trimmed.startsWith('/*')) return true;
+  }
+  return false;
+}
+
 /**
  * Every `file#symbol` occurrence of `pattern` across `files`, plus a
  * human-readable site list for assertion messages.
  *
  * `skipLine` drops a matched line before it is counted — for a definition site
- * that necessarily matches the call pattern it defines, say.
+ * that necessarily matches the call pattern it defines, say. It receives the
+ * line's index and the whole file, so a predicate can also decide from
+ * surrounding lines; {@link isCommentedOut} is the one that needs that.
  */
 export function occurrencesOf(
   files: ScannedSource[],
   pattern: RegExp,
-  skipLine?: (line: string) => boolean,
+  skipLine?: (line: string, lineIndex: number, lines: string[]) => boolean,
 ): { keys: string[]; sites: string[] } {
   const keys = new Set<string>();
   const sites: string[] = [];
   for (const { rel, lines } of files) {
     lines.forEach((line, i) => {
       if (!pattern.test(line)) return;
-      if (skipLine?.(line)) return;
+      if (skipLine?.(line, i, lines)) return;
       const symbol = enclosingSymbol(lines, i);
       keys.add(`${rel}#${symbol}`);
       sites.push(`${rel}:${i + 1} (${symbol}) — ${line.trim()}`);

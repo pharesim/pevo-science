@@ -77,6 +77,7 @@ import { config } from '../../src/config.js';
 import { ROUTE_FLAVOR_DERIVATION } from '../../src/routes/signup-verify.js';
 import { logger } from '../../src/logger.js';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
+import { expectNoSessionProof } from '../support/session-proof-shape.js';
 import { TIMING_ORACLE_FLOOR_MS } from '../support/timing-constants.js';
 import { SIGNUP_BINDING_COOKIE_NAME } from '../../src/signup-session-binding.js';
 
@@ -853,6 +854,10 @@ describe.skipIf(!dbReachable)('/link accreditation evidence_hash uses the link d
       .send(body);
 
     expect(res.status).toBe(200);
+    // Linking an existing Hive account finalizes a signup and issues a session,
+    // the self-custody sibling of the confirm route. A window opened here would
+    // be minted for every account that arrives by the Keychain path.
+    expectNoSessionProof(res, 'hive-link response');
 
     const op = findAccreditOp();
     expect(op.account).toBe(username);

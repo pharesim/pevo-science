@@ -20,12 +20,21 @@
  * minted but never returned is unusable by the client, so "absent from the
  * response body" is the wire-level form of the invariant.
  *
- * Two surfaces, chosen because they are the sympathetic ones. Login is where
- * "the user just proved their password, why prompt again" lands. Signup
+ * Four surfaces here, chosen because they are the sympathetic ones. Login is
+ * where "the user just proved their password, why prompt again" lands. Signup
  * finalization is worse: its best-effort-JWT contract lets a fast retry mint a
  * second session, so a proof minted there would be minted twice per
- * finalization. The ORCID `mode='login'` branch is covered in
- * `tests/routes/orcid.test.ts`, where the OAuth round-trip harness lives.
+ * finalization. Token refresh is covered on both of its branches, because
+ * presenting an unexpired JWT or a Hive signature is authentication rather than
+ * a re-auth act, and a proof attached to either would let a stolen credential
+ * renew its own window indefinitely. The ORCID `mode='login'` branch is covered
+ * in `tests/routes/orcid.test.ts`, where the OAuth round-trip harness lives; the
+ * recovery surfaces are covered in
+ * `tests/routes/session-proof-invalidation.test.ts`, where their fixtures live;
+ * the custody upgrade and the Keychain link have theirs in their own suites. The
+ * set of session-issuing handlers is itself pinned, in
+ * `tests/eslint/no-session-proof-mint-outside-reauth-routes.test.ts`, so a new
+ * one cannot land without an assertion.
  *
  * Mocks (per root CLAUDE.md "Carve-out for deterministic edge-case coverage"):
  *   (a) The chain-side surface only — `createClaimedAccount`, the
@@ -34,10 +43,13 @@
  *       the carve-out's "third-party libraries non-trivial to run for real
  *       per-test" target. Postgres, Redis, argon2, the session-binding cookie
  *       check, and the fresh-auth store all run real.
- *   (b) No auth middleware is mocked, and none is bypassed: both routes are
- *       unauthenticated, because the password and the auth_token respectively
- *       ARE the authentication. Nothing here depends on cryptographic
- *       signature verification.
+ *   (b) No auth middleware is mocked, and none is bypassed. The login and
+ *       signup-finalization routes are unauthenticated, because the password and
+ *       the auth_token respectively ARE the authentication. The two token-refresh
+ *       specs drive `verifyHiveSignature` for real, one down its Bearer branch
+ *       and one down its signature branch against a deterministic seed-derived
+ *       key; the chain lookup is conditional so signup finalization still sees an
+ *       empty account set for the username it is claiming.
  *   (c) The risk class — "a session-establishment response starts carrying a
  *       proof" — is asserted against the real route and the real response
  *       envelope, not against a stub.
@@ -48,10 +60,13 @@ import crypto from 'node:crypto';
 import request from 'supertest';
 import argon2 from 'argon2';
 import { PrivateKey } from '@hiveio/dhive';
+import jwt from 'jsonwebtoken';
 import { clearRateLimitKeys } from '../support/redis-helpers.js';
+import { signRequestBound } from '../support/sign-request.js';
+import { expectNoSessionProof } from '../support/session-proof-shape.js';
 
 const { getAccountsMock, broadcastJsonMock, createClaimedAccountMock } = vi.hoisted(() => ({
-  getAccountsMock: vi.fn().mockResolvedValue([]),
+  getAccountsMock: vi.fn(),
   broadcastJsonMock: vi.fn().mockResolvedValue({ id: 'mock-tx' }),
   createClaimedAccountMock: vi.fn().mockResolvedValue({ block_num: 12345 }),
 }));
@@ -105,6 +120,21 @@ const LOGIN_EMAIL = `nowindow_login_${RUN_ID}@example.com`;
 const LOGIN_PASSWORD = 'NoWindowPass1';
 const CONFIRM_USER = `nwcf${SUFFIX}`;
 const CONFIRM_EMAIL = `nowindow_confirm_${RUN_ID}@example.com`;
+const SIGNER_USER = `nwsg${SUFFIX}`;
+const SIGNER_KEY = PrivateKey.fromSeed('pevo-no-window-session-signer');
+
+// Conditional on purpose: POST /api/auth/confirm consults this same chain lookup
+// to decide the requested username is free, and a non-empty answer sends it down
+// the ownership-proof path to a duplicate-username rejection. An unconditional
+// key-publishing mock would fail signup finalization instead of the assertion
+// under test.
+getAccountsMock.mockImplementation((names: string[]) =>
+  Promise.resolve(
+    names.includes(SIGNER_USER)
+      ? [{ name: SIGNER_USER, posting: { key_auths: [[SIGNER_KEY.createPublic().toString(), 1]] } }]
+      : [],
+  ),
+);
 
 let dbReachable = false;
 {
@@ -134,45 +164,6 @@ async function cleanup() {
   for (const email of [LOGIN_EMAIL, CONFIRM_EMAIL]) {
     await pool.query('DELETE FROM accounts WHERE email = $1', [email]).catch(() => {});
   }
-}
-
-/**
- * Assert that nothing anywhere in a response body looks like a session-proof
- * grant.
- *
- * Deliberately a deep walk over the parsed body rather than a check on
- * `data.fresh_auth_proof`. The field's placement is not the invariant — a proof
- * handed back under `data.session.fresh_auth_proof`, or beside a reissued
- * token, or renamed to `session_proof`, breaks § 6.5 invariant #9 just as
- * completely as one at the documented path, and a path-specific assertion would
- * pass for all three.
- */
-function expectNoSessionProof(body: unknown, label: string): void {
-  const offenders: string[] = [];
-  const walk = (node: unknown, path: string): void => {
-    if (Array.isArray(node)) {
-      node.forEach((item, i) => walk(item, `${path}[${i}]`));
-      return;
-    }
-    if (node === null || typeof node !== 'object') return;
-    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
-      // Underscores stripped before matching, so `freshAuthProof` and
-      // `fresh_auth_proof` are the same key to this check. A regression that
-      // renames the field into camelCase is the same regression.
-      if (/freshauth|sessionproof/.test(key.replace(/_/g, '').toLowerCase())) {
-        offenders.push(`${path}.${key}`);
-      }
-      walk(value, `${path}.${key}`);
-    }
-  };
-  walk(body, label);
-  expect(
-    offenders,
-    `${label} carries a session-proof-shaped field. Only an explicit re-auth act ` +
-      'may open a broadcast window (ARCH.md § 6.5 invariant #9); a session ' +
-      'established by logging in or finalizing a signup must not come with one ' +
-      `attached:\n${offenders.join('\n')}\n\nbody:\n${JSON.stringify(body, null, 2)}`,
-  ).toEqual([]);
 }
 
 beforeAll(async () => {
@@ -207,7 +198,7 @@ describe.skipIf(!dbReachable)('session establishment opens no broadcast window',
     // SUCCESSFUL login hands back.
     expect(res.status).toBe(200);
     expect(res.body.data.token).toBeTruthy();
-    expectNoSessionProof(res.body, 'login response');
+    expectNoSessionProof(res, 'login response');
   });
 
   it('POST /api/auth/confirm finalizes a signup and returns no fresh-auth proof', async () => {
@@ -246,25 +237,125 @@ describe.skipIf(!dbReachable)('session establishment opens no broadcast window',
 
     expect(res.status).toBe(200);
     expect(res.body.data.username).toBe(CONFIRM_USER);
-    expectNoSessionProof(res.body, 'signup-finalize response');
+    expectNoSessionProof(res, 'signup-finalize response');
   });
 
-  it('the detector fires on every placement a regression could use', () => {
-    // Planted positives and a negative. Without them a mangled walker would
-    // report no offenders for every body and both assertions above would pass
-    // while enforcing nothing.
-    const cases: Array<[string, unknown]> = [
-      ['top level', { fresh_auth_proof: 'x' }],
-      ['nested under data', { data: { token: 't', fresh_auth_proof: 'x' } }],
-      ['two levels down', { data: { session: { fresh_auth_proof: 'x' } } }],
-      ['inside an array', { data: { grants: [{ session_proof: 'x' }] } }],
-      ['renamed', { data: { freshAuthProof: 'x' } }],
+  it('POST /api/auth/session refreshes a session and returns no fresh-auth proof', async () => {
+    // The token-refresh surface. Presenting an unexpired session token buys a
+    // new session token and nothing else; a proof handed back here would make
+    // every refresh silently re-open a broadcast window, so a stolen JWT would
+    // renew its own window indefinitely without the user ever re-authenticating.
+    // This drives the Bearer branch of verifyHiveSignature, which is the branch
+    // that reads the revocation column; the signature branch below does not.
+    await clearRateLimitKeys(['auth-session']);
+    const bearer = jwt.sign({ sub: LOGIN_USER, custody: 'light' }, config.sessionSecret, {
+      expiresIn: '1h',
+    });
+    const res = await request(app)
+      .post('/api/auth/session')
+      .set('Authorization', `Bearer ${bearer}`)
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body.data.token).toBeTruthy();
+    expectNoSessionProof(res, 'session-refresh response');
+  });
+
+  it('POST /api/auth/session accepts a Hive signature and returns no fresh-auth proof', async () => {
+    // The Keychain surface. Presenting a signature is authentication, not a
+    // re-auth act: it proves the posting key, which is the credential a stolen
+    // session already implies control of, so a proof handed back here would make
+    // possession of a signable key equal to a standing broadcast window.
+    await clearRateLimitKeys(['auth-session']);
+    const timestamp = new Date().toISOString();
+    const signature = signRequestBound(SIGNER_KEY, 'POST', '/api/auth/session', {}, timestamp);
+    const res = await request(app)
+      .post('/api/auth/session')
+      .set('X-Hive-Username', SIGNER_USER)
+      .set('X-Hive-Signature', signature)
+      .set('X-Hive-Timestamp', timestamp)
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body.data.token).toBeTruthy();
+    expectNoSessionProof(res, 'keychain session response');
+  });
+
+  it('the detector fires on every placement, name, and channel a regression could use', () => {
+    // Planted positives and negatives. Without them a mangled walker would
+    // report no offenders for every response and every assertion above would
+    // pass while enforcing nothing. The positives carry a real proof-shaped
+    // value where the point is the value tell, because a renamed field is caught
+    // by nothing else.
+    const HEX64 = 'a3'.repeat(32);
+    const JWT_SAMPLE =
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.' +
+      'eyJzdWIiOiJhbGljZSIsImN1c3RvZHkiOiJsaWdodCIsImlhdCI6MTc1NjY0MDAwMH0.' +
+      'Zr0kQm8vXcT1yB2nHfLpJdWsQeAbCdEfGhIjKlMnOpQ';
+    type Response = Parameters<typeof expectNoSessionProof>[0];
+    const positives: Array<[string, Response]> = [
+      ['top level', { body: { fresh_auth_proof: 'x' } }],
+      ['nested under data', { body: { data: { token: 't', fresh_auth_proof: 'x' } } }],
+      ['two levels down', { body: { data: { session: { fresh_auth_proof: 'x' } } } }],
+      ['inside an array', { body: { data: { grants: [{ session_proof: 'x' }] } } }],
+      ['renamed to camelCase', { body: { data: { freshAuthProof: 'x' } } }],
+      // Name tells nothing; only the value does.
+      ['renamed to proof, still 64 hex', { body: { data: { proof: HEX64 } } }],
+      ['renamed to reauth_token', { body: { data: { reauth_token: HEX64 } } }],
+      ['renamed to broadcast_token', { body: { data: { broadcast_token: HEX64 } } }],
+      ['inside a redirect URL', { body: { data: { next: `https://example.org/cb?p=${HEX64}` } } }],
+      // Channels a body-only walk never sees.
+      ['a bespoke response header', { headers: { 'x-fresh-auth-proof': 'x' } }],
+      ['an unnamed header carrying it', { headers: { 'x-grant': HEX64 } }],
+      ['a cookie other than the binder', { headers: { 'set-cookie': [`pevo_bc=${HEX64}; Path=/`] } }],
+      [
+        'a proof-named cookie with a re-encoded value',
+        { headers: { 'set-cookie': ['pevo_fresh_auth=bm90LWhleA; Path=/'] } },
+      ],
     ];
-    for (const [label, body] of cases) {
-      expect(() => expectNoSessionProof(body, label), label).toThrow();
+    for (const [label, res] of positives) {
+      expect(() => expectNoSessionProof(res, label), label).toThrow();
     }
-    expect(() =>
-      expectNoSessionProof({ data: { token: 't', custody: 'light', username: 'alice' } }, 'clean'),
-    ).not.toThrow();
+
+    const negatives: Array<[string, Response]> = [
+      [
+        'a realistic full response',
+        {
+          body: {
+            status: 'ok',
+            data: {
+              token: JWT_SAMPLE,
+              expires_at: '2026-08-31T12:00:00.000Z',
+              custody: 'light',
+              username: 'alice',
+            },
+          },
+          headers: {
+            'content-type': 'application/json; charset=utf-8',
+            etag: 'W/"6d-Zr0kQm8vXcT1yB2nHfLpJdWsQeA"',
+            'set-cookie': [
+              `${SIGNUP_BINDING_COOKIE_NAME}=; Path=/api/auth; Expires=Thu, 01 Jan 1970 00:00:00 GMT`,
+            ],
+          },
+        },
+      ],
+      // A 32-hex nonce and a 128-hex digest both sit either side of the proof's
+      // exact width, which is what the boundaries on the value tell are for.
+      ['the 32-hex ORCID state', { body: { data: { state: 'ab'.repeat(16) } } }],
+      ['a 128-hex digest', { body: { data: { digest: 'de'.repeat(64) } } }],
+      // The signup binder emits the same 32-byte-hex shape and is not a
+      // broadcast credential, so its value is exempt by cookie name.
+      [
+        'the binding-cookie mint',
+        {
+          headers: {
+            'set-cookie': [
+              `${SIGNUP_BINDING_COOKIE_NAME}=${HEX64}; Max-Age=86400; Path=/api/auth; HttpOnly; SameSite=Lax`,
+            ],
+          },
+        },
+      ],
+    ];
+    for (const [label, res] of negatives) {
+      expect(() => expectNoSessionProof(res, label), label).not.toThrow();
+    }
   });
 });

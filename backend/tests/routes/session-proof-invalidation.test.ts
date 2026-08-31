@@ -19,16 +19,43 @@
  *     applies the staged swap inside a transaction and then reissues a JWT.
  *
  * "The window is closed" is asserted by consuming the proof through the real
- * `consumeSessionFreshAuthToken` against the real store, which is the same
- * store and the same call the broadcast route makes. A blast-radius test pins
- * the other direction: an unrelated account's window must survive.
+ * `consumeSessionFreshAuthToken` against the real store the broadcast route
+ * reads. It is deliberately NOT the same call that route makes: the route also
+ * hands the consume the account's revocation epoch from
+ * `req.hiveSessionsInvalidatedAt`, and the helpers here pass `undefined`
+ * instead. Withholding the epoch is what scopes these assertions to the SWEEP
+ * and nothing else. With the epoch supplied, every window below would be
+ * rejected by the cut-off whether or not the sweep ran, so a writer that
+ * stamped the column and skipped the sweep would sail through the very suite
+ * written to catch it. The cut-off has its own end-to-end coverage through
+ * `POST /api/custody/broadcast` and `POST /api/ipfs/upload-token`. A
+ * blast-radius test pins the other direction: an unrelated account's window
+ * must survive.
+ *
+ * These three routes must also not OPEN a window while closing one. All three
+ * reissue a JWT, which makes them session-establishment surfaces in the sense
+ * of § 6.5 invariant #9, and the real recovery fixtures live here (a seeded
+ * `reset_token`, a seeded ORCID receipt, an inserted `pending_recovery` row),
+ * so the wire-level no-proof assertion rides along rather than a second suite
+ * rebuilding them.
  *
  * The static half of the guarantee lives in the last describe block: any future
- * writer of `sessions_invalidated_at`, anywhere under `src/`, must also sweep
- * the proofs from the same function. A wiring omission is the realistic failure
- * here, not a bug inside the helper (which `tests/lib/fresh-auth.test.ts`
- * covers directly), and an omission in a handler written months from now is
- * exactly what an end-to-end test of today's three routes cannot catch.
+ * TOUCH of `sessions_invalidated_at` in executable source anywhere under
+ * `src/`, matched on the bare column name so no SQL spelling of the write can
+ * slip past, must also sweep the proofs from the same function, and the sweep
+ * must be a live call rather than a commented-out one. The middleware's read is
+ * exempted by exact line, not by pattern and not by enclosing symbol: under-
+ * matching a write is fail-open, so the scan over-matches on purpose and spares
+ * three named lines explicitly, which leaves a write added beside them still
+ * visible. A wiring omission is the realistic failure here, not a bug inside the
+ * helper (which `tests/lib/fresh-auth.test.ts` covers directly), and an omission
+ * in a handler written months from now is exactly what an end-to-end test of
+ * today's three routes cannot catch.
+ *
+ * What that scan cannot see, so it is not over-trusted: pairing is by enclosing
+ * symbol, not by control flow, so a write on an early-return branch of a handler
+ * that sweeps further down still pairs; and a write that never spells the column
+ * in a `.ts` file is outside it entirely.
  *
  * Note what the sweep is and is not. It reclaims storage; it is NOT the
  * authoritative close. That is the revocation-epoch check inside the session
@@ -55,7 +82,14 @@ import request from 'supertest';
 import crypto from 'node:crypto';
 import argon2 from 'argon2';
 import path from 'node:path';
-import { occurrencesOf, sourcesUnder } from '../support/enclosing-symbol.js';
+import {
+  isCommentLine,
+  isCommentedOut,
+  occurrencesOf,
+  sourcesUnder,
+  type ScannedSource,
+} from '../support/enclosing-symbol.js';
+import { expectNoSessionProof } from '../support/session-proof-shape.js';
 
 const { createApp } = await import('../../src/app.js');
 const { getAppPool } = await import('../../src/app-db.js');
@@ -140,14 +174,28 @@ async function seedOrcidReceipt(nonce: string): Promise<void> {
   orcidVerified.set(nonce, { ...payload, expires: Date.now() + 600_000 });
 }
 
-/** Assert a proof no longer consumes. Uses the same helper and the same store
- *  the broadcast route uses, so this is the property the route would observe. */
+/** Assert a proof no longer consumes, with NO revocation epoch supplied.
+ *  `undefined` is passed on purpose: it disables the epoch cut-off, so the only
+ *  thing that can close the window here is the sweep the route under test was
+ *  supposed to call. Handing the real epoch in would make this pass for a writer
+ *  that stamped `sessions_invalidated_at` and never swept, which is the exact
+ *  omission this suite exists to catch. `undefined` rather than `null`: `null`
+ *  is the store's encoding of "this account has never had its sessions
+ *  revoked", which is false at these call sites. */
 async function expectWindowClosed(token: string, username: string): Promise<void> {
-  const result = await consumeSessionFreshAuthToken(token, username);
+  const result = await consumeSessionFreshAuthToken(token, username, undefined);
   expect(result.valid).toBe(false);
   if (!result.valid) {
     expect(result.reason).toBe('expired');
   }
+}
+
+/** Assert a proof still consumes, under the same no-epoch posture as
+ *  {@link expectWindowClosed}. Serves as the pre-condition each route test rests
+ *  on (the window really was open before the route ran) and, for the unrelated
+ *  account, as the blast-radius assertion itself. */
+async function expectWindowOpen(token: string, username: string): Promise<void> {
+  expect((await consumeSessionFreshAuthToken(token, username, undefined)).valid).toBe(true);
 }
 
 beforeAll(async () => {
@@ -178,12 +226,13 @@ describe('session invalidation closes outstanding session-proof windows', () => 
     );
 
     const issued = await issueSessionFreshAuthToken(USER, 'password');
-    expect((await consumeSessionFreshAuthToken(issued.token, USER)).valid).toBe(true);
+    await expectWindowOpen(issued.token, USER);
 
     const res = await request(app)
       .post('/api/auth/reset')
       .send({ token: resetToken, password: 'BrandNewPass1' });
     expect(res.status).toBe(200);
+    expectNoSessionProof(res, 'password-reset response');
 
     await expectWindowClosed(issued.token, USER);
   });
@@ -193,7 +242,7 @@ describe('session invalidation closes outstanding session-proof windows', () => 
     await seedOrcidReceipt(nonce);
 
     const issued = await issueSessionFreshAuthToken(USER, 'orcid');
-    expect((await consumeSessionFreshAuthToken(issued.token, USER)).valid).toBe(true);
+    await expectWindowOpen(issued.token, USER);
 
     const res = await request(app)
       .post('/api/auth/recover')
@@ -208,6 +257,7 @@ describe('session invalidation closes outstanding session-proof windows', () => 
     // caller holds that token, or the reissue hands back a session with a
     // pre-existing broadcast window still attached to it.
     expect(res.body.data.token).toBeDefined();
+    expectNoSessionProof(res, 'orcid-recovery response');
 
     await expectWindowClosed(issued.token, USER);
   });
@@ -227,13 +277,14 @@ describe('session invalidation closes outstanding session-proof windows', () => 
     );
 
     const issued = await issueSessionFreshAuthToken(USER, 'password');
-    expect((await consumeSessionFreshAuthToken(issued.token, USER)).valid).toBe(true);
+    await expectWindowOpen(issued.token, USER);
 
     const res = await request(app)
       .post('/api/auth/recover/verify')
       .send({ token: verifyToken });
     expect(res.status).toBe(200);
     expect(res.body.data.token).toBeDefined();
+    expectNoSessionProof(res, 'recovery-verify response');
 
     await expectWindowClosed(issued.token, USER);
   });
@@ -260,36 +311,102 @@ describe('session invalidation closes outstanding session-proof windows', () => 
     expect(res.status).toBe(200);
 
     await expectWindowClosed(targetProof.token, USER);
-    expect((await consumeSessionFreshAuthToken(bystanderProof.token, BYSTANDER)).valid).toBe(true);
+    await expectWindowOpen(bystanderProof.token, BYSTANDER);
   });
 });
 
-describe('every writer of the revocation column also closes session-proof windows', () => {
+describe('every toucher of the revocation column also closes session-proof windows', () => {
   // Standing wiring canary. The three routes above are today's writers; the
   // failure this guards against is a fourth one added later that stamps
   // `sessions_invalidated_at` and stops there, leaving a live broadcast window
   // attached to a session the operator believes they cut off. That omission is
   // invisible to every test in this file, because those tests name their routes.
   //
-  // Two granularity properties this scan needs, both of which a
-  // whole-file-tests-whole-file version silently lacked:
+  // Three granularity properties this scan needs, each of which a narrower
+  // version silently lacked:
   //
   //   - It walks ALL of `src/` recursively, not a flat listing of `src/routes`.
   //     A writer added under `src/lib`, or in any subdirectory, was previously
   //     not scanned at all.
-  //   - It pairs each WRITE with a sweep in the SAME enclosing symbol. Testing
+  //   - It pairs each TOUCH with a sweep in the SAME enclosing symbol. Testing
   //     "this file contains a write" against "this file contains a sweep" means
   //     a second, unswept writer added to `recover.ts` — which already sweeps
   //     from two other handlers — passes untouched.
+  //   - It matches the bare column name and requires the sweep to be a LIVE
+  //     call. Both directions of under-matching are fail-open: a write spelled
+  //     in a way the pattern misses never has to pair with anything, and a
+  //     sweep read out of a commented-out line pairs with a write that has no
+  //     live sweep behind it at all.
 
-  /** A WRITE to the revocation column: the column name followed by `=`, which
-   *  matches both the SQL `SET sessions_invalidated_at = NOW()` form and the
-   *  parameterized `sessions_invalidated_at = $3` form. A SELECT of the column
-   *  has no `=` after it and does not match. */
-  const REVOCATION_WRITE_RE = /sessions_invalidated_at\s*=/;
+  /** Any mention of the revocation column in executable source. Deliberately
+   *  the BARE column name rather than `column = value`: the `=` form matched
+   *  only two of this write's spellings, and an unmatched write is FAIL-OPEN,
+   *  since it never enters the occurrence set and is therefore never required
+   *  to pair with a sweep. A quoted identifier, a multi-column
+   *  `SET (a, b) = (...)`, an INSERT naming the column in its column list, a
+   *  query-builder object literal, and a template-literal UPDATE that wraps the
+   *  line before the `=` all write the column and all evaded it. Over-matching
+   *  is the safe direction: a false positive is a red bar naming a symbol, a
+   *  false negative is a revocation that silently leaves a broadcast window
+   *  open. */
+  const REVOCATION_COLUMN_RE = /\bsessions_invalidated_at\b/;
+
+  /** A CALL to the sweep. Commented-out lines are filtered out of THIS scan
+   *  because over-matching here is fail-open: a sweep the scan reads out of
+   *  prose, or out of a call commented out during debugging and never restored,
+   *  pairs with a live write in the same handler and the canary goes silent for
+   *  the omission it exists to catch. Over-matching a column TOUCH has no
+   *  equivalent danger, since a touch read out of prose can only demand a sweep
+   *  that had to be there anyway. */
   const SWEEP_CALL_RE = /invalidateSessionFreshAuthTokens\s*\(/;
 
+  /** Whitespace-normalized line text, so the read exemption below survives a
+   *  reindent or a rewrapped call without surviving an edit to the statement. */
+  const normalize = (line: string): string => line.trim().replace(/\s+/g, ' ');
+
+  /** The lines that touch the column without writing it: the middleware's JWT
+   *  branch types the row shape, SELECTs the column, and reads the field off the
+   *  row. Reading a revocation epoch revokes nothing, so these are spared.
+   *
+   *  Exempted by LINE, not by enclosing symbol. A symbol-wide exemption would
+   *  cover any write later added inside that same function, and the obvious
+   *  guard against that — asserting the symbol never matches `column =` — is the
+   *  same under-matching form this scan just abandoned: it sees neither a quoted
+   *  identifier, nor `SET (a, b) = (...)`, nor an INSERT column list, nor a
+   *  wrapped `=`. Per-line, any new column line inside the middleware is a new
+   *  occurrence that must pair with a sweep, in every spelling. Kept honest by
+   *  the staleness test below. */
+  const READ_ONLY_LINES = [
+    'const { rows } = await pool.query<{ sessions_invalidated_at: Date | null }>(',
+    "'SELECT sessions_invalidated_at FROM accounts WHERE username = $1',",
+    'const invalidatedAt = rows.length > 0 ? rows[0].sessions_invalidated_at : null;',
+  ];
+
+  /** Prose cannot write a column, and the broadened signal matches every
+   *  docblock mention of the name across the module, the middleware, and two
+   *  route files. Without this skip each mention becomes an occurrence that must
+   *  pair with a sweep in its own enclosing symbol, and the suite goes red on
+   *  documentation alone. The shape-only predicate is the right one here: on a
+   *  scan where a match DEMANDS something, an over-match is safe and a skip is
+   *  not. An inline trailing comment on a code line is deliberately not
+   *  stripped, because a comment marker also occurs inside string literals and
+   *  truncating there would drop a real write sharing the line. */
+  const skipColumnLine = (line: string): boolean =>
+    isCommentLine(line) || READ_ONLY_LINES.includes(normalize(line));
+
   const sources = sourcesUnder(path.resolve(__dirname, '..', '..', 'src'));
+
+  /** The pairing every assertion below rests on, built once so the synthetic
+   *  probes exercise the same call the whole-tree scan does. A probe that
+   *  rebuilt the scan with its own arguments would stay green when the real scan
+   *  lost its comment filter, which is the regression the probes exist to catch
+   *  and which the real tree cannot show, since no writer is commented out
+   *  today. */
+  const unsweptWriters = (files: ScannedSource[]) => {
+    const touches = occurrencesOf(files, REVOCATION_COLUMN_RE, skipColumnLine);
+    const sweeps = new Set(occurrencesOf(files, SWEEP_CALL_RE, isCommentedOut).keys);
+    return { touches, sweeps, offenders: touches.keys.filter((key) => !sweeps.has(key)) };
+  };
 
   it('the scan reaches the whole source tree, not just the top of src/routes', () => {
     // Without this, a bad path or a non-recursive walk would make the assertion
@@ -302,37 +419,99 @@ describe('every writer of the revocation column also closes session-proof window
     expect(rels).toContain('lib/fresh-auth.ts');
   });
 
-  it('no writer of the revocation column skips the proof sweep', () => {
-    const writes = occurrencesOf(sources, REVOCATION_WRITE_RE);
-    const sweeps = new Set(occurrencesOf(sources, SWEEP_CALL_RE).keys);
-    // The middleware READS the column on every request; the pattern spares a
-    // SELECT, so it is not expected to appear here at all.
-    expect(writes.keys.length, `revocation-column writes:\n${writes.sites.join('\n')}`)
-      .toBeGreaterThan(0);
-    const offenders = writes.keys.filter((key) => !sweeps.has(key));
+  it('no toucher of the revocation column skips the proof sweep', () => {
+    const { touches, offenders } = unsweptWriters(sources);
+    // Non-vacuity by name rather than by count: a pattern edit that stops
+    // matching one of today's writers fails here first, instead of quietly
+    // shrinking the set the offender filter runs over. `arrayContaining` so a
+    // legitimate new writer that does sweep is not a mandatory list update.
+    expect(touches.keys, `revocation-column sites:\n${touches.sites.join('\n')}`).toEqual(
+      expect.arrayContaining([
+        'routes/auth.ts#POST /reset',
+        'routes/recover.ts#POST /recover',
+        'routes/recover.ts#POST /recover/verify',
+      ]),
+    );
     expect(
       offenders,
-      'these functions write sessions_invalidated_at but never call ' +
+      'these functions touch sessions_invalidated_at but never call ' +
         'invalidateSessionFreshAuthTokens, so they revoke bearer tokens while ' +
         'leaving an open broadcast window attached to the session they claim to ' +
-        `have cut off:\n${offenders.join('\n')}\n\nall writes:\n${writes.sites.join('\n')}`,
+        'have cut off. If one of these only READS the column, add its exact ' +
+        `line to READ_ONLY_LINES:\n${offenders.join('\n')}\n\n` +
+        `all sites:\n${touches.sites.join('\n')}`,
     ).toEqual([]);
   });
 
-  it('the matchers fire on a write and spare a read', () => {
+  it('the read exemption stays anchored to a line that still exists', () => {
+    // A per-line exemption rots silently: refactor the middleware query and the
+    // entry covers nothing, while a reader still believes the read is accounted
+    // for. Exactly one occurrence each, so a removal and a copy-paste into a
+    // second file are both caught.
+    for (const exempt of READ_ONLY_LINES) {
+      const hits = sources.flatMap(({ rel, lines }) =>
+        lines.flatMap((line, i) => (normalize(line) === exempt ? [`${rel}#${i}`] : [])),
+      );
+      expect(hits, `read exemption no longer matches exactly one line: ${exempt}`).toHaveLength(1);
+    }
+  });
+
+  it('the column matcher fires on every spelling of the write', () => {
     // Planted positives and negatives, so a mangled pattern cannot leave the
     // scan silently matching nothing while the suite stays green.
-    expect(REVOCATION_WRITE_RE.test('SET sessions_invalidated_at = NOW()')).toBe(true);
-    expect(REVOCATION_WRITE_RE.test('             sessions_invalidated_at = $3')).toBe(true);
-    expect(REVOCATION_WRITE_RE.test('SELECT sessions_invalidated_at FROM accounts')).toBe(false);
-    expect(SWEEP_CALL_RE.test('await invalidateSessionFreshAuthTokens(account.username);')).toBe(true);
+    const touches = (line: string): boolean =>
+      REVOCATION_COLUMN_RE.test(line) && !skipColumnLine(line);
+
+    expect(touches('SET sessions_invalidated_at = NOW()')).toBe(true);
+    expect(touches('             sessions_invalidated_at = $3')).toBe(true);
+    // Spellings the `column = value` form missed. Every one writes the column,
+    // and every one was fail-open before.
+    expect(touches('SET "sessions_invalidated_at" = NOW()')).toBe(true);
+    expect(touches('SET (email, sessions_invalidated_at) = ($1, NOW())')).toBe(true);
+    expect(
+      touches('INSERT INTO accounts (username, sessions_invalidated_at) VALUES ($1, NOW())'),
+    ).toBe(true);
+    expect(touches('             sessions_invalidated_at')).toBe(true);
+    expect(touches('  .set({ sessions_invalidated_at: new Date() })')).toBe(true);
+    // A SELECT is matched by the pattern and spared only by the exact-line
+    // exemption, which is what lets the touch side over-match safely. An
+    // unexempted SELECT still counts, so a read added elsewhere gets reviewed.
+    expect(touches('SELECT sessions_invalidated_at FROM accounts')).toBe(true);
+    expect(
+      touches("            'SELECT sessions_invalidated_at FROM accounts WHERE username = $1',"),
+    ).toBe(false);
+    // Prose is skipped, and the camelCase request field is a different name.
+    expect(touches(' * `sessions_invalidated_at` MUST call this.')).toBe(false);
+    expect(touches('  // sessions_invalidated_at and reissues a fresh session token')).toBe(false);
+    expect(touches('  const ms = req.hiveSessionsInvalidatedAt;')).toBe(false);
+
+    expect(SWEEP_CALL_RE.test('await invalidateSessionFreshAuthTokens(account.username);')).toBe(
+      true,
+    );
     expect(SWEEP_CALL_RE.test('  invalidateSessionFreshAuthTokens,')).toBe(false);
+    // The pattern alone cannot tell a live call from a dead one, which is why
+    // the scan above is the one that carries the filter.
+    expect(SWEEP_CALL_RE.test('  // await invalidateSessionFreshAuthTokens(username);')).toBe(true);
+    const dead = [
+      '  /* restore before merge',
+      '  await invalidateSessionFreshAuthTokens(username);',
+      '  */',
+      '  await invalidateSessionFreshAuthTokens(username);',
+    ];
+    expect(isCommentedOut(dead[1], 1, dead)).toBe(true);
+    expect(isCommentedOut(dead[3], 3, dead)).toBe(false);
+    expect(
+      isCommentedOut(' * calls invalidateSessionFreshAuthTokens(u) from the same handler', 0, []),
+    ).toBe(true);
   });
 
   it('a write and a sweep in different functions of one file do not pair up', () => {
     // The granularity the assertion above rests on. Under the previous
-    // whole-file form these two synthetic handlers passed, because the file
-    // contained both a write and a sweep somewhere.
+    // whole-file form these synthetic handlers passed, because the file
+    // contained both a write and a sweep somewhere. `/quoted` and `/wrapped`
+    // were additionally invisible to the `column = value` signal, and
+    // `/promises` was visible to it but PAIRED, because a commented-out sweep
+    // counted as a sweep.
     const lines = [
       "router.post('/sweeps', async (req, res) => {",
       '  await pool.query(`UPDATE accounts SET sessions_invalidated_at = NOW()`);',
@@ -342,16 +521,71 @@ describe('every writer of the revocation column also closes session-proof window
       "router.post('/forgets', async (req, res) => {",
       '  await pool.query(`UPDATE accounts SET sessions_invalidated_at = NOW()`);',
       '});',
+      '',
+      "router.post('/quoted', async (req, res) => {",
+      '  await pool.query(`UPDATE accounts SET "sessions_invalidated_at" = NOW()`);',
+      '});',
+      '',
+      "router.post('/wrapped', async (req, res) => {",
+      '  await pool.query(`UPDATE accounts',
+      '     SET sessions_invalidated_at',
+      '         = NOW()`);',
+      '});',
+      '',
+      "router.post('/promises', async (req, res) => {",
+      '  await pool.query(`UPDATE accounts SET sessions_invalidated_at = NOW()`);',
+      '  // TODO: await invalidateSessionFreshAuthTokens(username);',
+      '});',
     ];
-    const file = [{ rel: 'routes/synthetic.ts', lines }];
-    const writes = occurrencesOf(file, REVOCATION_WRITE_RE);
-    const sweeps = new Set(occurrencesOf(file, SWEEP_CALL_RE).keys);
-    expect(writes.keys).toEqual([
+    const { touches, offenders } = unsweptWriters([{ rel: 'routes/synthetic.ts', lines }]);
+    expect(touches.keys).toEqual([
       'routes/synthetic.ts#POST /forgets',
+      'routes/synthetic.ts#POST /promises',
+      'routes/synthetic.ts#POST /quoted',
       'routes/synthetic.ts#POST /sweeps',
+      'routes/synthetic.ts#POST /wrapped',
     ]);
-    expect(writes.keys.filter((k) => !sweeps.has(k))).toEqual([
+    expect(offenders).toEqual([
       'routes/synthetic.ts#POST /forgets',
+      'routes/synthetic.ts#POST /promises',
+      'routes/synthetic.ts#POST /quoted',
+      'routes/synthetic.ts#POST /wrapped',
     ]);
+  });
+
+  it('a sweep commented out with a line comment does not pair with a live write', () => {
+    // The ordinary accident, not an adversarial one: the call is commented out
+    // while debugging and never restored. The handler still stamps the
+    // revocation column and still leaves an open broadcast window, and a scan
+    // that counts the dead line as the sweep stays green through it.
+    const lines = [
+      "router.post('/stale', async (req, res) => {",
+      '  await pool.query(`UPDATE accounts SET sessions_invalidated_at = NOW()`);',
+      '  // await invalidateSessionFreshAuthTokens(username);',
+      '});',
+    ];
+    const { touches, sweeps, offenders } = unsweptWriters([{ rel: 'routes/synthetic.ts', lines }]);
+    expect(touches.keys).toEqual(['routes/synthetic.ts#POST /stale']);
+    expect([...sweeps]).toEqual([]);
+    expect(offenders).toEqual(['routes/synthetic.ts#POST /stale']);
+  });
+
+  it('a sweep commented out with a block does not pair with a live write', () => {
+    // The same accident by the other editor gesture. A block toggle over a
+    // multi-line selection prefixes only the first line, so the dead call keeps
+    // its indentation and its `await` and reads as live code to any predicate
+    // that judges a line by its own first characters.
+    const lines = [
+      "router.post('/stale-block', async (req, res) => {",
+      '  await pool.query(`UPDATE accounts SET sessions_invalidated_at = NOW()`);',
+      '  /* restore before merge',
+      '  await invalidateSessionFreshAuthTokens(username);',
+      '  */',
+      '});',
+    ];
+    const { touches, sweeps, offenders } = unsweptWriters([{ rel: 'routes/synthetic.ts', lines }]);
+    expect(touches.keys).toEqual(['routes/synthetic.ts#POST /stale-block']);
+    expect([...sweeps]).toEqual([]);
+    expect(offenders).toEqual(['routes/synthetic.ts#POST /stale-block']);
   });
 });
