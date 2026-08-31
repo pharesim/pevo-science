@@ -269,3 +269,98 @@ resolution, since item 1 may change what the doc should say.
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
 re-review signal. Do not edit this hold block or annotate items as fixed; the commit diff
 is the evidence and the architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-08-31, commits ab5a2fac + bc3d6095)
+
+All five items landed at `ab5a2fac`; the review-pass simplification
+(`bc3d6095`) later centralized the session path's redirect policy without
+behavior change. Every claim below is per item against its named test, each
+verified by a mutation probe against the committed baseline (fix reverted,
+named test fails, tree restored). Sequenced after the reauth-window round-3
+fixes on purpose: item 1's fallback rides that task's `allowRedirect` seam.
+
+**1. Observed vs assumed, with the ORCID escape hatch.**
+`resolvePasswordFactor()` (renamed from `accountUsesPasswordFactor`; still
+the single resolver, and the old name survives nowhere under `frontend/`)
+returns `{ usesPassword, assumed }`. The failure direction is unchanged: only
+an explicit `false` refuses the password factor, and an unavailable or
+field-less status resolves `{ usesPassword: true, assumed: true }`, never
+memoized. `mintViaPasswordFactor` consumes the flag: a first-mint 401 against
+an ASSUMED factor returns the new `FRESH_AUTH_ORCID_FALLBACK` instead of a
+second prompt, and every consumer maps it to its own ORCID factor. The
+session path applies its `allowRedirect` policy (suppressed callers get the
+non-navigating `reauthRequired` refusal); both orchestrators map it at BOTH
+the initial and the 401-retry gates. The retry-gate redirect is the one
+deliberate exception to the re-OAuth-loop guard, argued in-code: the 401 is
+new information (no password exists), the user just engaged by typing one,
+and each pass costs a typed password plus a full OAuth round-trip, so it
+cannot tight-loop. An OBSERVED password's 401 still re-prompts and never
+falls back. Tests: session suite "an assumed password the backend rejects
+falls back to the ORCID round-trip", "an assumed-password 401 with
+navigation suppressed refuses instead of redirecting", "an observed password
+that 401s re-prompts and never falls back to ORCID"; settings suite "an
+assumed password the backend rejects at the mint falls back to the ORCID
+redirect", "an observed password that 401s still re-prompts instead of
+redirecting", "an assumed password rejected at the RETRY mint also redirects
+rather than dead-ending"; the first two mirrored in the authorship suite.
+Probes: the `assumed` branch deleted fails both the session and settings
+fallback tests.
+
+**2. The failed-status render asserts nothing.** `loadEmailStatus()`'s catch
+leaves `emailStatus` null and raises a new `emailStatusError` flag; the email
+section renders a retry affordance (`settings.emailStatusLoadFailed`, new key
+stubbed across all 16 locales with a `STUBS.md` sweep entry, plus the
+existing `common.retry`). With `emailStatus` null the set-password section's
+strict `hasPassword === false` gate cannot draw, so a transient failure can
+no longer reach the `set_password` navigation. Tests
+(`pages-settings.test.js`): "asserts nothing on a failed fetch: null status
+plus a retry flag"; "a failed fetch does not draw the set-password section"
+(mirrors the template gates verbatim); "a retry after a failed fetch clears
+the error flag and renders the status". Probe: the fabricated fallback
+restored fails the draw test.
+
+**3. Coalescing.** Concurrent resolutions join a `_factorResolutionInFlight`
+promise, mirroring the acquisition in-flight pattern in the same file. Test:
+"concurrent resolutions coalesce onto one status request" (one fetch, both
+callers agree). Probe: the join deleted fails it.
+
+**4. Generation counter.** `clearPasswordFactorMemo()` bumps a generation the
+resolver captures before its await and re-checks before the memo write, so a
+clear landing mid-flight is not undone by the resolving fetch. Test: "a
+clear landing mid-resolution is not undone by the resolving fetch". Probe:
+the generation check deleted fails it.
+
+**5. The memo branches are live in both orchestrator suites.** Both alpinejs
+auth stubs now carry the username their LIGHT ctx uses (with an in-suite
+comment saying why), and each suite pins "the 401 retry gate reuses the
+memoized factor instead of a second status read" (exactly one
+`fetchEmailStatus` across both gates). Probes: the username removed from
+either stub fails that suite's memo test.
+
+### Acceptance criteria, re-verified
+
+1. One resolver; the settings, admin, paper-detail, and both orchestrator
+   surfaces consume it (directly or by passing no factor hint at all).
+2. A state-B user with a failed status fetch still gets the password prompt
+   on change-email, never a redirect: the escape hatch engages only after
+   the backend 401s the typed password, which a correct password never
+   triggers.
+3. `set_password` stays ORCID-only and still never consults the status
+   (pre-existing tests remain green).
+4. The memo stays username-keyed and non-inheritable, and is now also
+   immune to the clear/write race.
+
+### Verification
+
+Full frontend unit suite green: 78 files, 1699 tests; `npm run build` clean;
+pre-commit anchor gate and zone audit passed on all commits. E2E test-mode
+batch over these surfaces (`settings.spec`, `settings-orcid-factor`,
+`authorship-consent-actions`, `non-consent-fresh-auth`): 10 passed /
+1 failed, identical to the prior baseline; the failure is the documented
+stale consent-op cache-shape assertion, out of scope. Dev routing restored.
+
+For the architect's § 6.4 doc pass the hold reserved: the code now also
+carries the assumed-401 ORCID fallback, which that pass may want to state
+alongside the unknown-status fallback direction.
