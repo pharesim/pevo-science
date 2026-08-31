@@ -110,11 +110,17 @@ What landed instead is a process-local `spentConsentOps` ledger in
   report, so single-use no longer rests on a command that may never flush.
 - Ledger entries retire on any of three events: a confirmed compensating
   delete, a later presentation's `GETDEL` proving the canonical copy gone (the
-  refused replay cleans up after itself), or the proof's own expiry.
+  refused replay cleans up after itself), or the ledger entry's OWN deadline.
+  (Corrected in round 2: that deadline is burn time plus a full TTL, and is
+  deliberately later than the proof's own expiry. An entry that retires while
+  the key it guards is still readable is the one shape that reopens the replay,
+  so the ledger has to outlive the canonical copy rather than match it.)
 - The existing `memStore` cleaner also drains still-pending compensating
-  deletes once Redis is reachable again. That is not what closes the hole (the
-  ledger is), but it stops an orphaned canonical key from outliving the
-  process-local entry guarding it.
+  deletes. That is not what closes the hole (the ledger is), but it stops an
+  orphaned canonical key from outliving the process-local entry guarding it.
+  (Corrected in round 2: the drain now also runs on the Redis client's next
+  `ready` transition, so recovery no longer waits for a cleanup tick. See the
+  residual paragraph below for which arm each trigger actually covers.)
 
 The compensating delete is KEPT and its client-existence guard is KEPT. Gating
 it on `isRedisAvailable()` would still be wrong for the reason the convention
@@ -126,25 +132,60 @@ added to the issue or read paths, and the ledger is only ever written at burn
 time. A blip between issue and consume still resolves out of `memStore` and
 returns `valid`. The new test asserts this directly on the first consume.
 
-**Residual, stated plainly:** the ledger is process-local, so a backend restart
-between the burn and Redis returning drops it. That window is not closable
-without a durable store, and a restart also drops `memStore`, which is already
-the point past which Redis is the sole arbiter. The drain shortens the window
-to "until Redis is next reachable" rather than "the rest of the TTL". Flagged
-here rather than fixed because a Postgres-backed burn ledger is a schema change
-and a new hard dependency on the consent-op consume path, which is an architect
-call, not a backend one.
+**Residual, stated plainly** (rewritten in round 2 so it matches the code rather
+than the intent): the ledger is process-local, so a backend restart before the
+compensating delete has actually landed drops it, and the orphaned canonical key
+is then readable for the rest of its TTL with nothing left to refuse it. Two
+triggers can land that delete, and which one applies depends on how the entry
+came to be written:
+
+- Entry written while the client was off `ready` and going to re-enter it. That
+  is the mid-flap case AND a connection that dropped mid-`GETDEL`: ioredis sets
+  `close`/`reconnecting` the moment the socket closes, which is strictly before
+  any rejection the drop can produce, so the arming that follows that throw is in
+  place for the recovery `ready`. The unsafe window is "until the client is next
+  ready", not "until a tick coincides with a ready client".
+- Entry written by a `commandTimeout` against a connected-but-stalled server.
+  Here the socket stays open, the client never leaves `ready`, and no transition
+  follows, so the 60s cleanup tick is the SOLE sweeper and the unsafe window is
+  up to a full interval. This is also where an operator is most likely to bounce
+  the backend, since a stalled Redis presents as a hanging API.
+  (This split was itself wrong when first written in round 2 — the mid-command
+  drop was filed under the tick-only arm — and was corrected after probing the
+  behaviour against the installed ioredis. The code was always right; only the
+  recorded residual was too pessimistic.)
+
+Also newly accepted in round 2: a ledger entry now deliberately outlives the
+canonical key it guards by up to a TTL, so `spentConsentOps` holds each spent
+proof for a full 5 minutes rather than for the proof's remaining life. Growth is
+bounded the same way it was before — one entry per consent-op burn that could not
+confirm its delete, retired by the drain's expiry arm or by a later presentation
+— and each entry costs an attacker a full argon2 verify or an ORCID round-trip to
+create.
+
+The process-local part is not closable without a durable store, and a restart
+also drops `memStore`, which is already the point past which Redis is the sole
+arbiter. Flagged here rather than fixed because a Postgres-backed burn ledger is
+a schema change and a new hard dependency on the consent-op consume path, which
+is an architect call, not a backend one.
 
 **AC3 test:** `backend/tests/lib/fresh-auth-consent-op-burn-offline-queue.test.ts`
 drives the real rejection. It stands a local TCP proxy between a
-production-configured ioredis client (`maxRetriesPerRequest: 3`,
-`commandTimeout`, the imported `redisRetryStrategy`) and the real Redis, then
-severs it. `isRedisAvailable()` is not stubbed to a toggle: it is production's
-own `status === 'ready'` predicate applied to a client whose status is driven by
-a real socket, and the queue rejection is ioredis's own
+production-configured ioredis client and the real Redis, then severs it.
+`isRedisAvailable()` is not stubbed to a toggle: it is production's own
+`status === 'ready'` predicate applied to a client whose status is driven by a
+real socket, and the queue rejection is ioredis's own
 `MaxRetriesPerRequestError` (confirmed in the run log). The test pins that the
-canonical key is STILL PRESENT after recovery, which is the evidence that the
+canonical key is still present after the burn, which is the evidence that the
 queued delete really was flushed unsent, and that the replay is refused anyway.
+
+Two claims in this paragraph were wrong as originally written and are corrected
+in round 2. The client's `maxRetriesPerRequest` and `commandTimeout` were
+hand-copied literals, not imported as claimed; they are now genuinely imported
+from `redis.ts`. And the key-presence evidence was taken AFTER proxy recovery,
+which the round-2 reconnect drain would sweep; it is now taken through a separate
+direct-to-Redis observation client while the proxied client is still severed,
+which is both earlier and drain-independent.
 
 Mutation-confirmed against the committed baseline: removing the ledger gate in
 the burn, and separately removing the ledger write, each make the replay return
@@ -338,3 +379,145 @@ ledger, and update that header so it claims the role it actually plays now.
 
 Scope item 4 (the convention entry) remains with the architect and does not block the
 implementer. Handled separately from this hold.
+
+---
+
+## Backend re-review signal (2026-08-31, commits 557e5cad + 026b92bd)
+
+Round-2 fixes for the five held items are landed. `557e5cad` is the fix for the
+hold block; `026b92bd` is the fix for what my own verification pass found wrong
+in `557e5cad`. Symbols and test titles are named below so the diff can be
+grepped rather than the prose trusted.
+
+**Item 1 — ledger retires before the canonical key.**
+`burnConsentOpEntry` now stamps `spentConsentOps.set(token, Date.now() +
+FRESH_AUTH_TTL_SECONDS * 1000)`; the `memRecord` local is gone and the comment
+above the hoisted read now cites the reason that survives (`drainSpentConsentOps`
+can mutate the map across an await; `inFlightConsumes` does not serialize against
+it). The "can only over-guard, never under-guard" phrasing is gone; the
+replacement states the bound and names two residuals rather than claiming a
+proof — ioredis may re-execute an issuing `SET` whose promise `commandTimeout`
+already rejected (`autoResendUnfulfilledCommands` defaults true), and the ledger
+deadline runs on the app clock while the key's `EX` runs on the Redis server's.
+`drainSpentConsentOps`'s expiry arm issues the compensating delete before an
+unconditional drop. Boundary test: `refuses the replay even though the
+compensating delete never landed, and holds the proof spent past its own expiry`.
+
+**Item 2 — drain only ran on the 60s tick.** `armDrainOnReady` /
+`onRedisReadyDrain` / `drainArmedClients` added, armed from the ledger-write
+branch. Test: `retires the ledger entry and sweeps the orphan on the next ready
+transition, with no replay attempted`.
+
+**Item 3 — the test's anti-drift claim.** `REDIS_COMMAND_TIMEOUT_MS` and
+`REDIS_MAX_RETRIES_PER_REQUEST` are exported from `redis.ts` and imported by the
+suite. The claim is also narrowed rather than merely made true: `sendCommand`
+starts the command timeout before queueing, so a large enough retry budget flips
+the scenario from an offline-queue rejection to a plain timeout with every
+assertion still green, and the header now says the imports keep the numbers
+tracking production but the assertions are on outcomes.
+
+**Item 4 — docblock breadth.** Broadened in `burnConsentOpEntry`, and at the two
+further sites carrying the same too-narrow framing: the `spentConsentOps`
+docblock's "is not guaranteed to land" paragraph and the `alreadySpent` inline
+comment.
+
+**Item 5 — the sibling suite's stated mutation-kill.** Both sibling suites gained
+a canonical-key-absence assertion taken before any replay:
+`fresh-auth-redis-unavailable-burn.test.ts` (`removes the canonical key inside
+the window where the burn saw Redis as unavailable`) and, because the sibling's
+carve-out clause (c) points at it, `fresh-auth.test.ts`'s `a burn whose Redis leg
+fails still clears the canonical entry` case, whose own "this test is its
+mutation-kill" comment was void for the same reason.
+
+### Deliberate deviations from the hold's literal wording
+
+1. **Persistent `client.on('ready')`, not a one-shot.** ioredis's `closeHandler`
+   schedules `connect()` on the SAME instance, so client identity survives every
+   flap and `ready` is emitted again on each recovery; a `once` listener would
+   cover the first flap of the process's life and silently stop covering later
+   ones. Idempotent arming is per-instance via a `WeakSet`, which is what the
+   hold's "module flag so listeners cannot accumulate" is for.
+2. **No test-only gate on the ready-drain.** An earlier shape gated it on the
+   cleanup interval so the ledger test could stay deterministic. That is mutually
+   exclusive with testing the drain end-to-end, and it couples a security-relevant
+   sweep to the memStore sweeper's lifecycle. Instead the offline-queue suite
+   never produces a `ready` transition on the client `getRedis()` returns: it
+   recovers by swapping `state.client` to a second, already-ready direct-to-Redis
+   client. Restarting the proxy would fire the drain and move the replay's refusal
+   from the ledger to the read path, voiding the mutation-kill.
+
+### Changed beyond the hold, and why
+
+`isConsentOpSpent` no longer prunes on read; it is now `spentConsentOps.has`.
+Item 1 named both deadline-retirement sites but prescribed a sweep only for the
+drain. The read-path prune is the site a REPLAY traverses, and it is the one that
+cannot issue a sweep — it runs two statements ahead of the same call's `GETDEL`,
+so a fire-and-forget delete there would race the burn it is deciding, while
+dropping the entry bare leaves that `GETDEL` free to find a key the deadline said
+had lapsed and report it as a win. Retirement therefore belongs entirely to the
+drain, which sweeps. Answering "spent" past the deadline only ever refuses a
+proof whose own TTL expired a full interval earlier. If you would rather have the
+prune back, the fix is a smaller diff than the one that removed it.
+
+### Self-verification, and what it caught
+
+`557e5cad` was reviewed by four adversarial lenses plus per-finding adjudication
+before this signal was written, and `026b92bd` is the result. Two statements
+`557e5cad` had just written were false, which is the same class the hold block
+exists to close:
+
+- The drain docblock filed a mid-command drop under the tick-only arm. Probed
+  against the installed ioredis with the production options: a drop sets
+  `close`/`reconnecting` before any rejection it can produce, so the ready arm
+  does cover it. Only a `commandTimeout` against a connected-but-stalled server
+  is tick-only. Corrected in the docblock and in the Residual paragraph above.
+- `onRedisReadyDrain`'s `try`/`catch` was justified as protecting another
+  subscriber's `ready` work. Unreachable — `redis.ts` registers its handler at
+  construction, so this one is always last. The real consequence is worse and is
+  now the stated one: status events are emitted from a `process.nextTick`, so an
+  escaping throw is an uncaught exception and `index.ts` exits on those.
+
+Three drain arms had no test at all and now do, each mutation-confirmed: the
+expiry arm's sweep (`sweeps the canonical key when it drops an entry past its
+deadline`), the periodic tick's call into the drain (`retires an expired entry
+from the periodic cleanup tick`), and the `!client` arm, where a LIVE entry must
+survive a drain pass that finds Redis unreachable — the arm the tick takes for
+the whole of an outage, and the one where dropping an entry would retire the
+refusal while the orphan is still readable. That last one is an added assertion
+inside `drops a ledger entry past its deadline even with no reachable client`.
+`_setSpentConsentOpForTests` was added to make the first two reachable: the
+production writer stamps a full TTL out, so no burn-driven test can reach them.
+
+### Evidence
+
+Eleven mutation probes against the committed baseline, each killing exactly the
+intended test: the ledger stamp reverted to the proof's own expiry; the
+`armDrainOnReady` call removed; the expiry arm's drop chained onto its delete;
+the expiry arm's sweep removed; a live entry dropped in the `!client` arm; the
+tick's `drainSpentConsentOps(now)` call removed; the compensating delete removed
+(kills BOTH sibling suites); the compensating delete re-gated on
+`isRedisAvailable()` (kills ONLY the sibling suite, which is what makes its
+rewritten uniqueness claim true); and the `alreadySpent` gate removed.
+
+Green: `npm run typecheck` (src + tests), `npm run lint` (the one pre-existing
+`author-supersession.ts` warning), and 518 tests across the 30 files that import
+`lib/fresh-auth` or `redisStubFactory`.
+
+### Known gaps, stated rather than hidden
+
+- `redisStubFactory` in `tests/support/argon2-error-mocks.ts` had to gain both new
+  constants: its `typeof import('../../src/redis.js')` annotation makes any new
+  export of `redis.ts` a `typecheck:tests` break across its consumers. Behaviour
+  unchanged; those stubs return a null client and never build one.
+- The offline-queue suite's key-presence assertions remain exposed to a sibling
+  worker's per-file `${appTag}:*` flush, which is pre-existing and inherent at
+  `maxWorkers: 2`. Mitigated where it matters: the drain assertions are on the
+  ledger's size, which no other file can touch, and the orphan is observed
+  through a direct client during the outage rather than after recovery.
+
+### Still architect-owned
+
+Scope item 4, the convention entry under `agents/docs/solutions/`, is untouched
+and unchanged from the `[TODO Architect]` block above. The
+`backend/src/lib/ipfs-upload-token.ts` divergence is likewise untouched, per the
+hold's "Noted, not held".
