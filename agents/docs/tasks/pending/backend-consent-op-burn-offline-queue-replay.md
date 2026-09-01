@@ -1191,3 +1191,131 @@ retained-then-retired test, the `redis === null` drain leg undriven, the
 follow-ups from this round separately. `backend/src/lib/ipfs-upload-token.ts`
 remains the one place in the tree asserting the offline-queue rationale this
 task disproved, unchanged, per the standing "noted, not held".
+
+---
+
+## Architect re-review (2026-09-01, round 6) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on the round-5 diff (`4195c8f7`), six lenses plus an
+independent per-finding validation pass. No cross-model peer was available on this
+host, so the adversarial lens ran in-process.
+
+**All three round-5 hold items verified genuinely landed**, checked in the source
+rather than taken from the signal, independently by three lenses:
+
+- **Item 1.** The `fresh_auth.redis_compensating_del_failed` warning names the two
+  real release events and nothing else.
+- **Item 2.** The retry-ceiling figure is settled at both previously-missed sites.
+- **Item 3.** The drain docblock now carries the tick test's qualifier.
+
+**Every ioredis claim in the new text is correct**, and for the second round running
+it was re-derived independently rather than copied: four lenses read
+`built/redis/event_handler.js` in the installed 5.10.1 and confirmed the
+`retryAttempts % (maxRetriesPerRequest + 1) === 0` flush condition,
+`REDIS_MAX_RETRIES_PER_REQUEST = 3`, the 200/400/600 curve flushing on the fourth
+close a little over a second in, `getdel(...) !== null` as the arbitrator, and the
+sibling suite's delete taking `sendCommand`'s writable branch to a live socket. The
+project-conventions lens returned clean on all four of its checks, including the
+anchor gate over every added line, the carve-out clauses, and the commit's staging.
+**AC1, AC2 and AC3 remain met; AC4 remains met.**
+
+Three items, and they are one root cause rather than three. The sweep matched the
+retired phrase as a literal token, so it closed every occurrence a grep can see and
+missed every shape it cannot: a semantic restatement inside a paragraph the same
+commit re-emitted, a vestigial stub whose comment still asserts the old model, and
+an occurrence split by a comment wrap. Item 1 below is the only one with a
+consequence beyond prose; settle it first, because its fix determines what item 3's
+comment should say.
+
+### 1. Two race tests stub the wrong Redis command, so neither drives the tier it claims
+
+`fresh-auth.test.ts`'s `memStore fallback` dual-consume variant and the
+`cross-helper` variant below it both stub `redis.get` and `redis.del`, and both
+carry a comment saying this leaves the in-memory tier as the only arbiter. The burn
+arbitrates on `redis.getdel`, which neither test stubs. So `redisLegRan` is true on
+every run, the `!redisLegRan` branch that would call the stubbed `del` is
+unreachable, and the win is settled by real Redis exactly as in the Redis-up variant
+above them. Both are `skipIf(!redisAvailable)`, so the only environment they ever run
+in is the one where this holds.
+
+That is not merely a stale comment. The comment on the cross-helper variant states
+why it is Redis-stubbed rather than Redis-up: the mutation kill "requires forcing
+both helpers onto the in-memory tier". With `GETDEL` arbitrating, dropping the
+`inFlightConsumes` lock still leaves exactly one winner, so the mutant these two
+tests exist to kill survives both of them. The suite header's own summary of the
+consent-op concurrency coverage — Redis stubbed down, both callers reaching the
+in-memory tier, the lock closing the race — is false for the runs that actually
+happen, and that header sentence sits one line from text this commit edited.
+
+Fix: spy on `redis.getdel` in both tests alongside the existing `get` stub, restoring
+it in the same `finally`, so the burn's Redis leg genuinely reports nothing removed;
+then re-describe `del` as the compensating delete rather than as the Redis leg of the
+burn. Confirm with a mutation probe that each test now fails with `inFlightConsumes`
+removed — the probe is the point of the fix, not a formality, since the current
+tests pass under exactly that mutation. Per the standing convention, the probe needs
+a committed baseline for the file before every `git checkout --` restore.
+
+### 2. The burn docblock states a one-event retirement contract its own body contradicts
+
+`burnConsentOpEntry`'s docblock says the burn "clears the record only once the delete
+is confirmed". The body clears the entry on a second event as well: the `alreadySpent`
+branch retires it whenever a later presentation's own `GETDEL` resolves. The
+`spentConsentOps` docblock, the drain docblock, and the failure log this very commit
+rewrote all state the two-event model; this sentence is now the one place stating it
+as one.
+
+The line is in this commit's own added text — the paragraph was re-emitted when the
+retry-ceiling figure was corrected — which makes it the mirror image of the round-5
+"SOLE sweeper" item: that one stated the retirement contract too strongly, this one
+states it too narrowly, and both were left standing by a rewrite that touched the
+lines around them. The hazard is the usual one: a future author who trusts this
+sentence reads the `alreadySpent` early release as a bug.
+
+Fix: adopt the two-event form already used at `spentConsentOps`.
+
+### 3. A retired "delete-reply count" survives a comment wrap
+
+The signal states that a grep for "reply count" across `backend/src` and
+`backend/tests` is now empty. The grep is empty; the claim it is offered for is not.
+A comment wrap in `fresh-auth.test.ts` splits the phrase across two lines, so a sixth
+site survived the five-site sweep. A wrap-tolerant pass that collapses newline and
+comment-prefix runs before matching finds it immediately.
+
+It matters beyond tidiness because the surviving sentence is the design justification
+for the test in item 1, which is itself wrong — the same two lines carry both defects.
+
+Fix: rewrite the sentence to say a non-nil `GETDEL` reply, and re-verify the sweep
+wrap-tolerantly rather than by single-line grep. A completeness claim in the next
+signal should name the technique it used, not just the phrase it searched for.
+
+### Noted, not held
+
+- **The recurring lesson of this round is about the sweep technique, not the code.**
+  Three of three findings come from a symbol-level pass over a vocabulary-level
+  problem. Whether the same-day learnings entry on this exact subject should absorb
+  the wrap-tolerant and semantic-restatement steps is architect-owned and was
+  deliberately deferred rather than folded into this hold.
+- The drain docblock's "the `DEL` resolving is the one event that proves the
+  canonical key unreadable" survives on its "its delete" scoping. Once item 2 lands
+  it is the last over-readable sentence in the file. Not held; worth not making
+  worse.
+- The operator log names both release events but not the restart that voids them,
+  since the hold is process-local. Accurate as landed, and adding the clause runs
+  against the project's logging-minimalism stance. Dismissed deliberately.
+- Nothing pins agreement between the retirement contract as prose and as
+  implemented; both release events are individually covered, which is exactly why
+  item 2's drift produced no failing test. The reviewers proposed a standing canary
+  over the fresh-auth surface that matches after comment wraps are collapsed. Not
+  held here.
+- Every corrected figure remains unpinned prose. No test asserts the retry-ceiling
+  arithmetic, the log wording, or the retirement contract.
+- The round-5 coverage gaps are unchanged and still not held: no server-replied
+  error rejection anywhere, the stalled-server entry planted rather than produced,
+  no retained-then-retired test, the `redis === null` drain leg undriven.
+- `backend/src/lib/ipfs-upload-token.ts` is unchanged and still carries the
+  disproved rationale, per its own pending task. Confirmed out of scope again.
+
+### Architect-owned
+
+Nothing outstanding. AC4's convention entry stays correct as of the round-5
+correction; the possible refresh noted above is a new question, not a reopening.
