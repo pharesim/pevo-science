@@ -49,6 +49,7 @@ import {
   releaseBindingLock,
   HAF_INDEXING_LAG_CEILING_SECONDS,
 } from '../lib/orcid-binding.js';
+import { custodyClaimFor } from '../lib/custody-claim.js';
 
 // Per-route Zod body schema for POST /api/orcid/callback.
 // Narrows req.body to typed fields so
@@ -697,9 +698,11 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
   // set. Annotate the column as `string | null` per the wrapping-
   // primitive convention; this honest-types the column's nullability
   // as belt-and-suspenders if the filter ever drops, not a defense
-  // against a currently-reachable null row.
-  const result = await pool.query<{ username: string; custody: string | null }>(
-    `SELECT username, custody FROM accounts WHERE orcid = $1 AND username IS NOT NULL LIMIT 1`,
+  // against a currently-reachable null row. `upgraded_at` rides along
+  // because the claim derivation below reads the epoch, not just the
+  // column.
+  const result = await pool.query<{ username: string; custody: string | null; upgraded_at: string | null }>(
+    `SELECT username, custody, upgraded_at FROM accounts WHERE orcid = $1 AND username IS NOT NULL LIMIT 1`,
     [orcidId],
   );
 
@@ -717,15 +720,15 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
   }
 
   const account = result.rows[0];
-  // Mint the JWT with the actual DB value rather than coercing to
-  // `'light'` — the row matched by this query is finalized, so
-  // `account.custody` is `'light'` or `'self'` (states A/B/C/D per
-  // ARCHITECTURE.md § 6.1). The `null` branch in the column type is
-  // unreachable here; the state-C passwordless shape (password_hash
-  // NULL) is defended at /upgrade per the § 6.4 re-auth contract,
-  // not by this annotation.
+  // The custody claim is derived by the shared `custodyClaimFor`, the same
+  // derivation the password login and the recovery reissues use, so an
+  // ORCID login and a password login cannot mint different claims for one
+  // row. The row matched by this query is finalized (states A/B/C/D per
+  // ARCHITECTURE.md § 6.1); the state-C passwordless shape (password_hash
+  // NULL) is defended at /upgrade per the § 6.4 re-auth contract, not here.
+  const custody = custodyClaimFor(account);
   const token = jwt.sign(
-    { sub: account.username, custody: account.custody },
+    { sub: account.username, custody },
     config.sessionSecret,
     { expiresIn: '24h' },
   );
@@ -735,7 +738,7 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
     mode: 'login',
     token,
     expires_at: expiresAt,
-    custody: account.custody,
+    custody,
     username: account.username,
   });
 }

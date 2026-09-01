@@ -1493,24 +1493,39 @@ router.post('/upgrade', verifyHiveSignature, validateUpgradeBodyShape, upgradeLi
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid upgrade proof');
     }
 
-    // Overwrite and NULL encrypted keys, set upgraded_at, and stamp the
-    // session-revocation epoch in the same statement. Upgrade rotates the
-    // account's entire authentication posture: the chain keys changed, the
-    // server's signing custody ends, and every credential minted under the
-    // light-custody model predates that change. Credentials issued before the
-    // rotation must not keep working after it, which is the same posture the
-    // password-reset and recovery writers take — bearer JWTs die via this
-    // epoch (the middleware rejects tokens minted at or before it), and any
-    // open session-proof window dies via the same epoch on its next consume
-    // plus the storage sweep below. The epoch is computed in Node rather than
-    // SQL NOW() so the exact epoch-ms can ride in the reissued token's
-    // `reissuedAt` claim, which is how the middleware spares the one JWT this
-    // very response hands back from the same-second revocation.
+    // Overwrite and NULL encrypted keys, flip custody to 'self', set
+    // upgraded_at, and stamp the session-revocation epoch in the same
+    // statement. Upgrade rotates the account's entire authentication posture:
+    // the chain keys changed, the server's signing custody ends, and every
+    // credential minted under the light-custody model predates that change.
+    // Credentials issued before the rotation must not keep working after it,
+    // which is the same posture the password-reset and recovery writers take
+    // — bearer JWTs die via this epoch (the middleware rejects tokens minted
+    // at or before it), and any open session-proof window dies via the same
+    // epoch on its next consume plus the storage sweep below. The epoch is
+    // computed in Node rather than SQL NOW() so the exact epoch-ms can ride
+    // in the reissued token's `reissuedAt` claim, which is how the middleware
+    // spares the one JWT this very response hands back from the same-second
+    // revocation.
+    //
+    // `custody = 'self'` lands in the same statement as `upgraded_at` so the
+    // row moves to § 6.1 state D atomically, mirroring the signup-verify
+    // `/link` finalize (the only other writer of `upgraded_at`). The schema
+    // CHECK on `accounts` refuses `upgraded_at` without `custody = 'self'`,
+    // so a future edit that drops the column write from this SET list fails
+    // loud here rather than leaving a row the login mints would read as a
+    // stale light account.
+    //
+    // `updated_at` is deliberately NOT bumped: it is the signup-finalize
+    // recency marker that bounds the `/link` stuck-recovery lookup, and that
+    // lookup matches `custody = 'self'` rows. Bumping it here would re-open
+    // the recovery window for every freshly upgraded account.
     const invalidatedAt = new Date();
     await pool.query(
       `UPDATE accounts
        SET posting_key_enc = NULL, iv_posting = NULL,
            memo_key_enc = NULL, iv_memo = NULL,
+           custody = 'self',
            upgraded_at = NOW(),
            sessions_invalidated_at = $2
        WHERE username = $1`,

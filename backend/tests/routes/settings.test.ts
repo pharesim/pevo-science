@@ -711,8 +711,8 @@ describe('settings.email_delete.light_account_login_loss log shape', () => {
     'fires warn branch on light-account DELETE /email with route + username',
     async () => {
       // Drive: seed a light-account row (custody='light', upgraded_at=NULL)
-      // so the SELECT returns rows[0] matching the warn-branch condition at
-      // settings.ts:315 (`row.custody === 'light' && !row.upgraded_at`).
+      // so the SELECT returns rows[0] matching the warn-branch condition in
+      // the DELETE /email handler (`custodyClaimFor(row) === 'light'`).
       // The transaction proceeds normally after the warn fires; we assert the
       // warn shape, then the row is deleted by the route's transaction (so no
       // explicit cleanup needed beyond the file-level afterAll).

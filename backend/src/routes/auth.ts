@@ -18,6 +18,7 @@ import { runWithArgon2Slot, ShuttingDownError, isArgonSemaphoreError } from '../
 import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js';
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { invalidateSessionFreshAuthTokens } from '../lib/fresh-auth.js';
+import { custodyClaimFor } from '../lib/custody-claim.js';
 import {
   hashEmailForLogs,
   maskEmail,
@@ -858,7 +859,9 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
       return sendError(res, 403, 'ACCOUNT_LOCKED', 'Account temporarily locked due to too many failed attempts. Reset your password or try again later.');
     }
 
-    const custody = account.upgraded_at ? 'self' : (account.custody || 'light');
+    // Shared derivation with the ORCID login and the recovery reissues; see
+    // `custodyClaimFor` for why the epoch is read ahead of the column.
+    const custody = custodyClaimFor(account);
 
     const token = jwt.sign(
       { sub: account.username, custody },

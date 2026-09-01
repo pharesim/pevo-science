@@ -18,6 +18,7 @@ import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { createSmtpTransporter } from '../lib/smtp.js';
 import { maskEmail, sha256HexDigest } from '../lib/log-pii.js';
 import { invalidateSessionFreshAuthTokens } from '../lib/fresh-auth.js';
+import { custodyClaimFor } from '../lib/custody-claim.js';
 import { burnSentinel, SESSION_EXPIRY, SESSION_EXPIRY_MS } from './auth.js';
 
 const router = Router();
@@ -419,7 +420,7 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
         [account.username, 'account_recovery'],
       ).catch(() => {});
 
-      const custody = account.upgraded_at ? 'self' : (account.custody || 'light');
+      const custody = custodyClaimFor(account);
       const token = jwt.sign(
         { sub: account.username, custody, reissuedAt: invalidatedAt.getTime() },
         config.sessionSecret,
@@ -582,7 +583,7 @@ router.post('/recover/verify', recoverLimiter, async (req: Request, res: Respons
     // `invalidatedAt` const, so this await cannot desynchronize the round-trip.
     await invalidateSessionFreshAuthTokens(account.username);
 
-    const custody = account.upgraded_at ? 'self' : (account.custody || 'light');
+    const custody = custodyClaimFor(account);
     const sessionJwt = jwt.sign(
       { sub: account.username, custody, reissuedAt: invalidatedAt.getTime() },
       config.sessionSecret,

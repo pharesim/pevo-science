@@ -946,6 +946,41 @@ describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
     },
   );
 
+  // The login mint derives its custody claim through the shared derivation
+  // (`custodyClaimFor`), which reads the `upgraded_at` epoch ahead of the
+  // `custody` column. The mocked pool is what makes this pinnable: the schema
+  // CHECK refuses a real row whose column lags its epoch, so the real-Postgres
+  // parity suite can only show both mints agreeing on well-formed rows. Feeding
+  // the mint a row where the two columns answer differently is the one probe
+  // that fails if this handler ever goes back to copying the column into the
+  // claim, and it is exactly the row shape the pre-backfill upgrade path used
+  // to leave behind.
+  it(
+    'login mode mints the claim from the upgrade epoch, not the raw custody column',
+    async () => {
+      const orcidId = '0000-0001-9002-0010';
+      installOrcidFetchStub({ orcid: orcidId });
+      appQueryMock.mockResolvedValue({
+        rows: [{ username: 'alice', custody: 'light', upgraded_at: new Date('2026-01-01T00:00:00Z') }],
+      });
+      const state = await startUnauthed('login');
+      const res = await request(app)
+        .post('/api/orcid/callback')
+        .send({ code: 'fake', state });
+      expect(res.status).toBe(200);
+      expect(res.body.data.custody).toBe('self');
+      const claims = jwt.verify(res.body.data.token, config.sessionSecret) as { custody?: unknown };
+      expect(claims.custody).toBe('self');
+      // The row the mint reads must carry the epoch for the derivation to see
+      // it. A SELECT that drops `upgraded_at` would make this handler blind to
+      // the upgrade again, so the query shape is pinned alongside the claim.
+      const loginSelect = appQueryMock.mock.calls
+        .map((c) => String(c[0]))
+        .find((sql) => /FROM accounts WHERE orcid = \$1/.test(sql));
+      expect(loginSelect).toMatch(/\bupgraded_at\b/);
+    },
+  );
+
   // Item 5 (cache hit): findAccreditedAccountWithOrcid consults the recent-bind
   // cache BEFORE HAF. A cached binding to a different account must trigger
   // 409 ORCID_ALREADY_LINKED without any HAF query running at all. This is the

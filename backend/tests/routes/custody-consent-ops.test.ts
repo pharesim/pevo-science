@@ -324,7 +324,15 @@ describe.skipIf(!dbReachable)('Round-3 BACKEND-COAUTHOR-TRUST-MODEL — custody 
 
     it('already-upgraded account → 403 FORBIDDEN', async () => {
       const pool = getAppPool()!;
-      await pool.query('UPDATE accounts SET upgraded_at = NOW() WHERE username = $1', [ALICE]);
+      // Move the row to § 6.1 state D the way the upgrade route does: the
+      // column and the epoch flip together (the schema CHECK refuses an epoch
+      // on a light row). The bearer below still carries the pre-upgrade
+      // `custody: 'light'` claim, which is the stale-token shape this 403 is
+      // about; the refusal comes from the row's `upgraded_at`, not the claim.
+      await pool.query(
+        "UPDATE accounts SET custody = 'self', upgraded_at = NOW() WHERE username = $1",
+        [ALICE],
+      );
       const res = await request(app)
         .post('/api/custody/fresh-auth')
         .set('Authorization', bearerFor(ALICE))

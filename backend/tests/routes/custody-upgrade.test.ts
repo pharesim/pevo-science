@@ -278,10 +278,17 @@ describe.skipIf(!dbReachable)(
       // here, ARCHITECTURE.md changes first and this line goes with it.
       expectNoSessionProof(res, 'custody-upgrade response');
 
-      const { rows } = await pool.query<{ upgraded_at: Date | null; posting_key_enc: Buffer | null; iv_posting: Buffer | null; memo_key_enc: Buffer | null; iv_memo: Buffer | null }>(
-        'SELECT upgraded_at, posting_key_enc, iv_posting, memo_key_enc, iv_memo FROM accounts WHERE username = $1',
+      // Post-upgrade row shape is § 6.1 state D: the custody column flips to
+      // 'self' in the same UPDATE that stamps the epoch and nulls the keys.
+      // `(custody='light', upgraded_at SET)` is not an enumerated state; the
+      // custody column is what a raw-column reader (the ORCID login mint
+      // reads it through the shared claim derivation) would otherwise
+      // re-mint as a stale 'light' claim.
+      const { rows } = await pool.query<{ custody: string | null; upgraded_at: Date | null; posting_key_enc: Buffer | null; iv_posting: Buffer | null; memo_key_enc: Buffer | null; iv_memo: Buffer | null }>(
+        'SELECT custody, upgraded_at, posting_key_enc, iv_posting, memo_key_enc, iv_memo FROM accounts WHERE username = $1',
         [STATE_A_USER],
       );
+      expect(rows[0].custody).toBe('self');
       expect(rows[0].upgraded_at).not.toBeNull();
       expect(rows[0].posting_key_enc).toBeNull();
       expect(rows[0].iv_posting).toBeNull();
@@ -303,10 +310,11 @@ describe.skipIf(!dbReachable)(
       expect(res.body.data?.custody).toBe('self');
       expectNoSessionProof(res, 'custody-upgrade response');
 
-      const { rows } = await pool.query<{ upgraded_at: Date | null }>(
-        'SELECT upgraded_at FROM accounts WHERE username = $1',
+      const { rows } = await pool.query<{ custody: string | null; upgraded_at: Date | null }>(
+        'SELECT custody, upgraded_at FROM accounts WHERE username = $1',
         [STATE_B_USER],
       );
+      expect(rows[0].custody).toBe('self');
       expect(rows[0].upgraded_at).not.toBeNull();
     });
 
@@ -324,10 +332,11 @@ describe.skipIf(!dbReachable)(
       expect(res.body.data?.custody).toBe('self');
       expectNoSessionProof(res, 'custody-upgrade response');
 
-      const { rows } = await pool.query<{ upgraded_at: Date | null; password_hash: string | null }>(
-        'SELECT upgraded_at, password_hash FROM accounts WHERE username = $1',
+      const { rows } = await pool.query<{ custody: string | null; upgraded_at: Date | null; password_hash: string | null }>(
+        'SELECT custody, upgraded_at, password_hash FROM accounts WHERE username = $1',
         [STATE_C_USER],
       );
+      expect(rows[0].custody).toBe('self');
       expect(rows[0].upgraded_at).not.toBeNull();
       // password_hash is preserved (still NULL — § 6.2: "preserved").
       expect(rows[0].password_hash).toBeNull();

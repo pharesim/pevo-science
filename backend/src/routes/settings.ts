@@ -24,6 +24,7 @@ import {
   type FreshAuthMechanism,
   type FreshAuthVerifyFailureReason,
 } from '../lib/fresh-auth.js';
+import { custodyClaimFor } from '../lib/custody-claim.js';
 
 const readLimiter = rateLimit({ name: 'settings-read', windowMs: 60_000, max: 30, keyFn: byIp });
 const writeLimiter = rateLimit({ name: 'settings-write', windowMs: 60_000, max: 10, keyFn: byIp });
@@ -86,7 +87,7 @@ router.get('/email', readLimiter, verifyHiveSignature, async (req: Request, res:
       hasEmail: row.email !== null,
       email: row.email ? maskEmail(row.email) : null,
       verified: row.verify_token === null || row.verify_token.startsWith('confirmed:'),
-      custody: row.upgraded_at ? 'self' : (row.custody || 'self'),
+      custody: custodyClaimFor(row),
       pendingChange: row.pending_email !== null,
       hasPassword: row.password_hash !== null,
     });
@@ -651,7 +652,7 @@ router.delete('/email', writeLimiter, verifyHiveSignature, async (req: Request, 
     }
 
     // Log if light account user will lose login access
-    if (row.custody === 'light' && !row.upgraded_at) {
+    if (custodyClaimFor(row) === 'light') {
       logger.warn(
         {
           event: 'settings.email_delete.light_account_login_loss',
