@@ -891,11 +891,14 @@ const memStore = new Map<string, { entry: StoredEntry; expiresAt: number }>();
 const inFlightConsumes = new Set<string>();
 
 /** Consent-op proofs whose burn was won by the in-memory tier while the
- *  canonical Redis copy could NOT be confirmed removed. Token -> the LEDGER
- *  ENTRY's own deadline (epoch ms), which is burn time plus a full
- *  `FRESH_AUTH_TTL_SECONDS` and is therefore deliberately later than the proof's
- *  own expiry. The entry has to outlive the thing it guards: retiring it while
- *  the canonical key is still readable is the one shape that reopens the replay.
+ *  canonical Redis copy could NOT be confirmed removed. Membership is the whole
+ *  record. An entry has to outlive the thing it guards, and no clock can bound
+ *  the key's life from this side — ioredis retains an issuing `SET` whose
+ *  socket closed unreplied and resends it at recovery with a fresh full `EX`
+ *  (`autoResendUnfulfilledCommands` defaults true) — so entries deliberately
+ *  carry no deadline: one leaves only when some command's resolution proves the
+ *  canonical key unreadable. Retiring an entry while the key it guards is still
+ *  readable is the one shape that reopens the replay.
  *
  *  Why a ledger is needed at all: the compensating `DEL` issued after an
  *  in-memory-arbitrated burn is not guaranteed to land, in either of the two
@@ -921,43 +924,50 @@ const inFlightConsumes = new Set<string>();
  *  Membership means "spent, canonical fate unknown". The burn consults it before
  *  reporting a win, so a proof in here is refused on every later presentation no
  *  matter what Redis still holds — the guarantee no longer rests on a command
- *  that may never flush. Entries leave on any of three events: the compensating
- *  delete is confirmed to have landed, a later presentation's `GETDEL` proves
- *  the canonical copy gone, or the entry's own deadline above passes.
+ *  that may never flush. Entries leave on either of two events: the compensating
+ *  delete is CONFIRMED to have landed (the `DEL` resolved, not merely got
+ *  dispatched), or a later presentation's `GETDEL` proves the canonical copy
+ *  gone.
  *
  *  Process-local, like every other tier here. A restart drops the ledger, but it
  *  drops `memStore` with it, which is already the point past which Redis is the
  *  sole arbiter; the drain below is what keeps that window short. */
-const spentConsentOps = new Map<string, number>();
+const spentConsentOps = new Set<string>();
 
 /** Has this consent-op proof already been burned against an unconfirmed
- *  canonical copy? Membership alone, deliberately: an entry past its deadline
- *  still answers yes.
+ *  canonical copy? Membership alone, deliberately: an entry answers yes for as
+ *  long as it exists, however long ago it was written.
  *
  *  This predicate does NOT retire entries, and that asymmetry with
- *  `drainSpentConsentOps` is the point. Retiring an entry is only safe when it
- *  is paired with a sweep of the key it was guarding — the drain issues that
- *  sweep, and this cannot: it runs inside `burnConsentOpEntry` two statements
- *  ahead of that call's own `GETDEL`, so a fire-and-forget delete here would
- *  race the burn it is deciding. Dropping the entry bare instead is the worse
- *  half of the same trade: the very next `GETDEL` would find a key the deadline
- *  said had lapsed, and report it as a win.
+ *  `drainSpentConsentOps` is the point. Retirement is only safe when it is
+ *  paired with PROOF the guarded key is unreadable — the drain takes that proof
+ *  from a `DEL` that resolved, a refused replay takes it from its own `GETDEL`
+ *  — and this predicate can produce no such proof: it runs inside
+ *  `burnConsentOpEntry` two statements ahead of that call's own `GETDEL`, so a
+ *  fire-and-forget delete here would race the burn it is deciding, and dropping
+ *  the entry bare would hand that same `GETDEL` a key to report as a win.
  *
- *  Answering yes past the deadline costs nothing. A proof whose ledger entry has
- *  expired is a proof whose own TTL ran out a full interval earlier, so the only
- *  presentation this refuses is one that was going to be refused anyway. The
- *  drain is what bounds the map, on a tick that always runs in production. */
+ *  Age proves nothing here. However stale the entry, the key it guards can
+ *  still be readable — an unreplied issuing `SET` is resent at recovery with a
+ *  fresh full `EX` — so a stale entry can be the ONLY refusal left standing.
+ *  Answering yes is always safe: entries are written only for proofs that
+ *  already authorized an action, so the worst this costs is refusing a proof
+ *  that was spent anyway. The map is bounded by confirmed sweeps, not by time;
+ *  the drain documents the one shape that retains an entry for the process
+ *  lifetime, and why that is accepted. */
 function isConsentOpSpent(token: string): boolean {
   return spentConsentOps.has(token);
 }
 
-/** Retry the compensating deletes a flap left undone, and retire ledger
- *  entries whose own deadline has passed — but only when their sweep can be
- *  dispatched. While no client is reachable, expired entries are KEPT and go
- *  on refusing their proofs: the deadline does not prove the canonical key
- *  unreadable (ioredis can resend an unreplied issuing `SET` at recovery with
- *  a fresh full `EX`), so retirement waits for the first drain pass that holds
- *  a client and can pair the drop with a delete.
+/** Retry the compensating deletes a flap left undone, retiring each ledger
+ *  entry only once its delete is CONFIRMED — the `DEL` resolving is the one
+ *  event that proves the canonical key unreadable. A delete that was merely
+ *  dispatched proves nothing: it can time out against a stalled-but-ready
+ *  server, or die with a socket whose close flushes it out of the resend
+ *  lineage, and either way the key may stand while an on-dispatch drop would
+ *  have already retired the one refusal left. So a failed delete leaves its
+ *  entry exactly where it was, for the next trigger; while no client is
+ *  reachable, nothing is dispatched and everything is kept.
  *
  *  This is not what closes the replay hole — the ledger itself refuses the
  *  replay whether or not a delete ever lands. What the drain buys is that an
@@ -980,58 +990,42 @@ function isConsentOpSpent(token: string): boolean {
  *     no further `ready` transition is emitted to arm anything on.
  *
  *  Residual, accordingly: a restart before EITHER a ready-armed drain or a
- *  cleanup tick has landed the delete leaves the orphaned key readable for the
- *  rest of its TTL with no process-local entry left to refuse it. The stalled-
- *  server arm is the wider of the two windows, and also the one where an
- *  operator is most likely to bounce the backend, since a stalled Redis presents
- *  as a hanging API.
+ *  cleanup tick has CONFIRMED the delete leaves the orphaned key readable with
+ *  no process-local entry left to refuse it — for the rest of its TTL, or for
+ *  a FRESH full `EX` measured from recovery when the key was resurrected by a
+ *  resent issuing `SET`. The stalled-server arm is the wider of the two
+ *  windows, and also the one where an operator is most likely to bounce the
+ *  backend, since a stalled Redis presents as a hanging API.
  *
- *  Deletes are fire-and-forget: a retry that fails leaves the entry in place for
- *  the next trigger, which is exactly the state it was already in. */
-function drainSpentConsentOps(now: number): void {
+ *  One shape retains an entry for the process lifetime: a delete that rejects
+ *  forever while the client stays ready (an ACL denial would be the canonical
+ *  cause). Accepted deliberately. Retention only ever refuses a proof that WAS
+ *  burned once, and this deployment has no per-command ACLs — past
+ *  authentication, a dispatched command fails only by timeout or connection
+ *  loss, and both end. Retiring on server-replied error classes instead would
+ *  trade that bounded growth for a guess that the error also implies the key
+ *  is unreadable, which a permission denial does not. */
+function drainSpentConsentOps(): void {
   if (spentConsentOps.size === 0) return;
   const redis = getRedis();
-  const client = redis !== null && isRedisAvailable() ? redis : null;
-  for (const [token, expiresAt] of spentConsentOps) {
-    if (expiresAt <= now) {
-      // An entry past its deadline retires ONLY when its sweep can be
-      // dispatched. The deadline alone does not prove the canonical key
-      // unreadable: ioredis retains an issuing `SET` whose socket closed
-      // unreplied and resends it on recovery with a fresh full `EX`
-      // (`autoResendUnfulfilledCommands` defaults true, and a mid-outage TCP
-      // connect's `resetCommandQueue` decouples that deque from the
-      // retry-ceiling flush), so after an outage that outlasts the deadline
-      // the key can come back while the map entry is the only thing left
-      // refusing the spent proof. Dropping bare here would hand that replay
-      // exactly the trailing window this ledger exists to close. Keeping the
-      // entry is bounded: these are the same per-burn entries the live arm
-      // below already retains during an outage, each costing an argon2 verify
-      // or an ORCID round-trip to create, and all of them retire on the first
-      // drain pass that holds a client.
-      //
-      // With a client, the sweep is issued before the drop so a retiring entry
-      // never leaves an unswept key behind. The `catch` is load-bearing, not
-      // decorative: this runs from a timer callback with no surrounding
-      // handler, so an unhandled rejection ends the process under Node's
-      // default policy — during exactly the Redis outage this whole path
-      // exists to survive.
-      if (!client) continue;
-      void client.del(KEY_PREFIX + token).catch(() => {});
-      spentConsentOps.delete(token);
-      continue;
-    }
-    if (!client) continue;
-    void client
+  if (redis === null || !isRedisAvailable()) return;
+  for (const token of spentConsentOps) {
+    void redis
       .del(KEY_PREFIX + token)
       .then(() => {
         // Confirmed gone from the canonical tier, and `memStore` lost it at
         // burn time, so the proof is unreachable and the ledger entry has
-        // nothing left to guard.
+        // nothing left to guard. The drop lives HERE and not after the
+        // dispatch: the delete has to land before the entry may leave.
         spentConsentOps.delete(token);
       })
       .catch(() => {
-        // Still unreachable. Deliberately unlogged: the burn already warned
-        // once, and this runs on a timer for as long as the outage lasts.
+        // Unconfirmed, so the entry stays for the next trigger. Deliberately
+        // unlogged: the burn already warned once, and this runs on a timer
+        // for as long as the outage lasts. The `catch` is also load-bearing —
+        // this runs from a timer callback with no surrounding handler, so an
+        // unhandled rejection ends the process under Node's default policy,
+        // during exactly the Redis outage this path exists to survive.
       });
   }
 }
@@ -1057,7 +1051,7 @@ const drainArmedClients = new WeakSet<Redis>();
  *  the same drain. */
 function onRedisReadyDrain(): void {
   try {
-    drainSpentConsentOps(Date.now());
+    drainSpentConsentOps();
   } catch {
     /* background cleanup; the periodic tick retries */
   }
@@ -1093,7 +1087,7 @@ function startCleanup(): void {
     for (const [token, { expiresAt }] of memStore) {
       if (expiresAt <= now) memStore.delete(token);
     }
-    drainSpentConsentOps(now);
+    drainSpentConsentOps();
   }, CLEANUP_INTERVAL_MS);
   cleanupInterval.unref();
 }
@@ -1900,20 +1894,12 @@ async function burnConsentOpEntry(token: string): Promise<boolean> {
     // Record the burn first. Ordering is the point: if the delete below is the
     // thing that establishes single-use, an outage that outlives the offline
     // queue reopens the replay, whereas a ledger entry written first survives
-    // the delete failing, timing out, or being flushed unsent.
-    //
-    // The deadline is stamped from NOW rather than from the proof's own expiry.
-    // The canonical key's `EX` began when Redis executed the issuing `SET`,
-    // which necessarily precedes the token reaching a client and being presented
-    // back here, so a full TTL measured from the burn covers the key's remaining
-    // life. Over-guarding is free: a 32-byte random token is never re-minted, so
-    // a ledger entry that outlives its key can only refuse a proof that was
-    // already spent. Two residuals keep this a strong bound rather than a proof
-    // — ioredis may re-execute an issuing `SET` whose promise `commandTimeout`
-    // already rejected, and the deadline runs on this process's clock while the
-    // `EX` runs on the Redis server's, so a forward step here shortens the guard
-    // relative to the key. Both are why the drain's expiry arm still sweeps.
-    spentConsentOps.set(token, Date.now() + FRESH_AUTH_TTL_SECONDS * 1000);
+    // the delete failing, timing out, or being flushed unsent. Membership is
+    // the whole record — the entry stays until some command's resolution
+    // proves the canonical key unreadable, however long that takes, because no
+    // deadline computable here can bound the key's life (a resent issuing
+    // `SET` restarts its `EX` from recovery).
+    spentConsentOps.add(token);
     try {
       await redis.del(KEY_PREFIX + token);
       spentConsentOps.delete(token);
@@ -2195,24 +2181,22 @@ export function _resetFreshAuthMemStoreForTests(): void {
   spentConsentOps.clear();
 }
 
-/** Test-only hook: runs one drain pass with a caller-supplied clock.
- *  `drainSpentConsentOps` is otherwise reachable only from the periodic tick and
- *  from a Redis `ready` transition, so neither of its arms — retrying a
- *  compensating delete, and dropping an entry past its deadline — can be driven
- *  directly. Passing a future `now` is what exercises the second arm without
- *  waiting out a full TTL. */
-export function _drainSpentConsentOpsForTests(now: number): void {
-  drainSpentConsentOps(now);
+/** Test-only hook: runs one drain pass. `drainSpentConsentOps` is otherwise
+ *  reachable only from the periodic tick and from a Redis `ready` transition,
+ *  so neither of its behaviours — dispatching the pending compensating deletes
+ *  and retiring entries on confirmation, or keeping every entry while no client
+ *  is reachable — can be driven directly. */
+export function _drainSpentConsentOpsForTests(): void {
+  drainSpentConsentOps();
 }
 
-/** Test-only hook: plants a ledger entry with a caller-chosen deadline.
- *  The only production writer is the burn's compensating-delete branch, which is
- *  reachable only during a genuine Redis outage, and an entry it writes is a full
- *  TTL from retiring. Seeding directly is what lets the drain's expiry arm — and
- *  the periodic tick that calls it — be exercised against a REACHABLE client,
- *  which is the arm that issues the sweep. */
-export function _setSpentConsentOpForTests(token: string, expiresAt: number): void {
-  spentConsentOps.set(token, expiresAt);
+/** Test-only hook: plants a ledger entry directly. The only production writer
+ *  is the burn's compensating-delete branch, which is reachable only while the
+ *  Redis leg cannot confirm anything — so exercising the drain's
+ *  confirmed-delete retirement against a REACHABLE client, and the periodic
+ *  tick that calls it, requires seeding the ledger from outside. */
+export function _setSpentConsentOpForTests(token: string): void {
+  spentConsentOps.add(token);
 }
 
 /** Test-only hook: how many consent-op proofs are currently held spent.
@@ -2222,14 +2206,6 @@ export function _setSpentConsentOpForTests(token: string, expiresAt: number): vo
  *  file's keyspace flush), the entry's retirement does not. */
 export function _getSpentConsentOpsSizeForTests(): number {
   return spentConsentOps.size;
-}
-
-/** Test-only hook: the raw ledger deadline recorded for one token, unpruned.
- *  Reading the stamp directly is what turns "the deadline is taken from burn
- *  time, not from the proof's own expiry" into a deterministic assertion instead
- *  of a wall-clock race against a difference that is normally sub-millisecond. */
-export function _getSpentConsentOpExpiryForTests(token: string): number | undefined {
-  return spentConsentOps.get(token);
 }
 
 /** Test-only hook: returns the current size of the in-flight consume lock set.

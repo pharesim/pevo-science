@@ -152,16 +152,26 @@ describe('consent-op burn during a Redis reconnect', () => {
   });
 });
 
-/** The drain's own retirement paths, driven against a REACHABLE client.
+/** The drain's retirement paths, driven against a REACHABLE client.
  *
- *  The burn only ever stamps a ledger entry a full TTL out, and only during a
- *  genuine outage, so neither the arm that issues the sweep nor the tick that
- *  calls it is reachable from a burn inside a test run: by the time an entry
- *  could expire on its own the client is long gone. Seeding the ledger directly
- *  is what closes that, and this file is where it belongs, because the client
- *  here is genuinely connected and the swept key is therefore observable. */
+ *  The production writer only leaves a ledger entry behind when its
+ *  compensating delete could not be confirmed, and with the client here
+ *  genuinely ready that delete lands inside the burn itself — so a burn inside
+ *  this file can never leave the drain anything to do. Seeding the ledger
+ *  directly is what closes that, and this file is where it belongs, because
+ *  the client here is genuinely connected and a swept key is therefore
+ *  observable. */
 describe('spent-proof ledger retirement', () => {
   const seedKey = (token: string) => `${config.appTag}:fresh_auth:token:${token}`;
+
+  const waitFor = async (predicate: () => boolean, timeoutMs: number): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return predicate();
+  };
 
   afterEach(() => {
     vi.useRealTimers();
@@ -172,43 +182,44 @@ describe('spent-proof ledger retirement', () => {
     _restartCleanupForTests();
   });
 
-  it.skipIf(!redisPresent)('sweeps the canonical key when it drops an entry past its deadline', async () => {
+  it.skipIf(!redisPresent)('retires entries only once their sweeps land, and sweeps every entry it holds', async () => {
     const redis = getRedis()!;
-    const token = 'ledger-expiry-sweep-token';
-    const key = seedKey(token);
-    // A key that is deliberately still alive when its ledger entry retires. In
-    // production the entry's deadline dominates the key's, so this pairing only
-    // arises through the residuals the burn documents (a re-executed issuing
-    // `SET`, or the app clock stepping forward relative to Redis). Recreating it
-    // directly is the only way to execute the sweep the drain issues for exactly
-    // those cases.
-    await redis.set(key, '{}', 'EX', FRESH_AUTH_TTL_SECONDS);
-    _setSpentConsentOpForTests(token, Date.now() - 1);
-    expect(_getSpentConsentOpsSizeForTests()).toBe(1);
-
-    _drainSpentConsentOpsForTests(Date.now());
-    expect(_getSpentConsentOpsSizeForTests()).toBe(0);
-
-    // The delete is fire-and-forget, so the entry drops first and the key
-    // follows. Without the sweep the key would sit out the rest of its TTL with
-    // no ledger entry left to refuse it, which is the orphan the drain exists to
-    // prevent.
-    for (let i = 0; i < 40 && (await redis.exists(key)) === 1; i++) {
-      await new Promise((res) => setTimeout(res, 25));
+    // Keys that are deliberately still alive while their ledger entries stand:
+    // the pairing an unconfirmed compensating delete leaves behind, recreated
+    // directly because a burn against this reachable client confirms its
+    // delete in-line and leaves nothing over. Two entries rather than one, so
+    // a drain that stops after its first entry fails here instead of being
+    // sampled around.
+    const tokens = ['ledger-sweep-token-a', 'ledger-sweep-token-b'];
+    for (const token of tokens) {
+      await redis.set(seedKey(token), '{}', 'EX', FRESH_AUTH_TTL_SECONDS);
+      _setSpentConsentOpForTests(token);
     }
-    expect(await redis.exists(key)).toBe(0);
+    expect(_getSpentConsentOpsSizeForTests()).toBe(2);
+
+    _drainSpentConsentOpsForTests();
+
+    // Retirement trails dispatch by a round-trip: the entry may leave only
+    // once its `DEL` resolves, so the size assertion has to wait for the
+    // confirmation rather than sample the map synchronously. Without the
+    // sweep, each key would sit out the rest of its TTL with no ledger entry
+    // left to refuse it, which is the orphan the drain exists to prevent.
+    expect(await waitFor(() => _getSpentConsentOpsSizeForTests() === 0, 5_000)).toBe(true);
+    for (const token of tokens) {
+      expect(await redis.exists(seedKey(token))).toBe(0);
+    }
   });
 
-  it.skipIf(!redisPresent)('a past-deadline ledger entry still refuses the consume itself', async () => {
-    // The membership-only read: `isConsentOpSpent` answers from `.has` alone
-    // and never prunes, and this is the consume-path case that makes that
-    // load-bearing. The planted state is what a replay finds when the
-    // compensating delete never landed and the entry's deadline lapsed before
-    // any drain ran: canonical key present, in-memory record absent, ledger
-    // entry expired. A prune-on-read variant drops the entry at the check, the
-    // same call's own GETDEL then finds the key the deadline said had lapsed,
-    // and the spent proof is reported a WIN — so this case is what dies if the
-    // predicate ever regains a prune.
+  it.skipIf(!redisPresent)('a ledger entry refuses the consume itself, with the canonical key still readable', async () => {
+    // The consume-path kill for the burn's spent-check. The planted state is
+    // what a replay finds when the compensating delete never landed: canonical
+    // key present, in-memory record absent, ledger entry held. The refusal
+    // must come from membership BEFORE the same call's own GETDEL can find the
+    // planted key — remove or weaken that gate and the GETDEL wins, reporting
+    // the spent proof as a fresh burn. Membership is consulted bare, with no
+    // retirement at the read: any retirement here would have to either race
+    // the GETDEL two statements later or drop the entry and hand that GETDEL
+    // the key, which is why retirement belongs to confirmations only.
     _resetFreshAuthMemStoreForTests();
     const redis = getRedis()!;
     const token = 'ledger-stale-refusal-token';
@@ -225,7 +236,7 @@ describe('spent-proof ledger retirement', () => {
       'EX',
       FRESH_AUTH_TTL_SECONDS,
     );
-    _setSpentConsentOpForTests(token, Date.now() - 1);
+    _setSpentConsentOpForTests(token);
 
     // No drain runs first; the consume itself is the subject.
     const replay = await consumeFreshAuthToken(token, 'stale-refusal-user', TARGET_HASH);
@@ -241,23 +252,26 @@ describe('spent-proof ledger retirement', () => {
     expect(await redis.exists(key)).toBe(0);
   });
 
-  it.skipIf(!redisPresent)('retires an expired entry from the periodic cleanup tick', async () => {
+  it.skipIf(!redisPresent)('retires an entry from the periodic cleanup tick', async () => {
     const token = 'ledger-tick-token';
-    _setSpentConsentOpForTests(token, Date.now() + 1_000);
+    _setSpentConsentOpForTests(token);
     expect(_getSpentConsentOpsSizeForTests()).toBe(1);
 
-    // The tick is the SOLE retirement path for an entry written while the client
-    // stayed `ready` (a `commandTimeout` against a stalled server emits no later
-    // `ready` transition to sweep on), so its call into the drain has to be
-    // pinned. Fake timers are safe here only because the interval is recreated
-    // under them and the connection is healthy, so no ioredis reconnect or
-    // command timer is pending to be frozen.
+    // The tick is the SOLE retirement trigger for an entry written while the
+    // client stayed `ready` (a `commandTimeout` against a stalled server emits
+    // no later `ready` transition to sweep on), so its call into the drain has
+    // to be pinned. Fake timers are safe here only because the interval is
+    // recreated under them and the connection is healthy, so no ioredis
+    // reconnect or command timer is pending to be frozen.
     _stopCleanupForTests();
     vi.useFakeTimers();
     _restartCleanupForTests();
-    vi.setSystemTime(Date.now() + 400_000);
     vi.advanceTimersByTime(60_000);
 
-    expect(_getSpentConsentOpsSizeForTests()).toBe(0);
+    // The tick dispatched the delete; the drop waits on its confirmation,
+    // which arrives over a real socket — so hand the clock back before
+    // polling for it.
+    vi.useRealTimers();
+    expect(await waitFor(() => _getSpentConsentOpsSizeForTests() === 0, 5_000)).toBe(true);
   });
 });

@@ -16,23 +16,21 @@
  * as the first.
  *
  * The defence under test is the spent-proof ledger: the burn records the proof
- * as spent BEFORE attempting the delete, and clears the record only on a
- * confirmed delete, so single-use no longer rests on a command that may never
- * flush. Three properties are pinned here:
+ * as spent BEFORE attempting the delete, and the record leaves only on
+ * CONFIRMATION that the canonical key is unreadable, so single-use no longer
+ * rests on a command that may never flush. Three properties are pinned here:
  *
  *   1. The replay is refused even though the compensating delete was flushed
  *      unsent, while the first consume during the outage still succeeds —
  *      because the whole reason the in-memory tier exists is that a user who
  *      just re-authenticated must not be told their proof expired because Redis
  *      blinked.
- *   2. The ledger entry's deadline is stamped from BURN time plus a full TTL,
- *      not from the proof's own expiry. The canonical key's `EX` starts when
- *      Redis executes the issuing `SET`, which is strictly later than the
- *      instant the issuer snapshotted as the proof's expiry, so a ledger keyed
- *      on that snapshot retires while the key it guards is still readable. The
- *      real gap is sub-millisecond dispatch latency; the case below widens it to
- *      an observable 1.5s by planting a short-lived in-memory record, and also
- *      reads the stamp directly so the assertion does not depend on wall clock.
+ *   2. Retirement is confirmation-gated at every trigger. A drain pass that
+ *      holds no reachable client keeps every entry, and one whose dispatched
+ *      delete REJECTS — a command timeout against a stalled-but-ready server —
+ *      keeps its entry too, with the kept entry alone still refusing the
+ *      replay. Dropping on dispatch instead would retire the one refusal left
+ *      standing while the canonical key is still readable.
  *   3. The drain retires the ledger entry, and sweeps the orphaned canonical
  *      key, on the client's next `ready` transition rather than waiting out a
  *      periodic tick — with no replay attempted, so the sweep is attributable to
@@ -65,12 +63,16 @@
  *       flip the scenario from an offline-queue rejection to a plain command
  *       timeout with every assertion still green.
  *
- *       Two further deliberate deviations. The replay leg runs against a second,
- *       direct-to-Redis client rather than a restored proxy: restarting the
- *       proxy fires the `ready` transition whose drain sweeps the orphan first,
- *       which would move the refusal from the ledger to the read path and void
- *       the mutation-kill. And the periodic cleanup is paused for the file, so
- *       the drain's timer arm cannot land mid-assertion on a slow worker.
+ *       Three further deliberate deviations. The replay leg runs against a
+ *       second, direct-to-Redis client rather than a restored proxy: restarting
+ *       the proxy fires the `ready` transition whose drain sweeps the orphan
+ *       first, which would move the refusal from the ledger to the read path
+ *       and void the mutation-kill. The periodic cleanup is paused for the
+ *       file, so the drain's timer arm cannot land mid-assertion on a slow
+ *       worker. And the proxy can STALL as well as sever — sockets held open,
+ *       bytes stopped — because a delete that is dispatched and then rejects
+ *       with the client still `ready` is otherwise unreachable: severing moves
+ *       the client off `ready` before any rejection lands.
  *   (b) No auth middleware is involved; these are library calls.
  *   (c) Real-path companion: the orphaned-canonical-key risk class is also
  *       covered against the unmocked module singleton by the rejecting-burn test
@@ -103,13 +105,13 @@ const {
   computeFreshAuthTargetHash,
   consumeFreshAuthToken,
   issueFreshAuthToken,
+  FRESH_AUTH_TTL_SECONDS,
   _resetFreshAuthMemStoreForTests,
-  _setMemStoreEntryForTests,
+  _setSpentConsentOpForTests,
   _stopCleanupForTests,
   _restartCleanupForTests,
   _drainSpentConsentOpsForTests,
   _getSpentConsentOpsSizeForTests,
-  _getSpentConsentOpExpiryForTests,
 } = await import('../../src/lib/fresh-auth.js');
 
 const TARGET = {
@@ -121,13 +123,19 @@ const TARGET_HASH = computeFreshAuthTargetHash(TARGET);
 
 const upstream = config.redisUrl ? new URL(config.redisUrl) : null;
 
-/** A severable stand-in for the Redis endpoint. Stopping it destroys every live
- *  socket AND refuses new connections, which is what an ordinary server restart
- *  looks like to ioredis: repeated `ECONNREFUSED` reconnects, and the offline
- *  queue rejected once the retry budget is spent. */
+/** A severable stand-in for the Redis endpoint, with two failure modes.
+ *  Stopping it destroys every live socket AND refuses new connections, which is
+ *  what an ordinary server restart looks like to ioredis: repeated
+ *  `ECONNREFUSED` reconnects, and the offline queue rejected once the retry
+ *  budget is spent. Stalling it keeps every socket open but stops moving bytes,
+ *  which is what a connected-but-stalled server looks like: the client never
+ *  leaves `ready`, commands are genuinely dispatched, and each rejection is the
+ *  command's own timeout. */
 class SeverableProxy {
   private server: net.Server | null = null;
   private sockets = new Set<net.Socket>();
+  private pairs = new Set<[net.Socket, net.Socket]>();
+  private stalled = false;
   readonly port: number;
 
   constructor(port: number, private readonly host: string, private readonly upstreamPort: number) {
@@ -153,15 +161,19 @@ class SeverableProxy {
     if (this.server) return;
     const server = net.createServer((downstream) => {
       const up = net.connect(this.upstreamPort, this.host);
+      const pair: [net.Socket, net.Socket] = [downstream, up];
+      this.pairs.add(pair);
       this.sockets.add(downstream);
       this.sockets.add(up);
       const drop = (s: net.Socket) => { this.sockets.delete(s); s.destroy(); };
       downstream.on('error', () => drop(downstream));
       up.on('error', () => drop(up));
-      downstream.on('close', () => drop(up));
-      up.on('close', () => drop(downstream));
-      downstream.pipe(up);
-      up.pipe(downstream);
+      downstream.on('close', () => { this.pairs.delete(pair); drop(up); });
+      up.on('close', () => { this.pairs.delete(pair); drop(downstream); });
+      if (!this.stalled) {
+        downstream.pipe(up);
+        up.pipe(downstream);
+      }
     });
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
@@ -175,7 +187,31 @@ class SeverableProxy {
     this.server = null;
     for (const s of this.sockets) s.destroy();
     this.sockets.clear();
+    this.pairs.clear();
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+
+  /** Hold every socket open but stop forwarding. Unpiping removes the only
+   *  data consumers, so each socket falls out of flowing mode and inbound
+   *  bytes sit in kernel/stream buffers until `unstall` re-pipes them. */
+  stall(): void {
+    if (this.stalled) return;
+    this.stalled = true;
+    for (const [downstream, up] of this.pairs) {
+      downstream.unpipe(up);
+      up.unpipe(downstream);
+      downstream.pause();
+      up.pause();
+    }
+  }
+
+  unstall(): void {
+    if (!this.stalled) return;
+    this.stalled = false;
+    for (const [downstream, up] of this.pairs) {
+      downstream.pipe(up);
+      up.pipe(downstream);
+    }
   }
 }
 
@@ -255,9 +291,12 @@ afterEach(async () => {
   // between `proxy.stop()` and the next `proxy.start()` leaves the proxy down
   // for the following test and for the runner's own retries of this one, where
   // issuance would write only the in-memory tier and every key assertion would
-  // reject.
+  // reject. Unstall first: `start` is a no-op on a stalled-but-listening proxy.
   state.client = proxied;
-  if (proxy) await proxy.start();
+  if (proxy) {
+    proxy.unstall();
+    await proxy.start();
+  }
   if (proxied) await waitFor(() => proxied!.status === 'ready', 20_000);
 });
 
@@ -270,7 +309,7 @@ afterAll(async () => {
 });
 
 describe('consent-op burn across a Redis outage that outlives the offline queue', () => {
-  it.skipIf(!redisPresent)('refuses the replay even though the compensating delete never landed, and holds the proof spent past its own expiry', async () => {
+  it.skipIf(!redisPresent)('refuses the replay even though the compensating delete never landed', async () => {
     const client = proxied!;
     const issued = await issueFreshAuthToken('offline-queue-burn', 'password', TARGET);
     const key = `${config.appTag}:fresh_auth:token:${issued.token}`;
@@ -278,27 +317,6 @@ describe('consent-op burn across a Redis outage that outlives the offline queue'
 
     await proxy!.stop();
     expect(await waitFor(() => client.status !== 'ready', 5_000)).toBe(true);
-
-    // Widen a race that is otherwise unobservable. The issuer snapshots the
-    // proof's expiry BEFORE dispatching its `SET ... EX`, so a ledger keyed on
-    // that snapshot retires ahead of the canonical key by the dispatch-to-
-    // execute latency: real, but sub-millisecond. Replanting the in-memory
-    // record with a 1.5s life reproduces the same ordering at a scale the burn's
-    // own duration exceeds — the compensating delete is awaited and does not
-    // settle until the retry budget is spent, seconds later. Same username,
-    // mechanism and target as the issued proof, so the consume below is a
-    // genuine first use and not a shape the validator would reject.
-    _setMemStoreEntryForTests(
-      issued.token,
-      {
-        username: 'offline-queue-burn',
-        mechanism: 'password',
-        issued_at: Date.now(),
-        kind: 'consent_op',
-        target_hash: TARGET_HASH,
-      },
-      Date.now() + 1_500,
-    );
 
     // Resolves only once the compensating delete has settled — it is awaited
     // inside the burn — so by the time this returns the queue rejection has
@@ -312,14 +330,6 @@ describe('consent-op burn across a Redis outage that outlives the offline queue'
     // queued delete flushed on reconnect the way the offline queue is often
     // assumed to, it would be gone.
     expect(await observer!.exists(key)).toBe(1);
-
-    // The ledger's deadline is read raw, before any prune. Stamped from burn
-    // time it is a full 5-minute TTL out; stamped from the proof's own expiry it
-    // would already have lapsed, since the plant above put that 1.5s away and the
-    // burn took longer than that to settle.
-    const ledgerDeadline = _getSpentConsentOpExpiryForTests(issued.token);
-    expect(ledgerDeadline).toBeDefined();
-    expect(ledgerDeadline!).toBeGreaterThan(Date.now() + 200_000);
 
     // Recover by pointing `getRedis()` at the direct client rather than by
     // restarting the proxy. A restart would emit `ready` on the proxied client,
@@ -368,42 +378,94 @@ describe('consent-op burn across a Redis outage that outlives the offline queue'
     expect(await observer!.exists(key)).toBe(0);
   }, 60_000);
 
-  it.skipIf(!redisPresent)('keeps a ledger entry past its deadline while no client is reachable', async () => {
+  it.skipIf(!redisPresent)('keeps a ledger entry while no client is reachable, and the kept entry alone refuses the replay', async () => {
     const client = proxied!;
-    const issued = await issueFreshAuthToken('drain-expiry', 'password', TARGET);
+    const issued = await issueFreshAuthToken('drain-keep', 'password', TARGET);
+    const key = `${config.appTag}:fresh_auth:token:${issued.token}`;
 
     await proxy!.stop();
     expect(await waitFor(() => client.status !== 'ready', 5_000)).toBe(true);
 
-    const first = await consumeFreshAuthToken(issued.token, 'drain-expiry', TARGET_HASH);
+    const first = await consumeFreshAuthToken(issued.token, 'drain-keep', TARGET_HASH);
     expect(first.valid).toBe(true);
     expect(_getSpentConsentOpsSizeForTests()).toBe(1);
 
-    // First, a LIVE entry: a drain pass that finds no reachable client must
-    // leave it alone. This is the arm the 60s tick takes for the whole of an
-    // outage, and dropping an entry here would retire the refusal while the
-    // orphaned key is still readable, which is precisely the replay the ledger
-    // exists to close.
-    _drainSpentConsentOpsForTests(Date.now());
+    // A drain pass that finds no reachable client must leave the entry alone:
+    // nothing can be dispatched, so nothing can be confirmed, and dropping the
+    // entry would retire the refusal while the orphaned key is still readable
+    // — precisely the replay the ledger exists to close. This is the arm the
+    // 60s tick takes for the whole of an outage.
+    _drainSpentConsentOpsForTests();
     expect(_getSpentConsentOpsSizeForTests()).toBe(1);
 
-    // Then the expiry arm, still severed, so the drain holds no reachable
-    // client. The entry must be KEPT, not dropped: with no client there is no
-    // sweep to dispatch, and the deadline alone does not prove the canonical
-    // key unreadable — ioredis retains an issuing SET whose socket closed
-    // unreplied and resends it at recovery with a fresh full EX, so after an
-    // outage that outlasts the deadline the map entry can be the only thing
-    // left refusing the spent proof. A bare drop here hands that replay its
-    // trailing window. Driven with a future clock rather than by waiting out a
-    // real TTL. Retirement belongs to the first drain pass that holds a
-    // client; the expiry sweep-then-drop for the reachable-client case is
-    // pinned in `fresh-auth-redis-unavailable-burn.test.ts`.
-    _drainSpentConsentOpsForTests(Date.now() + 400_000);
-    expect(_getSpentConsentOpsSizeForTests()).toBe(1);
-
-    // And the refusal that retention exists to preserve: the proof stays
-    // refused past its own deadline while the outage lasts.
-    const replay = await consumeFreshAuthToken(issued.token, 'drain-expiry', TARGET_HASH);
+    // The refusal that retention exists to preserve, made attributable. The
+    // replay runs against the already-connected direct client — no `ready`
+    // transition fires, so no drain runs first — with the canonical key
+    // verified still readable and the in-memory backup gone since the burn.
+    // Refusing here can only be the kept ledger entry's doing; under any
+    // variant that dropped the entry in the no-client pass above, this
+    // presentation would read the standing key back and win.
+    state.client = observer;
+    expect(await observer!.exists(key)).toBe(1);
+    const replay = await consumeFreshAuthToken(issued.token, 'drain-keep', TARGET_HASH);
     expect(replay.valid).toBe(false);
+    if (!replay.valid) {
+      expect(replay.reason).toBe('expired');
+    }
+  }, 60_000);
+
+  it.skipIf(!redisPresent)('retains the entry when the drain delete rejects with the client still ready, and still refuses the replay', async () => {
+    const client = proxied!;
+    // Plant the post-burn state directly: canonical key readable, in-memory
+    // record absent, ledger entry held. A burn cannot produce it in this test,
+    // because reaching the ledger write requires the Redis leg to fail while
+    // this scenario needs the client to stay `ready` throughout.
+    const token = 'stalled-del-token';
+    const key = `${config.appTag}:fresh_auth:token:${token}`;
+    await observer!.set(
+      key,
+      JSON.stringify({
+        username: 'stalled-del-user',
+        mechanism: 'password',
+        issued_at: Date.now() - 60_000,
+        kind: 'consent_op',
+        target_hash: TARGET_HASH,
+      }),
+      'EX',
+      FRESH_AUTH_TTL_SECONDS,
+    );
+    _setSpentConsentOpForTests(token);
+    expect(_getSpentConsentOpsSizeForTests()).toBe(1);
+
+    // Stall, don't sever. The client never leaves `ready`, so the drain's
+    // delete below is genuinely DISPATCHED — past any offline queue — and then
+    // rejected by its own command timeout, which is the one rejection shape a
+    // severed connection cannot produce.
+    proxy!.stall();
+    expect(client.status).toBe('ready');
+    _drainSpentConsentOpsForTests();
+
+    // Only once the command timeout has fired is there a rejection for an
+    // on-failure drop to act on; a retained entry proves nothing before that.
+    await new Promise((resolve) => setTimeout(resolve, REDIS_COMMAND_TIMEOUT_MS + 1_500));
+    expect(client.status).toBe('ready');
+    expect(_getSpentConsentOpsSizeForTests()).toBe(1);
+    expect(await observer!.exists(key)).toBe(1);
+
+    // The retained entry is the sole refusal: the key is readable through the
+    // direct client and there is no in-memory record. A drain that retired the
+    // entry on dispatch rather than confirmation would hand this presentation
+    // the standing key.
+    state.client = observer;
+    const replay = await consumeFreshAuthToken(token, 'stalled-del-user', TARGET_HASH);
+    expect(replay.valid).toBe(false);
+    if (!replay.valid) {
+      expect(replay.reason).toBe('expired');
+    }
+
+    // The refused replay's own resolved GETDEL is a confirmation, so it
+    // retires the entry and the key on the spot.
+    expect(_getSpentConsentOpsSizeForTests()).toBe(0);
+    expect(await observer!.exists(key)).toBe(0);
   }, 60_000);
 });
