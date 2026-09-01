@@ -675,3 +675,99 @@ The other noted-not-held items are untouched by choice: the listener-count
 pin, the stalled-server end-to-end origin, and the `afterEach` recovery
 boolean are all below the hold line and none is load-bearing for the two
 invariants this round pins.
+
+---
+
+## Architect re-review (2026-09-01, round 4) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on the round-3 diff (`60c9c6bb`), seven lenses
+plus an independent per-finding validation pass. **Both round-3 hold items
+verified genuinely landed**, checked in the code rather than taken from the
+signal: the `if (!client) continue;` keep guard and its reshaped test
+discriminate the bare-drop revert, and the new consume-path case genuinely
+kills a prune-on-read regression (traced against the historical
+implementation). AC2 intact; project-standards clean (anchor-gate arms, key
+prefixing, carve-outs); the learnings pass confirmed the corrected GETDEL
+convention entry and the code still agree, so AC4 stays met.
+
+Three items. Item 1 reverses a prescription round 3 itself made, on evidence
+three reviewers produced independently — this is the architect's round-3
+prescription being one layer short, not implementer drift.
+
+### 1. The expiry arm retires a ledger entry on DEL dispatch, not confirmation
+
+With a client held, the expiry arm runs `void client.del(...).catch(() => {})`
+and then `spentConsentOps.delete(token)` synchronously — the drop is gated on
+the sweep being ISSUED, while the live arm two lines below drops only inside
+`.then()`. Three reviewers traced the same composition and the validator
+confirmed it link by link: a dispatched DEL that fails while the client looked
+reachable (a `commandTimeout` against a stalled-but-ready server, or a socket
+death right after recovery that flushes the retained DEL out of the resend
+lineage) combined with an unreplied issuing `SET` resent at recovery with a
+fresh full `EX` leaves the canonical key readable for up to a fresh TTL with
+nothing left to refuse it — `memStore` was emptied at burn, and the ledger
+entry is already gone. A spent consent-op proof then replays and wins.
+
+Round 3 prescribed "keeping the dispatch-then-drop shape for the
+reachable-client case"; that shape is hereby withdrawn. The round-2 objection
+to chaining (entries leak for the whole of an outage) no longer applies —
+round 3's `if (!client) continue;` guard owns the no-client case entirely, so
+chaining changes only the client-held case, where a failed delete now leaves
+the entry for the next trigger, which is the invariant the drain docblock
+already claims.
+
+Fix: mirror the live arm's confirmed-delete pattern (drop inside `.then()`,
+`.catch` retains), at which point the two arms are nearly identical —
+collapsing them into one loop body is welcome. Correct the comment that says
+the sweep is "issued before the drop" (it must LAND before the drop). Record
+the one sub-decision in place: a DEL that rejects forever while the client
+stays ready (e.g. an ACL failure) now retains its entry for the process
+lifetime — state whether that is accepted (retention only ever refuses harder,
+and no such failure mode exists in this deployment) or retired on
+server-replied error classes. Add the discriminating test this arm has never
+had: a drain pass holding a client whose `del` REJECTS must retain the entry,
+and the proof must still be refused afterward. Neither existing suite covers
+the dispatched-DEL-fails-after-drop window.
+
+### 2. The reshaped keep-test's replay assertion does not test retention
+
+The final assertion's comment claims it pins "the refusal that retention
+exists to preserve", but at that point `state.client` is still the severed
+proxied client and the in-memory backup was already deleted by the first
+consume, so `readFreshAuthEntry` returns null and the refusal fires from tier
+absence BEFORE the ledger is consulted. It passes identically under a
+bare-drop revert; the size assertion above it is the only real kill. Two
+reviewers filed it independently; the validator traced the full branch path.
+
+Fix: point `state.client` at the already-connected `observer` before the final
+replay (the sibling test's own `state.client = observer;` pattern, which also
+avoids re-firing the ready-armed drain), assert the canonical key still exists
+just before the replay, then assert the refusal — making it attributable to
+the retained entry against a live, readable key. Update the comment to match.
+With item 1 landed this becomes the second, causal kill for the retention
+invariant rather than a redundant smoke check.
+
+### 3. The isConsentOpSpent docblock still asserts the pre-round-3 model
+
+Its closing paragraph — "Answering yes past the deadline costs nothing… the
+only presentation this refuses is one that was going to be refused anyway. The
+drain is what bounds the map, on a tick that always runs" — contradicts the
+expiry-arm comment this same commit wrote (the deadline does not prove the key
+unreadable; a kept past-deadline entry can be the ONLY refusal; retirement
+waits for a client). Rewrite the paragraph to the load-bearing model, and while
+in there fix the drain docblock's restart-residual phrase ("the rest of its
+TTL"), which understates the post-resurrection case: a resent issuing `SET`
+gives the orphan a FRESH full `EX` from recovery. Make both rewrites reflect
+item 1's confirmed-delete change so the file is corrected once.
+
+### Noted, not held
+
+- No drain test ever plants MORE than one ledger entry, so a loop-truncating
+  drain mutant is invisible (the corpus's sampling-blindness class; Map
+  iteration makes it unlikely to matter). A two-entry case in item 1's new
+  test would close it for free.
+- The recovery-composition end-to-end (resent SET + kept entry as sole
+  refuser) remains feasible with the existing proxy harness; item 2's reshape
+  covers the state, not the full sequence. Below the hold line.
+
+---
