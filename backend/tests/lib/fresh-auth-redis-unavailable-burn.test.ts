@@ -55,7 +55,7 @@
  *       `GETDEL` with the readiness predicate left real.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from 'vitest';
 import { config } from '../../src/config.js';
 
 const { redisReady } = vi.hoisted(() => ({ redisReady: { value: true } }));
@@ -97,6 +97,19 @@ const redisPresent = await (async () => {
   }
   return r.status === 'ready';
 })();
+
+// The periodic tick also drains the ledger, on a client this file keeps
+// genuinely connected. Paused for the whole file so it cannot land inside a
+// drain assertion and finish a sweep the code under test skipped — which would
+// mask exactly the mutants these cases exist to kill. The tick case below
+// re-creates its own interval under fake timers when it needs one.
+beforeAll(() => {
+  _stopCleanupForTests();
+});
+
+afterAll(() => {
+  _restartCleanupForTests();
+});
 
 beforeEach(() => {
   redisReady.value = true;
@@ -175,14 +188,14 @@ describe('spent-proof ledger retirement', () => {
 
   afterEach(() => {
     vi.useRealTimers();
-    // Stop-then-start, not a bare start: the fake-timer case leaves an interval
-    // that was created under faked timers and would never fire again, and
-    // `_restartCleanupForTests` is a no-op while one is already registered.
+    // Stop without restarting: the file-wide pause above is what keeps a real
+    // tick out of these assertions, and the fake-timer case leaves behind an
+    // interval created under faked timers that would never fire again. The
+    // file's `afterAll` puts a live cleaner back.
     _stopCleanupForTests();
-    _restartCleanupForTests();
   });
 
-  it.skipIf(!redisPresent)('retires entries only once their sweeps land, and sweeps every entry it holds', async () => {
+  it.skipIf(!redisPresent)('sweeps every entry it holds, retiring each only once its own delete lands', async () => {
     const redis = getRedis()!;
     // Keys that are deliberately still alive while their ledger entries stand:
     // the pairing an unconfirmed compensating delete leaves behind, recreated
@@ -199,11 +212,18 @@ describe('spent-proof ledger retirement', () => {
 
     _drainSpentConsentOpsForTests();
 
-    // Retirement trails dispatch by a round-trip: the entry may leave only
-    // once its `DEL` resolves, so the size assertion has to wait for the
-    // confirmation rather than sample the map synchronously. Without the
-    // sweep, each key would sit out the rest of its TTL with no ledger entry
-    // left to refuse it, which is the orphan the drain exists to prevent.
+    // Nothing has retired yet, and this samples it deterministically: the drain
+    // only DISPATCHES here, and no `.then()` can run until this synchronous
+    // block yields, so a real round-trip cannot beat the assertion. Retiring on
+    // dispatch instead of on confirmation empties the ledger by now and fails
+    // here. (The consequence of that mutation — a spent proof going unrefused
+    // while its key still stands — is pinned in the offline-queue suite, which
+    // can make the dispatched delete actually reject.)
+    expect(_getSpentConsentOpsSizeForTests()).toBe(2);
+
+    // Then the confirmations land and both entries retire. Without the sweep,
+    // each key would sit out the rest of its TTL with no ledger entry left to
+    // refuse it, which is the orphan the drain exists to prevent.
     expect(await waitFor(() => _getSpentConsentOpsSizeForTests() === 0, 5_000)).toBe(true);
     for (const token of tokens) {
       expect(await redis.exists(seedKey(token))).toBe(0);
@@ -257,10 +277,12 @@ describe('spent-proof ledger retirement', () => {
     _setSpentConsentOpForTests(token);
     expect(_getSpentConsentOpsSizeForTests()).toBe(1);
 
-    // The tick is the SOLE retirement trigger for an entry written while the
-    // client stayed `ready` (a `commandTimeout` against a stalled server emits
-    // no later `ready` transition to sweep on), so its call into the drain has
-    // to be pinned. Fake timers are safe here only because the interval is
+    // For an entry written while the client stayed `ready` (a `commandTimeout`
+    // against a stalled server emits no later `ready` transition to sweep on),
+    // the tick is the only trigger that sweeps it WITHOUT a further
+    // presentation of the proof — a replay's own resolved `GETDEL` would also
+    // retire it, but nothing guarantees a replay arrives. So the tick's call
+    // into the drain has to be pinned. Fake timers are safe here only because the interval is
     // recreated under them and the connection is healthy, so no ioredis
     // reconnect or command timer is pending to be frozen.
     _stopCleanupForTests();

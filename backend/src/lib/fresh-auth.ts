@@ -893,12 +893,16 @@ const inFlightConsumes = new Set<string>();
 /** Consent-op proofs whose burn was won by the in-memory tier while the
  *  canonical Redis copy could NOT be confirmed removed. Membership is the whole
  *  record. An entry has to outlive the thing it guards, and no clock can bound
- *  the key's life from this side — ioredis retains an issuing `SET` whose
- *  socket closed unreplied and resends it at recovery with a fresh full `EX`
- *  (`autoResendUnfulfilledCommands` defaults true) — so entries deliberately
- *  carry no deadline: one leaves only when some command's resolution proves the
- *  canonical key unreadable. Retiring an entry while the key it guards is still
- *  readable is the one shape that reopens the replay.
+ *  the key's life from this side: ioredis retains an issuing `SET` whose socket
+ *  closed unreplied and resends it at recovery with a fresh full `EX`
+ *  (`autoResendUnfulfilledCommands` defaults true). That retention needs a TCP
+ *  connect to intervene — the retained deque is only decoupled from the
+ *  retry-ceiling flush by `resetCommandQueue` on a successful connect — but
+ *  where it survives, the key's life restarts from recovery and outruns any
+ *  deadline computed at burn time. So entries deliberately carry no deadline:
+ *  one leaves only when some command's resolution proves the canonical key
+ *  unreadable. Retiring an entry while the key it guards is still readable is
+ *  the one shape that reopens the replay.
  *
  *  Why a ledger is needed at all: the compensating `DEL` issued after an
  *  in-memory-arbitrated burn is not guaranteed to land, in either of the two
@@ -907,8 +911,9 @@ const inFlightConsumes = new Set<string>();
  *   - The client was mid-flap, so the `DEL` was queued rather than sent. ioredis
  *     rejects the entire offline queue with `MaxRetriesPerRequestError` on every
  *     reconnect attempt divisible by `maxRetriesPerRequest + 1`, so on this
- *     client's backoff curve a queued command survives roughly two seconds of
- *     downtime — well short of an ordinary Redis restart.
+ *     client's backoff curve (200ms linear, flushing on the fourth close) a
+ *     queued command survives a little over a second of downtime — well short
+ *     of an ordinary Redis restart.
  *   - The client was ready and the burn's `GETDEL` was dispatched and still
  *     rejected: a connection dropped mid-command, or `commandTimeout` fired
  *     against a connected-but-stalled server. The compensating `DEL` that
@@ -950,11 +955,13 @@ const spentConsentOps = new Set<string>();
  *  Age proves nothing here. However stale the entry, the key it guards can
  *  still be readable — an unreplied issuing `SET` is resent at recovery with a
  *  fresh full `EX` — so a stale entry can be the ONLY refusal left standing.
- *  Answering yes is always safe: entries are written only for proofs that
- *  already authorized an action, so the worst this costs is refusing a proof
- *  that was spent anyway. The map is bounded by confirmed sweeps, not by time;
- *  the drain documents the one shape that retains an entry for the process
- *  lifetime, and why that is accepted. */
+ *  Answering yes is always safe: an entry exists only for a proof that was
+ *  already SPENT, and a spent proof is not retryable by design (the burn runs
+ *  ahead of the username and target checks, so even a proof refused by those is
+ *  deliberately not reusable). The worst this costs is refusing that proof
+ *  again. The ledger is bounded by confirmed sweeps, not by time; the drain
+ *  documents the shapes that retain an entry indefinitely, and why that is
+ *  accepted. */
 function isConsentOpSpent(token: string): boolean {
   return spentConsentOps.has(token);
 }
@@ -997,14 +1004,21 @@ function isConsentOpSpent(token: string): boolean {
  *  windows, and also the one where an operator is most likely to bounce the
  *  backend, since a stalled Redis presents as a hanging API.
  *
- *  One shape retains an entry for the process lifetime: a delete that rejects
- *  forever while the client stays ready (an ACL denial would be the canonical
- *  cause). Accepted deliberately. Retention only ever refuses a proof that WAS
- *  burned once, and this deployment has no per-command ACLs — past
- *  authentication, a dispatched command fails only by timeout or connection
- *  loss, and both end. Retiring on server-replied error classes instead would
- *  trade that bounded growth for a guess that the error also implies the key
- *  is unreadable, which a permission denial does not. */
+ *  Two shapes retain entries indefinitely, and both are accepted deliberately.
+ *  A Redis that never comes back retains everything, by the no-client rule
+ *  above. And even with the client healthy and `ready`, a server that
+ *  persistently refuses writes retains every entry it is asked to sweep: the
+ *  realistic cause is not an ACL denial but `-MISCONF`, which a default
+ *  `stop-writes-on-bgsave-error yes` returns to every write command — `DEL`
+ *  included — for as long as the last background save is failing. Under that
+ *  incident each tick re-dispatches one rejecting `DEL` per entry.
+ *
+ *  Accepted, because retention only ever refuses a proof that WAS burned once,
+ *  and growth is one entry per unconfirmed consent-op burn, each costing an
+ *  attacker a full argon2 verify or an ORCID round-trip to create. Retiring on
+ *  server-replied error classes instead would trade that bounded growth for a
+ *  guess that the error also implies the key is unreadable — which neither a
+ *  permission denial nor a persistence failure does. */
 function drainSpentConsentOps(): void {
   if (spentConsentOps.size === 0) return;
   const redis = getRedis();
@@ -1073,7 +1087,10 @@ function armDrainOnReady(client: Redis): void {
   client.on('ready', onRedisReadyDrain);
 }
 
-/** Periodic cleanup so the maps don't grow unbounded under no-Redis ops.
+/** Periodic cleanup so `memStore` doesn't grow unbounded under no-Redis ops,
+ *  and so the ledger drain has a backstop trigger when no `ready` transition
+ *  follows. Only the `memStore` half prunes during an outage: the drain keeps
+ *  every ledger entry while no client is reachable, deliberately.
  *  Same shape as the orcid_state cleaner in orcid.ts. Wrapped in a
  *  start/stop pair so tests can deterministically pause the cleaner during
  *  fake-timer scenarios. */

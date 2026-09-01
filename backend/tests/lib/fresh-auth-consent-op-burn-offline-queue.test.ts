@@ -7,7 +7,8 @@
  * is queued offline rather than sent. ioredis rejects that entire queue with
  * `MaxRetriesPerRequestError` once its reconnect count reaches
  * `maxRetriesPerRequest`, which on the production backoff curve
- * (`redisRetryStrategy`, 200ms linear) lands about two seconds into an outage.
+ * (`redisRetryStrategy`, 200ms linear) lands a little over a second into an
+ * outage, on the fourth close.
  * An ordinary Redis restart comfortably outlasts that, so the delete is flushed
  * unsent, the canonical copy keeps the rest of its 5-minute TTL, and a proof
  * that has ALREADY authorized one critical action reads back out of Redis and
@@ -412,14 +413,24 @@ describe('consent-op burn across a Redis outage that outlives the offline queue'
     if (!replay.valid) {
       expect(replay.reason).toBe('expired');
     }
+
+    // Proof the refusal came from the ledger and not from tier absence. A
+    // sibling worker's per-file keyspace flush landing between the existence
+    // check and the replay would otherwise satisfy both assertions above
+    // without the ledger being consulted; only a replay that actually reached
+    // the burn retires its entry here.
+    expect(_getSpentConsentOpsSizeForTests()).toBe(0);
   }, 60_000);
 
   it.skipIf(!redisPresent)('retains the entry when the drain delete rejects with the client still ready, and still refuses the replay', async () => {
     const client = proxied!;
     // Plant the post-burn state directly: canonical key readable, in-memory
-    // record absent, ledger entry held. A burn cannot produce it in this test,
-    // because reaching the ledger write requires the Redis leg to fail while
-    // this scenario needs the client to stay `ready` throughout.
+    // record absent, ledger entry held. A burn under the same stall DOES reach
+    // this state — the ledger write is gated on the `GETDEL` not resolving, not
+    // on the client leaving `ready` — but getting there serializes three
+    // command timeouts (the read, the burn's `GETDEL`, its compensating `DEL`)
+    // and forces issuance before the stall. Planting keeps the drain's own
+    // rejected delete the only failure in the frame, which is the subject here.
     const token = 'stalled-del-token';
     const key = `${config.appTag}:fresh_auth:token:${token}`;
     await observer!.set(
