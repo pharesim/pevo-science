@@ -7,8 +7,21 @@ import {
 } from '../api.js';
 import { broadcastOps } from '../signer.js';
 import { REAUTH_PROMPT_BUSY } from '../components/reauth-modal.js';
+// The storage keys for the subject-bound caches below. Defined in
+// subject-bound-keys.js — the single source of truth the auth store's subject
+// scrub and its test-fixture mirror loop over — never as private literals
+// here, so the scrub and the fixture cannot drift from the keys this module
+// actually writes. The semantics of each cache stay documented below, next to
+// the code that implements it.
+import {
+  SESSION_PROOF_KEY,
+  CONSENT_OP_PROOF_KEY,
+  RETURN_PATH_KEY,
+  ORCID_MODE_KEY,
+} from './subject-bound-keys.js';
 
-// In-tab cache of the session-kind fresh_auth_proof WINDOW. The proof is
+// In-tab cache of the session-kind fresh_auth_proof WINDOW, stored under
+// `SESSION_PROOF_KEY`. The proof is
 // target-less, bound to the JWT subject, and multi-use: it authorizes the
 // non-consent broadcast surface and the IPFS upload-token pre-flight
 // repeatedly until the window closes. Two deadlines bound it and the window
@@ -20,7 +33,6 @@ import { REAUTH_PROMPT_BUSY } from '../components/reauth-modal.js';
 // Held in sessionStorage so the window survives the ORCID OAuth round-trip
 // (publish page → orcid.org → /orcid/callback → return path) without
 // leaking across tabs or persisting past tab close.
-const PROOF_KEY = 'pevo_fresh_auth_session_proof';
 
 // A window closing sooner than this reads as already spent to the
 // acquire-before-commit gate. Re-authing deliberately ahead of a submit beats
@@ -29,7 +41,8 @@ const PROOF_KEY = 'pevo_fresh_auth_session_proof';
 // window is worth attempting.
 const WINDOW_PREFLIGHT_MARGIN_MS = 120_000;
 
-// In-tab cache of a consent_op-kind fresh_auth_proof. Target-bound to the
+// In-tab cache of a consent_op-kind fresh_auth_proof, stored under
+// `CONSENT_OP_PROOF_KEY`. Target-bound to the
 // triple `(action, root_author, root_permlink)` and, for name-only-route
 // credit ops, the additional per-op fields the backend binds: `author_index`
 // (claim/approve) and `claimer` (approve/revoke). The broadcast consumer MUST
@@ -44,12 +57,10 @@ const WINDOW_PREFLIGHT_MARGIN_MS = 120_000;
 // single-use bearer bound to the JWT subject with the same 5-minute TTL as
 // session-kind proofs; backend invariant is identical (consumed atomically on
 // broadcast attempt, gone post-attempt whether success or failure).
-const CONSENT_OP_PROOF_KEY = 'pevo_fresh_auth_consent_op_proof';
 
-// Stashed pre-redirect context so the callback handler can navigate the
-// user back to the page they initiated the action on. Cleared by the
-// callback handler after the proof lands.
-const RETURN_PATH_KEY = 'pevo_fresh_auth_return_to';
+// `RETURN_PATH_KEY` stashes pre-redirect context so the callback handler can
+// navigate the user back to the page they initiated the action on. Cleared by
+// the callback handler after the proof lands.
 
 // Sentinel for `broadcastWithFreshAuth` callers: when minting required a
 // full-page redirect to ORCID, broadcast cannot complete in this tick.
@@ -367,7 +378,7 @@ let _memoryWindow = null;
 
 function persistWindow(entry) {
   try {
-    sessionStorage.setItem(PROOF_KEY, JSON.stringify(entry));
+    sessionStorage.setItem(SESSION_PROOF_KEY, JSON.stringify(entry));
     _memoryWindow = null;
   } catch {
     // The window still covers the rest of this page load through the mirror;
@@ -387,7 +398,7 @@ function persistWindow(entry) {
 function dropWindow() {
   _memoryWindow = null;
   try {
-    sessionStorage.removeItem(PROOF_KEY);
+    sessionStorage.removeItem(SESSION_PROOF_KEY);
   } catch {
     /* noop */
   }
@@ -398,7 +409,7 @@ function dropWindow() {
 function storedWindow() {
   let raw;
   try {
-    raw = sessionStorage.getItem(PROOF_KEY);
+    raw = sessionStorage.getItem(SESSION_PROOF_KEY);
   } catch {
     return _memoryWindow;
   }
@@ -742,8 +753,11 @@ export async function resolvePasswordFactor() {
 // Start the ORCID round-trip that opens a session window. The only factor a
 // passwordless account has, and a full-page navigation — callers must have
 // nothing unsaved in flight when this fires (see `ensureSessionWindow`).
-export async function beginSessionAuthOrcidRedirect() {
-  return beginOrcidFreshAuthRedirect('session_auth', {}, '/');
+// `isStale` is the acquisition's teardown predicate, threaded through to the
+// redirect helper's pre-navigation re-check; callers outside an acquisition
+// flight pass none and keep the plain redirect.
+export async function beginSessionAuthOrcidRedirect(isStale) {
+  return beginOrcidFreshAuthRedirect('session_auth', {}, '/', isStale);
 }
 
 // Acquire a session-kind window: reuse the cached one, or open a new one
@@ -823,8 +837,15 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
     // The navigation policy for the passwordless outcome, applied in one
     // place: the known-passwordless branch and the assumed-password fallback
     // below share it, so the two cannot diverge on when a redirect may fire.
+    // The redirect leg carries the flight's teardown predicate: the start
+    // round-trip inside it is the one await left between the generation
+    // checks here and the navigation, so the helper re-checks at that
+    // boundary and unwinds a stale flight as a clean cancel instead of
+    // navigating for a subject this tab no longer represents.
     const orcidOrRefuse = () =>
-      allowRedirect ? beginSessionAuthOrcidRedirect() : FRESH_AUTH_REAUTH_REQUIRED;
+      allowRedirect
+        ? beginSessionAuthOrcidRedirect(() => generation !== _acquireGeneration)
+        : FRESH_AUTH_REAUTH_REQUIRED;
 
     const factor = await resolvePasswordFactor();
     if (generation !== _acquireGeneration) return FRESH_AUTH_CANCELLED;
@@ -1049,7 +1070,18 @@ export async function freshAuthWindowReady(opts) {
 // `extra` (the action plus any target fields the backend binds) and a default
 // return path used only when `window.location.pathname` is empty. Returns
 // FRESH_AUTH_REDIRECT_PENDING; throws on transport / config / invalid-host errors.
-async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault) {
+//
+// `isStale` (optional) is a teardown predicate re-checked after the start
+// round-trip resolves, immediately before the navigation: the round-trip is
+// an await a subject teardown can land inside, and a navigation issued past
+// it would send the tab to ORCID on behalf of a subject it no longer
+// represents. A stale flight unwinds the keys written above (the scrub has
+// usually removed them already; the unwind keeps that true even when it has
+// not) and resolves as FRESH_AUTH_CANCELLED — the same silent clean-cancel
+// every other teardown boundary in the acquisition resolves to. Callers
+// without a teardown-scoped flight (the page-level and consent-op redirect
+// starters) pass none and keep the unconditional navigation.
+async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault, isStale) {
   const returnPath = window.location.pathname || returnPathDefault;
   try {
     sessionStorage.setItem(RETURN_PATH_KEY, returnPath);
@@ -1061,15 +1093,21 @@ async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault) {
   // second tab in a different mode (e.g. 'link') would silently overwrite this
   // tab's marker and route the callback to the wrong handler. sessionStorage is
   // per-tab and survives the OAuth round-trip within the originating tab.
-  sessionStorage.setItem('pevo_orcid_mode', mode);
+  sessionStorage.setItem(ORCID_MODE_KEY, mode);
 
   let data;
   try {
     data = await startOrcid(mode, extra);
   } catch (err) {
-    sessionStorage.removeItem('pevo_orcid_mode');
+    sessionStorage.removeItem(ORCID_MODE_KEY);
     clearReturnPath();
     throw err;
+  }
+
+  if (isStale?.()) {
+    sessionStorage.removeItem(ORCID_MODE_KEY);
+    clearReturnPath();
+    return FRESH_AUTH_CANCELLED;
   }
 
   // Validate the redirect host before navigating — open-redirect defense
@@ -1080,12 +1118,12 @@ async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault) {
   try {
     target = new URL(data.redirect_url);
   } catch {
-    sessionStorage.removeItem('pevo_orcid_mode');
+    sessionStorage.removeItem(ORCID_MODE_KEY);
     clearReturnPath();
     throw new Error('Invalid ORCID redirect URL');
   }
   if (!ORCID_REDIRECT_HOSTS.includes(target.hostname)) {
-    sessionStorage.removeItem('pevo_orcid_mode');
+    sessionStorage.removeItem(ORCID_MODE_KEY);
     clearReturnPath();
     throw new Error('Invalid ORCID redirect URL');
   }

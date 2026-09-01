@@ -5,6 +5,13 @@
 // (atomic {token, expires_at} pair, preserve-on-undefined for the rest)
 // across the 4+ test files that exercise login-style call sites.
 //
+// The subject-scrub key set is imported from the same module the real
+// store's scrub loops (subject-bound-keys.js — dependency-free, so pulling
+// it in here cannot disturb the consuming suites' partial module mocks),
+// never hand-copied: a key added there is scrubbed by this mirror
+// automatically. The parity test in auth.test.js additionally pins this
+// mirror's sessionStorage effect against the real `loginFromResponse`.
+//
 // Usage:
 //   import { mockLoginFromResponse } from './fixtures/mock-auth.js';
 //   // ...
@@ -16,6 +23,11 @@
 // The function is designed to be invoked as a method on a `this`-bound
 // store object: `vi.fn(mockLoginFromResponse)` preserves the `this` ref
 // when the consuming code calls `Alpine.store('auth').loginFromResponse(...)`.
+
+import {
+  SUBJECT_BOUND_STORAGE_KEYS,
+  TAB_SUBJECT_KEY,
+} from '../../../src/lib/subject-bound-keys.js';
 
 export function mockLoginFromResponse(data) {
   // Mirror of the helper's subject-adoption step: a response subject that
@@ -29,25 +41,18 @@ export function mockLoginFromResponse(data) {
   if (subject) {
     let marker = null;
     try {
-      marker = sessionStorage.getItem('pevo_tab_subject');
+      marker = sessionStorage.getItem(TAB_SUBJECT_KEY);
     } catch { /* unavailable */ }
     const previous = marker ?? this.username;
     if (previous && previous !== subject) {
-      for (const key of [
-        'pevo_fresh_auth_session_proof',
-        'pevo_fresh_auth_consent_op_proof',
-        'pevo_fresh_auth_return_to',
-        'pevo_orcid_mode',
-        'pevo_orcid_return_to',
-        'pevo_tab_subject',
-      ]) {
+      for (const key of SUBJECT_BOUND_STORAGE_KEYS) {
         try {
           sessionStorage.removeItem(key);
         } catch { /* noop */ }
       }
     }
     try {
-      sessionStorage.setItem('pevo_tab_subject', subject);
+      sessionStorage.setItem(TAB_SUBJECT_KEY, subject);
     } catch { /* noop */ }
   }
   if (data.token && data.expires_at) {

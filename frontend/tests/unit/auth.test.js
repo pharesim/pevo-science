@@ -53,6 +53,11 @@ import {
   slideSessionWindow,
   clearCachedSessionProof,
 } from '../../src/lib/fresh-auth.js';
+// The fixture mirror of loginFromResponse used by the suites that mock the
+// auth store, pinned against the real store by the parity test below, which
+// also seeds every key in the shared subject-bound list.
+import { mockLoginFromResponse } from './fixtures/mock-auth.js';
+import { SUBJECT_BOUND_STORAGE_KEYS } from '../../src/lib/subject-bound-keys.js';
 
 describe('auth store', () => {
   let localStorageData;
@@ -600,6 +605,64 @@ describe('auth store', () => {
       // the rest of the subject-bound state.
       slideSessionWindow();
       expect(sessionStorageData['pevo_fresh_auth_session_proof']).toBeUndefined();
+    });
+
+    it('the fixture mirror and the real store leave identical sessionStorage behind a login', () => {
+      // fixtures/mock-auth.js#mockLoginFromResponse reimplements the
+      // subject-adoption scrub for suites that mock the auth store. Both now
+      // loop the shared key list (subject-bound-keys.js), but the mirror
+      // cannot execute the real scrub's clear functions, so this parity pin
+      // is what binds the two implementations end to end: the same login
+      // sequence, run from identically seeded state through the real store
+      // and through the mirror, must leave the same sessionStorage — for a
+      // cross-user login (both scrub), a same-subject re-login (both
+      // preserve), and keys not bound to the subject (both leave alone). A
+      // subject-bound cache scrubbed by one implementation and kept by the
+      // other fails here instead of silently un-proving the mirror-backed
+      // suites.
+      const loginData = (username) => ({
+        token: `jwt-${username}`,
+        expires_at: FUTURE_EXPIRY,
+        username,
+        custody: 'light',
+        is_accredited: false,
+        accreditation: null,
+      });
+      // Seed the named keys the sibling tests use, then generically seed
+      // every remaining key in the shared list — so a key added to the list
+      // later is exercised by this pin automatically instead of passing
+      // vacuously for never having been seeded.
+      const seedEverySubjectBoundKey = () => {
+        seedSubjectBoundKeys();
+        for (const key of SUBJECT_BOUND_STORAGE_KEYS) {
+          sessionStorageData[key] ??= `seeded-${key}`;
+        }
+      };
+      const runThrough = (login) => {
+        sessionStorageData = {};
+        login(loginData('alice'));
+        seedEverySubjectBoundKey();
+        sessionStorageData['pevo_unrelated_key'] = 'survives';
+        login(loginData('bob'));
+        const afterCrossUser = { ...sessionStorageData };
+        seedEverySubjectBoundKey();
+        login(loginData('bob'));
+        return { afterCrossUser, afterSameSubject: { ...sessionStorageData } };
+      };
+
+      const real = runThrough((data) => store.loginFromResponse(data));
+      const mirrorStore = {
+        username: null,
+        _saveSession: vi.fn(),
+        _startAccreditationPolling: vi.fn(),
+      };
+      const mirrored = runThrough((data) => mockLoginFromResponse.call(mirrorStore, data));
+
+      expect(mirrored.afterCrossUser).toEqual(real.afterCrossUser);
+      expect(mirrored.afterSameSubject).toEqual(real.afterSameSubject);
+      // The scrub is a scrub, not a wipe: state not bound to the subject
+      // survives the cross-user login in both implementations.
+      expect(real.afterCrossUser.pevo_unrelated_key).toBe('survives');
     });
   });
 

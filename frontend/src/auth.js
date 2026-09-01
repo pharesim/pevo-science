@@ -10,16 +10,21 @@ import {
   abandonInFlightAcquisitions,
   dismissOpenReauthPrompt,
 } from './lib/fresh-auth.js';
+// TAB_SUBJECT_KEY: the per-tab marker naming the JWT subject this tab's
+// subject-bound sessionStorage state (fresh-auth proof caches, ORCID flow
+// keys) belongs to. Lives in sessionStorage so it shares that state's
+// lifetime: it survives reloads and the ORCID round-trip alongside the
+// proofs, and a marker that disagrees with an incoming subject is exactly
+// the signal that another subject's leftovers are still in this tab. Written
+// by _adoptSubject, removed with the rest of the subject-bound keys by
+// _scrubSubjectBoundState, which loops SUBJECT_BOUND_STORAGE_KEYS — the
+// shared key-set truth (see subject-bound-keys.js).
+import {
+  SUBJECT_BOUND_STORAGE_KEYS,
+  TAB_SUBJECT_KEY,
+} from './lib/subject-bound-keys.js';
 
 const SESSION_KEY = 'pevo_session';
-// Per-tab marker naming the JWT subject this tab's subject-bound
-// sessionStorage state (fresh-auth proof caches, ORCID flow keys) belongs to.
-// Lives in sessionStorage so it shares that state's lifetime: it survives
-// reloads and the ORCID round-trip alongside the proofs, and a marker that
-// disagrees with an incoming subject is exactly the signal that another
-// subject's leftovers are still in this tab. Written by _adoptSubject,
-// removed by _scrubSubjectBoundState.
-const TAB_SUBJECT_KEY = 'pevo_tab_subject';
 
 export function initAuth() {
   Alpine.store('auth', {
@@ -228,10 +233,13 @@ export function initAuth() {
       }
     },
 
-    // THE scrub list for state bound to the JWT subject. Runs on explicit
+    // THE scrub for state bound to the JWT subject. Runs on explicit
     // logout (disconnect) and on any subject change detected by
     // _adoptSubject. Add any future subject-bound cache HERE, not at a call
-    // site, so every teardown path picks it up.
+    // site, so every teardown path picks it up — and add its sessionStorage
+    // key to SUBJECT_BOUND_STORAGE_KEYS (subject-bound-keys.js), which this
+    // scrub and the test-fixture mirror of it both loop, so the fixture
+    // cannot drift from what the real scrub removes.
     _scrubSubjectBoundState() {
       // Scrub sessionStorage state bound to the JWT subject so cross-user
       // re-login on a shared browser cannot pick up a stale fresh-auth proof
@@ -260,10 +268,13 @@ export function initAuth() {
       // teardown, rather than relying on the microtask ordering that makes the
       // two interchangeable today.
       dismissOpenReauthPrompt();
+      // The shared key list is the storage-removal truth: the proof-cache
+      // clears above already removed their own keys (plus module state the
+      // list cannot carry), so for those this loop is an idempotent re-remove,
+      // and for the ORCID flow keys and the tab-subject marker it is the
+      // removal itself.
       try {
-        sessionStorage.removeItem('pevo_orcid_mode');
-        sessionStorage.removeItem('pevo_orcid_return_to');
-        sessionStorage.removeItem(TAB_SUBJECT_KEY);
+        for (const key of SUBJECT_BOUND_STORAGE_KEYS) sessionStorage.removeItem(key);
       } catch {
         /* sessionStorage unavailable (private mode); noop */
       }

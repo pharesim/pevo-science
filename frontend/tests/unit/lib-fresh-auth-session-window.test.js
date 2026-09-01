@@ -955,6 +955,33 @@ describe('teardown abandons in-flight acquisitions', () => {
     expect(window.location.href).toBe('');
   });
 
+  it('an ORCID redirect start resolving after teardown does not navigate', async () => {
+    // The passwordless branch's `startOrcid` round-trip is the last await
+    // before the full-page navigation: both passwordless outcomes reach it
+    // after their final generation check, so a teardown landing inside the
+    // round-trip must be re-checked at the navigation itself. Without that,
+    // the resolution sends the new subject's tab to ORCID on the previous
+    // subject's behalf. The flight unwinds as a clean cancel instead, and
+    // the redirect keys it wrote are cleared, mirroring the error unwinds.
+    mockFetchEmailStatus.mockResolvedValueOnce({ status: 'ok', data: { hasPassword: false } });
+    let resolveStart;
+    mockStartOrcid.mockReturnValueOnce(
+      new Promise((resolve) => { resolveStart = resolve; }),
+    );
+
+    const pending = ensureSessionWindow();
+    await tick(); // the startOrcid round-trip is now pending
+    teardownSubjectState();
+
+    resolveStart({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+    const outcome = await pending;
+
+    expect(outcome).toEqual({ ready: false, cancelled: true });
+    expect(window.location.href).toBe('');
+    expect(sessionStorage.getItem('pevo_orcid_mode')).toBeNull();
+    expect(sessionStorage.getItem('pevo_fresh_auth_return_to')).toBeNull();
+  });
+
   it('a stale factor resolution settling late does not evict its successor from the in-flight slot', async () => {
     let resolveStale;
     mockFetchEmailStatus.mockReturnValueOnce(
