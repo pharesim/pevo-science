@@ -121,3 +121,58 @@ green with pins unchanged (the moved ladder carries no `fetchEmailStatus` /
    `ensureSessionWindow` is fail-open (reads as ready). Today every sentinel
    is exported because call sites compare identity; the structure change
    weakens that pressure over time.
+
+---
+
+## Architect re-review (2026-09-01) — HELD PENDING FIXES:
+
+Full /ce-code-review fan-out on commit 32681cf9 (9 reviewers). The
+no-behavior-change claim VERIFIED independently by five lenses (correctness,
+security, reliability, frontend-races, adversarial intent check): sentinel
+dispatch exact, extracted ladder identical to both pre-refactor copies, toast
+copy and upload codes verbatim. Six lenses clean. Three findings survived
+synthesis + independent validation; user triaged all three onto this hold.
+
+1. **(P1, validated) Delegate the upload pre-flight's outcome-key scan to the
+   canonical helper.** `windowProof()` in `ipfs-upload.js` reimplements the
+   `Object.keys(...).find((key) => outcome[key])` scan that `windowOutcomeKey`
+   (`fresh-auth.js`) exports as the one registration-point scan, and the two
+   copies already diverge (the canonical one optional-chains `outcome?.[key]`).
+   The file already imports from `fresh-auth.js`, so this is a named-import
+   addition, not a new dependency. Suggested shape:
+   `const code = UPLOAD_CODE_BY_WINDOW_OUTCOME[windowOutcomeKey(outcome)] ?? UPLOAD_CANCELLED;`
+   (a null key indexes to undefined, so the `??` keeps the existing
+   unknown-outcome fall-through to a cancel).
+
+2. **(P2, validated) Add the shared gate's retry-path consumption specs.**
+   Both orchestrator suites test the initial mint only; no spec drives
+   `consentOpFreshAuthRetryGate`'s retry side at its consumption site. Add,
+   through the public orchestrators (either surface, or one each — the ladder
+   is shared now, so one pair covers both):
+   (a) first `run()` rejects remintable FRESH_AUTH_REQUIRED, retry mint
+   resolves `FRESH_AUTH_CANCELLED` -> expect `{ cancelled: true }`, and
+   `FRESH_AUTH_MINT_FAILED` -> expect `{ freshAuthFailed: true }`;
+   (b) the retry's `run()` rejects a NON-fresh-auth error -> expect it to
+   propagate to the caller's op-level handling (rethrow), not map to
+   `freshAuthFailed`. The existing non-fresh-auth specs reject on the FIRST
+   `run()` and only hit the gate's top-level entry check.
+
+3. **(P2, design call resolved: fail closed) Close the unregistered-sentinel
+   fall-through in `ensureSessionWindow`.** An acquisition result that is
+   neither a registered sentinel nor a string must map to
+   `{ ready: false, failed: true }` instead of falling through to
+   `{ ready: true, proof }` — behavior-preserving today (every legitimate
+   light-path proof is a non-empty string and the null-valued redirect
+   sentinel is registered), and it closes the fail-open direction the new
+   suite currently pins (the internally-resolved assertion asserts exactly the
+   input that reads as ready). Add a suite case pinning an unregistered
+   Symbol to a non-ready outcome. This resolves this task's residual 2 as
+   triaged.
+
+Residual disposition from triage: residual 1 (extending the census to the
+three remaining per-member chains) is ACCEPTED as scoped — those chains
+classify a different sub-vocabulary into return shapes, and forcing them into
+the table pattern was judged not a net win; no follow-up filed. Soft-bucket
+observations (fresh-auth.js size growth, UPLOAD_ERROR_TEXT completeness,
+empty-catalog toast testing, mid-ladder teardown coverage) recorded in the
+review artifacts, no action required this round.
