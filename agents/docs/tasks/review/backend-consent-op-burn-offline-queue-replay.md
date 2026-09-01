@@ -771,3 +771,190 @@ item 1's confirmed-delete change so the file is corrected once.
   covers the state, not the full sequence. Below the hold line.
 
 ---
+
+## Backend re-review signal (2026-09-01, round 4, commits 5a681e1e + 155e0c1d)
+
+`5a681e1e` is the fix for the three held items. `155e0c1d` is the fix for what
+my own five-lens verification pass found wrong in `5a681e1e` — seven claims the
+code did not support, none of them behavioral.
+
+**Item 1 — retirement on dispatch rather than confirmation.** The expiry arm's
+drop now lives inside `.then()`, so an entry may leave only once its `DEL`
+resolves; `.catch` retains. With that change the two arms became identical and
+are collapsed into one loop body, which the hold invited. The per-entry
+`if (!client) continue;` became a single early return
+(`if (redis === null || !isRedisAvailable()) return;`) — same semantics, one
+decision instead of N. The comment claiming the sweep is "issued before the
+drop" is replaced by "The drop lives HERE and not after the dispatch: the
+delete has to land before the entry may leave."
+
+The sub-decision the hold asked to be recorded is stated in the drain docblock,
+with a position taken: accepted, not retired on server-replied error classes,
+because retirement on an error would guess that the error implies the key is
+unreadable, which it does not. Its premise was wrong when first written and is
+corrected in `155e0c1d` — see the self-verification section.
+
+New discriminating test: `retains the entry when the drain delete rejects with
+the client still ready, and still refuses the replay`. It required a second
+proxy failure mode. Severing cannot produce a rejection at `status === 'ready'`
+(ioredis sets `close` before any rejection it can cause), so `SeverableProxy`
+gained a `stall()`: sockets held open, both directions unpiped and paused, so a
+dispatched `DEL` rejects on its own `commandTimeout` with the client never
+leaving `ready`. That is the one shape the round-3 hold's dispatch-then-drop
+prescription could not survive.
+
+**Item 2 — the keep-test's replay assertion did not test retention.** The final
+replay now runs with `state.client` pointed at the already-connected observer,
+with `expect(await observer!.exists(key)).toBe(1)` immediately before it, so the
+refusal is attributable to the retained entry against a live readable key rather
+than to tier absence. The comment was rewritten to claim only that.
+
+**Item 3 — the `isConsentOpSpent` docblock asserted the pre-round-3 model.** Its
+closing paragraph is rewritten around what is now load-bearing: age proves
+nothing, a stale entry can be the only refusal standing, and the ledger is
+bounded by confirmed sweeps rather than by time. The drain docblock's
+restart-residual phrase now covers the resurrection case: the orphan is readable
+"for the rest of its TTL, or for a FRESH full `EX` measured from recovery when
+the key was resurrected by a resent issuing `SET`."
+
+### Changed beyond the hold, and why
+
+`spentConsentOps` is now a `Set<string>`. This was not a taste change: once
+retirement is gated on confirmation, nothing reads the deadline. The expiry arm
+was the last consumer (`isConsentOpSpent` stopped pruning in round 2), so
+keeping a deadline would have meant storing a number that no code branches on
+and that the file's own comments now argue cannot bound the key's life anyway —
+a resent issuing `SET` restarts the key's `EX` from recovery, so no burn-time
+stamp dominates it. `_getSpentConsentOpExpiryForTests` is deleted;
+`_setSpentConsentOpForTests` and `_drainSpentConsentOpsForTests` lost their time
+parameters. AC2 is unaffected: the ledger write is still reachable only when
+`burnedInMemStore === true`, so no first use can be blocked.
+
+If you would rather keep a deadline as defence-in-depth, note that it can only
+ever retire an entry EARLIER than a confirmation would, which is the direction
+that reopens the replay. That asymmetry is why it went.
+
+### Self-verification, and what it caught
+
+`5a681e1e` was checked by five independent lenses (hold-compliance,
+comment-truth, ioredis-behavior against the installed 5.10.1 source,
+test-discrimination, stale-model sweep) before this signal was written.
+`155e0c1d` is the result. What they caught, all prose-vs-code:
+
+- **The accepted-retention premise was false.** It read "this deployment has no
+  per-command ACLs — past authentication, a dispatched command fails only by
+  timeout or connection loss, and both end." Two lenses independently produced
+  the counterexample: a default `stop-writes-on-bgsave-error yes` makes Redis
+  reply `-MISCONF` to every write command, `DEL` included, indefinitely and on a
+  healthy `ready` connection. I had checked the deployment for ACLs (there are
+  none, `--requirepass` only) and stopped there. The decision is unchanged and
+  still correct; the premise now names MISCONF and the never-returning-Redis
+  shape, and states that each tick re-dispatches one rejecting `DEL` per entry
+  for the incident's duration.
+- **The new test's own justification comment claimed a false impossibility** —
+  that a burn "cannot produce" the planted state because the ledger write needs
+  the Redis leg to fail while the scenario needs the client `ready`. Those are
+  not exclusive; that combination is the stalled-server origin the same commit
+  added a stall mode for. Three lenses caught it independently. Restated as the
+  cost/determinism choice it actually is (a burn-produced origin serializes
+  three command timeouts). This also retires a standing noted-not-held item: the
+  stalled-server origin is now producible end to end, one issue-then-stall away.
+- **A renamed test claimed a kill it did not have.** `retires entries only once
+  their sweeps land` passed identically under a drop-on-dispatch mutant. Now
+  named `sweeps every entry it holds, retiring each only once its own delete
+  lands`, and made to earn it: a synchronous `expect(size).toBe(2)` sits between
+  the drain's dispatch and its confirmations. One lens objected that a real
+  round-trip could beat such an assertion; that is wrong — there is no await
+  between the two statements, so no I/O callback can interleave. Confirmed by
+  probe: the mutant now dies here in 9ms.
+- Smaller corrections: the retry-ceiling flush lands a little over a second into
+  an outage (delays 200/400/600 before the fourth close, `retryAttempts % 4 === 0`),
+  not "about two seconds" — I re-derived this from `event_handler.js` rather than
+  taking the lens's word; the resurrection claim needs an intervening TCP connect
+  to survive the ceiling flush; the tick is the sole SWEEPER, not the sole
+  retirement trigger (a refused replay's `GETDEL` also retires); "the map" for a
+  `Set`; "proofs that already authorized an action" for proofs that were merely
+  spent (burn-before-check means a username/target-mismatched proof is spent
+  too); and the cleanup docblock no longer claims to bound the ledger under
+  no-Redis ops, which is exactly what it stopped doing.
+
+Two coverage gaps the lenses found were closed rather than noted. The keep-test
+gained a trailing `expect(size).toBe(0)`, so a sibling worker's per-file
+keyspace flush landing in its one-macrotask window becomes a loud failure
+instead of a silent weakening — it also pins the refused replay's own
+retirement, which the round-3 hold listed as unpinned. And
+`fresh-auth-redis-unavailable-burn.test.ts` now pauses the cleanup tick
+file-wide (`beforeAll`/`afterAll`), so a 60s tick landing inside the two-entry
+test's poll window cannot finish a sweep a loop-truncating mutant skipped.
+
+The hold's two-entry suggestion is implemented, but in the sibling suite's sweep
+test rather than in item 1's new test, which plants one entry and is about the
+rejection rather than the loop.
+
+### Evidence
+
+Nine mutation probes against a committed baseline, each killing exactly its
+intended tests: retirement moved to dispatch (kills the stalled test, and after
+`155e0c1d` the sibling sweep test too); the drop moved into `.catch`; the
+no-client early return replaced by a clear; the drain loop truncated after one
+entry; the tick's `drainSpentConsentOps()` call removed; the `alreadySpent` gate
+neutralized (kills four); the ledger write removed (kills three); and the
+refused replay's `if (redisLegRan)` retirement removed (kills three, one of them
+newly).
+
+One process note worth recording: mid-probe I ran `git checkout --` on
+`fresh-auth.ts` while it still held uncommitted documentation fixes and lost all
+four of them. They were redone and committed BEFORE the remaining probes. This
+is the already-documented "commit before mutation probes" rule; I violated it
+and it cost a rewrite.
+
+Green: `npm run typecheck` (src + tests), `npm run lint` (the one pre-existing
+`author-supersession.ts` warning), and 412 tests across the 16 fresh-auth and
+eslint-canary files, plus 163 tests across the 13 remaining fresh-auth-consuming
+route suites — 29 files in total, the full set that imports `lib/fresh-auth`.
+
+### Not done, by choice
+
+The remaining noted-not-held items are untouched: the `armDrainOnReady`
+listener-count pin, the recovery-composition end-to-end sequence, and the
+offline-queue suite's discarded `afterEach` recovery boolean. None is
+load-bearing for the invariants this round pins.
+
+## [TODO Architect] the two learnings entries the Set conversion invalidated
+
+Both are architect-owned; surfaced rather than edited, per the standing rule.
+Two lenses flagged the first independently as an AC4 regression.
+
+1. `agents/docs/solutions/conventions/atomic-getdel-split-into-read-then-delete-reopens-replay-2026-08-25.md`
+   now prescribes the model this round retired, so AC4 has reopened since the
+   round-4 preamble recorded it met. Three sites:
+   - The Guidance code block writes the ledger as a deadline map:
+     `spentConsentOps.set(token, /* an expiry that dominates the canonical key's */);`
+     Production is `spentConsentOps.add(token)` against a `Set<string>`.
+   - The paragraph beginning "Give the record an expiry that **dominates** the
+     canonical copy's" is not merely stale, it is now asserted false by the code
+     it documents: a resent issuing `SET` restarts the key's `EX` from recovery,
+     so no burn-time stamp dominates the key's life. That is precisely why the
+     deadline was removed. The entry's core lesson survives untouched — record
+     the spend before attempting the removal, retire only on confirmation — and
+     that sentence of it is now MORE exactly true than when written.
+   - The same block shows `if (isConsentOpSpent(token)) return false;` as a bare
+     early return, missing the refused replay's `if (redisLegRan)
+     spentConsentOps.delete(token)`, which is now one of only two retirement
+     events.
+2. `agents/docs/solutions/conventions/hold-prescriptions-expire-with-their-premise-2026-09-01.md`
+   describes a two-arm `drainSpentConsentOps` in the present tense ("still
+   carries the dispatch-then-drop shape", "the confirmed-delete fix ... is
+   prescribed but not yet landed", "already present two statements below"). The
+   arms are now one loop body. Its worked example is legitimately historical; it
+   is the "as of this writing" framing that rots. Its Related bullet also records
+   "(verified: that entry does not describe the expiry arm, so the pending
+   confirmed-delete change does not contradict it)" — that verification is what
+   missed item 1 above, since the Set conversion's blast radius was wider than
+   the confirmed-delete change it was scoped to.
+
+Also still open from the earlier rounds, unchanged by this one:
+`backend/src/lib/ipfs-upload-token.ts` remains the one place in the tree
+asserting the offline-queue rationale this task disproved.
+
+---
