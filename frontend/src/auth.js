@@ -140,11 +140,15 @@ export function initAuth() {
     //   pass an explicit custody (login → 'light', upgrade → 'self',
     //   etc.); omitting it preserves the existing value.
     //
-    // - Subject adoption: the response's subject (or the current one when
-    //   `username` is omitted, as in the custody-upgrade flow) is adopted
-    //   via _adoptSubject BEFORE any field lands, so a login as a different
+    // - Subject adoption: the response's subject is adopted via
+    //   _adoptSubject BEFORE any field lands, so a login as a different
     //   user scrubs the previous subject's state instead of inheriting it
     //   while a same-subject re-login keeps its live fresh-auth window.
+    //   Every live call site passes `username` explicitly — the custody-
+    //   upgrade sites pin it to the subject captured before their own
+    //   first await, so a response landing after a cross-tab login as a
+    //   different user still counts as a subject change. The fallback to the current username
+    //   is defensive only; no caller relies on it.
     loginFromResponse(data) {
       const subject = data.username !== undefined ? data.username : this.username;
       if (subject) this._adoptSubject(subject);
@@ -209,9 +213,12 @@ export function initAuth() {
     //
     // Same-subject re-login is deliberately NOT a subject change: the live
     // fresh-auth window and proof caches belong to the same account, and
-    // discarding them would cost the user a re-auth they do not owe. That
-    // covers the custody-upgrade call site too, which omits `username` from
-    // its response and is same-subject by construction.
+    // discarding them would cost the user a re-auth they do not owe. The
+    // custody-upgrade call sites qualify by pinning `username` to a
+    // subject captured before their first await: an ordinary upgrade
+    // re-login stays same-subject, while an upgrade response that lands
+    // after a cross-tab login as a different user counts as a subject
+    // change and scrubs.
     //
     // The marker read falls back to the in-memory username so the check
     // still works within a page load when sessionStorage is unavailable

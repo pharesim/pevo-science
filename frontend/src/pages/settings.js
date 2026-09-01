@@ -1173,6 +1173,14 @@ export function initSettingsPage() {
       // closure-wipe hygiene, not for surviving a wipe-before-import.
       const newSeedPhrase = this.newSeedPhrase;
 
+      // Pin the re-login subject to the account this upgrade started for,
+      // captured before the first await. The backend cleanup can take up to
+      // 20s, and a cross-tab login as a different user during that window
+      // advances `this.username` (and the tab-subject marker) before the
+      // response lands; the pinned value keeps the loginFromResponse call
+      // below comparing against the intended subject.
+      const upgradeSubject = this.username;
+
       // ORDERING:
       //   (a) validate
       //   (b) _performUpgradeKeyRotation     — IRREVERSIBLE: account_update broadcast
@@ -1238,14 +1246,19 @@ export function initSettingsPage() {
         // {token, expires_at} pair invariant — both rotate together or
         // neither does. The decoupled-guard form this site used to ship
         // allowed `{token: new, expires_at: undefined}` to persist a
-        // server-invalidated old token with new expiry. Username,
-        // is_accredited, and accreditation are omitted from the data
+        // server-invalidated old token with new expiry. `username` is the
+        // pinned upgrade subject, not the store's current value, so a
+        // cross-tab login as a different user during the backend window is
+        // recognized by subject adoption as a subject change instead of
+        // filing the upgraded token under the other user's username.
+        // is_accredited and accreditation are omitted from the data
         // payload so the helper preserves them (the upgrade flips
-        // custody and rotates session credentials, not identity or
-        // accreditation status).
+        // custody and rotates session credentials, not accreditation
+        // status).
         Alpine.store('auth').loginFromResponse({
           token: result.data?.token,
           expires_at: result.data?.expires_at,
+          username: upgradeSubject,
           custody: 'self',
         });
         // Re-check post-loginFromResponse: the helper resolves synchronously
@@ -1292,6 +1305,10 @@ export function initSettingsPage() {
       this.upgradeError = null;
       this.upgradeErrorKey = null;
       const newSeedPhrase = this.newSeedPhrase;
+      // Pin the re-login subject before the first await, mirroring
+      // executeUpgrade: the retry's backend POST has the same multi-second
+      // window in which a cross-tab login can advance `this.username`.
+      const upgradeSubject = this.username;
       if (!newSeedPhrase) {
         // Defensive: `newSeedPhrase` is cleared on every terminal
         // sub-case, so reaching here means the state machine drifted.
@@ -1316,6 +1333,7 @@ export function initSettingsPage() {
         Alpine.store('auth').loginFromResponse({
           token: result.data?.token,
           expires_at: result.data?.expires_at,
+          username: upgradeSubject,
           custody: 'self',
         });
         // Re-check post-loginFromResponse for the same reason as executeUpgrade:

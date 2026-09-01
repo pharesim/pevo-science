@@ -485,9 +485,11 @@ describe('auth store', () => {
       expect(store.token).toBe('jwt-alice-2');
     });
 
-    it('a response omitting username is same-subject by construction and preserves the window', () => {
-      // The custody-upgrade flow passes only {token, expires_at, custody}:
-      // the subject stays whoever is signed in, so nothing is scrubbed.
+    it('a response omitting username falls back to the current subject and preserves the window', () => {
+      // Defensive fallback with no live caller: every call site passes
+      // `username` explicitly (the custody-upgrade sites pin a subject
+      // captured before their first await). An omitted username still
+      // resolves to whoever is signed in, so nothing is scrubbed.
       loginAs('alice');
       seedSubjectBoundKeys();
       mockAbandonInFlightAcquisitions.mockClear();
