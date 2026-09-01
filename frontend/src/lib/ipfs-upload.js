@@ -4,6 +4,7 @@ import {
   slideSessionWindow,
   clearCachedSessionProof,
   handleSessionInconsistency,
+  isUsernameMismatch,
   REMINTABLE_REASONS,
 } from './fresh-auth.js';
 
@@ -109,14 +110,20 @@ const UPLOAD_ERROR_TEXT = Object.freeze({
   [UPLOAD_REAUTH_FAILED]: 'Re-authentication failed',
   [UPLOAD_REAUTH_BUSY]: 'Another confirmation is open',
   [UPLOAD_REAUTH_REQUIRED]: 'Re-authentication required',
+  [UPLOAD_SESSION_TORN_DOWN]: 'Session torn down. Sign in again.',
 });
+
+// Every UploadSessionError this module raises is built here, so the table above
+// stays the per-code index its docblock claims rather than losing entries to
+// inline strings at the raise sites.
+const uploadError = (code) => new UploadSessionError(code, UPLOAD_ERROR_TEXT[code]);
 
 async function windowProof() {
   const outcome = await ensureSessionWindow({ minRemainingMs: 0, allowRedirect: false });
   if (outcome.ready) return outcome.proof;
   const outcomeKey = Object.keys(UPLOAD_CODE_BY_WINDOW_OUTCOME).find((key) => outcome[key]);
   const code = outcomeKey ? UPLOAD_CODE_BY_WINDOW_OUTCOME[outcomeKey] : UPLOAD_CANCELLED;
-  throw new UploadSessionError(code, UPLOAD_ERROR_TEXT[code]);
+  throw uploadError(code);
 }
 
 // One consume of the window: upload, then replay the idle slide the backend
@@ -127,6 +134,39 @@ async function attemptOnce(file, proof) {
   const res = await uploadFileToIpfs(file, { freshAuthProof: proof });
   slideSessionWindow();
   return res;
+}
+
+// Tear the session down and hand the caller the already-reported code. Shared
+// by the first attempt and both retry legs so a mismatch reports identically
+// whichever attempt surfaces it.
+function tornDownSession() {
+  handleSessionInconsistency();
+  return uploadError(UPLOAD_SESSION_TORN_DOWN);
+}
+
+// One retry attempt: re-acquire the window, then upload. Both retry legs go
+// through here so a `username_mismatch` surfacing on a SECOND attempt takes the
+// same teardown the first attempt does. Written as a wrapper rather than two
+// copies of the mismatch branch because the retries live in `uploadFile`'s
+// single flat catch, where a rejection has no enclosing handler left and would
+// otherwise escape raw — the page layer then stacks a generic upload failure on
+// top of a session that was never torn down.
+//
+// Only a mismatch is reclassified. `windowProof()`'s own UploadSessionErrors
+// (a dismissed prompt, a spent re-auth, a refused round-trip) are the coded
+// vocabulary every consumer already describes, so they pass straight through.
+async function retryOnce(file) {
+  try {
+    const proof = await windowProof();
+    // Same self-custody branch the first attempt takes: no window means no
+    // proof to attach. Reachable on a retry because a teardown between the
+    // attempts leaves the store with no light custody at all.
+    if (!proof) return await uploadFileToIpfs(file);
+    return await attemptOnce(file, proof);
+  } catch (err) {
+    if (isUsernameMismatch(err)) throw tornDownSession();
+    throw err;
+  }
 }
 
 // Upload one file to IPFS through the two-step pre-flight in `api.js`.
@@ -148,26 +188,20 @@ export async function uploadFile(file) {
     // real re-auth act.
     if (err?.code === 'FRESH_AUTH_REQUIRED' && REMINTABLE_REASONS.includes(err.details?.reason)) {
       clearCachedSessionProof();
-      return attemptOnce(file, await windowProof());
+      return retryOnce(file);
     }
-    // username_mismatch means the cached proof belongs to a different account
-    // than the JWT subject — a corrupted session no re-mint can fix, because
-    // every re-acquisition would replay the same mismatched pair. Tear the
-    // session down and force re-login via the shared teardown, matching the
-    // broadcast, settings, and authorship siblings; without it every retry
-    // resends the same stale proof and the paper-upload path wedges behind a
-    // generic failure until the window's cap. The teardown disconnects (which
-    // drops the cached window) and shows the re-login toast; the thrown
-    // already-reported code aborts the batch while telling the page layer the
-    // teardown's toast was the whole message — rethrowing the raw error here
-    // used to stack a generic upload-failure surface on top of it.
-    if (err?.code === 'FRESH_AUTH_REQUIRED' && err.details?.reason === 'username_mismatch') {
-      handleSessionInconsistency();
-      throw new UploadSessionError(
-        UPLOAD_SESSION_TORN_DOWN,
-        'Session torn down. Sign in again.',
-      );
-    }
+    // username_mismatch means the proof in hand belongs to a different account
+    // than the JWT subject — a corrupted session no re-mint fixes, because a
+    // re-acquisition under the same divergence produces the same pair. Tear the
+    // session down via the shared teardown, matching the broadcast, settings,
+    // and authorship siblings. The cost of NOT doing so is a misreport, not a
+    // lockout: the subject change that produced the divergence already dropped
+    // the cached window, so a resubmit would re-acquire and succeed. But the
+    // user is told "upload failed" (and, on the publish path, "publishing
+    // failed" on top) for a session that needs re-login, which is neither
+    // actionable nor true. The already-reported code aborts the batch while
+    // telling the page layer the teardown's toast was the whole message.
+    if (isUsernameMismatch(err)) throw tornDownSession();
     // UNAUTHORIZED comes from the upload leg (`/ipfs/upload`) and means the
     // single-use upload token was refused. Not because a slow transfer outlived
     // the token's TTL — every request carries a 30-second abort composed in
@@ -180,7 +214,7 @@ export async function uploadFile(file) {
     // Retry the two-step once as a safety net; the pre-flight cache-hits the
     // live window and mints a fresh token.
     if (err?.code === 'UNAUTHORIZED') {
-      return attemptOnce(file, await windowProof());
+      return retryOnce(file);
     }
     throw err;
   }

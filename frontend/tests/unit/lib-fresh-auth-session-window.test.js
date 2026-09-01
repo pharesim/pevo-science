@@ -923,6 +923,13 @@ describe('teardown abandons in-flight acquisitions', () => {
 
     expect(outcome).toEqual({ ready: false, cancelled: true });
     expect(mockMintSessionAuthProof).not.toHaveBeenCalled();
+    // The outcome is the same sentinel a user's own dismissal produces, and
+    // the vocabulary keeps that one silent — so the abort site is what tells
+    // the two apart. Without a message the user answers a prompt and watches
+    // the action do nothing at all. Pinned here so the session path and the
+    // consent-op orchestrators report a teardown identically.
+    expect(mockToastStore.show).toHaveBeenCalledTimes(1);
+    expect(mockToastStore.show).toHaveBeenCalledWith(expect.any(String), 'error');
   });
 
   it('the assumed-password ORCID fallback does not navigate after teardown', async () => {

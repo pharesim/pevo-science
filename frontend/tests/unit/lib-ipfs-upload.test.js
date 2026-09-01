@@ -40,6 +40,10 @@ vi.mock('../../src/lib/fresh-auth.js', () => ({
   slideSessionWindow: (...a) => mockSlideSessionWindow(...a),
   handleSessionInconsistency: (...a) => mockHandleSessionInconsistency(...a),
   REMINTABLE_REASONS: ['missing', 'expired', 'malformed'],
+  // Mirrors the real shared discriminator: the reason is the whole gate, and
+  // the ApiRequestErrors this surface sees carry no status to gate on.
+  isUsernameMismatch: (err) =>
+    err?.code === 'FRESH_AUTH_REQUIRED' && err.details?.reason === 'username_mismatch',
 }));
 
 import {
@@ -232,11 +236,11 @@ describe('uploadFile', () => {
     expect(mockUploadFileToIpfs).not.toHaveBeenCalled();
   });
 
-  it('a mismatched session tears down instead of wedging on retries', async () => {
-    // username_mismatch means the cached proof belongs to a different account
-    // than the JWT subject; no re-mint can fix that pair. Without the teardown
-    // nothing clears the state, so every retry resends the same stale proof
-    // and the paper-upload path wedges behind a generic failure.
+  it('a mismatched session tears down instead of reporting a generic failure', async () => {
+    // username_mismatch means the proof in hand belongs to a different account
+    // than the JWT subject; no re-mint fixes that pair. Without the teardown
+    // the user is told the upload failed for a session that needs re-login,
+    // which is neither actionable nor true.
     mockUploadFileToIpfs.mockRejectedValue(freshAuthRejected('username_mismatch'));
 
     // The rejection carries the dedicated already-reported code, not the raw
@@ -252,6 +256,69 @@ describe('uploadFile', () => {
     // clear: the teardown's disconnect drops the window itself.
     expect(mockUploadFileToIpfs).toHaveBeenCalledTimes(1);
     expect(mockClearCachedSessionProof).not.toHaveBeenCalled();
+  });
+
+  // ─── A mismatch surfacing on a RETRY, not on the first attempt ───────────
+  //
+  // Both retry legs sit inside the single flat catch that handles the
+  // first-attempt mismatch, so a rejection from either had no enclosing
+  // handler left and escaped raw to the page layer. The reachable interleaving
+  // is narrow but real: the proof is dereferenced into a local before the
+  // upload runs, and the pre-flight hashes the whole file before it reads the
+  // JWT, so a subject change landing in that gap presents the previous
+  // subject's proof under the new subject's token.
+
+  it('a mismatch surfacing on the re-mint retry tears down like a first-attempt one', async () => {
+    mockUploadFileToIpfs
+      .mockRejectedValueOnce(freshAuthRejected('expired'))
+      .mockRejectedValueOnce(freshAuthRejected('username_mismatch'));
+    mockEnsureSessionWindow
+      .mockResolvedValueOnce({ ready: true, proof: 'window-1' })
+      .mockResolvedValueOnce({ ready: true, proof: 'window-2' });
+
+    await expect(uploadFile(file())).rejects.toMatchObject({
+      code: UPLOAD_SESSION_TORN_DOWN,
+      name: 'UploadSessionError',
+    });
+    expect(mockHandleSessionInconsistency).toHaveBeenCalledTimes(1);
+    expect(mockUploadFileToIpfs).toHaveBeenCalledTimes(2);
+  });
+
+  it('a mismatch surfacing on the refused-token retry tears down like a first-attempt one', async () => {
+    // The aged-token leg deliberately keeps the window (the 401 came from the
+    // upload leg, which says nothing about the window), so its retry
+    // cache-hits the same proof — and that is exactly the proof that can go
+    // stale under a subject change.
+    mockUploadFileToIpfs
+      .mockRejectedValueOnce(codedError('UNAUTHORIZED'))
+      .mockRejectedValueOnce(freshAuthRejected('username_mismatch'));
+
+    await expect(uploadFile(file())).rejects.toMatchObject({
+      code: UPLOAD_SESSION_TORN_DOWN,
+      name: 'UploadSessionError',
+    });
+    expect(mockHandleSessionInconsistency).toHaveBeenCalledTimes(1);
+    expect(mockUploadFileToIpfs).toHaveBeenCalledTimes(2);
+    // The window is still not this leg's to drop.
+    expect(mockClearCachedSessionProof).not.toHaveBeenCalled();
+  });
+
+  it('a retry after the session went away uploads without a proof rather than a null one', async () => {
+    // A teardown between the attempts leaves the store with no light custody,
+    // so the re-acquisition answers ready-with-no-proof — the self-custody
+    // shape. The first attempt has always branched on that; the retries had
+    // not, and passed the null straight through as a proof.
+    mockUploadFileToIpfs
+      .mockRejectedValueOnce(codedError('UNAUTHORIZED'))
+      .mockResolvedValueOnce(okUpload('bafy2'));
+    mockEnsureSessionWindow
+      .mockResolvedValueOnce({ ready: true, proof: 'window-1' })
+      .mockResolvedValueOnce({ ready: true, proof: null });
+
+    const res = await uploadFile(file());
+
+    expect(res).toEqual(okUpload('bafy2'));
+    expect(mockUploadFileToIpfs).toHaveBeenNthCalledWith(2, expect.anything());
   });
 
   it('never blocks a passwordless account up front', async () => {

@@ -13,6 +13,7 @@ import {
   passwordPromptMessage,
   resolvePasswordFactor,
   promptBusy,
+  subjectTeardownGuard,
 } from './fresh-auth.js';
 
 /**
@@ -48,10 +49,10 @@ import {
 // differs. `assumed` is the resolver's observed-vs-guessed flag, threaded
 // through so an assumed password the backend 401s hands the action to the
 // ORCID factor rather than a second prompt.
-function mintViaPassword(action, assumed) {
+function mintViaPassword(action, assumed, guard) {
   return mintViaPasswordFactor(
     (password) => mintSettingsActionProof(action, password),
-    { message: passwordPromptMessage(), assumed },
+    { message: passwordPromptMessage(), assumed, guard },
   );
 }
 
@@ -76,14 +77,20 @@ async function passwordFactorFor(action) {
 // otherwise the ORCID factor. An ASSUMED password the backend 401s falls back
 // to the ORCID round-trip — the settings page has no unsaved state worth more
 // than completing the action.
-async function resolveProof(action, { username }) {
+async function resolveProof(action, { username }, guard) {
   const cached = getCachedConsentOpProof(action, username, '');
   if (cached) return cached;
 
   const factor = await passwordFactorFor(action);
+  // The status read is itself an await a teardown can land in, and the answer
+  // decides between prompting and navigating. Acting on it after a subject
+  // change would open a prompt, or fire a full-page ORCID round-trip, for the
+  // subject that left. The shared mint's own guard cannot see this one: it is
+  // only entered after this point.
+  if (guard.tornDown()) return guard.cancel();
   if (!factor.usesPassword) return beginSettingsActionOrcidFreshAuth(action);
 
-  const minted = await mintViaPassword(action, factor.assumed);
+  const minted = await mintViaPassword(action, factor.assumed, guard);
   if (minted === FRESH_AUTH_ORCID_FALLBACK) {
     return beginSettingsActionOrcidFreshAuth(action);
   }
@@ -97,7 +104,9 @@ async function resolveProof(action, { username }) {
  *
  *   { ok: <apiResult> }       request succeeded
  *   { redirect: true }        ORCID round-trip in flight; abort cleanly
- *   { cancelled: true }       user dismissed the password modal; abort cleanly
+ *   { cancelled: true }       user dismissed the password modal, or a subject
+ *                             teardown abandoned the action (already reported by
+ *                             the teardown itself); abort cleanly either way
  *   { freshAuthFailed: true } re-auth rejected or could not be completed (403
  *                             binding violation, wrong mechanism, a second wrong
  *                             password, or an expired ORCID-factor proof on
@@ -127,7 +136,12 @@ export async function withSettingsFreshAuth(action, ctx, run) {
     return { ok: await run(undefined) };
   }
 
-  const proof = await resolveProof(action, ctx);
+  // Opened before the first await, so it covers the whole action: the status
+  // read, the prompt, the mint, the guarded call, and the retry gate's
+  // re-mint. Every one of those must belong to the subject this tab
+  // represented when the user asked for the action.
+  const guard = subjectTeardownGuard();
+  const proof = await resolveProof(action, ctx, guard);
   if (proof === FRESH_AUTH_REDIRECT_PENDING) return { redirect: true };
   if (proof === FRESH_AUTH_PROMPT_BUSY) return promptBusy();
   if (proof === FRESH_AUTH_CANCELLED) return { cancelled: true };
@@ -150,8 +164,9 @@ export async function withSettingsFreshAuth(action, ctx, run) {
     // that are not fresh-auth rethrow from the gate, so the caller keeps its
     // per-action handling.
     return consentOpFreshAuthRetryGate(err, {
+      guard,
       resolveFactor: () => passwordFactorFor(action),
-      mint: (assumed) => mintViaPassword(action, assumed),
+      mint: (assumed) => mintViaPassword(action, assumed, guard),
       beginOrcidRedirect: () => beginSettingsActionOrcidFreshAuth(action),
       run,
       clearProofCache: clearCachedConsentOpProof,

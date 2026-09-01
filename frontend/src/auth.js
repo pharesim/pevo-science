@@ -8,6 +8,7 @@ import {
   clearReturnPath,
   clearPasswordFactorMemo,
   abandonInFlightAcquisitions,
+  dismissOpenReauthPrompt,
 } from './lib/fresh-auth.js';
 
 const SESSION_KEY = 'pevo_session';
@@ -250,6 +251,15 @@ export function initAuth() {
       // them so a late resolution cannot repopulate the slots just cleared,
       // nor hand its outcome to a caller arriving under the next subject.
       abandonInFlightAcquisitions();
+      // A re-auth prompt can be open when this runs, and nothing else closes
+      // it: it would stay on screen and answerable for a subject this tab no
+      // longer represents, holding the previous subject's typed password, with
+      // its caller parked on the prompt promise indefinitely. Dismissing it
+      // resolves that promise so the caller unwinds. Ordered after the
+      // generation bump above so the resumed caller always observes the
+      // teardown, rather than relying on the microtask ordering that makes the
+      // two interchangeable today.
+      dismissOpenReauthPrompt();
       try {
         sessionStorage.removeItem('pevo_orcid_mode');
         sessionStorage.removeItem('pevo_orcid_return_to');

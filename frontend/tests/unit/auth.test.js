@@ -4,9 +4,16 @@ let store;
 const mockWaitForKeychain = vi.fn().mockResolvedValue(false);
 const mockFetchAccreditationStatus = vi.fn().mockResolvedValue({ data: null });
 
+// The reauth modal as the subject scrub sees it. Kept separate from the
+// capture-def branch below because the scrub dismisses this store by name: a
+// name-blind mock would hand `auth` back for every lookup and the dismissal
+// would silently address the wrong object.
+const reauthCancel = vi.fn();
+
 vi.mock('alpinejs', () => ({
   default: {
     store: vi.fn((name, def) => {
+      if (name === 'reauthModal') return { cancel: (...args) => reauthCancel(...args) };
       if (def) store = def;
       return store;
     }),
@@ -373,6 +380,16 @@ describe('auth store', () => {
       store.disconnect();
       expect(mockClearPasswordFactorMemo).toHaveBeenCalledTimes(1);
     });
+
+    it('dismisses an open re-auth prompt on disconnect', () => {
+      // Nothing else closes it. Left open it stays answerable after the
+      // logout, still holding the typed password, with its caller parked on
+      // the prompt promise — that await has no timeout, so the action never
+      // unwinds until a human touches the modal.
+      reauthCancel.mockClear();
+      store.disconnect();
+      expect(reauthCancel).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('subject change runs the cross-user scrub', () => {
@@ -527,6 +544,31 @@ describe('auth store', () => {
       expect(store.username).toBe('alice');
       expect(sessionStorageData['pevo_fresh_auth_session_proof']).toBeDefined();
       expect(sessionStorageData['pevo_tab_subject']).toBe('alice');
+    });
+
+    it('signing in as a different username dismisses an open re-auth prompt', () => {
+      // The prompt belongs to the previous subject but the mint behind it
+      // reads the JWT at call time, so an answered prompt would authenticate
+      // as the NEW subject. Dismissing it is what makes the mint unreachable
+      // and lets the parked orchestrator unwind as a cancel.
+      loginAs('alice');
+      reauthCancel.mockClear();
+
+      loginAs('bob');
+
+      expect(reauthCancel).toHaveBeenCalledTimes(1);
+    });
+
+    it('same-subject re-login leaves an open re-auth prompt alone', () => {
+      // The pair-partner of the test above: no subject change means no scrub,
+      // and dismissing a prompt the same account opened would cost a re-auth
+      // the user does not owe.
+      loginAs('alice');
+      reauthCancel.mockClear();
+
+      loginAs('alice', 'jwt-alice-2');
+
+      expect(reauthCancel).not.toHaveBeenCalled();
     });
 
     it('disconnect removes the tab-subject marker and abandons in-flight acquisitions', () => {

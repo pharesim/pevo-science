@@ -223,6 +223,29 @@ describe('broadcastWithFreshAuth — error-recovery paths', () => {
     expect(mockBroadcastOps).toHaveBeenCalledTimes(1);
   });
 
+  it('username_mismatch on the 401 retry tears down too, not just on the first attempt', async () => {
+    // The retry leg is a separately deletable branch. Its shape-preserving
+    // rethrow matches a mismatch (the signer error carries both status and
+    // code), so the mismatch used to reach the call site's generic op-failure
+    // message with the corrupted session left standing — the first-attempt
+    // branch below never sees it, because it inspects the FIRST error, which
+    // by construction is the remintable 401 that opened the retry.
+    setWindow('proof-r');
+    mockBroadcastOps
+      .mockRejectedValueOnce(freshAuthError(401, 'expired'))
+      .mockRejectedValueOnce(freshAuthError(403, 'username_mismatch'));
+
+    const result = await broadcastWithFreshAuth('alice', [['vote', {}]]);
+
+    expect(result).toBe(FRESH_AUTH_REDIRECT_PENDING);
+    expect(mockAuthStore.disconnect).toHaveBeenCalledTimes(1);
+    // Exactly one message: the teardown's. A second would mean the unwind
+    // reported twice for one failure.
+    expect(mockToastStore.show).toHaveBeenCalledTimes(1);
+    expect(mockToastStore.show).toHaveBeenCalledWith(LOCALIZED_SENTINEL, 'error');
+    expect(mockBroadcastOps).toHaveBeenCalledTimes(2);
+  });
+
   it('403 username_mismatch falls back to raw English when i18n bundle absent', async () => {
     setWindow('proof-x');
     mockBroadcastOps.mockRejectedValueOnce(freshAuthError(403, 'username_mismatch'));

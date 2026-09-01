@@ -3814,3 +3814,21 @@ pt: settings.emailStatusLoadFailed
 sv: settings.emailStatusLoadFailed
 tr: settings.emailStatusLoadFailed
 zh: settings.emailStatusLoadFailed
+
+### Added 2026-09-01 (ui-consent-op-teardown-guard)
+
+ar: auth.reauthCancelled
+cs: auth.reauthCancelled
+da: auth.reauthCancelled
+de: auth.reauthCancelled
+es: auth.reauthCancelled
+fa: auth.reauthCancelled
+fr: auth.reauthCancelled
+he: auth.reauthCancelled
+it: auth.reauthCancelled
+nl: auth.reauthCancelled
+pl: auth.reauthCancelled
+pt: auth.reauthCancelled
+sv: auth.reauthCancelled
+tr: auth.reauthCancelled
+zh: auth.reauthCancelled

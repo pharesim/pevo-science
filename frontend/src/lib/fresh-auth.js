@@ -78,8 +78,13 @@ export const REMINTABLE_REASONS = Object.freeze(['missing', 'expired', 'malforme
 // fresh-auth orchestrators. Exported (not per-orchestrator locals) so the
 // orchestrators compare against the SAME symbol mintViaPasswordFactor returns —
 // a per-file Symbol would never be `===` to the helper's return.
-//   FRESH_AUTH_CANCELLED  the user dismissed the re-auth modal (abort cleanly,
-//                         no error toast).
+//   FRESH_AUTH_CANCELLED  the flow stopped without completing, from one of two
+//                         causes the caller handles identically and the user
+//                         does not: the user dismissed the re-auth modal (no
+//                         message, stopping was their choice), or a subject
+//                         teardown abandoned the flow (reported by
+//                         `subjectTeardownGuard`'s cancel before the sentinel
+//                         is returned, so the caller adds nothing).
 //   FRESH_AUTH_MINT_FAILED  re-auth could not be completed (a second wrong
 //                         password, or a transport error on the retry mint);
 //                         the caller surfaces a generic re-auth failure rather
@@ -131,9 +136,18 @@ export function passwordPromptMessage() {
 // fallback for the not-yet-loaded-bundle case.
 export function handleSessionInconsistency() {
   Alpine.store('auth')?.disconnect();
-  const msg =
-    Alpine.store('i18n')?.messages?.auth?.sessionInconsistency ||
-    'Session inconsistency detected. Please sign in again.';
+  toastLocalized('auth', 'sessionInconsistency', 'Session inconsistency detected. Please sign in again.');
+}
+
+// Show one error toast, localized. Lib code cannot use the `$t` magic helper,
+// so every message this module raises reads the i18n store directly and falls
+// back to English for the not-yet-loaded-bundle case; this is that read plus
+// the show, in one place, so the fallback policy and the severity cannot drift
+// between the sites that raise messages (the session-inconsistency teardown
+// above, the window-outcome dispatch below, and the teardown cancel in the
+// password-factor mint).
+function toastLocalized(section, name, fallback) {
+  const msg = Alpine.store('i18n')?.messages?.[section]?.[name] || fallback;
   Alpine.store('toast')?.show(msg, 'error');
 }
 
@@ -157,24 +171,55 @@ export function handleSessionInconsistency() {
 // strongest evidence the account has one, so an ASSUMED factor that just
 // minted is not re-guessed on the next resolution while the status read
 // stays unavailable.
-export async function mintViaPasswordFactor(mintFn, { message, assumed = false }) {
+//
+// Every await below is also a teardown boundary. The prompt is a human-length
+// pause and the mint is a round-trip, so the tab's subject can change under
+// either one — and the mint reads the JWT at call time (api.js
+// `authenticatedRequest`), so a mint issued past a subject change binds to
+// whoever the tab now represents, not to whoever opened the prompt. `guard`
+// turns every such resumption into a clean cancel.
+//
+// A caller that awaited BEFORE reaching here — both consent-op orchestrators
+// read the account status first — must pass its own guard, opened before that
+// await. A guard opened here would capture a generation the teardown has
+// already moved and so compare it against itself, never firing; the default is
+// only correct for a caller whose first await is the prompt.
+export async function mintViaPasswordFactor(
+  mintFn,
+  { message, assumed = false, guard = subjectTeardownGuard() },
+) {
   const modal = Alpine.store('reauthModal');
   // Captured BEFORE the prompt opens: a subject scrub landing while the
   // modal sits open must veto the memo write (see beginPasswordMintReport).
   const reportMintSuccess = beginPasswordMintReport();
   const attemptMint = async (password) => {
     const minted = await mintFn(password);
+    // A teardown while the round-trip was pending leaves a proof this tab must
+    // not deliver to the caller's `run`.
+    if (guard.tornDown()) return guard.cancel();
     reportMintSuccess(minted);
     return minted;
   };
 
   let password = await modal.request({ message });
+  // No mint may leave the tab after a teardown, and this check is what
+  // guarantees it: nothing awaits between here and the request `attemptMint`
+  // issues, so "checked here" and "checked at the request" are the same
+  // instant. Anything inserted in between would need its own check.
+  if (guard.tornDown()) return guard.cancel();
   if (password === REAUTH_PROMPT_BUSY) return FRESH_AUTH_PROMPT_BUSY;
   if (password === null || password === undefined) return FRESH_AUTH_CANCELLED;
 
   try {
     return await attemptMint(password);
   } catch (err) {
+    // A teardown that landed while the mint was in flight outranks whatever
+    // the mint reported. Checked before the branches below so a rejection
+    // cannot re-prompt the new subject with the old action's prompt, and so
+    // the ASSUMED-password branch cannot fire a full-page ORCID round-trip on
+    // behalf of the subject that left.
+    if (guard.tornDown()) return guard.cancel();
+
     // A non-auth error on the first attempt (transport, 503) propagates as an
     // unexpected failure; only a wrong password (UNAUTHORIZED) re-prompts.
     if (err?.code !== 'UNAUTHORIZED') throw err;
@@ -191,11 +236,15 @@ export async function mintViaPasswordFactor(mintFn, { message, assumed = false }
     if (assumed) return FRESH_AUTH_ORCID_FALLBACK;
 
     password = await modal.request({ message });
+    if (guard.tornDown()) return guard.cancel();
     if (password === REAUTH_PROMPT_BUSY) return FRESH_AUTH_PROMPT_BUSY;
     if (password === null || password === undefined) return FRESH_AUTH_CANCELLED;
     try {
       return await attemptMint(password);
     } catch {
+      // A teardown outranks the spent-re-auth report here too: the user is not
+      // owed "re-authentication failed" for an attempt this tab abandoned.
+      if (guard.tornDown()) return guard.cancel();
       // Last re-prompt spent: a second auth failure, or any transport error on
       // the retry mint, means re-auth could not be completed. Surface the
       // generic re-auth failure rather than letting it escape as the op's own
@@ -203,6 +252,77 @@ export async function mintViaPasswordFactor(mintFn, { message, assumed = false }
       return FRESH_AUTH_MINT_FAILED;
     }
   }
+}
+
+// Open a teardown guard over a stretch of work that must all belong to one
+// subject: the factor read, the prompt, the mint, and the guarded call the
+// proof is minted for. Snapshot the generation the subject scrub bumps, and
+// answer two questions afterwards — has the tab's subject-bound state been
+// torn down since, and how does this flow report that.
+//
+// Open the guard BEFORE the first await of the stretch. The generation only
+// distinguishes "before" from "after", so a guard opened after the teardown
+// compares the post-teardown value against itself and never fires; that is the
+// whole reason the guard is a value callers pass down rather than something
+// each layer captures for itself.
+//
+// `cancel()` reports and returns the SAME sentinel a user dismissal does, so no
+// caller needs a new branch and the window-outcome vocabulary keeps `cancelled`
+// silent — but it speaks first, because the two are otherwise
+// indistinguishable to a user who typed a password and watched nothing happen.
+// A user's own dismissal stays silent; only a teardown-driven cancel reports.
+export function subjectTeardownGuard() {
+  const generation = _acquireGeneration;
+  return {
+    tornDown: () => generation !== _acquireGeneration,
+    cancel: () => {
+      toastLocalized(
+        'auth',
+        'reauthCancelled',
+        'Your session changed, so the confirmation was cancelled.',
+      );
+      return FRESH_AUTH_CANCELLED;
+    },
+  };
+}
+
+// The corrupted-session discriminator, in one place so the first-attempt and
+// retry legs of every fresh-auth surface cannot drift on what a mismatch looks
+// like. The JWT subject and the proof subject diverge; no re-mint fixes it
+// (every re-acquisition would replay the same mismatched pair), so each leg
+// routes it through `handleSessionInconsistency` rather than treating it as a
+// retryable re-auth failure.
+//
+// `details.reason` is the whole gate, never a status code. The session-kind
+// surface shapes its errors in signer.js and carries a 403 alongside; the
+// consent-op, settings and upload surfaces raise api.js ApiRequestErrors that
+// carry no `status` at all, and a retry-leg error that reaches a normalizing
+// wrapper loses `status` on the way through. Keying on the reason is the only
+// form that holds on every leg.
+export function isUsernameMismatch(err) {
+  return err?.code === 'FRESH_AUTH_REQUIRED' && err.details?.reason === 'username_mismatch';
+}
+
+// Dismiss a re-auth prompt left open across a subject teardown. Called by the
+// auth store's subject scrub alongside the cache clears; kept here because
+// this module is the modal store's only programmatic consumer, so the
+// knowledge that `cancel()` resolves the pending `request()` — and that a
+// `null` resolution is what unwinds `mintViaPasswordFactor` — stays with the
+// code that depends on it.
+//
+// Without this the prompt survives the teardown three ways at once: it stays
+// on screen and answerable for a subject the tab no longer represents, the
+// previous subject's typed password stays live in the store (only submit and
+// cancel clear it), and the orchestrator parked on `modal.request()` never
+// resumes at all — there is no timeout on that await, so the action hangs
+// until a human touches the prompt. `cancel()` closes all three: it hides the
+// prompt, blanks the password, and resolves the parked promise so the
+// generation check above can unwind the flow as a clean cancel.
+//
+// Safe when no prompt is open: `cancel()` is a no-op on the pending-promise
+// half and merely re-blanks fields that are already blank.
+export function dismissOpenReauthPrompt() {
+  Alpine.store('reauthModal')?.cancel?.();
 }
 
 // The session-window periods the backend publishes in
@@ -794,8 +914,9 @@ export function windowOutcomeKey(outcome) {
 // can drift on copy or on which outcomes speak. A null row is a decision, not
 // a gap:
 //   redirect   an in-flight navigation needs no toast; the page is leaving.
-//   cancelled  the user's own dismissal warrants no message; stopping was
-//              their choice.
+//   cancelled  silent HERE. A user's own dismissal warrants no message, and a
+//              teardown-driven cancel has already been reported at the abort
+//              site (`subjectTeardownGuard`), so a row would double-report it.
 //   failed     re-auth could not be completed (a second wrong password, or a
 //              transport error on the retry mint): the user was prompted twice
 //              and would otherwise watch the action do nothing at all.
@@ -827,15 +948,15 @@ const WINDOW_OUTCOME_TOASTS = Object.freeze({
   },
 });
 
-// The one parameterized toast helper behind every consuming site. Lib code
-// cannot use the `$t` magic helper; read the i18n store directly with an
-// English fallback. Silent for the outcomes whose table row is null and for a
-// null key (a ready outcome, or a value outside the vocabulary).
+// The one dispatch behind every site that consumes an acquisition outcome, so
+// none of them carries a copy of its own. Silent for outcomes whose table row
+// is null and for a null key (a ready outcome, or a value outside the
+// vocabulary). The localization and the show come from `toastLocalized`, shared
+// with the module's non-vocabulary messages.
 export function showWindowOutcomeToast(outcomeKey) {
   const spec = outcomeKey ? WINDOW_OUTCOME_TOASTS[outcomeKey] : null;
   if (!spec) return;
-  const msg = Alpine.store('i18n')?.messages?.[spec.section]?.[spec.name] || spec.fallback;
-  Alpine.store('toast')?.show(msg, 'error');
+  toastLocalized(spec.section, spec.name, spec.fallback);
 }
 
 // Acquire-before-commit gate (ARCHITECTURE.md § 6.4.1). Call this BEFORE
@@ -855,7 +976,9 @@ export function showWindowOutcomeToast(outcomeKey) {
 //                                     null for self-custody (Keychain signs per
 //                                     request and needs no window)
 //   { ready: false, redirect: true }  ORCID round-trip in flight; abort cleanly
-//   { ready: false, cancelled: true } the password modal was dismissed
+//   { ready: false, cancelled: true } the password modal was dismissed, or a
+//                                     subject teardown abandoned the
+//                                     acquisition (already reported)
 //   { ready: false, failed: true }    re-auth could not be completed
 //   { ready: false, busy: true }      another action's prompt owns the modal
 //   { ready: false, reauthRequired: true }  no window is open and the only
@@ -1031,6 +1154,10 @@ export async function beginAuthorshipOrcidFreshAuth(target) {
 // their own op-level handling.
 //
 // The hooks carry the only parts that differ per surface:
+//   guard               the caller's subject teardown guard, opened at the
+//                       orchestrator's entry so it also covers the guarded
+//                       call this gate is reacting to — a guard opened here
+//                       would be blind to a teardown that landed during it
 //   resolveFactor       the surface's factor resolution (the authorship
 //                       orchestrator uses the shared resolver directly; the
 //                       settings orchestrator threads its set_password
@@ -1041,6 +1168,7 @@ export async function beginAuthorshipOrcidFreshAuth(target) {
 //   clearProofCache     drops the surface's cached proof (before the retry
 //                       mints, and again after a successful retry run)
 export async function consentOpFreshAuthRetryGate(err, {
+  guard,
   resolveFactor,
   mint,
   beginOrcidRedirect,
@@ -1056,6 +1184,14 @@ export async function consentOpFreshAuthRetryGate(err, {
   const remintable = REMINTABLE_REASONS.includes(err.details?.reason);
   if (remintable) {
     const factor = await resolveFactor();
+    // Same boundary the orchestrators guard on their initial resolution: the
+    // status read is an await, and a teardown landing in it (or earlier, in
+    // the guarded call that brought us here) must not be answered with a fresh
+    // prompt and a re-mint for the subject that left.
+    if (guard.tornDown()) {
+      guard.cancel();
+      return { cancelled: true };
+    }
     if (factor.usesPassword) {
       const retry = await mint(factor.assumed);
       if (retry === FRESH_AUTH_ORCID_FALLBACK) {
@@ -1070,13 +1206,20 @@ export async function consentOpFreshAuthRetryGate(err, {
         clearProofCache();
         return { ok };
       } catch (retryErr) {
+        // A mismatch surfacing here is the same corrupted session the
+        // first-attempt branch below tears down, so it takes the same exit
+        // rather than degrading into the retryable freshAuthFailed report.
+        if (isUsernameMismatch(retryErr)) {
+          handleSessionInconsistency();
+          return { sessionInconsistent: true };
+        }
         if (retryErr?.code === 'FRESH_AUTH_REQUIRED') return { freshAuthFailed: true };
         throw retryErr;
       }
     }
   }
 
-  if (err.details?.reason === 'username_mismatch') {
+  if (isUsernameMismatch(err)) {
     handleSessionInconsistency();
     return { sessionInconsistent: true };
   }
@@ -1186,6 +1329,17 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
           if (acquisitionAborted(reacquired)) return FRESH_AUTH_REDIRECT_PENDING;
           return await attemptOnce(reacquired);
         } catch (retryErr) {
+          // A mismatch surfacing on the retry is the same corrupted session
+          // the first-attempt branch below tears down, so it takes the same
+          // exit. This has to sit ahead of both the shape-preserving rethrow
+          // and the wrap: the rethrow's predicate already matches it (a
+          // signer.js-shaped 403 has both `status` and `code`), and the wrap
+          // replaces `details` with a `cause` string, destroying the reason a
+          // later branch would need.
+          if (isUsernameMismatch(retryErr)) {
+            handleSessionInconsistency();
+            return FRESH_AUTH_REDIRECT_PENDING;
+          }
           // Preserve the shape if the retry's own error already follows the
           // contract (i.e., another FRESH_AUTH_REQUIRED or any signer.js-shaped
           // error). Otherwise wrap into a synthesized 0/UNKNOWN shape that
@@ -1201,12 +1355,13 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
         }
       }
 
-      // 403 username_mismatch → JWT subject and proof subject diverge.
-      // Critical session inconsistency; force re-login via the shared teardown
-      // (disconnect + re-login toast). The session-kind error carries `status`
-      // (signer.js#broadcastOps shapes it), so this surface gates on the 403,
-      // unlike the consent-op/settings paths whose api.js errors omit `status`.
-      if (err.status === 403 && err.details?.reason === 'username_mismatch') {
+      // username_mismatch → JWT subject and proof subject diverge. Critical
+      // session inconsistency; force re-login via the shared teardown
+      // (disconnect + re-login toast). The reason is the discriminator, via
+      // the shared predicate the retry leg above uses, so the two legs cannot
+      // drift; the 403 the session-kind error also carries (signer.js shapes
+      // it) is a property of the wire shape, not a second condition.
+      if (isUsernameMismatch(err)) {
         handleSessionInconsistency();
         return FRESH_AUTH_REDIRECT_PENDING;
       }

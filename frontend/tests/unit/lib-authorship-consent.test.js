@@ -47,24 +47,72 @@ vi.mock('../../src/lib/fresh-auth.js', async (importActual) => ({
 const reauthRequest = vi.fn();
 const authDisconnect = vi.fn();
 const toastShow = vi.fn();
+let i18nMessages = null;
 vi.mock('alpinejs', () => ({
   default: {
     store: vi.fn((name) => {
-      if (name === 'reauthModal') return { request: (...a) => reauthRequest(...a) };
+      // `cancel` mirrors the real store's: it resolves the parked `request()`
+      // with null, which is how the subject scrub unwinds an open prompt in
+      // production.
+      if (name === 'reauthModal') {
+        return {
+          request: (...a) => reauthRequest(...a),
+          cancel: () => {
+            const resolve = pendingPromptResolve;
+            pendingPromptResolve = null;
+            if (resolve) resolve(null);
+          },
+        };
+      }
       // `username` matches the LIGHT ctx below so the shared resolver's
       // username-keyed memo branches are live in this suite; without it the
       // memo is never read or written and the retry-gate reuse is untestable.
       if (name === 'auth') return { disconnect: (...a) => authDisconnect(...a), username: 'carol' };
       if (name === 'toast') return { show: (...a) => toastShow(...a) };
-      if (name === 'i18n') return { messages: null };
+      if (name === 'i18n') return { messages: i18nMessages };
       return null;
     }),
   },
 }));
 
 import { withAuthorshipFreshAuth } from '../../src/lib/authorship-consent.js';
-import { clearPasswordFactorMemo } from '../../src/lib/fresh-auth.js';
+import {
+  clearPasswordFactorMemo,
+  abandonInFlightAcquisitions,
+  dismissOpenReauthPrompt,
+} from '../../src/lib/fresh-auth.js';
 import { REAUTH_PROMPT_BUSY } from '../../src/components/reauth-modal.js';
+
+// The subject-bound scrub as this surface feels it, composed from the exported
+// pieces the real auth-store scrub delegates to (that store's own suite drives
+// the whole scrub end to end). The window cache is omitted: this surface never
+// touches it.
+function teardownSubjectState() {
+  clearPasswordFactorMemo();
+  abandonInFlightAcquisitions();
+  dismissOpenReauthPrompt();
+}
+
+// The same teardown MINUS the prompt dismissal, for the cases that have to
+// prove the generation guard alone stops the flow: with the dismissal in play
+// the parked prompt resolves null and the plain-cancel branch could carry the
+// unwind on its own.
+function teardownWithoutPromptDismissal() {
+  clearPasswordFactorMemo();
+  abandonInFlightAcquisitions();
+}
+
+// Real timers in this file; a macrotask hop lets a pending orchestration
+// advance to the await currently blocking it.
+const tick = () => new Promise((resolve) => { setTimeout(resolve, 0); });
+
+// Set by the tests that answer (or abandon) a prompt after it opens.
+let pendingPromptResolve = null;
+
+// A localized value distinct from every English fallback in the module, so an
+// assertion can name WHICH message fired: the busy refusal toasts the same
+// shape from the same store, and expect.any(String) cannot tell them apart.
+const TEARDOWN_CANCEL_SENTINEL = 'LOCALIZED-teardown-cancel-sentinel';
 
 // Mirrors the signer.js broadcastOps error shape consumed by the orchestrator:
 // a `code` (FRESH_AUTH_REQUIRED) plus `details.reason`. The retry gate keys on
@@ -101,6 +149,8 @@ describe('withAuthorshipFreshAuth', () => {
     reauthRequest.mockResolvedValue('hunter2');
     mockMintAuthorshipFreshAuthProof.mockResolvedValue('minted-proof');
     mockBeginAuthorshipOrcid.mockResolvedValue(null); // redirect-pending sentinel
+    i18nMessages = null;
+    pendingPromptResolve = null;
     run = vi.fn().mockResolvedValue({ tx_id: 'tx1' });
   });
 
@@ -338,5 +388,110 @@ describe('withAuthorshipFreshAuth', () => {
     expect(out).toEqual({ cancelled: true });
     expect(toastShow).toHaveBeenCalledTimes(1);
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('a username_mismatch on the 401 retry tears down too, not just on the first attempt', async () => {
+    // Same contract as the first-attempt case above: a mismatch is a corrupted
+    // session, not a re-auth the user can retry into. The retry leg is a
+    // separately deletable branch and had been reporting the retryable
+    // freshAuthFailed instead.
+    run
+      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'))
+      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'username_mismatch'));
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    expect(out).toEqual({ sessionInconsistent: true });
+    expect(authDisconnect).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  // ─── A subject change while the prompt is open ───────────────────────────
+  //
+  // The mint behind the prompt reads the JWT at call time, so a cross-tab
+  // login as someone else during that human-length pause turns an answered
+  // prompt into a mint for the NEW subject. The chain gate on the broadcast
+  // surface rejects the op that follows (its posting auth still names the
+  // previous subject), so the cost here is a spent mint and a verified
+  // password rather than a cross-account write — but neither is owed, and the
+  // guard lives in the shared password-factor mint, so this surface gets it
+  // without a check of its own. These cases pin that it arrives.
+
+  it('a password typed into a prompt left open across a subject change does not spend a mint', async () => {
+    i18nMessages = { auth: { reauthCancelled: TEARDOWN_CANCEL_SENTINEL } };
+    let resolvePrompt;
+    reauthRequest.mockImplementationOnce(
+      () => new Promise((resolve) => { resolvePrompt = resolve; }),
+    );
+
+    const pending = withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    await tick(); // the prompt is now open
+    teardownWithoutPromptDismissal();
+
+    resolvePrompt('hunter2');
+
+    expect(await pending).toEqual({ cancelled: true });
+    expect(mockMintAuthorshipFreshAuthProof).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    // Distinguishable from the user's own dismissal, which stays silent, and
+    // named rather than counted: the busy refusal is the same shape.
+    expect(toastShow).toHaveBeenCalledTimes(1);
+    expect(toastShow).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
+  });
+
+  it('a subject change during the factor read stops the op before it prompts', async () => {
+    // The status round-trip is the FIRST await of the op, and the memo is
+    // empty on a fresh page load (the scrub clears it too), so it really runs.
+    // A guard opened after it would compare the post-teardown generation
+    // against itself and never fire.
+    let resolveStatus;
+    mockFetchEmailStatus.mockReturnValueOnce(
+      new Promise((resolve) => { resolveStatus = resolve; }),
+    );
+
+    const pending = withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    await tick(); // the factor read is now pending
+    teardownSubjectState();
+
+    resolveStatus({ status: 'ok', data: { hasPassword: true } });
+
+    expect(await pending).toEqual({ cancelled: true });
+    expect(reauthRequest).not.toHaveBeenCalled();
+    expect(mockMintAuthorshipFreshAuthProof).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('a passwordless answer arriving after a subject change does not start an ORCID round-trip', async () => {
+    // Navigating away from the paper page for the subject that left, and
+    // rewriting the ORCID flow keys the scrub just cleared.
+    let resolveStatus;
+    mockFetchEmailStatus.mockReturnValueOnce(
+      new Promise((resolve) => { resolveStatus = resolve; }),
+    );
+
+    const pending = withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    await tick(); // the factor read is now pending
+    teardownSubjectState();
+
+    resolveStatus({ status: 'ok', data: { hasPassword: false } });
+
+    expect(await pending).toEqual({ cancelled: true });
+    expect(mockBeginAuthorshipOrcid).not.toHaveBeenCalled();
+    expect(reauthRequest).not.toHaveBeenCalled();
+  });
+
+  it('a subject change while the mint is in flight does not hand the proof to the broadcast', async () => {
+    let resolveMint;
+    mockMintAuthorshipFreshAuthProof.mockReturnValueOnce(
+      new Promise((resolve) => { resolveMint = resolve; }),
+    );
+
+    const pending = withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    await tick(); // the default prompt answered; the mint is now pending
+    teardownWithoutPromptDismissal();
+
+    resolveMint('late-proof');
+
+    expect(await pending).toEqual({ cancelled: true });
+    expect(run).not.toHaveBeenCalled();
+    expect(toastShow).toHaveBeenCalledTimes(1);
   });
 });

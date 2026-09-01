@@ -45,7 +45,19 @@ let i18nMessages = null;
 vi.mock('alpinejs', () => ({
   default: {
     store: vi.fn((name) => {
-      if (name === 'reauthModal') return { request: (...a) => reauthRequest(...a) };
+      // `cancel` mirrors the real store's: it resolves the parked `request()`
+      // with null, which is exactly how the subject scrub unwinds an open
+      // prompt in production.
+      if (name === 'reauthModal') {
+        return {
+          request: (...a) => reauthRequest(...a),
+          cancel: () => {
+            const resolve = pendingPromptResolve;
+            pendingPromptResolve = null;
+            if (resolve) resolve(null);
+          },
+        };
+      }
       // `username` matches the LIGHT ctx below so the shared resolver's
       // username-keyed memo branches are live in this suite; without it the
       // memo is never read or written and the retry-gate reuse is untestable.
@@ -58,8 +70,46 @@ vi.mock('alpinejs', () => ({
 }));
 
 import { withSettingsFreshAuth } from '../../src/lib/settings-fresh-auth.js';
-import { clearPasswordFactorMemo } from '../../src/lib/fresh-auth.js';
+import {
+  clearPasswordFactorMemo,
+  abandonInFlightAcquisitions,
+  dismissOpenReauthPrompt,
+} from '../../src/lib/fresh-auth.js';
 import { REAUTH_PROMPT_BUSY } from '../../src/components/reauth-modal.js';
+
+// The subject-bound scrub as this surface feels it, composed from the exported
+// pieces the real auth-store scrub delegates to (that store's own suite drives
+// the whole scrub end to end). The window cache and the ORCID flow keys are
+// omitted: this surface touches neither.
+function teardownSubjectState() {
+  clearPasswordFactorMemo();
+  abandonInFlightAcquisitions();
+  dismissOpenReauthPrompt();
+}
+
+// The same teardown MINUS the prompt dismissal, for the cases that have to
+// prove the generation guard alone stops the flow. With the dismissal in play
+// the parked prompt resolves null and the plain-cancel branch could carry the
+// unwind on its own; withholding it forces the user's answer through, which is
+// the interleaving where the guard is the only thing standing between a typed
+// password and a mint under the next subject.
+function teardownWithoutPromptDismissal() {
+  clearPasswordFactorMemo();
+  abandonInFlightAcquisitions();
+}
+
+// Real timers in this file; a macrotask hop lets a pending orchestration
+// advance through its internal awaits to the point currently blocking it.
+const tick = () => new Promise((resolve) => { setTimeout(resolve, 0); });
+
+// Set by the tests that need to answer (or abandon) a prompt after it opens.
+let pendingPromptResolve = null;
+
+// A localized value distinct from every English fallback in the module, so an
+// assertion can name WHICH message fired. Without it `expect.any(String)`
+// cannot tell the teardown cancel from the busy refusal or a re-auth failure,
+// and a typo in the key would serve the hardcoded fallback forever.
+const TEARDOWN_CANCEL_SENTINEL = 'LOCALIZED-teardown-cancel-sentinel';
 
 // Mirrors the real `ApiRequestError` shape (api.js): a `code` plus optional
 // `details`, and crucially NO `status` field. The orchestrator's 401-retry gate
@@ -101,6 +151,7 @@ describe('withSettingsFreshAuth', () => {
     reauthRequest.mockResolvedValue('hunter2');
     mockMintSettingsActionProof.mockResolvedValue('minted-proof');
     mockBeginOrcid.mockResolvedValue(null);
+    pendingPromptResolve = null;
     run = vi.fn().mockResolvedValue({ data: { ok: true } });
   });
 
@@ -462,6 +513,202 @@ describe('withSettingsFreshAuth', () => {
     expect(out).toEqual({ cancelled: true });
     expect(toastShow).toHaveBeenCalledTimes(1);
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('a username_mismatch on the 401 retry tears down too, not just on the first attempt', async () => {
+    // The gate's own contract is that a mismatch is a corrupted session rather
+    // than a retryable re-auth failure. That has to hold on the retry leg as
+    // well, or the same divergence reports as "re-authentication failed" and
+    // invites the user to try again against a session no re-mint can fix.
+    run
+      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'))
+      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'username_mismatch'));
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
+    expect(out).toEqual({ sessionInconsistent: true });
+    expect(authDisconnect).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  // ─── A subject change while the prompt is open ───────────────────────────
+  //
+  // The prompt is a human-length pause, and the mint behind it reads the JWT
+  // at call time (api.js `authenticatedRequest`). A cross-tab login as someone
+  // else during that pause therefore turns an answered prompt into a mint for
+  // the NEW subject, after which this orchestrator would run the FIRST
+  // subject's captured action — with `delete_account` in the action set, that
+  // is the most destructive surface in the app. The shared password-factor
+  // mint carries the guard, so no per-orchestrator check is needed here; these
+  // cases pin that it reaches this surface.
+
+  it('a password typed into a prompt left open across a subject change does not spend a mint', async () => {
+    i18nMessages = { auth: { reauthCancelled: TEARDOWN_CANCEL_SENTINEL } };
+    let resolvePrompt;
+    reauthRequest.mockImplementationOnce(
+      () => new Promise((resolve) => { resolvePrompt = resolve; }),
+    );
+
+    const pending = withSettingsFreshAuth('delete_account', LIGHT, run);
+    await tick(); // the prompt is now open
+    teardownWithoutPromptDismissal();
+
+    resolvePrompt('hunter2');
+
+    expect(await pending).toEqual({ cancelled: true });
+    expect(mockMintSettingsActionProof).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    // Distinguishable from the user's own dismissal, which stays silent, and
+    // named rather than merely counted: every call site treats { cancelled }
+    // as a silent abort, and the busy refusal toasts the same shape from the
+    // same store, so only the localized value identifies which one fired.
+    expect(toastShow).toHaveBeenCalledTimes(1);
+    expect(toastShow).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
+  });
+
+  it('the scrub dismissing the prompt reports the teardown, not a plain cancel', async () => {
+    // The production shape: the scrub resolves the parked prompt with null,
+    // the same value a user's Cancel produces. The teardown check has to
+    // outrank the null branch, or the flow unwinds silently and the user is
+    // left with a button that did nothing.
+    i18nMessages = { auth: { reauthCancelled: TEARDOWN_CANCEL_SENTINEL } };
+    reauthRequest.mockImplementationOnce(
+      () => new Promise((resolve) => { pendingPromptResolve = resolve; }),
+    );
+
+    const pending = withSettingsFreshAuth('delete_account', LIGHT, run);
+    await tick(); // the prompt is now open
+    teardownSubjectState();
+
+    expect(await pending).toEqual({ cancelled: true });
+    expect(mockMintSettingsActionProof).not.toHaveBeenCalled();
+    expect(toastShow).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
+  });
+
+  it('a subject change during the factor read stops the action before it prompts', async () => {
+    // The status round-trip is the FIRST await of the action, and the memo is
+    // empty on a fresh page load (the scrub clears it too), so it really runs.
+    // A guard opened after it would compare the post-teardown generation
+    // against itself and never fire, leaving the prompt to open for whoever
+    // the tab now represents.
+    let resolveStatus;
+    mockFetchEmailStatus.mockReturnValueOnce(
+      new Promise((resolve) => { resolveStatus = resolve; }),
+    );
+
+    const pending = withSettingsFreshAuth('delete_account', LIGHT, run);
+    await tick(); // the factor read is now pending
+    teardownSubjectState();
+
+    resolveStatus({ status: 'ok', data: { hasPassword: true } });
+
+    expect(await pending).toEqual({ cancelled: true });
+    expect(reauthRequest).not.toHaveBeenCalled();
+    expect(mockMintSettingsActionProof).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('a passwordless answer arriving after a subject change does not start an ORCID round-trip', async () => {
+    // The other branch of the same await: a full-page navigation fired for the
+    // subject that left, which also rewrites the ORCID flow keys the scrub
+    // just cleared.
+    let resolveStatus;
+    mockFetchEmailStatus.mockReturnValueOnce(
+      new Promise((resolve) => { resolveStatus = resolve; }),
+    );
+
+    const pending = withSettingsFreshAuth('change_email', LIGHT, run);
+    await tick(); // the factor read is now pending
+    teardownSubjectState();
+
+    resolveStatus({ status: 'ok', data: { hasPassword: false } });
+
+    expect(await pending).toEqual({ cancelled: true });
+    expect(mockBeginOrcid).not.toHaveBeenCalled();
+    expect(reauthRequest).not.toHaveBeenCalled();
+  });
+
+  it('a subject change while the guarded call is in flight stops the retry gate re-minting', async () => {
+    // The gate re-prompts and re-mints after a remintable 401. Its guard is
+    // the orchestrator's, opened before run(), so a teardown that landed while
+    // run() was in flight is still visible — a guard opened inside the gate
+    // would not be.
+    let rejectRun;
+    run.mockImplementationOnce(
+      () => new Promise((resolve, reject) => { rejectRun = reject; }),
+    );
+
+    const pending = withSettingsFreshAuth('delete_account', LIGHT, run);
+    await tick(); // the prompt answered, the proof minted, run() is pending
+    teardownSubjectState();
+
+    rejectRun(codedError('FRESH_AUTH_REQUIRED', 'expired'));
+
+    expect(await pending).toEqual({ cancelled: true });
+    // One prompt (the initial mint), never a second for the new subject.
+    expect(reauthRequest).toHaveBeenCalledTimes(1);
+    expect(mockMintSettingsActionProof).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('a subject change while the mint is in flight does not hand the proof to the action', async () => {
+    // The narrower half: the prompt is already answered and the mint round-trip
+    // is pending, so dismissing the modal cannot help. The proof that lands is
+    // bound to a subject this tab no longer represents and must not reach run().
+    let resolveMint;
+    mockMintSettingsActionProof.mockReturnValueOnce(
+      new Promise((resolve) => { resolveMint = resolve; }),
+    );
+
+    const pending = withSettingsFreshAuth('delete_account', LIGHT, run);
+    await tick(); // the default prompt answered; the mint is now pending
+    teardownWithoutPromptDismissal();
+
+    resolveMint('late-proof');
+
+    expect(await pending).toEqual({ cancelled: true });
+    expect(run).not.toHaveBeenCalled();
+    expect(toastShow).toHaveBeenCalledTimes(1);
+  });
+
+  it('an assumed-password 401 landing after a subject change does not start an ORCID round-trip', async () => {
+    // The status read is down, so the factor is assumed; a mint 401 would
+    // normally hand the action to the ORCID factor by full-page navigation.
+    // Arriving after the scrub, that navigation would fire for the subject
+    // that left and rewrite the flow keys the scrub just cleared.
+    statusUnavailable();
+    let rejectMint;
+    mockMintSettingsActionProof.mockReturnValueOnce(
+      new Promise((resolve, reject) => { rejectMint = reject; }),
+    );
+
+    const pending = withSettingsFreshAuth('change_email', LIGHT, run);
+    await tick(); // the default prompt answered; the mint is now pending
+    teardownWithoutPromptDismissal();
+
+    rejectMint(codedError('UNAUTHORIZED'));
+
+    expect(await pending).toEqual({ cancelled: true });
+    expect(mockBeginOrcid).not.toHaveBeenCalled();
+  });
+
+  it('a wrong password whose 401 lands after a subject change does not re-prompt', async () => {
+    // The observed-factor sibling of the case above: without the teardown
+    // check at the catch entry, a mistyped password would open a SECOND prompt
+    // — carrying the previous action's copy — for whoever the tab now
+    // represents, and that prompt would then own the singleton modal.
+    let rejectMint;
+    mockMintSettingsActionProof.mockReturnValueOnce(
+      new Promise((resolve, reject) => { rejectMint = reject; }),
+    );
+
+    const pending = withSettingsFreshAuth('change_email', LIGHT, run);
+    await tick(); // the default prompt answered; the mint is now pending
+    teardownWithoutPromptDismissal();
+
+    rejectMint(codedError('UNAUTHORIZED'));
+
+    expect(await pending).toEqual({ cancelled: true });
+    expect(reauthRequest).toHaveBeenCalledTimes(1);
+    expect(mockBeginOrcid).not.toHaveBeenCalled();
   });
 
   it('an ORCID-factor 401-on-arrival is terminal, not a second redirect (re-OAuth-loop guard)', async () => {

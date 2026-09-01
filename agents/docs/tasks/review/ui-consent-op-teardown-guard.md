@@ -75,3 +75,66 @@ prevents a cross-account WRITE; this task closes the client-side action-on-behal
 and the missing-teardown UX so the client never spends a credential or runs an action
 for a subject the tab no longer represents. The reachability of the consent-op case
 was validated by an independent verification pass, not assumed.
+
+---
+
+## UI implementation notes (2026-09-01)
+
+**Mechanism.** `subjectTeardownGuard()` (fresh-auth.js) is the new shared primitive:
+it snapshots the generation the subject scrub bumps and answers "was this stretch of
+work abandoned" plus "how does this flow report that". `mintViaPasswordFactor` takes a
+`guard` option (defaulting to one opened at its own entry, which is correct only for
+the session path, whose first await IS the prompt).
+
+**Three deviations from the Scope prescription, all deliberate:**
+
+1. *Scope 1 said the shared-layer guard covers both orchestrators "without
+   per-orchestrator edits". It does not, and both orchestrators were edited.* A guard
+   captured at `mintViaPasswordFactor`'s entry is blind to a teardown that landed
+   during the factor read both orchestrators await BEFORE entering it — it compares the
+   post-teardown generation against itself and never fires, so the prompt opens, the
+   mint spends under the new subject, and `run(proof)` executes the previous subject's
+   captured action. That is the same harm AC1 names, one await earlier. The guard is
+   therefore opened at each orchestrator's entry and threaded down through
+   `resolveProof`, `mintViaPasswordFactor`, and the retry gate, matching how
+   `acquireSessionProof` already threads its own. Verified by an independent adversarial
+   pass (3 of 3 refutation attempts confirmed it); tests per orchestrator.
+
+2. *A fourth retry leg was fixed beyond the three AC3 names.*
+   `consentOpFreshAuthRetryGate`'s own retry `catch` returned the retryable
+   `{ freshAuthFailed: true }` on a `username_mismatch`, contradicting that function's
+   docblock. Same defect class as the two named legs, in the same function family;
+   fixing three and leaving the fourth would have reopened the sweep at review. One
+   test per consent-op surface.
+
+3. *The first-attempt mismatch gate in `broadcastWithFreshAuth` lost its
+   `status === 403` condition.* Both legs now share `isUsernameMismatch(err)`
+   (code + `details.reason`, no status). Behaviour-preserving — the backend maps that
+   reason to 403 only — and required on the retry leg, where the normalizing wrapper
+   replaces `details` with a `cause` string, so a status-gated check could never see the
+   reason. One predicate is also what stops the two legs drifting.
+
+**One in-class parity fix inside a touched leg:** `retryOnce` in ipfs-upload.js branches
+on a null proof the way the first attempt always has. Reachable exactly in this task's
+scenario: a teardown between attempts leaves the store without light custody, so the
+re-acquisition answers ready-with-no-proof and the old code passed that null through as
+a proof.
+
+**Not fixed, surfaced for triage** (per root CLAUDE.md "Code Review Findings"):
+
+- A teardown cancel raised inside `uploadFile`'s own window acquisition reports twice:
+  the teardown message, then the page's `common.uploadCancelled`. Suppressing the
+  second needs a distinguishable outcome, i.e. a new member of the window-outcome
+  vocabulary plus its `UPLOAD_*` code and `describeUploadError` arm. Both messages are
+  true; the cost of the vocabulary widening looked worse than the noise.
+- `broadcastConfirm` is the same "singleton prompt outlives the subject" shape as the
+  reauth modal and the scrub does not dismiss it either. An adversarial pass refuted the
+  cross-account-broadcast harm (the scrub drops the window, so a post-teardown Confirm
+  lands on a full re-acquisition rather than a silent broadcast), so this is a UX
+  residual, not a security one.
+
+**Verification.** 1778/1778 frontend unit tests pass; production build clean. Every new
+test was confirmed to fail against the unfixed code before the fix landed. No browser or
+Playwright run: the change has no DOM surface of its own, and its one visible effect is
+a toast in a two-tab, two-account race that the unit suite stages deterministically and
+a manual session cannot.

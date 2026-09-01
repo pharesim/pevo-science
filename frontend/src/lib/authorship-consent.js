@@ -13,6 +13,7 @@ import {
   passwordPromptMessage,
   resolvePasswordFactor,
   promptBusy,
+  subjectTeardownGuard,
 } from './fresh-auth.js';
 
 /**
@@ -56,10 +57,10 @@ import {
 // differs. `assumed` is the resolver's observed-vs-guessed flag, threaded
 // through so an assumed password the backend 401s hands the op to the ORCID
 // factor rather than a second prompt.
-function mintViaPassword(target, assumed) {
+function mintViaPassword(target, assumed, guard) {
   return mintViaPasswordFactor(
     (password) => mintAuthorshipFreshAuthProof(target, password),
-    { message: passwordPromptMessage(), assumed },
+    { message: passwordPromptMessage(), assumed, guard },
   );
 }
 
@@ -80,12 +81,18 @@ function getCachedProof(target) {
 // backend 401s also falls back to the round-trip: navigating away from the
 // paper page costs the user their place, but the alternative is an op that
 // cannot complete at all.
-async function resolveProof(target) {
+async function resolveProof(target, guard) {
   const cached = getCachedProof(target);
   if (cached) return cached;
   const factor = await resolvePasswordFactor();
+  // The status read is itself an await a teardown can land in, and the answer
+  // decides between prompting and navigating. Acting on it after a subject
+  // change would open a prompt, or fire a full-page ORCID round-trip, for the
+  // subject that left. The shared mint's own guard cannot see this one: it is
+  // only entered after this point.
+  if (guard.tornDown()) return guard.cancel();
   if (!factor.usesPassword) return beginAuthorshipOrcidFreshAuth(target);
-  const minted = await mintViaPassword(target, factor.assumed);
+  const minted = await mintViaPassword(target, factor.assumed, guard);
   if (minted === FRESH_AUTH_ORCID_FALLBACK) {
     return beginAuthorshipOrcidFreshAuth(target);
   }
@@ -99,7 +106,9 @@ async function resolveProof(target) {
  *
  *   { ok: <broadcastResult> }     broadcast succeeded
  *   { redirect: true }            ORCID round-trip in flight; abort cleanly
- *   { cancelled: true }           user dismissed the password modal; abort cleanly
+ *   { cancelled: true }           user dismissed the password modal, or a subject
+ *                                 teardown abandoned the op (already reported by
+ *                                 the teardown itself); abort cleanly either way
  *   { freshAuthFailed: true }     re-auth rejected or could not be completed;
  *                                 show a generic error
  *   { sessionInconsistent: true } the JWT subject and proof subject diverge
@@ -121,7 +130,12 @@ export async function withAuthorshipFreshAuth(target, ctx, run) {
     return { ok: await run(undefined) };
   }
 
-  const proof = await resolveProof(target);
+  // Opened before the first await, so it covers the whole op: the status read,
+  // the prompt, the mint, the broadcast, and the retry gate's re-mint. Every
+  // one of those must belong to the subject this tab represented when the user
+  // asked for the op.
+  const guard = subjectTeardownGuard();
+  const proof = await resolveProof(target, guard);
   if (proof === FRESH_AUTH_REDIRECT_PENDING) return { redirect: true };
   if (proof === FRESH_AUTH_PROMPT_BUSY) return promptBusy();
   if (proof === FRESH_AUTH_CANCELLED) return { cancelled: true };
@@ -142,8 +156,9 @@ export async function withAuthorshipFreshAuth(target, ctx, run) {
     // bindings differ. Errors that are not fresh-auth rethrow from the gate,
     // so the caller keeps its op-level handling.
     return consentOpFreshAuthRetryGate(err, {
+      guard,
       resolveFactor: resolvePasswordFactor,
-      mint: (assumed) => mintViaPassword(target, assumed),
+      mint: (assumed) => mintViaPassword(target, assumed, guard),
       beginOrcidRedirect: () => beginAuthorshipOrcidFreshAuth(target),
       run,
       clearProofCache: clearCachedConsentOpProof,
