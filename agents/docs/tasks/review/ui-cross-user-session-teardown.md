@@ -230,3 +230,58 @@ near-theoretical respectively).
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
 re-review signal. Do not edit this hold block or annotate items as fixed; the commit
 diff is the evidence and the architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-09-01, commit 659131b8)
+
+Both hold items landed, red-first where a base red exists, adversarially
+reviewed by a three-lens fan-out (correctness/races, security/account-state
+against ARCHITECTURE § 6, test-quality) with three refute votes per raised
+finding: zero findings survived. Full frontend unit suite on the integrated
+tree: 80 files, 1780 tests green (the 3 vitest errors are the documented
+pre-existing `pages-edit` `_mountEditors` rejections). Playwright not run: no
+visual surface changed; same omission posture as the base implementation.
+
+**Fix for the redirect boundary.** `acquireSessionProof` supplies its flight's
+generation predicate to `beginSessionAuthOrcidRedirect`, which threads it into
+`beginOrcidFreshAuthRedirect` as an optional `isStale` callback. After
+`startOrcid` resolves and before any navigation, a stale flight clears the
+mode and return-path keys (mirroring the error unwinds) and resolves as
+`FRESH_AUTH_CANCELLED` — the same silent clean cancel as the sibling
+generation checks. Both passwordless outcomes (known-passwordless and the
+assumed-password fallback) share the one guarded closure. Page-level and
+consent-op redirect starters pass no predicate; their behavior is unchanged.
+The prescribed mirror test (startOrcid pending → teardown → resolve → no
+navigation, keys cleared) was observed red at base for the right reason.
+
+**Fix for the fixture mirror.** Went with the export option, plus the parity
+test as a semantic pin on top. The export lives in a NEW dependency-free
+module `frontend/src/lib/subject-bound-keys.js` rather than as exports from
+`auth.js`/`fresh-auth.js` directly: the fixture's consuming suites partially
+mock `api.js`/`alpinejs`, so importing the truth through those modules'
+import graphs would have dragged the partial mocks' missing exports into six
+suites. `fresh-auth.js` now imports its formerly-private key consts from the
+module (retiring the can't-import-the-truth problem), `_scrubSubjectBoundState`
+loops the module's `SUBJECT_BOUND_STORAGE_KEYS` for its storage removals, and
+the fixture loops the same list. The parity test runs the real
+`loginFromResponse` and `mockLoginFromResponse` from identically seeded
+storage and asserts identical results for the cross-user scrub, the
+same-subject preserve, and unrelated-key survival; it seeds every listed key
+generically so a future list entry is exercised automatically, and both
+mutation probes (fixture skips a key; real scrub loop skips a key) are killed
+by it.
+
+**Residual disclosed for the record, judged dismissible by all reviewers:**
+a stale flight's unwind removes the mode/return-path keys unconditionally, so
+a successor ORCID flow's freshly written keys could be wiped if the old
+`startOrcid` resolves inside the successor's own round-trip window
+(sub-second, fail-closed retryable dead-end at the callback, same shape as
+the function's pre-existing error unwinds, and strictly narrower than the
+base behavior of navigating). A value-conditional ownership guard cannot
+discriminate two flights writing identical mode strings; a per-flight nonce
+would be preemptive hardening per repo norms. Known parity-test blind spot,
+also disclosed: a future subject-bound key scrubbed only via a new dedicated
+clear function and never registered in the shared list is never seeded, so
+parity passes vacuously — the docblocks at `_scrubSubjectBoundState` and
+`subject-bound-keys.js` both channel additions into the list.
