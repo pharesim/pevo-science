@@ -194,3 +194,118 @@ convention store is architect-maintained.
 governs assertion granularity and was correctly followed; every item here sits on
 the detection axis that entry explicitly scoped out. A companion entry for the
 detection-precision class is worth writing once this lands.
+
+---
+
+## Architect re-review (2026-09-01) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on `e56973c3`, six lenses plus an independent
+validation pass. **All seven scoped items verified genuinely landed**: every
+planted probe discriminates its evasion shape (traced against real production
+shapes, including validateStoredEntry's actual casts and shorthand returns),
+AC4 holds by execution (all scan files green against the tree, zero
+backend/src changes), comment-anchor and carve-out compliance is clean, and
+the canary-ladder convention entries were followed — the fail-closed pairing
+prescription essentially verbatim.
+
+Six items hold the archive. Every one is an evasion of the HARDENED seams,
+mechanically replicated twice — once by the finding reviewer and again,
+independently, by the validation pass — and every one is an ordinary
+authoring shape, which is this task's own bar. Same class, one layer deeper.
+
+### 1. Trailing comments satisfy all three consume-canary seams
+
+The satisfying sides of the required-mention seams count mentions inside
+trailing comments on live lines (only full-line comments are filtered):
+`consumeSessionFreshAuthToken(token, user, undefined); // TODO wire
+req.hiveSessionsInvalidatedAt` passes the epochs scan green, and
+`sessionsInvalidatedAtMs: undefined, // was req.hiveSessionsInvalidatedAt`
+beside `acceptSession: true` classifies as epoch-referencing in the value
+seam. This commit gave the sibling sweep scan `stripTrailingComment` for
+exactly this dead-mention class; the consume canary's satisfying sides did
+not get it. Fix: hoist `stripTrailingComment` into the support module and
+apply it on every REQUIRED-mention satisfying side (the epochs scan, the
+fields scan, and the value text before both classifier arms — the
+string-truncation naivety fails closed on all three), with a
+trailing-comment planted probe per seam.
+
+### 2. Extracting the surface literal into a builder defeats the value seam
+
+Facts are collected tree-wide but the offender loop judges only symbols that
+CALL the surface consume. The ordinary helper-extraction refactor — a builder
+returning `{ acceptSession: true, sessionsInvalidatedAtMs: undefined }`, a
+wrapper calling the consume with the built object — passes all three seams
+green while disabling revocation. It is the identical maintenance edit this
+same commit hardened the JWT registry against. Fix: judge every
+lib/fresh-auth.ts symbol whose facts are accepting AND (literal OR no epoch
+ref), independent of surface calls — sound because the surface type is
+module-private, and the one outside opts-bag writer (routes/ipfs.ts) stays
+exempt. Add the builder shape as a planted probe.
+
+### 3. Shorthand or quoted acceptSession evades the accepting classification
+
+`ACCEPT_SESSION_WRITE_RE` requires a colon, so a shorthand forward
+(`acceptSession,`) or quoted key never marks a surface accepting; beside
+`sessionsInvalidatedAtMs: undefined` the surface passes. Three reviewers
+found this independently — it is the same shorthand class this diff closed
+for the sibling keys, unapplied to this key. Fix: mirror
+`SURFACE_FIELD_WRITE_RE`'s key-position discipline and treat a shorthand
+write (null value text) as ACCEPTING — the conservative direction the seam
+already commits to; the option-bag `acceptSession?: boolean` negative stays
+excluded. Planted probes both ways; no shorthand acceptSession exists under
+src today, so no current red bar.
+
+### 4. A kind key with an identifier value evades the composed discriminator
+
+`kind: entryKind` (with `const entryKind = 'session'` nearby) matches neither
+the value-anchored signal nor the bare-key signal (a colon followed by a value
+is not end-of-line), so it contributes an empty occurrence set inside the
+storage-pin-licensed symbols — and the new docblock's residual claim ("what
+remains out of reach is an entry assembled entirely by spread") is therefore
+inaccurate. Fix both: add a lowercase-identifier-value arm (another loud
+false-positive class, matching the loud-FP posture the scan already takes)
+and correct the residual docblock to state the surviving gap honestly.
+
+### 5. The JWT registry seeds only the jwt.sign spelling
+
+A route importing jsonwebtoken any other way (destructured, renamed,
+namespace) mints session JWTs while seeding zero registry members; the
+exact-set assertion and the member-count floor guard shrinkage, not silent
+non-growth. All eight current importers use the default-import convention;
+nothing pins it. Fix: a tree-wide occurrence scan over jsonwebtoken whose
+only allowed shape is the default import — the same move this file already
+makes for the session-mint function itself.
+
+### 6. The validateStoredEntry allowlist license is wider than its argument
+
+The new allowlist member licenses the WHOLE symbol, but its stated
+justification covers only shorthand kind echoes. A value-anchored
+`kind: 'session'` literal inside validateStoredEntry — a read-path kind
+coercion one edit away from its existing defaulting arm, invisible to the
+storage pins because it writes nothing — is now silently absorbed where the
+pre-diff two-member allowlist went red. Fix: split the license by signal
+strength — the value-anchored scan pinned to exactly the two constructor
+sites, the composed key-anchored scan against the three-member list — plus a
+planted probe with a value literal inside a validateStoredEntry-named symbol.
+
+### Noted, not held
+
+- Item 4 of the original scope (the four storage-write pins) was verified in
+  aggregate only; no dedicated per-pin planted probe exists. Fail-closed
+  set-equality shape mitigates. Adding one probe per pin alongside the fixes
+  above is welcome but not required.
+- Residuals judged below the ordinary-authoring bar, recorded for the next
+  probing pass: a sweep-call shape inside a live string literal still
+  satisfies pairing; the consume-epoch pairing is call-shaped (first-class
+  function passing escapes it); wildcard SCAN access bypasses the contiguous
+  keyspace literal; .mts/.cts under src would be invisible to every canary
+  (none exists; pre-existing tree-walk boundary).
+
+### Architect-owned follow-up
+
+Once these land, the ordinary-authoring-shapes convention entry should be
+refreshed to add the comment-tail-satisfying-side, builder-extraction, and
+identifier-value shapes to its documented class. Architect runs
+`/ce-compound-refresh`; do not hand-edit.
+
+---
