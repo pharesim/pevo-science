@@ -958,3 +958,139 @@ Also still open from the earlier rounds, unchanged by this one:
 asserting the offline-queue rationale this task disproved.
 
 ---
+
+## Architect re-review (2026-09-01, round 5) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on the round-4 diff (`5a681e1e` + `155e0c1d`), eight
+lenses plus an independent per-finding validation pass.
+
+**All three round-4 hold items verified genuinely landed**, checked in the code rather
+than taken from the signal:
+
+- **Item 1.** The expiry arm's drop lives inside `.then()`; `.catch` retains. The two
+  arms are collapsed into one loop body behind a single early return. The new stalled
+  test drives a genuinely DISPATCHED delete that rejects on its own `commandTimeout`
+  with the client never leaving `ready` — the one rejection shape severing cannot
+  produce, confirmed against the installed ioredis: `closeHandler` sets `close`
+  synchronously before any rejection a severed socket can cause.
+- **Item 2.** The keep-test's final replay now runs with `state.client` pointed at the
+  connected observer and `exists(key) === 1` asserted immediately before it, so the
+  refusal is attributable to the retained entry rather than to tier absence. Verified it
+  now fails under a bare-drop revert; the previous shape passed identically.
+- **Item 3.** `isConsentOpSpent`'s closing paragraph and the drain's restart-residual
+  are rewritten to the load-bearing model.
+
+**The security work is done and nothing this round reopens it.** Four lenses independently
+enumerated the burn matrix over (`redis` null or not, `isRedisAvailable()`, `getdel`
+resolved or threw, `memStore` hit or miss, `alreadySpent`) and none found a combination
+returning a win with a canonical copy readable and unguarded. AC2 holds structurally:
+`spentConsentOps.add` has exactly two call sites, and the production one sits inside
+`!redisLegRan && burnedInMemStore && redis`. The `Set` conversion is a strict
+refusal-widening. The beyond-hold removal of the deadline was checked in both directions
+and cannot retire an entry earlier than a confirmation would.
+
+**Notably, and for the first time in this task, every ioredis claim the diff makes is
+correct.** Five reviewers verified independently against installed 5.10.1 rather than
+against the comments: the `retryAttempts % (maxRetriesPerRequest + 1)` flush condition,
+`autoResendUnfulfilledCommands` defaulting true and resending the original `SET ... EX`
+at recovery, `resetCommandQueue` on a successful connect, `commandTimeout` armed before
+the offline-queue check, and `setStatus` emitting via `process.nextTick`. The rewritten
+docblocks are accurate. What follows is text the rewrite did not reach.
+
+Three items. All are the same class: statements of the retired model left standing
+where the `Set` conversion did not reach. None affects behaviour.
+
+### 1. The compensating-delete failure log still promises release on expiry
+
+`burnConsentOpEntry`'s `logger.warn` on the failed compensating delete tells the operator
+the proof is "held spent in-process until the delete lands **or it expires**". Nothing
+expires any more. The ledger is a `Set<string>` whose own docblock states entries leave
+on exactly two events, neither of which is expiry.
+
+This is the only operator-facing artifact in the feature, and it fires during precisely
+the incident the ledger exists to survive — where, under a Redis that stays down or
+returns `-MISCONF`, the entry is retained indefinitely by design. An operator reading it
+has been told the wrong recovery model at the moment they most need the right one. It is
+also the last statement of the retired model inside a function whose surrounding docblock
+this same commit already corrected, which makes it the single line most likely to seduce
+a future author back into deadline-based retirement.
+
+Fix: drop the `or it expires` clause and name the actual release condition (a confirmed
+delete, or a later presentation proving the canonical copy gone). Operator log, so the
+no-emdash rule does not bind.
+
+### 2. The retry-ceiling figure was corrected in two places and left wrong in two others
+
+`155e0c1d` corrected this claim in the `spentConsentOps` docblock to "divisible by
+`maxRetriesPerRequest + 1` ... flushing on the fourth close ... a little over a second".
+Two copies were missed, and both are wrong in both halves:
+
+- `burnConsentOpEntry`'s docblock still says "rejected wholesale once the reconnect count
+  reaches `maxRetriesPerRequest`, which on this client's backoff curve is about two
+  seconds". This is the docblock that explains why the ledger exists at all.
+- The offline-queue suite's header still says "once its reconnect count reaches
+  `maxRetriesPerRequest`" — directly beside the "on the fourth close" clause this same
+  diff added. The sentence now contradicts itself.
+
+With `REDIS_MAX_RETRIES_PER_REQUEST = 3` the flush is at attempt 4, and on the 200ms
+linear curve (200/400/600) that is a little over one second. Settle the wording once and
+apply it to both sites. Four lenses flagged the first; two flagged the second.
+
+For the record, the same stale figure was in the architect-owned GETDEL convention entry
+and has been corrected there in `ac3ce047`, so all four copies now agree.
+
+### 3. The drain docblock's "SOLE sweeper" claim is false
+
+The docblock calls the periodic tick "the SOLE sweeper" for the stalled-server arm.
+`burnConsentOpEntry`'s `if (redisLegRan) spentConsentOps.delete(token);` also retires
+that entry, whenever a replay's own `GETDEL` resolves.
+
+This same commit already wrote the correct qualifier into the tick test — "the only
+trigger that sweeps it WITHOUT a further presentation of the proof; a replay's own
+resolved `GETDEL` would also retire it, but nothing guarantees a replay arrives" — and
+the round-4 signal listed this very correction as one it had made. It was made in the
+test and missed in the production docblock, which is now the one place stating the
+retirement contract too strongly. Adopt the test comment's phrasing.
+
+### Noted, not held
+
+- **Two findings were raised and dropped at validation, recorded so they are not
+  re-litigated.** First, a claim that the stalled test cannot distinguish a rejected
+  delete from a still-pending one, and so would not kill a drop-on-settle (`.finally`)
+  mutant. Traced concretely: `commandTimeout` is armed at dispatch and is 5s, while the
+  test sleeps `REDIS_COMMAND_TIMEOUT_MS + 1_500`, so the rejection lands 1.5s before the
+  assertion and the mutant does die there. The test is sound as written. Second, a claim
+  that `hold-prescriptions-expire-with-their-premise` is contradicted; it is stale in one
+  status line but hedged "as of this writing", and its normative content matches what
+  landed. Left alone deliberately.
+- **Unbounded retention now has a second dimension nobody has bounded.** Entries are
+  retained for the whole of an outage by design, and each tick re-dispatches one `DEL`
+  per entry. A timed-out ioredis command is additionally never removed from
+  `commandQueue`, so against a stalled server that never replies the `Command` objects
+  accumulate alongside the entries. This is strictly wider than pre-diff, since entries
+  no longer lapse. Being filed as its own task rather than held here — it touches the
+  invariant this task just settled and deserves its own design pass.
+- The `-MISCONF` premise in the drain docblock assumes RDB save points are configured; a
+  Redis with no `save` directives never returns `-MISCONF` to `DEL`. Narrows the named
+  shape, changes nothing about the decision. Not worth an edit on its own.
+- AC1's safety under the resent-`SET` resurrection rests on an ioredis ordering guarantee
+  named nowhere in the code: `readyHandler` resends `prevCommandQueue` before flushing
+  `offlineQueue`, and `setStatus` emits `ready` via `process.nextTick`. Verified correct
+  today. An upstream change to that order would reopen the window silently, and no test
+  pins it. Recorded as residual risk, not held.
+- `waitFor` is now defined identically in both ledger suites, and `isConsentOpSpent`'s
+  docblock re-derives the resend rationale already given on `spentConsentOps`. Both
+  below the hold line.
+- Test coverage gaps recorded and not held: no server-replied error (`-MISCONF`,
+  `-NOPERM`) rejection anywhere, only client-side ones; the stalled-server ORIGIN of an
+  entry is still planted rather than produced (now one issue-then-stall away, with
+  `stall()` in the fixture); no test that a retained entry is actually retired by a later
+  successful trigger; the `redis === null` leg of the drain guard is undriven.
+
+### Architect-owned, now closed
+
+Scope item 4 / AC4 had reopened: the `Set` conversion left the GETDEL convention entry
+prescribing the deadline model at three sites, one of which the code now proves false.
+Corrected by the architect in `ac3ce047` via `/ce-compound-refresh`. **AC1, AC2 and AC3
+were met in round 4 and remain met; AC4 is met again as of that commit.** The three items
+above are all that stand between this task and archive.
