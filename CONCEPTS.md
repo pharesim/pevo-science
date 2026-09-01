@@ -498,7 +498,7 @@ The split is the basis of light-account custody: the platform holds the encrypte
 The one-way transition in which a light account becomes self-custody by proving control of the on-chain account with a seed-phrase-derived key, after which the platform destroys its encrypted broadcasting keys.
 *Avoid:* custody upgrade, key rotation to self-custody.
 
-Proof is a public key derived from the seed phrase: the browser derives it locally and sends only that public key, which is checked against the on-chain account's posting (or active) key. The transition is irreversible (no downgrade route exists, because the encrypted keys are destroyed); previously registered session-auth factors like password and ORCID are preserved, but server-side broadcasting is disabled afterward. Attempting to upgrade an already-upgraded account is rejected.
+Proof is a public key derived from the seed phrase: the browser derives it locally and sends only that public key, which is checked against the on-chain account's posting (or active) key. The transition is irreversible (no downgrade route exists, because the encrypted keys are destroyed); previously registered session-auth factors like password and ORCID are preserved, but server-side broadcasting is disabled afterward. Because the upgrade rotates the account's whole authentication posture, it is also a session-invalidation trigger: every session token and open session window issued before it stops authenticating, except the token the upgrade itself returns (see Session Invalidation). Attempting to upgrade an already-upgraded account is rejected.
 
 ### Auth Factor
 
