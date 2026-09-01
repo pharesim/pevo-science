@@ -1094,3 +1094,100 @@ prescribing the deadline model at three sites, one of which the code now proves 
 Corrected by the architect in `ac3ce047` via `/ce-compound-refresh`. **AC1, AC2 and AC3
 were met in round 4 and remain met; AC4 is met again as of that commit.** The three items
 above are all that stand between this task and archive.
+
+---
+
+## Backend re-review signal (2026-09-01, round 5, commit 4195c8f7)
+
+All three held items landed in one commit. Text only; no behaviour change, no
+test added or reshaped. Symbols named so the diff can be grepped.
+
+**Item 1 — the failure log promised release on expiry.** The
+`fresh_auth.redis_compensating_del_failed` warning in `burnConsentOpEntry` now
+reads "held spent in-process until a retried delete is confirmed to have landed
+or a later presentation proves the canonical copy gone". Exactly the two
+release events the `spentConsentOps` docblock lists, nothing else. Observed
+firing with that text in the offline-queue suite's run log, on a genuine
+`MaxRetriesPerRequestError` out of `event_handler.js`.
+
+**Item 2 — the retry-ceiling figure at two sites.** Settled on the
+`spentConsentOps` docblock's already-correct wording and applied it to the
+`burnConsentOpEntry` docblock and the offline-queue suite header: the queue is
+flushed "on every reconnect attempt divisible by `maxRetriesPerRequest + 1`",
+on the 200ms-linear curve "flushing on the fourth close", "a little over a
+second". Re-derived from the installed 5.10.1 `closeHandler` rather than
+copied: `retryStrategy(++retryAttempts)` then
+`retryAttempts % (maxRetriesPerRequest + 1) === 0`, so closes 1 to 3 schedule
+200/400/600 and close 4 flushes. A grep for "about two seconds" and "reaches
+`maxRetriesPerRequest`" across `backend/src` and `backend/tests` is now empty.
+
+**Item 3 — "SOLE sweeper".** The `drainSpentConsentOps` docblock's
+stalled-server bullet now says the tick "for one narrower arm is the only
+trigger that sweeps WITHOUT a further presentation of the proof", followed by
+"A replay's own resolved `GETDEL` would also retire that entry, but nothing
+guarantees a replay arrives", which is the tick test's phrasing in substance.
+The residual paragraph beneath it was checked rather than assumed: it does not
+enumerate the replay retirement, but in that sub-case the key is gone and there
+is no orphan, so its worst-case framing stays true and it was left alone.
+
+### Changed beyond the hold, and why
+
+The hold's theme was "statements of the retired model left standing where the
+rewrite did not reach", and every round of this task has found one more. So
+before signalling, the whole fresh-auth surface (`fresh-auth.ts`, the three
+fresh-auth suites, `redis.ts`) was swept by five independent lenses for ANY
+remaining stale statement, and each candidate was put to two refuters. Two
+classes survived; both are pre-existing, neither is a regression of any round:
+
+1. **"Redis `DEL` reply count" as the burn's arbitrator, at five sites.** The
+   module docblock, the `inFlightConsumes` docblock and the
+   `consumeFreshAuthToken` docblock in `fresh-auth.ts`, plus the header and
+   one inline comment in `fresh-auth.test.ts`, all said the Redis-side burn is
+   arbitrated by a `DEL` reply count. It has always been
+   `(await redis.getdel(...)) !== null`, a non-nil bulk reply, not an integer
+   count, and the only `DEL` the burn issues discards its reply. Checked in
+   history rather than taken from the reviewers (who disagreed on it): the
+   `GETDEL` leg predates the phrase, which was written against a burn that
+   already used it, so it was stale since written. All five now say "a non-nil
+   Redis `GETDEL` reply". A grep for "reply count"
+   across `backend/src` and `backend/tests` is now empty.
+2. **The offline-queue header misdescribed the sibling's delete path.** It said
+   the sibling suite's compensating delete is "queued" and "always flushes on
+   the very next tick". The sibling's client is genuinely `ready`, so ioredis
+   `sendCommand` takes the `writable` branch and writes that `DEL` straight to
+   the socket; it never enters the offline queue. It now says the delete "is
+   written straight to a live socket rather than queued". The substantive
+   point (the rejection path is never reached there) was already right.
+
+One candidate was raised and refuted, recorded so it is not re-litigated: the
+drain docblock's opening "the `DEL` resolving is the one event that proves the
+canonical key unreadable" reads as exclusive, but its subject is the DRAIN's
+own delete and the next sentence fixes the contrast as resolved-versus-merely-
+dispatched; the ledger-wide two-event model is stated where it belongs. Left
+as is.
+
+### Evidence
+
+No mutation probes this round: nothing behavioural changed, so there is no
+mutant for a text edit to kill. The verification was the sweep above
+(hold-compliance, retired-model sweep of `src`, retired-model sweep of the
+tests and `redis.ts`, ioredis-truth of every changed sentence against the
+installed source, and project conventions on the added lines); the first,
+fourth and fifth lenses returned zero findings.
+
+Green: `npm run typecheck` (src + tests), `npm run lint` (the one
+pre-existing `author-supersession.ts` warning), and 120 tests across
+`fresh-auth.test.ts`, `fresh-auth-redis-unavailable-burn.test.ts`,
+`fresh-auth-consent-op-burn-offline-queue.test.ts` and the stale-anchor
+canary.
+
+### Not done, by choice
+
+The noted-not-held items stand: no server-replied error rejection in any
+test, the stalled-server entry origin still planted rather than produced, no
+retained-then-retired test, the `redis === null` drain leg undriven, the
+`armDrainOnReady` listener-count pin, the duplicated `waitFor`, and the
+`afterEach` recovery boolean. The architect has already filed the two
+follow-ups from this round separately. `backend/src/lib/ipfs-upload-token.ts`
+remains the one place in the tree asserting the offline-queue rationale this
+task disproved, unchanged, per the standing "noted, not held".
