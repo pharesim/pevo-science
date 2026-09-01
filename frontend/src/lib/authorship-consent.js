@@ -3,16 +3,15 @@ import {
   getCachedConsentOpProof,
   clearCachedConsentOpProof,
   beginAuthorshipOrcidFreshAuth,
+  consentOpFreshAuthRetryGate,
   FRESH_AUTH_REDIRECT_PENDING,
   FRESH_AUTH_CANCELLED,
   FRESH_AUTH_MINT_FAILED,
   FRESH_AUTH_PROMPT_BUSY,
   FRESH_AUTH_ORCID_FALLBACK,
-  REMINTABLE_REASONS,
   mintViaPasswordFactor,
   passwordPromptMessage,
   resolvePasswordFactor,
-  handleSessionInconsistency,
   promptBusy,
 } from './fresh-auth.js';
 
@@ -136,58 +135,18 @@ export async function withAuthorshipFreshAuth(target, ctx, run) {
     clearCachedConsentOpProof();
     return { ok };
   } catch (err) {
-    if (err?.code !== 'FRESH_AUTH_REQUIRED') throw err;
-
-    // The proof is consumed (success or fail) before the broadcast, so any retry
-    // must mint a fresh one. Drop the cache first.
-    clearCachedConsentOpProof();
-
-    // Re-mintable reasons (missing/expired/malformed) retry inline ONLY on the
-    // password factor. A KNOWN-ORCID account would need a second full-page
-    // OAuth redirect near the 5-minute TTL (re-OAuth loop risk); it surfaces a
-    // terminal failure so the user restarts deliberately. The one exception is
-    // the ASSUMED-password 401 at the retry mint: there the 401 is new
-    // information (the account has no password), the user has just engaged by
-    // typing one, and without the redirect the op dead-ends — each pass costs
-    // a typed password plus a full OAuth round-trip, so it cannot tight-loop.
-    // `wrong_mechanism` and the 403 username/target/kind mismatches are not
-    // fixable by re-minting the same factor — they fall through to
-    // freshAuthFailed.
-    const remintable = REMINTABLE_REASONS.includes(err.details?.reason);
-    if (remintable) {
-      const factor = await resolvePasswordFactor();
-      if (factor.usesPassword) {
-        const retry = await mintViaPassword(target, factor.assumed);
-        if (retry === FRESH_AUTH_ORCID_FALLBACK) {
-          await beginAuthorshipOrcidFreshAuth(target);
-          return { redirect: true };
-        }
-        if (retry === FRESH_AUTH_PROMPT_BUSY) return promptBusy();
-        if (retry === FRESH_AUTH_CANCELLED) return { cancelled: true };
-        if (retry === FRESH_AUTH_MINT_FAILED) return { freshAuthFailed: true };
-        try {
-          const ok = await run(retry);
-          clearCachedConsentOpProof();
-          return { ok };
-        } catch (retryErr) {
-          if (retryErr?.code === 'FRESH_AUTH_REQUIRED') return { freshAuthFailed: true };
-          throw retryErr;
-        }
-      }
-    }
-
-    // username_mismatch: the JWT subject and the proof subject diverge — a
-    // corrupted session, not a retryable re-auth failure. Tear the session down
-    // and force re-login via the shared teardown, matching the session-kind and
-    // settings siblings; otherwise the user retries a broken session indefinitely
-    // against the generic "try again" outcome. Gate on the reason, not a status
-    // code: the custody-broadcast error reaching this catch is an api.js
-    // ApiRequestError carrying only code/details, no `status`.
-    if (err.details?.reason === 'username_mismatch') {
-      handleSessionInconsistency();
-      return { sessionInconsistent: true };
-    }
-
-    return { freshAuthFailed: true };
+    // The FRESH_AUTH_REQUIRED fallout — the remintable re-mint+retry, the
+    // ASSUMED-password ORCID fallback, the username_mismatch teardown, and the
+    // terminal freshAuthFailed — lives in the shared retry gate
+    // (`consentOpFreshAuthRetryGate`, fresh-auth.js); only this surface's
+    // bindings differ. Errors that are not fresh-auth rethrow from the gate,
+    // so the caller keeps its op-level handling.
+    return consentOpFreshAuthRetryGate(err, {
+      resolveFactor: resolvePasswordFactor,
+      mint: (assumed) => mintViaPassword(target, assumed),
+      beginOrcidRedirect: () => beginAuthorshipOrcidFreshAuth(target),
+      run,
+      clearProofCache: clearCachedConsentOpProof,
+    });
   }
 }

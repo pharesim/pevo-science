@@ -86,19 +86,37 @@ export function describeUploadError(err) {
 // to UPLOAD_CANCELLED: the user never saw a prompt for this upload, so
 // reporting an upload they cancelled is exactly the silent-drop ambiguity the
 // busy sentinel exists to remove.
+
+// How each non-ready window outcome surfaces on this site: the pre-flight
+// throws a coded error the page layer describes, rather than toasting
+// directly. Keyed by the shared window-outcome vocabulary
+// (`WINDOW_OUTCOME_KEYS` in lib/fresh-auth.js); the vocabulary-driven
+// exhaustiveness suite pins this table against it, so a member added to the
+// vocabulary without a row here is a failing test, not a silent
+// misclassification as a cancel.
+export const UPLOAD_CODE_BY_WINDOW_OUTCOME = Object.freeze({
+  redirect: UPLOAD_CANCELLED,
+  cancelled: UPLOAD_CANCELLED,
+  failed: UPLOAD_REAUTH_FAILED,
+  busy: UPLOAD_REAUTH_BUSY,
+  reauthRequired: UPLOAD_REAUTH_REQUIRED,
+});
+
+// Internal Error.message text per code (developer-facing; the user-facing copy
+// comes from `describeUploadError`'s i18n keys).
+const UPLOAD_ERROR_TEXT = Object.freeze({
+  [UPLOAD_CANCELLED]: 'Upload cancelled',
+  [UPLOAD_REAUTH_FAILED]: 'Re-authentication failed',
+  [UPLOAD_REAUTH_BUSY]: 'Another confirmation is open',
+  [UPLOAD_REAUTH_REQUIRED]: 'Re-authentication required',
+});
+
 async function windowProof() {
   const outcome = await ensureSessionWindow({ minRemainingMs: 0, allowRedirect: false });
   if (outcome.ready) return outcome.proof;
-  if (outcome.reauthRequired) {
-    throw new UploadSessionError(UPLOAD_REAUTH_REQUIRED, 'Re-authentication required');
-  }
-  if (outcome.failed) {
-    throw new UploadSessionError(UPLOAD_REAUTH_FAILED, 'Re-authentication failed');
-  }
-  if (outcome.busy) {
-    throw new UploadSessionError(UPLOAD_REAUTH_BUSY, 'Another confirmation is open');
-  }
-  throw new UploadSessionError(UPLOAD_CANCELLED, 'Upload cancelled');
+  const outcomeKey = Object.keys(UPLOAD_CODE_BY_WINDOW_OUTCOME).find((key) => outcome[key]);
+  const code = outcomeKey ? UPLOAD_CODE_BY_WINDOW_OUTCOME[outcomeKey] : UPLOAD_CANCELLED;
+  throw new UploadSessionError(code, UPLOAD_ERROR_TEXT[code]);
 }
 
 // One consume of the window: upload, then replay the idle slide the backend

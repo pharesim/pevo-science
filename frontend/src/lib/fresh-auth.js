@@ -746,6 +746,98 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
   }
 }
 
+// ---------------------------------------------------------------------------
+// The window-outcome vocabulary and its shared dispatch.
+//
+// `acquireSessionProof` resolves to a proof string or to one of the sentinels
+// below, and three independently owned sites consume the result: the page gate
+// `freshAuthWindowReady`, the broadcast unwinder `acquisitionAborted`, and the
+// upload pre-flight `windowProof` (lib/ipfs-upload.js). This map is THE
+// registration point for the vocabulary: `ensureSessionWindow` derives its
+// outcome object from the key, the toast dispatch below carries the message
+// (or deliberate silence) each outcome owes the user, and the vocabulary-driven
+// exhaustiveness suite pins every consuming site against `WINDOW_OUTCOME_KEYS`,
+// so a member added here without a matching entry at a consumer is a failing
+// test rather than a silent fall-through discovered in review.
+//
+// FRESH_AUTH_ORCID_FALLBACK is deliberately absent: acquisition resolves it
+// internally (to the ORCID redirect or the suppressed refusal) before any
+// window consumer sees it, and the exhaustiveness suite pins that exclusion.
+const WINDOW_OUTCOME_BY_SENTINEL = new Map([
+  [FRESH_AUTH_REDIRECT_PENDING, 'redirect'],
+  [FRESH_AUTH_CANCELLED, 'cancelled'],
+  [FRESH_AUTH_MINT_FAILED, 'failed'],
+  [FRESH_AUTH_PROMPT_BUSY, 'busy'],
+  [FRESH_AUTH_REAUTH_REQUIRED, 'reauthRequired'],
+]);
+
+// The non-ready outcome keys, derived from the registration map so the two
+// cannot drift. Every outcome object carries exactly one of these keys by
+// construction (`ensureSessionWindow` sets the one matching its sentinel).
+export const WINDOW_OUTCOME_KEYS = Object.freeze([...WINDOW_OUTCOME_BY_SENTINEL.values()]);
+
+// Classify an acquisition result for consumers that see the raw
+// proof-or-sentinel: the vocabulary key, or null for a proof string in hand
+// (and for any value outside the vocabulary, which every consumer treats as
+// its existing fall-through).
+export function acquisitionOutcomeKey(proof) {
+  return WINDOW_OUTCOME_BY_SENTINEL.get(proof) ?? null;
+}
+
+// Which vocabulary member a non-ready `ensureSessionWindow` outcome carries;
+// null for a ready outcome (or one outside the vocabulary).
+export function windowOutcomeKey(outcome) {
+  return WINDOW_OUTCOME_KEYS.find((key) => outcome?.[key]) ?? null;
+}
+
+// The message each outcome owes the user, in one table so no consuming site
+// can drift on copy or on which outcomes speak. A null row is a decision, not
+// a gap:
+//   redirect   an in-flight navigation needs no toast; the page is leaving.
+//   cancelled  the user's own dismissal warrants no message; stopping was
+//              their choice.
+//   failed     re-auth could not be completed (a second wrong password, or a
+//              transport error on the retry mint): the user was prompted twice
+//              and would otherwise watch the action do nothing at all.
+//   busy       the action was refused because another action's prompt owns the
+//              modal. The user never saw a prompt for THIS action, so saying
+//              nothing would look like the button did nothing.
+//   reauthRequired  no window is open and the account's only factor navigates,
+//              but the caller asked for a non-navigating acquisition. The work
+//              was refused before anything was lost — that is the point of
+//              suppressing — but a silent refusal reads as a dead button, so
+//              tell the user the way through: re-authenticate, then try again.
+const WINDOW_OUTCOME_TOASTS = Object.freeze({
+  redirect: null,
+  cancelled: null,
+  failed: {
+    section: 'settings',
+    name: 'reauthFailed',
+    fallback: 'Re-authentication failed. Please try again.',
+  },
+  busy: {
+    section: 'common',
+    name: 'reauthPromptOpen',
+    fallback: 'Finish the confirmation already open, then try again.',
+  },
+  reauthRequired: {
+    section: 'common',
+    name: 'reauthRequired',
+    fallback: 'Please confirm your identity again, then try once more.',
+  },
+});
+
+// The one parameterized toast helper behind every consuming site. Lib code
+// cannot use the `$t` magic helper; read the i18n store directly with an
+// English fallback. Silent for the outcomes whose table row is null and for a
+// null key (a ready outcome, or a value outside the vocabulary).
+export function showWindowOutcomeToast(outcomeKey) {
+  const spec = outcomeKey ? WINDOW_OUTCOME_TOASTS[outcomeKey] : null;
+  if (!spec) return;
+  const msg = Alpine.store('i18n')?.messages?.[spec.section]?.[spec.name] || spec.fallback;
+  Alpine.store('toast')?.show(msg, 'error');
+}
+
 // Acquire-before-commit gate (ARCHITECTURE.md § 6.4.1). Call this BEFORE
 // starting work whose loss would cost the user — selecting a file, uploading to
 // IPFS, entering a submit sequence — never after. The ORCID factor acquires by
@@ -770,6 +862,10 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
 //                                     factor navigates, but the caller asked
 //                                     for a non-navigating acquisition
 //
+// The non-ready outcome keys come from `WINDOW_OUTCOME_BY_SENTINEL` above: a
+// new way for an acquisition to end is registered there, never by adding a
+// branch here.
+//
 // Throws on transport / config errors, so callers that have nothing to unwind
 // go through `freshAuthWindowReady` instead, which cannot reject.
 export async function ensureSessionWindow({
@@ -779,49 +875,9 @@ export async function ensureSessionWindow({
   if (Alpine.store('auth')?.custody !== 'light') return { ready: true, proof: null };
 
   const proof = await acquireSessionProof(minRemainingMs, { allowRedirect });
-  if (proof === FRESH_AUTH_REDIRECT_PENDING) return { ready: false, redirect: true };
-  if (proof === FRESH_AUTH_CANCELLED) return { ready: false, cancelled: true };
-  if (proof === FRESH_AUTH_MINT_FAILED) return { ready: false, failed: true };
-  if (proof === FRESH_AUTH_PROMPT_BUSY) return { ready: false, busy: true };
-  if (proof === FRESH_AUTH_REAUTH_REQUIRED) return { ready: false, reauthRequired: true };
+  const outcomeKey = acquisitionOutcomeKey(proof);
+  if (outcomeKey) return { ready: false, [outcomeKey]: true };
   return { ready: true, proof };
-}
-
-// The one message a failed acquisition owes the user. Shown when re-auth could
-// not be completed — a second wrong password, or a transport error on the retry
-// mint — because the user was prompted twice and would otherwise watch the
-// action do nothing at all. A dismissed modal says nothing: stopping was the
-// user's own choice. Lib code cannot use `$t`; read the i18n store directly
-// with an English fallback.
-function showReauthFailedToast() {
-  const msg =
-    Alpine.store('i18n')?.messages?.settings?.reauthFailed ||
-    'Re-authentication failed. Please try again.';
-  Alpine.store('toast')?.show(msg, 'error');
-}
-
-// The message a refused-while-open acquisition owes the user. The action was
-// dropped before the user saw a prompt for it, so saying nothing would look
-// like the button did nothing at all. Reaches the consent-op and settings
-// orchestrators through `promptBusy` below, and the session path through the
-// gate and broadcast unwinders, so the collision reads the same everywhere.
-function showPromptBusyToast() {
-  const msg =
-    Alpine.store('i18n')?.messages?.common?.reauthPromptOpen ||
-    'Finish the confirmation already open, then try again.';
-  Alpine.store('toast')?.show(msg, 'error');
-}
-
-// The message a suppressed acquisition owes the user when no window is open
-// and the account's only factor navigates. The work was refused before
-// anything was lost — that is the point of suppressing — but a refusal that
-// says nothing reads as a dead button, so tell the user the way through:
-// re-authenticate, then try again.
-function showReauthRequiredToast() {
-  const msg =
-    Alpine.store('i18n')?.messages?.common?.reauthRequired ||
-    'Please confirm your identity again, then try once more.';
-  Alpine.store('toast')?.show(msg, 'error');
 }
 
 // The refuse-while-open outcome as the orchestrators' callers see it: toast
@@ -830,7 +886,7 @@ function showReauthRequiredToast() {
 // cancel. Shared by the settings and authorship orchestrators (both gates
 // each) so the collision cannot read differently between surfaces.
 export function promptBusy() {
-  showPromptBusyToast();
+  showWindowOutcomeToast('busy');
   return { cancelled: true };
 }
 
@@ -851,13 +907,14 @@ export async function freshAuthWindowReady(opts) {
     // acquisition failure the user can act on is a re-auth failure, so say so
     // and refuse the work.
     console.warn('[fresh-auth] window acquisition failed', err);
-    showReauthFailedToast();
+    showWindowOutcomeToast('failed');
     return false;
   }
   if (outcome.ready) return true;
-  if (outcome.failed) showReauthFailedToast();
-  if (outcome.busy) showPromptBusyToast();
-  if (outcome.reauthRequired) showReauthRequiredToast();
+  // Every non-ready outcome surfaces through the shared dispatch: the table
+  // decides which outcomes speak and which stay silent, so this site cannot
+  // drop a newly added vocabulary member on the floor.
+  showWindowOutcomeToast(windowOutcomeKey(outcome));
   return false;
 }
 
@@ -944,20 +1001,105 @@ export async function beginAuthorshipOrcidFreshAuth(target) {
   return beginOrcidFreshAuthRedirect('fresh_auth', consentOpRequestFields(target), '/');
 }
 
+// The remintable-401 retry gate shared by the consent-op orchestrators
+// (withSettingsFreshAuth and withAuthorshipFreshAuth). Both surfaces broadcast
+// a consent_op-kind proof the backend consumes (success or failure) before the
+// guarded call runs, so when that call rejects with FRESH_AUTH_REQUIRED any
+// retry must mint a fresh proof, and the cached copy is dropped first for the
+// same reason. One home for the ladder so the two surfaces cannot drift on
+// which failures retry, which redirect, and which are terminal.
+//
+// Re-mintable reasons (missing/expired/malformed, per REMINTABLE_REASONS)
+// retry inline ONLY on the password factor. A KNOWN-ORCID account would need
+// a second full-page OAuth redirect near the 5-minute proof TTL (re-OAuth
+// loop risk); it surfaces a terminal failure so the user restarts
+// deliberately. The one exception is the ASSUMED-password 401 at the retry
+// mint: there the 401 is new information (the account has no password), the
+// user has just engaged by typing one, and without the redirect the op
+// dead-ends — each pass costs a typed password plus a full OAuth round-trip,
+// so it cannot tight-loop.
+//
+// username_mismatch is a corrupted session, not a retryable re-auth failure:
+// tear it down and force re-login via the shared teardown, matching the
+// session-kind sibling in broadcastWithFreshAuth. The gate keys on
+// `err.details.reason`, never on a status code: the error reaching these
+// orchestrators is an api.js ApiRequestError carrying only code/details, no
+// `status` (unlike the signer.js-shaped session-kind error). 401
+// wrong_mechanism and the 403 target/kind mismatches are not fixable by
+// re-minting the same factor; they fall through to freshAuthFailed. Errors
+// whose code is not FRESH_AUTH_REQUIRED rethrow untouched so callers keep
+// their own op-level handling.
+//
+// The hooks carry the only parts that differ per surface:
+//   resolveFactor       the surface's factor resolution (the authorship
+//                       orchestrator uses the shared resolver directly; the
+//                       settings orchestrator threads its set_password
+//                       ORCID-only exception through its `passwordFactorFor`)
+//   mint(assumed)       the surface's target-bound password mint
+//   beginOrcidRedirect  the surface's ORCID round-trip starter
+//   run(proof)          the guarded call, retried once with the fresh proof
+//   clearProofCache     drops the surface's cached proof (before the retry
+//                       mints, and again after a successful retry run)
+export async function consentOpFreshAuthRetryGate(err, {
+  resolveFactor,
+  mint,
+  beginOrcidRedirect,
+  run,
+  clearProofCache,
+}) {
+  if (err?.code !== 'FRESH_AUTH_REQUIRED') throw err;
+
+  // The proof is consumed (success or fail) before the guarded call, so any
+  // retry must mint a fresh one. Drop the cache first.
+  clearProofCache();
+
+  const remintable = REMINTABLE_REASONS.includes(err.details?.reason);
+  if (remintable) {
+    const factor = await resolveFactor();
+    if (factor.usesPassword) {
+      const retry = await mint(factor.assumed);
+      if (retry === FRESH_AUTH_ORCID_FALLBACK) {
+        await beginOrcidRedirect();
+        return { redirect: true };
+      }
+      if (retry === FRESH_AUTH_PROMPT_BUSY) return promptBusy();
+      if (retry === FRESH_AUTH_CANCELLED) return { cancelled: true };
+      if (retry === FRESH_AUTH_MINT_FAILED) return { freshAuthFailed: true };
+      try {
+        const ok = await run(retry);
+        clearProofCache();
+        return { ok };
+      } catch (retryErr) {
+        if (retryErr?.code === 'FRESH_AUTH_REQUIRED') return { freshAuthFailed: true };
+        throw retryErr;
+      }
+    }
+  }
+
+  if (err.details?.reason === 'username_mismatch') {
+    handleSessionInconsistency();
+    return { sessionInconsistent: true };
+  }
+
+  // 401 wrong_mechanism, a 403 target/kind mismatch, or an ORCID-factor proof
+  // this gate declines to re-mint inline: surface a generic re-auth failure.
+  return { freshAuthFailed: true };
+}
+
 // Map a non-string acquisition outcome onto the broadcast call-site contract.
 // Every failure to acquire unwinds through the single FRESH_AUTH_REDIRECT_PENDING
 // sentinel so the eight broadcast call sites keep their one clean-abort branch
-// instead of growing per-outcome handling of their own.
+// instead of growing per-outcome handling of their own. The toast (or the
+// deliberate silence) per outcome comes from the shared dispatch table, so
+// this unwinder cannot drift from the page gate. The reauthRequired outcome
+// is load-bearing here for the suppressed broadcast posture: post-upload call
+// sites pass `allowRedirect: false` through broadcastWithFreshAuth, so a
+// passwordless account whose window died between the pre-broadcast gate and
+// the broadcast (or during the 401 retry's re-acquisition) lands here and
+// gets the re-authenticate toast instead of a silent drop.
 function acquisitionAborted(proof) {
   if (typeof proof === 'string') return false;
-  if (proof === FRESH_AUTH_MINT_FAILED) showReauthFailedToast();
-  if (proof === FRESH_AUTH_PROMPT_BUSY) showPromptBusyToast();
-  // Load-bearing unwinder for the suppressed broadcast posture: post-upload
-  // call sites pass `allowRedirect: false` through broadcastWithFreshAuth, so
-  // a passwordless account whose window died between the pre-broadcast gate
-  // and the broadcast (or during the 401 retry's re-acquisition) lands here
-  // and gets the re-authenticate toast instead of a silent drop.
-  if (proof === FRESH_AUTH_REAUTH_REQUIRED) showReauthRequiredToast();
+  showWindowOutcomeToast(acquisitionOutcomeKey(proof));
   return true;
 }
 
