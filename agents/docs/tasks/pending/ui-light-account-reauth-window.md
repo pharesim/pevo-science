@@ -900,3 +900,87 @@ vitest errors remain the documented pre-existing `pages-edit` class).
 2. (low, default-dismiss) The permissive-control test arms
    `mockStartOrcid.mockResolvedValue` without a per-test reset; inert today,
    future-only leak class.
+
+---
+
+## Architect re-review (2026-09-01, round 5) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on `d069c711` (frontend paths only), seven reviewer
+personas plus an independent validation batch. **All three round-4 items are
+verified genuinely fixed**, each traced end-to-end with mutation reasoning: the
+continuation twin discriminates (its fixture resolves `isContinuation === true` via
+the getter's real fallback path, and the two gate literals sit in mutually exclusive
+branches so neither twin masks the other's reversion); the `UPLOAD_SESSION_TORN_DOWN`
+contract holds (the teardown toast fires synchronously before every quiet unwind,
+exactly four consumers exist repo-wide and each guards before `describeUploadError`);
+and the redirect posture threads into both acquisitions with the permissive default
+preserved at all six vote/comment/vouch/review call sites. Project-standards clean;
+§ 6.4/6.5 hold.
+
+Three items. Two are on surfaces this round introduced; the third reverses a
+defensiveness regression this round made.
+
+### Item 1 — the editor multi-image queue keeps draining after a torn-down session
+
+`_handleImageUpload`'s `UPLOAD_SESSION_TORN_DOWN` catch returns without flushing
+`_imageUploadQueue` or setting a flag. `handleSessionInconsistency` has already
+synchronously nulled `auth.username`, so `_drainImageUploadQueue` (which breaks only
+on `!this.editor`) carries each remaining queued image into the pre-existing
+`!auth?.username` branch, firing its own "sign in to continue" toast. The toast store
+caps at three with FIFO eviction, so a drop of four or more images evicts the
+teardown toast this round's contract exists to protect. Multi-file drop is the
+ordinary path (`handleDrop` queues the whole array). Validated; races and adversarial
+both constructed it.
+
+Flush the queue in the torn-down branch (`this._imageUploadQueue.length = 0` before
+the return) and add a multi-image torn-down drop test asserting exactly one toast.
+
+### Item 2 (design call) — the suppressed-refusal recovery path re-enters the permissive entry gate and still discards the form for a passwordless account
+
+The `allowRedirect: false` fix correctly stops the current broadcast attempt from
+navigating when a passwordless window dies server-side mid-submit. But the toast it
+shows sends the user back into `handleSubmit` from the top, whose entry gate is
+permissive by design on the premise "nothing has been paid for yet." That premise is
+false on this specific resubmit: the 401 handler already cleared the window, the
+attached files and CIDs live in `handleSubmit` locals (not drafted), and a
+passwordless account's entry-gate acquisition is a full-page ORCID navigation that
+wipes the form. Re-uploads reproduce the same content-addressed CIDs (so no pin
+divergence), but the filled form and attached files are lost. So the fix defers the
+loss by one click for exactly the account class it targets. Validated.
+
+This is a design call, not a mechanical fix, because the entry gate is deliberately
+permissive. **Recommended default (implement unless you see a reason to deviate, in
+which case flag before landing):** suppress the entry gate (`allowRedirect: false`)
+when the submit already holds a selected file or a completed CID, so a passwordless
+account is refused non-destructively and told to re-authenticate rather than navigated
+away. Do NOT resolve this by persisting the file into the draft, which contradicts
+this task's scope item 2. Add a test: a passwordless account resubmitting with a file
+already attached refuses without navigation and keeps the file.
+
+### Item 3 — restore the loud default this round deleted from `acquisitionAborted` / `ensureSessionWindow`
+
+Round 4 deleted the annotation warning that `acquisitionAborted` silently swallows an
+unenumerated outcome (no toast, returns true) and that `ensureSessionWindow`'s
+fallthrough returns `{ ready: true, proof: <Symbol> }` for any unenumerated sentinel.
+Safe today (every current outcome is handled), but the surface sits directly under the
+sibling `FRESH_AUTH_ORCID_FALLBACK` seam, and a future sentinel drifting through fails
+silently at all eight broadcast call sites. Removing the warning is a defensiveness
+regression.
+
+Add an explicit `CANCELLED` case plus a loud default: `acquisitionAborted` treats an
+unenumerated outcome as a handled refusal rather than a silent pass, and
+`ensureSessionWindow` treats an unenumerated non-string proof as
+`{ ready: false, failed: true }` so drift fails visibly.
+
+### Not held, routed / accepted
+
+The disclosed retry-leg `username_mismatch` bypass on `uploadFile`, and its
+undisclosed sibling on `broadcastWithFreshAuth`'s 401-retry, are filed on
+`ui-consent-op-teardown-guard` as the same "teardown does not reach this path" family.
+Accepted as documented residuals: `describeUploadError`'s null branch being dead code
+(all four consumers guard first), the inert `mockStartOrcid` mock-leak, and the
+untested-but-inert non-light-custody `allowRedirect`-stripping branch.
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
+re-review signal. Do not edit this hold block or annotate items as fixed; the commit
+diff is the evidence and the architect updates the block at re-review.

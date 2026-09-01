@@ -115,3 +115,98 @@ pins. Full frontend unit suite green on the integrated tree.
    backend test files, which is outside the UI zone and an architecture
    decision; left for the architect to accept as deliberate dialect divergence
    or file as a cross-zone task.
+
+---
+
+## Architect re-review (2026-09-01) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on `4ef94970` + `1a819be1` + `bb575854` (frontend
+paths only), five reviewer personas including the mandatory adversarial lens (the
+diff IS a silent-pass verification mechanism), plus an independent validation batch
+that reproduced each detection hole by EXECUTING the scan machinery against planted
+sources. **The core is a strong first entry for the class**: all four acceptance
+criteria are met, the detection layer's self-tests run through the real extracted
+predicates (not copies), every pinned width reproduces against the tree, and the
+"stayed green across later fresh-auth edits with no re-pin" claim is genuine (those
+commits touched no pinned line). The routed cross-package-duplication decision is
+resolved below.
+
+The held items are all detection-fidelity holes, executed-confirmed, in exactly the
+class this canary's own Notes section names as the recurring failure mode. A guard
+whose evasions are documented-but-open is a weaker guard, so they are held rather
+than accepted.
+
+### Item 1 — the walker scans `.js` only; a `.mjs` / `.ts` / `.jsx` derivation is invisible to all four layers
+
+`sourcesUnder` collects only `entry.name.endsWith('.js')`. Vite resolves the other
+extensions with zero config, so a factor derivation authored in such a module joins
+the bundle unscanned, and the importing `.js` file writes neither the status-fetch
+name nor the discriminator. Latent today (the tree is all-`.js`), but a one-line
+authoring choice defeats the guard. Fix: assert beside the file-count floor that
+`frontend/src` contains no non-`.js` source file, so the first foreign-extension file
+fails loudly; add a planted `sourcesUnder` probe with a `.mjs` fixture.
+
+### Item 2 — the width pin counts matching LINES, not occurrences
+
+`occurrencesOf` tallies one per matching LINE, so a second discriminator read added on
+an already-licensed line keeps the pin satisfied. This is not only latent: at the
+reviewed head the pinned `lib/fresh-auth.js#flight: 6` for the password-state scan
+already masks eight textual occurrences (two lines each carry the property twice), so
+the docblock's "exact occurrence count" / "catches every ADDED occurrence under a
+licensed key" claim is factually wrong today. Tally per match (g-flagged match count
+per surviving line) and re-pin the maps to that basis, and add a same-line
+second-read case to the width-widening self-test; or, if line-counting is kept
+deliberately, correct both docblocks to name same-line addition (beside constant-width
+replacement) as a review-diff-mitigated residual. Prefer the per-match fix.
+
+### Item 3 — `importStatementOpens` spares a live reference below a complete single-line import
+
+The upward walk tests the `import {` opener before the `j < lineIndex` terminator, so
+a live reference (an object-literal member, say) sitting within the eight-line window
+below an unrelated complete single-line import is misclassified as an import specifier
+and silently skipped. Executed and confirmed. Fix: run the terminator test
+(`/[;}]|\bfrom\b/`) before the opener match for `j < lineIndex`, so a completed import
+line above returns false; add the two adjacency shapes as planted positives.
+
+### Item 4 — the resolution-layer machinery lacks discriminating self-tests
+
+The detection layer is thoroughly self-tested, but two load-bearing branches of the
+shared resolution machinery are not: the paren-counting guard arm that recognizes a
+wrapped-parameter declaration (every `= (` probe in the suite carries `=>`, which
+short-circuits before that arm), and the comment-skip inside the closing-brace walk
+(every comment-shaped probe is itself a skip target, never walk interior). Mangling
+either leaves every current whole-tree assertion green while future canaries built on
+this module inherit a silently weaker resolver. Add a synthetic-source probe for each:
+a wrapped-parameter const/let/var declaration with neither `function` nor `=>` on the
+opening line, and a comment-embedded `}` between a declaration and its target line.
+
+### Item 5 — `isCommentLine` silently skips live code behind a leading inline block comment
+
+`/^\s*(?:\*|\/\/|\/\*)/` returns true for `/* pragma */ code`, so a live factor read
+prefixed by an inline block comment (a coverage-ignore annotation, say) is skipped by
+the `hasPassword` scan. The docblock frames the predicate's miss direction as loud;
+this miss is silent. Executed and confirmed. Skip a `/*`-opening line only when it
+does not carry `*/` followed by non-whitespace, and add planted probes both
+directions. (Low; boundary-ordinary shape.)
+
+### Item 6 — unused regex capture group
+
+The method-shorthand `DECLARATION_PATTERN` captures the parameter list as group 2
+(`\(([^()]*)\)`) while its label reads only `m[1]`. Make it non-capturing. (Trivial;
+listed because the file is being edited for the items above.)
+
+### Dialect-divergence decision (routed here, resolved)
+
+The architect accepts `enclosing-symbol.js` and `backend/tests/support/enclosing-symbol.ts`
+as deliberate dialect divergence rather than a shared cross-zone module: they already
+diverged within this commit for real per-side needs (the frontend's `template` flag,
+`counts` tally, and Alpine/template-literal declaration shapes; the backend's
+`isCommentedOut`), and a shared module would force unused surface across a zone and
+runner boundary. The one real cost (a brace-walk bugfix reaching only one copy) is
+covered by a one-line reciprocal pointer in the backend docblock, filed as
+`backend-enclosing-symbol-port-backreference`. `isModuleScopeKey` shipping unconsumed
+is accepted (documented seam with backend precedent).
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
+re-review signal. Do not edit this hold block or annotate items as fixed; the commit
+diff is the evidence and the architect updates the block at re-review.

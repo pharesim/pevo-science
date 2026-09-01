@@ -505,3 +505,80 @@ green.
    the report helper survives mutation (117/117 green without it); the only
    non-string production path is always preceded by the generation bump that
    already vetoes the write.
+
+---
+
+## Architect re-review (2026-09-01, round 4) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on `46463131` (frontend paths only), five reviewer
+personas. **Both round-3 items are verified genuinely landed, and the disclosed
+fixture deviation is ratified.** The mint-success memo upgrade (`beginPasswordMintReport`
+inside the shared `mintViaPasswordFactor`, subject and generation captured before the
+prompt opens) is correct: the capture precedes the prompt and both awaits so the
+generation veto covers scrub-during-modal and scrub-during-roundtrip; the write is
+keyed to the captured subject so a scrub-less swap can only clobber the slot, never
+false-hit a new subject; failed and cancelled mints never report; and the canary
+needed no width re-pin (the report adds no status-fetch/`hasPassword` occurrence,
+confirmed by grep on the added lines). Security re-verified the round-1 posture:
+memo poisoning collapses because both mint routes 401 a null hash before issuance, so
+a proof string implies a real server-side password check; no new oracle; invariant #9
+intact. Project-standards clean.
+
+**Fixture deviation ratified.** The round-3 signal disclosed that the hold's literal
+retry-mint-fallback fixture became unsatisfiable once the memo upgrade landed (a
+successful initial mint writes the memo, so the retry resolves observed and re-prompts
+inline), and reworked both retry-gate fallback tests to seed their initial proof from
+the consent-op cache instead. Confirmed sound independently by three reviewers:
+correctness replayed the old fixture against the new code and proved it unsatisfiable,
+testing traced the call counts, security confirmed the consent-op-cache fixture models
+a genuinely reachable § 6.1 state (B/C, both with `orcid` set). The only coverage the
+reworked settings twin lost is the now-impossible pre-fix behavior, re-pinned in the
+correct inverted direction by the new upgrade twins in both suites with stronger
+assertions. Accepted.
+
+Two P3 items, tightly coupled (the second pins the invariant the first depends on).
+
+### Item 1 — the mint-proven memo turns wrong-memo recovery into a reload-to-escape loop
+
+On a memo hit `resolvePasswordFactor` returns `{ usesPassword: true, assumed: false }`,
+which permanently defeats the only in-flow ORCID escape (the `assumed` fallback). The
+new writer creates that memo precisely in the rate-limited-status regime where, before
+this round, the factor stayed `assumed` and the first 401 offered the ORCID escape.
+Composed with the deliberate same-subject-re-login-keeps-state decision from the
+teardown work, this bites: tab A mints under rate-limited status (memo written); tab B
+recovers via ORCID with no new password, dropping the password (B to C per
+ARCHITECTURE § 6.3); the user re-logs-in as the same subject, so tab A's scrub is
+deliberately skipped and tab A keeps a valid new token plus a stale `usesPassword`
+memo; every action then prompts for a password that no longer exists, 401s, re-prompts,
+and loops, escapable only by a page reload. Rare (needs the three-way coincidence) and
+reload-recoverable, but a self-caused regression of the memo upgrade worth fixing
+in-scope rather than shipping.
+
+Clear the memo on a second consecutive `UNAUTHORIZED` under an observed factor: two
+verifying-route rejections outrank the memo exactly as one mint success outranks the
+status endpoint, so the next resolution re-fetches (or falls to `assumed`, restoring
+the in-flow ORCID escape). Add a test driving the second 401.
+
+### Item 2 — report-on-success is unpinned; the write-on-attempt mutant reproduces item 1's loop unconditionally
+
+Moving `beginPasswordMintReport`'s call above the `await mintFn(password)`
+(write-on-attempt instead of write-on-success) survives all three suites green: every
+failed-mint fixture either ends immediately or navigates, so no test observes the memo
+after a failed attempt. That mutant hardens a passwordless account's first failed guess
+into a memo on the non-navigating `MINT_FAILED` path, reproducing item 1's loop with no
+coincidence precondition. Not theoretical-only: the mutation has a concrete user-facing
+failure mode, so it is held rather than dismissed. One-line kill: after the settings
+retry-fallback test's 401'd mint, assert a subsequent `resolvePasswordFactor` re-fetches
+(the memo was not written).
+
+### Not held, accepted
+
+Both disclosed residuals are dismissed with the dismissal mechanism verified, not just
+judged unlikely: the joiner-carries-assumed race (the flight never overwrites the
+mint-proven memo; worst case is one action-completing ORCID trip) and the
+`typeof`-string sentinel guard (the generation veto independently blocks every write the
+guard would; killing the mutant needs a fictional teardown-without-clear state).
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
+re-review signal. Do not edit this hold block or annotate items as fixed; the commit
+diff is the evidence and the architect updates the block at re-review.

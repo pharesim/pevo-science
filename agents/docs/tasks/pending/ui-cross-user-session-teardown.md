@@ -141,3 +141,92 @@ at the unit layer against the real store; flagging the omission explicitly.
    exercised only when `sessionStorage.getItem` itself throws, an environment
    the suite does not simulate; the fallback is unpinned by tests. Near-
    theoretical per repo norms.
+
+---
+
+## Architect re-review (2026-09-01) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on `1b9f2137` + `9ecff448` + `4c3e7c7a` (frontend
+paths only), eight reviewer personas plus an independent validation batch. **The
+core work is verified sound and complete.** Independently confirmed rather than
+taken from the signal: every subject-change path (login page, sign-in modal,
+Keychain connect, ORCID-login callback, custody upgrade, cold restore, cross-tab
+storage event) funnels through `_adoptSubject`; all four generation checks and both
+ownership-guarded finally blocks each have a distinct killing test; the
+identity-keyed factor-resolution join holds under every constructed interleaving;
+ARCHITECTURE § 6.5 invariant #9 holds (`cacheSessionProof` call sites unchanged);
+project-standards clean. All four acceptance criteria are met by tests driving the
+real store paths.
+
+Two items, both on the task's own surfaces.
+
+### Item 1 — the ORCID redirect after `startOrcid` is the one acquisition await with no generation re-check
+
+`acquireSessionProof` re-checks the teardown generation at every step boundary and
+resolves stale flights as a clean cancel, except the passwordless branch: it calls
+`beginSessionAuthOrcidRedirect` -> `beginOrcidFreshAuthRedirect`, and that helper
+awaits `startOrcid` (a network round-trip) and then assigns `window.location.href`
+with no re-check. Both passwordless outcomes reach it after their last generation
+check. A teardown landing during that round-trip (the cross-tab storage-event login
+this task adds a first-class path for) still full-page navigates the new subject's
+tab to ORCID on the previous subject's behalf; the scrub has already removed
+`pevo_orcid_mode`, so the return dead-ends in the callback's generic error branch.
+Confirmed independently by three reviewers (adversarial constructed it mechanically,
+security and correctness traced it), and it is the literal completion of this task's
+own "re-check at every step boundary" invariant, which the review found uncovered at
+exactly one boundary.
+
+Thread a staleness predicate into `beginOrcidFreshAuthRedirect` (an optional
+callback), supplied by `acquireSessionProof` as
+`() => generation !== _acquireGeneration`. After `startOrcid` resolves and before the
+navigation, if stale: clear the `pevo_orcid_mode` and return-path keys it wrote
+(mirroring the existing error-unwind blocks) and return `FRESH_AUTH_CANCELLED`.
+Page-level callers pass no predicate and keep today's behavior. Add the mirror test:
+`startOrcid` pending -> teardown -> resolve -> assert `window.location.href`
+unchanged and no navigation fired.
+
+### Item 2 — the test fixture mirror hardcodes the scrub key list with no parity pin
+
+`fixtures/mock-auth.js`'s `mockLoginFromResponse` reimplements the subject-adoption
+scrub as a literal six-key array. Three of those keys (the session-proof,
+consent-op-proof, and return-path keys) are module-private consts in `fresh-auth.js`
+that are never exported, so the fixture cannot import the source of truth and must
+copy the strings by hand. `components-sign-in-modal.test.js` and
+`pages-login.test.js` assert cross-user-scrub behavior against this mirror, not the
+real store, and no test binds the mirror's output to the real store's for identical
+input. A future subject-bound cache added to the real `_scrubSubjectBoundState`
+(whose own docblock instructs adding future caches THERE) silently desyncs, and those
+two suites keep passing while no longer proving what they claim. Five reviewers
+converged on it.
+
+Either export the subject-bound key set from `auth.js` / `fresh-auth.js` (retiring the
+can't-import-the-truth problem for the three private consts) and have the fixture
+import and loop it, or add one parity test that seeds identical state, runs the real
+`loginFromResponse` and `mockLoginFromResponse`, and asserts the resulting
+sessionStorage contents match.
+
+### Not held, routed elsewhere
+
+The consent-op orchestrators (`settings-fresh-auth.js`, `authorship-consent.js`) act
+on the same shared `resolvePasswordFactor` / `mintViaPasswordFactor` primitives with
+no teardown guard, and the scrub does not close an open reauth modal, so a password
+typed into a prompt left open across a cross-tab subject swap mints under the new
+subject's JWT and runs the previous subject's action against the new subject's
+account (validated end-to-end including the backend proof-to-subject binding). Filed
+as `ui-consent-op-teardown-guard` because the fix spans files outside this task's
+scope; the session-path reauth-modal silent-cancel gap (the same missing modal close)
+is folded into it, as are the `username_mismatch` escapes on the broadcast and upload
+retry legs (the same "teardown does not reach this path" family).
+
+The custody-upgrade re-login race (the omitted-username `loginFromResponse` fallback
+landing under a subject changed by a concurrent cross-tab login during the up-to-20s
+upgrade window) is filed as `ui-custody-upgrade-subject-pin`; the "same-subject by
+construction" comment this task added overclaims for that call site.
+
+The disclosed orcid-callback stale-proof-write residual and the `_adoptSubject`
+in-memory-fallback coverage gap are accepted as documented residuals (fail-closed and
+near-theoretical respectively).
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
+re-review signal. Do not edit this hold block or annotate items as fixed; the commit
+diff is the evidence and the architect updates the block at re-review.
