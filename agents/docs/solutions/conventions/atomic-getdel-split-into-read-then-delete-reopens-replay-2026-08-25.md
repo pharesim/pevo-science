@@ -112,8 +112,8 @@ Found later, by an adversarial pass over the fix for Defects 1 and 2. ioredis do
 offline-queued command indefinitely. Its reconnect handler flushes the **entire** offline queue with
 `MaxRetriesPerRequestError` whenever the reconnect count reaches a multiple of
 `maxRetriesPerRequest + 1`. On this client (`maxRetriesPerRequest: 3`, `retryStrategy` of
-`min(times * 200, 5000)`) that lands roughly two seconds into an outage, which an ordinary Redis
-restart comfortably outlasts. Past that point the queued delete is discarded unsent, the canonical
+`min(times * 200, 5000)`) that lands a little over a second into an outage, on the fourth close
+after delays of 200, 400 and 600ms, which an ordinary Redis restart comfortably outlasts. Past that point the queued delete is discarded unsent, the canonical
 copy stands for the rest of its TTL, and the replay is back — with the compensating delete present,
 correctly guarded, and doing nothing.
 
@@ -147,9 +147,11 @@ if (raw) return { raw, fromMemStore: false };
 
 ```ts
 // burnConsentOpEntry — the burn stays a single atomic command.
-// Consulted first, inside the existing per-token critical section: a proof
-// recorded as spent is refused no matter what either tier still reports.
-if (isConsentOpSpent(token)) return false;
+// Sampled BEFORE the awaits, inside the existing per-token critical section, so
+// the decision rests on the state as it was on entry: the record can be retired
+// concurrently by the drain, which the critical section does not serialize
+// against. A proof recorded as spent is refused whatever either tier reports.
+const alreadySpent = isConsentOpSpent(token);
 
 let burnedInRedis = false;
 let redisLegRan = false;
@@ -162,13 +164,23 @@ if (redis && isRedisAvailable()) {
 }
 const burnedInMemStore = memStore.delete(token);
 
+if (alreadySpent) {
+  // Refuse — and note this is one of only TWO events that may retire the
+  // record. A GETDEL that RESOLVED proves the canonical copy is gone, so the
+  // refused replay cleans up after itself. A GETDEL that threw proves nothing,
+  // and the record stays for the drain to finish.
+  if (redisLegRan) spentConsentOps.delete(token);
+  return false;
+}
+
 // Compensating delete for the case where the leg did not run at all. Still
 // guarded on the client's EXISTENCE only, so ioredis can queue it and flush it
 // if the outage is short. Best-effort CLEANUP, NOT the guarantee.
 if (!redisLegRan && burnedInMemStore && redis) {
   // Record the spend FIRST. A record written before the command survives that
-  // command failing, timing out, or being flushed unsent.
-  spentConsentOps.set(token, /* an expiry that dominates the canonical key's */);
+  // command failing, timing out, or being flushed unsent. Membership is the
+  // WHOLE record — no deadline; see below for why one cannot be computed here.
+  spentConsentOps.add(token);
   try {
     await redis.del(KEY_PREFIX + token);
     spentConsentOps.delete(token);   // confirmed gone; nothing left to guard
@@ -194,11 +206,30 @@ Order matters and is the whole trick: write the record, then attempt the delete,
 record only on a confirmed reply. Written in that order the record survives every way the delete can
 fail. Written the other way round it is decoration.
 
-Give the record an expiry that **dominates** the canonical copy's, or the guard lapses first and the
-replay reopens at the tail of the TTL. Stamp it from the moment of the burn rather than from the
-proof's issuance timestamp: the burn necessarily happens after the canonical `SET` executed, so
-burn-time plus a full TTL is always at or past the key's own expiry, with no dependence on the
-`SET`'s round trip. Over-guarding an already-spent proof costs nothing.
+**Give the record no expiry at all. Retire it only on a reply that proves the guarded key is
+unreadable.** Membership is the whole record. An entry leaves on exactly two events: a compensating
+delete that RESOLVED, or a later presentation's `GETDEL` that resolved. A command that was merely
+dispatched proves nothing — it can still time out against a stalled-but-ready server, or die with a
+socket whose close flushes it out of the resend lineage — so retiring on dispatch retires the one
+refusal left standing while the key is still there.
+
+The tempting alternative is a deadline that **dominates** the canonical copy's, stamped from the
+burn on the reasoning that the burn necessarily happens after the canonical `SET` executed. That
+reasoning is false, and the way it fails is worth knowing because it is invisible from the call
+site. When the issuing `SET` never got a reply, ioredis retains it and resends it at recovery
+(`autoResendUnfulfilledCommands` defaults true); Redis applies `EX` relative to *execution* time, so
+the resurrected key's life restarts from recovery and outruns any deadline computed at burn time.
+No clock available on this side of the connection can bound the key's life. A deadline can therefore
+only ever retire an entry EARLIER than a confirmation would, which is the one direction that reopens
+the replay.
+
+What that costs is a record with no time bound: while the canonical store is unreachable, or is
+reachable but refusing writes, entries accumulate and nothing retires them. Take that trade
+deliberately and say so where the record is declared. Retention only ever refuses a proof that was
+already spent, growth is one entry per unconfirmed burn, and each entry costs an attacker whatever
+minting a proof costs. Retiring on a server-replied error instead would trade that bounded growth
+for a guess that the error implies the key is unreadable, which no permission or persistence failure
+actually tells you.
 
 The scope of such a record is the scope of the tier that arbitrated the burn. Here that is one
 process, which is exactly as durable as the `memStore` whose win it is backstopping — past a
