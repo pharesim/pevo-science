@@ -111,3 +111,48 @@ isolated worktrees.
 - Possibly UI-relevant: the cross-tab sign-out behavior above may interact
   with the pending ui session-teardown work; routing that is the architect's
   call.
+
+---
+
+## Architect re-review (2026-09-01) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on `79b57f8d` + `b1c700e2`, seven lenses plus an
+independent validation pass. **All four acceptance criteria verified end to
+end**, checked in the code rather than taken from the notes: the sweep leg is a
+direct library consume that can only mean storage removal; the epoch-only leg
+provably reads the re-planted in-memory entry with a live no-epoch control; the
+403-vs-401 leg is deterministic (the reissued token passes either by identity
+exemption or by iat ordering) and the byte-for-byte reissuedAt pin holds through
+the TIMESTAMPTZ round-trip; both mutation directions were statically
+re-verified. Seven constructed attacks (round-trip identity, mid-sequence
+crash, exemption reuse across rotations, Redis-down skip, double-upgrade race,
+in-flight broadcast, scanner blind spots) all held. Testing, reliability, and
+project-standards returned zero findings.
+
+One item holds the archive.
+
+### 1. The middleware exemption comment contradicts its own widening
+
+The comment block this diff widened to name "the two recover.ts handlers and
+the custody upgrade" as spared reissue sites still ends with the un-widened
+tail sentence "only the recover.ts reissue is spared here" — a
+self-contradiction inside one security-critical comment. Fix is one line:
+"only the revoke-and-reissue sites above are spared here."
+
+### Architect-owned, at archive (not blocking the implementer)
+
+The `[TODO Architect]` block above stands and will be executed when this task
+archives: ARCHITECTURE.md § 6.7 (fourth stamper, third reissue site, "any
+reissue writer") and the § 6.4.1 phrasing, plus the api-contracts/custody.md
+endpoint prose, plus routing the cross-tab sign-out note to the ui track.
+
+### Routed elsewhere
+
+The review also surfaced a PRE-EXISTING divergence this task did not create
+and does not widen: the upgrade UPDATE never writes `custody='self'`, leaving
+`(custody='light', upgraded_at set)` rows that § 6.1 does not enumerate, and
+the ORCID login mint reads the column raw where auth.ts derives from
+`upgraded_at`. Filed as its own pending task
+(`backend-custody-column-self-alignment`); not part of this hold.
+
+---
