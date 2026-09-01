@@ -30,7 +30,7 @@ An earlier hold had prescribed the exact code shape for the drain's expiry arm: 
 
 The implementer complied exactly. The following review round then found — three reviewers independently, validator-confirmed — that the prescribed shape itself loses a double-fault: a dispatched DEL that fails while the client looked ready (a `commandTimeout` against a connected-but-stalled server, or a socket death right after recovery flushing the retained DEL), composed with ioredis resending an unreplied issuing `SET` at recovery with a fresh full `EX`, leaves the canonical key alive with no ledger entry left to refuse it. A spent single-use auth proof becomes replayable — the exact class the ledger exists to close. The prescription was withdrawn and replaced with the live arm's confirmed-delete pattern: drop the entry only inside the delete's `.then()`; the `.catch` retains it for the next trigger.
 
-As of this writing the expiry arm still carries the dispatch-then-drop shape (guard, fire-and-forget delete, unconditional `spentConsentOps.delete`); the confirmed-delete fix for it is prescribed but not yet landed. The live arm below it already demonstrates the target pattern.
+That fix has since landed, and the drain went further than the fix alone: the expiry and live arms were collapsed into a single loop body whose only retirement path is inside the delete's `.then()`, the client gate became an early `return` when no client is reachable (same effect as the per-entry `continue`: nothing is dispatched, so everything is kept), and `spentConsentOps` became a `Set<string>` carrying no deadlines at all. The shapes quoted under Examples below are therefore historical. They are kept because the incident is unreadable without them, not because they describe the current tree; read `drainSpentConsentOps` in `backend/src/lib/fresh-auth.ts` for what is there now.
 
 ## Guidance
 
@@ -59,7 +59,7 @@ A compliance-only re-review would have passed this round: green suite, hold bloc
 
 The worked example, against stable symbols in `drainSpentConsentOps`:
 
-**Prescribed shape (still in the tree as of this writing) — expiry arm:**
+**Prescribed shape — the expiry arm as it stood during these rounds, since replaced:**
 
 ```ts
 if (!client) continue;
@@ -69,7 +69,7 @@ spentConsentOps.delete(token);
 
 The drop is unconditional on the delete's outcome. If the DEL fails despite the client having looked ready (`commandTimeout` on a stalled-but-connected server; socket death immediately after recovery), the ledger entry is gone while ioredis may resend an unreplied issuing `SET` with a fresh full `EX` at recovery — orphaned canonical key, no entry refusing it, spent proof replayable.
 
-**Prescribed fix — the live arm's confirmed-delete pattern, already present two statements below:**
+**Prescribed fix — the live arm's confirmed-delete pattern, which the drain's single loop body now applies to every entry:**
 
 ```ts
 void client
@@ -82,7 +82,7 @@ void client
   });
 ```
 
-This is the shape the earlier hold had rejected — and the rejection was correct before `if (!client) continue;` existed, because chaining the drop onto an unissuable delete would leak entries all outage long. The guard retired that premise: entries are now kept during an outage by the `continue`, and the chained drop governs only the client-held case, where retain-on-failure is the drain's documented invariant. The rejection outlived its reason by one round because it was inherited as settled instead of re-derived.
+This is the shape the earlier hold had rejected — and the rejection was correct before `if (!client) continue;` existed, because chaining the drop onto an unissuable delete would leak entries all outage long. The guard retired that premise: entries were kept during an outage by the `continue`, and the chained drop governed only the client-held case, where retain-on-failure is the drain's documented invariant. (Today's drain returns early when no client is reachable, with the same effect.) The rejection outlived its reason by one round because it was inherited as settled instead of re-derived.
 
 ## Related
 
@@ -91,4 +91,5 @@ This is the shape the earlier hold had rejected — and the rejection was correc
 - `agents/docs/solutions/conventions/hold-block-must-not-contradict-convention-docs-2026-04-22.md` — hold blocks wrong at authorship against existing convention docs; this entry covers holds whose correctness expires mid-cycle.
 - `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` — the nearest analog outside the hold family: a fix must audit its own effect on the text that governs it.
 - `agents/docs/solutions/conventions/completeness-claim-tasks-need-independent-re-enumeration-2026-06-14.md` — the sibling skepticism norm: re-enumerate diffs instead of trusting prose claims; this entry applies the same skepticism to the architect's own prescriptions.
-- `agents/docs/solutions/conventions/atomic-getdel-split-into-read-then-delete-reopens-replay-2026-08-25.md` — the domain neighbor documenting the burn-time compensating delete this worked example's drain arm parallels (verified: that entry does not describe the expiry arm, so the pending confirmed-delete change does not contradict it).
+- `agents/docs/solutions/conventions/atomic-getdel-split-into-read-then-delete-reopens-replay-2026-08-25.md` — the domain neighbor documenting the burn-time compensating delete this worked example's drain arm parallels. It covers the burn, not the drain, so the confirmed-delete change did not contradict it; its ledger snippet has since drifted and been corrected on its own account, so check it against `backend/src/lib/fresh-auth.ts` rather than treating it as a second source on the ledger's shape.
+- `agents/docs/solutions/conventions/final-state-assertions-cannot-discriminate-dispatch-from-confirmation-2026-09-01.md` — why no suite objected while the dispatch-then-drop shape stood: an assertion on the settled state converges with the correct code whenever Redis is healthy, so the prescription's defect was invisible to every green run. The test-side complement to this entry's review-side lesson, from the same round.

@@ -1,7 +1,7 @@
 ---
 title: Concurrency wire-shape assertions can be mutation-blind under microtask FIFO ordering — anchor on synchronously observed structural state, not on outcome counts
 date: 2026-05-19
-last_updated: 2026-08-26
+last_updated: 2026-09-01
 category: conventions
 module: backend
 problem_type: convention
@@ -65,10 +65,11 @@ The fix is not a particular accessor. It is a change of vantage point: **observe
 structural state from inside the call, while it is happening, rather than inferring it
 from the outcome afterwards.**
 
-The practical mechanism is to export a test-only accessor for the state you need to
-observe, then sample it from inside a `mockImplementation` on a dependency the code
-awaits mid-operation. That callback fires *during* the operation, so it sees the state
-at the moment the invariant is supposed to hold:
+One practical mechanism — the one that fits when the code AWAITS something mid-operation
+— is to export a test-only accessor for the state you need to observe, then sample it
+from inside a `mockImplementation` on that awaited dependency. That callback fires
+*during* the operation, so it sees the state at the moment the invariant is supposed to
+hold:
 
 ```typescript
 /** Test-only hook: the current size of the in-process consume lock, so tests
@@ -190,6 +191,13 @@ stubs, no race.
   — adjacent on solution shape. Test-only exports are the canonical PEvO mechanism for
   reaching module-private state in tests; the structural sampling here is a specialization
   for observing that state mid-operation.
+- `agents/docs/solutions/conventions/final-state-assertions-cannot-discriminate-dispatch-from-confirmation-2026-09-01.md`
+  — the non-awaited half of this rule, same module and same size-accessor idiom. There the
+  code dispatches without awaiting (`void client.del(k).then(() => set.delete(k))`), so
+  there is no dependency to mock and no race to run: the accessor is sampled synchronously,
+  in the same block as the dispatching call, before any `.then()` can run, since the dispatching block has not yet yielded. Reach
+  for that shape whenever the vantage point is right but there is no `await` to hang a
+  `mockImplementation` on. Neither entry subsumes the other.
 - `backend/src/lib/fresh-auth.ts` — the `inFlightConsumes` lock and the
   `_getInFlightConsumesSizeForTests` export.
 - `backend/tests/lib/fresh-auth.test.ts` — the forward and inverse structural pins, which

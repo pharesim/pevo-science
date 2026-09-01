@@ -127,6 +127,6 @@ router.post('/email', verifyHiveSignature, async (req, res) => {
 
 Now the JWT-only attacker without a fresh-auth proof gets 401 regardless of whether `new_email` is registered. The 409 disclosure is bounded to callers who passed the auth gate.
 
-**Field instances in PEvO (as of 2026-05-17):**
+**Field instance in PEvO (originating incident, since resolved):**
 
-- `backend/src/routes/settings.ts` POST /email — duplicate-email SELECT at lines 147-162 runs BEFORE the fresh-auth gate at line 206-243. Held as task `backend-change-email-mint-path-and-followups` round-2 hold #1 (commit `568c196`). Pre-existing surface from commit b27bcdf; newly enumerable once the gate's 401 was added.
+- `backend/src/routes/settings.ts` POST /email — the duplicate-email SELECTs originally ran BEFORE the fresh-auth gate, so a JWT-only caller with no proof could read registration state off the 409-vs-401 differential. The pre-existing SELECT was benign until the gate's 401 was added downstream of it. The route has since been reordered into the canonical shape above: body validation → account-row SELECT (drives Add-vs-Change and supplies the mechanism check) → `consumeFreshAuthToken` gate on the JWT path → duplicate-email SELECTs → mutation. The handler now carries a `Handler order (load-bearing — closes the 401-vs-409 enumeration oracle)` doc-comment block, and the dupe check is marked inline with `Duplicate-email checks run AFTER the fresh-auth gate above`. Treat this route as the worked example of the convention rather than as an open instance.

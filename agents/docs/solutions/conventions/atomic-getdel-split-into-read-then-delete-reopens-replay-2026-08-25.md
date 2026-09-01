@@ -409,3 +409,9 @@ both defects the whole time.
   independent pin cap. Treat the divergence as a correctness-of-claim problem: either mirror the
   record, or downgrade the comments to describe the containment that actually applies. The trap is a
   future change that widens what an upload token authorizes while reasoning from the older comment.
+- `conventions/final-state-assertions-cannot-discriminate-dispatch-from-confirmation-2026-09-01.md`
+  is the test-side statement of the rule this entry makes about production: a command that was merely
+  issued is not a command that was applied. It shows why a suite cannot notice the difference - an
+  assertion on the settled state converges under both shapes whenever Redis is healthy - and what a
+  discriminating assertion looks like. Read it before trusting any green test that claims to pin the
+  record-then-delete-then-retire ordering prescribed above.
