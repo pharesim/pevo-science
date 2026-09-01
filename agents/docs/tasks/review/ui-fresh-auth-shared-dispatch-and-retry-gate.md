@@ -64,3 +64,60 @@ Sequence after the two held rounds land: the reauth-window round-4 hold touches
 `acquisitionAborted` and the pages, and the hasPassword round-3 hold touches the
 authorship retry gate and the memo write, so extracting first would force both
 holds to rebase onto moved code.
+
+---
+
+## UI completion signal (2026-09-01, commit 32681cf9)
+
+Implemented in an isolated worktree on top of both held rounds (as the Notes
+sequenced), reviewed by three adversarial lenses (behavior-preservation,
+exhaustiveness-structure, convention/simplify; zero must-fix findings), and
+cherry-picked onto main. Behavior-preservation was traced branch-for-branch by
+the reviewer: identical outcome shapes, toast keys and copy, ordering, throw
+contracts, and the non-light/ready paths at every consuming site; the commit
+touches ZERO existing test files.
+
+**Scope 1.** Both allowed forms landed: `WINDOW_OUTCOME_BY_SENTINEL` in
+`lib/fresh-auth.js` is the single registration point (keys derived, never
+hand-copied); one parameterized `showWindowOutcomeToast` replaces the three
+toast helpers; `ensureSessionWindow`, `freshAuthWindowReady`, `promptBusy` and
+`acquisitionAborted` consume the map structurally with no per-member branches
+left to forget. The upload pre-flight keeps its site contract (throws
+`UploadSessionError` codes, never toasts) via its own
+`UPLOAD_CODE_BY_WINDOW_OUTCOME` table, so `ipfs-upload.js` gained no new
+runtime import. A vocabulary-driven exhaustiveness suite
+(`tests/unit/lib-fresh-auth-outcome-dispatch.test.js`, 7 tests) pins every
+member at every consumer; intentional silence (redirect, cancelled) is an
+enumerated two-place decision, so a new member is loud by default.
+AC 1 demonstrated both ways: an unregistered sentinel fails the registration
+pin; a registered member with no consumer rows fails once per consumer surface,
+naming the member and the negligent site; teaching only one site leaves the
+others red (reviewer reproduced both directions in a scratchpad copy).
+
+**Scope 2.** The remintable-401 ladder exists once as
+`consentOpFreshAuthRetryGate(err, { resolveFactor, mint, beginOrcidRedirect,
+run, clearProofCache })`; both orchestrators consume it. AC 2 probed: deleting
+the shared fallback arm turns BOTH orchestrator suites red with exactly their
+fallback pins.
+
+**Scope 3 / AC 3.** Six per-row dispatch mutations each killed by existing
+behavioral tests (listed per row in the probe log) plus the new suite; full
+frontend unit suite on the integrated tree 79+1 files, 1757 tests green (3
+documented pre-existing `pages-edit` errors); `npm run build` clean; canary
+green with pins unchanged (the moved ladder carries no `fetchEmailStatus` /
+`hasPassword` occurrence).
+
+**Residuals surfaced for triage, deliberately not fixed here:**
+
+1. (medium, scope-limited by design) The exhaustiveness mechanism covers the
+   three window-outcome consumers the task named. Three more per-member
+   if-chains over the same `FRESH_AUTH_*` sentinels sit outside it: both
+   orchestrators' initial gates and the new shared retry gate's own mint
+   chain. Same drift class, one consolidation step further; a follow-up could
+   extend the suite's census to them.
+2. (low) The sentinel-registration pin sees only EXPORTED `FRESH_AUTH_*`
+   bindings in `fresh-auth.js`; a module-private sentinel would evade it, and
+   the runtime fall-through for an unregistered sentinel at
+   `ensureSessionWindow` is fail-open (reads as ready). Today every sentinel
+   is exported because call sites compare identity; the structure change
+   weakens that pressure over time.
