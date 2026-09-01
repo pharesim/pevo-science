@@ -27,9 +27,9 @@
  * - `consent_op` — target-bound, SINGLE-USE, `FRESH_AUTH_TTL_SECONDS` (5 min).
  *   Its job is to stop a proof minted for one paper/slot/co-author being
  *   redirected onto another, which is structurally incompatible with reuse.
- *   The burn is arbitrated by the storage tier (Redis `DEL` reply count, or
- *   the in-memory `Map.delete` return value), so exactly one concurrent
- *   caller can win.
+ *   The burn is arbitrated by the storage tier (a non-nil Redis `GETDEL`
+ *   reply, or the in-memory `Map.delete` return value), so exactly one
+ *   concurrent caller can win.
  * - `session` — target-less, MULTI-USE inside a bounded window. A sliding
  *   idle deadline (`SESSION_FRESH_AUTH_IDLE_SECONDS`) moves forward on every
  *   successful consume; an absolute cap (`SESSION_FRESH_AUTH_ABSOLUTE_SECONDS`)
@@ -860,7 +860,7 @@ const memStore = new Map<string, { entry: StoredEntry; expiresAt: number }>();
  *  dual-consume race across the two storage tiers.
  *
  *  The race: a consume reads the entry, then burns it. The burn is arbitrated
- *  by the storage tier it lands on — the Redis `DEL` reply count, or the
+ *  by the storage tier it lands on — a non-nil Redis `GETDEL` reply, or the
  *  in-memory `Map.delete` return value — so two callers hitting the SAME tier
  *  already resolve to exactly one winner. What the tier arbitration cannot
  *  cover is a Redis flap that splits two concurrent callers across BOTH tiers:
@@ -991,10 +991,13 @@ function isConsentOpSpent(token: string): boolean {
  *     moment the socket closes and does not reject the in-flight command until
  *     the retry-ceiling flush some way into the outage, so the arming that
  *     follows that throw is in place before the recovery `ready`.
- *   - The periodic cleanup tick runs it as a backstop, and is the SOLE sweeper
- *     for one narrower arm: a `commandTimeout` against a connected-but-stalled
- *     server, where the socket stays open, the client never leaves `ready`, and
- *     no further `ready` transition is emitted to arm anything on.
+ *   - The periodic cleanup tick runs it as a backstop, and for one narrower
+ *     arm is the only trigger that sweeps WITHOUT a further presentation of
+ *     the proof: a `commandTimeout` against a connected-but-stalled server,
+ *     where the socket stays open, the client never leaves `ready`, and no
+ *     further `ready` transition is emitted to arm anything on. A replay's own
+ *     resolved `GETDEL` would also retire that entry, but nothing guarantees a
+ *     replay arrives.
  *
  *  Residual, accordingly: a restart before EITHER a ready-armed drain or a
  *  cleanup tick has CONFIRMED the delete leaves the orphaned key readable with
@@ -1569,10 +1572,10 @@ type ValidatedEntry =
  * exactly once per issued token; subsequent calls return
  * `{ valid: false, reason: 'expired' }` because the entry was burned.
  *
- * The burn is arbitrated by the storage tier that holds the entry (Redis `DEL`
- * reply count, or the in-memory `Map.delete` return value), and serialized
- * across tiers by `inFlightConsumes` so a Redis flap cannot split two
- * concurrent callers into two winners.
+ * The burn is arbitrated by the storage tier that holds the entry (a non-nil
+ * Redis `GETDEL` reply, or the in-memory `Map.delete` return value), and
+ * serialized across tiers by `inFlightConsumes` so a Redis flap cannot split
+ * two concurrent callers into two winners.
  *
  * Consume requires `expectedTargetHash` (computed by the caller from the actual
  * gated op being authorized). A token minted for one (action, paper) target
@@ -1856,15 +1859,17 @@ async function readFreshAuthEntry(
  *  flap case, where ioredis can at least queue it.
  *
  *  That delete is best-effort, NOT the single-use guarantee. A queued one is
- *  rejected wholesale once the reconnect count reaches `maxRetriesPerRequest`,
- *  which on this client's backoff curve is about two seconds — shorter than an
- *  ordinary Redis restart; a dispatched one can reject exactly as the `GETDEL`
- *  before it did. The guarantee therefore comes from `spentConsentOps`: the burn
- *  records the proof as spent BEFORE attempting the delete and clears the record
- *  only once the delete is confirmed, so a proof burned during an outage stays
- *  refused however the delete resolves. `drainSpentConsentOps` retries the
- *  delete on the client's next `ready` transition and on the periodic tick, to
- *  keep an orphaned key from outliving its ledger entry. */
+ *  rejected wholesale on every reconnect attempt divisible by
+ *  `maxRetriesPerRequest + 1`, which on this client's backoff curve (200ms
+ *  linear, flushing on the fourth close) is a little over a second — shorter
+ *  than an ordinary Redis restart; a dispatched one can reject exactly as the
+ *  `GETDEL` before it did. The guarantee therefore comes from
+ *  `spentConsentOps`: the burn records the proof as spent BEFORE attempting the
+ *  delete and clears the record only once the delete is confirmed, so a proof
+ *  burned during an outage stays refused however the delete resolves.
+ *  `drainSpentConsentOps` retries the delete on the client's next `ready`
+ *  transition and on the periodic tick, to keep an orphaned key from outliving
+ *  its ledger entry. */
 async function burnConsentOpEntry(token: string): Promise<boolean> {
   // Read before the first await. `inFlightConsumes` serializes consumes of the
   // same token against each other, but not against `drainSpentConsentOps`, whose
@@ -1923,7 +1928,7 @@ async function burnConsentOpEntry(token: string): Promise<boolean> {
     } catch (err) {
       logger.warn(
         { err, event: 'fresh_auth.redis_compensating_del_failed' },
-        'Compensating Redis delete after an in-memory-arbitrated burn failed; the proof is held spent in-process until the delete lands or it expires',
+        'Compensating Redis delete after an in-memory-arbitrated burn failed; the proof is held spent in-process until a retried delete is confirmed to have landed or a later presentation proves the canonical copy gone',
       );
     }
   }

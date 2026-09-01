@@ -5,8 +5,8 @@
  * The burn's compensating `DEL` — the one issued when the Redis leg was skipped
  * because the client was mid-flap and the in-memory tier arbitrated the win —
  * is queued offline rather than sent. ioredis rejects that entire queue with
- * `MaxRetriesPerRequestError` once its reconnect count reaches
- * `maxRetriesPerRequest`, which on the production backoff curve
+ * `MaxRetriesPerRequestError` on every reconnect attempt divisible by
+ * `maxRetriesPerRequest + 1`, which on the production backoff curve
  * (`redisRetryStrategy`, 200ms linear) lands a little over a second into an
  * outage, on the fourth close.
  * An ordinary Redis restart comfortably outlasts that, so the delete is flushed
@@ -40,8 +40,9 @@
  * Why this is not the sibling suite: the sibling
  * (`fresh-auth-redis-unavailable-burn.test.ts`) toggles a stubbed
  * `isRedisAvailable()` while the underlying connection stays `'ready'`
- * throughout, so its queued delete always flushes on the very next tick and the
- * rejection path is never reached. Here the connection is genuinely severed.
+ * throughout, so its compensating delete is written straight to a live socket
+ * rather than queued, and the rejection path is never reached. Here the
+ * connection is genuinely severed.
  *
  * Test-mock carve-out (per root CLAUDE.md "Carve-out for deterministic edge-case
  * coverage"):

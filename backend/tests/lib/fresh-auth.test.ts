@@ -61,9 +61,9 @@
  *
  * Concurrency, which the two kinds also invert:
  *  - Consent-op dual-consume must produce exactly ONE winner. Two variants per
- *    path: Redis-up (the delete-reply count arbitrates, with the in-process lock
- *    layered on) and Redis stubbed down (both callers reach the in-memory tier,
- *    where the lock is what closes the race), plus a no-mock companion. A
+ *    path: Redis-up (the non-nil `GETDEL` reply arbitrates, with the in-process
+ *    lock layered on) and Redis stubbed down (both callers reach the in-memory
+ *    tier, where the lock is what closes the race), plus a no-mock companion. A
  *    cross-helper variant pins that the lock domain is the TOKEN, not the
  *    calling helper: a consent-op proof reaches the session surface through the
  *    cross-kind accept, so both helpers can burn the same entry at once.
@@ -1147,8 +1147,9 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
     // populate at issue time — but `issueFreshAuthToken` writes to BOTH
     // tiers, so the memStore branch only fires when Redis read fails).
     // For the Redis-available case, this test is functionally equivalent to the
-    // Redis-up test above (the Redis delete-reply count arbitrates and the lock
-    // is additionally enforced); under no-Redis it is the real-path companion.
+    // Redis-up test above (the non-nil Redis `GETDEL` reply arbitrates and the
+    // lock is additionally enforced); under no-Redis it is the real-path
+    // companion.
     const issued = await issueFreshAuthToken('race-carol', 'password', T);
     const [a, b] = await Promise.all([
       consumeFreshAuthToken(issued.token, 'race-carol', TH),
