@@ -545,6 +545,13 @@ Each outstanding session token records when it was issued; the platform stores a
 
 The same cutoff governs session proofs, and it is the authoritative test for them: a window opened before the cutoff is refused on its next use because the stored cutoff says so, not because the platform managed to find and delete the window. Sweeping the cached copies is a storage-reclamation step that can miss one and must never be relied on as the guarantee. Revoking bearer tokens while leaving an open broadcast window standing has not actually cut off the compromised session, which is why the two are one mechanism rather than two.
 
+### Subject Teardown
+
+The tab-local discarding of everything that belonged to the subject a browser tab previously represented, run whenever that tab's subject changes: an explicit logout, or a login as a different account that reaches the tab from another tab of the same browser.
+*Avoid:* subject scrub, cross-user teardown, tab teardown.
+
+A teardown clears the departed subject's cached fresh-auth proofs, remembered auth-factor state, and per-tab flow markers, dismisses any open re-auth prompt, and abandons re-auth work still in flight. In-flight work does not stop by itself: each stretch of re-auth work snapshots a teardown marker when it starts, re-checks it after every pause during which a teardown could have landed, and unwinds as a clean cancel rather than spending a credential or running a captured action for a subject the tab no longer represents. The marker protects only the code that carries it, so a helper reached during such a stretch that pauses before an irreversible effect must receive it too. Distinct from Session Invalidation, which is the platform revoking a subject's tokens; a teardown is the client refusing to let one subject's unfinished work run as another.
+
 ## Admin Authority
 
 ### Signer
