@@ -351,11 +351,12 @@ ask the type question against it explicitly, because nothing else will.
 - `conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` is the rot-class
   version of Step 4: when fixing one class of stale comment, verify the replacement does not
   introduce another.
-- `conventions/hold-prescriptions-expire-with-their-premise-2026-09-01.md` is a small negative example
-  of Step 5. Its cross-reference note records a verification that asked whether a sibling entry
-  *described* the arm being changed, rather than whether that entry's own sample *survived* the
-  change. It picked the wrong invariant to check, and that is the exact question this entry's Step 5
-  exists to replace.
+- `conventions/hold-prescriptions-expire-with-their-premise-2026-09-01.md` supplied a small negative
+  example of Step 5. Its cross-reference to the ledger entry had verified only that the neighbour
+  *described* a different function and concluded there was no contradiction: the DESCRIBES question,
+  not the SURVIVES question. The neighbour's own code sample had gone stale regardless. That bullet
+  has since been corrected and now sends readers to the source instead, so read this as a closed
+  instance rather than a live defect. The wrong question is the part worth remembering.
 - `conventions/final-state-assertions-cannot-discriminate-dispatch-from-confirmation-2026-09-01.md`
   came out of the same review cluster on the same subsystem, but is a test-assertion-vantage lesson
   rather than a prose-survival one. Same-incident pointer only.
