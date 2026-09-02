@@ -889,8 +889,8 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
     // The redirect leg carries the flight's teardown predicate: the start
     // round-trip inside it is the one await left between the teardown checks
     // here and the navigation, so the helper re-checks at that boundary and
-    // unwinds a stale flight instead of navigating for a subject this tab no
-    // longer represents. Nothing downstream of that unwind reports it, so the
+    // cancels a stale flight instead of navigating for a subject this tab no
+    // longer represents. Nothing downstream of that cancel reports it, so the
     // report belongs here.
     const orcidOrRefuse = async () => {
       if (!allowRedirect) return FRESH_AUTH_REAUTH_REQUIRED;
@@ -1129,16 +1129,25 @@ export async function freshAuthWindowReady(opts) {
 // FRESH_AUTH_REDIRECT_PENDING; throws on transport / config / invalid-host errors.
 //
 // `isStale` (optional) is a teardown predicate re-checked after the start
-// round-trip resolves, immediately before the navigation: the round-trip is
-// an await a subject teardown can land inside, and a navigation issued past
-// it would send the tab to ORCID on behalf of a subject it no longer
-// represents. A stale flight unwinds the keys written above (the scrub has
-// usually removed them already; the unwind keeps that true even when it has
-// not) and resolves as FRESH_AUTH_CANCELLED — the same silent clean-cancel
-// every other teardown boundary in the acquisition resolves to; when the
-// predicate is a consent-op guard's `tornDown`, the guarded caller owns the
-// report. Callers without a teardown-scoped flight (the page-level start
-// flows) pass none and keep the unconditional navigation.
+// round-trip: the round-trip is an await a subject teardown can land inside,
+// and a navigation issued past it would send the tab to ORCID on behalf of a
+// subject it no longer represents. A stale flight resolves as
+// FRESH_AUTH_CANCELLED — the same silent clean-cancel every other teardown
+// boundary in the acquisition resolves to; when the predicate is a consent-op
+// guard's `tornDown`, the guarded caller owns the report. Callers without a
+// teardown-scoped flight (the page-level start flows) pass none and keep the
+// unconditional navigation.
+//
+// The predicate also gates every unwind past that await, because the flow keys
+// the start wrote are the subject scrub's to remove and not this unwind's: the
+// scrub (`_scrubSubjectBoundState`) bumps the generation the predicate reads
+// and removes SUBJECT_BOUND_STORAGE_KEYS in one synchronous body, and this
+// flight wrote its keys before the await the teardown landed in. So a stale
+// flight's own keys are already gone, and whatever stands in them now was
+// written by a later flow in this tab. Taking those would strand it:
+// `completeOrcid` reads the mode marker to decide whether the callback carries
+// the session JWT, so a flow whose marker went missing posts an
+// authenticated-mode callback unauthenticated and dead-ends on return.
 async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault, isStale) {
   const returnPath = window.location.pathname || returnPathDefault;
   try {
@@ -1153,20 +1162,24 @@ async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault, isSta
   // per-tab and survives the OAuth round-trip within the originating tab.
   sessionStorage.setItem(ORCID_MODE_KEY, mode);
 
+  // The one unwind, so no exit past the start round-trip can drift from the
+  // ownership rule in the docblock. A stale flight leaves the keys alone; every
+  // other exit, and every caller that passes no predicate, removes them.
+  const unwindFlowKeys = () => {
+    if (isStale?.()) return;
+    sessionStorage.removeItem(ORCID_MODE_KEY);
+    clearReturnPath();
+  };
+
   let data;
   try {
     data = await startOrcid(mode, extra);
   } catch (err) {
-    sessionStorage.removeItem(ORCID_MODE_KEY);
-    clearReturnPath();
+    unwindFlowKeys();
     throw err;
   }
 
-  if (isStale?.()) {
-    sessionStorage.removeItem(ORCID_MODE_KEY);
-    clearReturnPath();
-    return FRESH_AUTH_CANCELLED;
-  }
+  if (isStale?.()) return FRESH_AUTH_CANCELLED;
 
   // Validate the redirect host before navigating — open-redirect defense
   // shared with settings.js handleOrcidLink. Uses the shared
@@ -1176,13 +1189,11 @@ async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault, isSta
   try {
     target = new URL(data.redirect_url);
   } catch {
-    sessionStorage.removeItem(ORCID_MODE_KEY);
-    clearReturnPath();
+    unwindFlowKeys();
     throw new Error('Invalid ORCID redirect URL');
   }
   if (!ORCID_REDIRECT_HOSTS.includes(target.hostname)) {
-    sessionStorage.removeItem(ORCID_MODE_KEY);
-    clearReturnPath();
+    unwindFlowKeys();
     throw new Error('Invalid ORCID redirect URL');
   }
 

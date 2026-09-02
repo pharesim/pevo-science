@@ -88,6 +88,15 @@ const {
 const { uploadFile, describeUploadError, UPLOAD_SUBJECT_CHANGED } = await import(
   '../../src/lib/ipfs-upload.js'
 );
+// The storage half of the subject scrub, plus the two flow keys the redirect
+// starter writes and the teardown cases below read back — all from the shared
+// single source of truth, so neither the staged teardown nor the assertions can
+// drift from the keys the module actually uses. The module is dependency-free,
+// so importing it here cannot disturb this suite's partial api.js / alpinejs
+// mocks.
+const { ORCID_MODE_KEY, RETURN_PATH_KEY, SUBJECT_BOUND_STORAGE_KEYS } = await import(
+  '../../src/lib/subject-bound-keys.js'
+);
 
 const PROOF_KEY = 'pevo_fresh_auth_session_proof';
 const IDLE_MS = 900_000;      // 15 minutes, the backend's idle period
@@ -734,13 +743,20 @@ describe('the gate never fails open into silence', () => {
 
 describe('teardown abandons in-flight acquisitions', () => {
   // The subject-bound scrub that runs on logout and on a cross-user login
-  // clears the proof caches AND abandons the module-level in-flight state as
-  // one act (the auth store routes both through its scrub). These tests drive
-  // the fresh-auth half directly, composed the way that scrub invokes it.
+  // clears the proof caches, abandons the module-level in-flight state, and
+  // removes every subject-bound storage key as one act (the auth store's
+  // `_scrubSubjectBoundState` routes all of it through itself). These tests
+  // drive the fresh-auth half directly, staged the way that scrub composes it —
+  // the key loop included, because a case asserting what a torn-down flight
+  // leaves in sessionStorage proves nothing unless the teardown it staged is
+  // what emptied those keys. One piece of the real scrub is deliberately left
+  // out: `dismissOpenReauthPrompt()`, because several cases below hold the
+  // prompt open and resolve it by hand to control when a flight resumes.
   function teardownSubjectState() {
     clearCachedSessionProof();
     clearPasswordFactorMemo();
     abandonInFlightAcquisitions();
+    for (const key of SUBJECT_BOUND_STORAGE_KEYS) sessionStorage.removeItem(key);
   }
 
   // Real timers in this file; a macrotask hop lets a pending flight advance
@@ -978,8 +994,10 @@ describe('teardown abandons in-flight acquisitions', () => {
     // after their final generation check, so a teardown landing inside the
     // round-trip must be re-checked at the navigation itself. Without that,
     // the resolution sends the new subject's tab to ORCID on the previous
-    // subject's behalf. The flight unwinds as a clean cancel instead, and
-    // the redirect keys it wrote are cleared, mirroring the error unwinds.
+    // subject's behalf. The flight resolves as a clean cancel instead. The
+    // flow keys read null because the staged teardown removed them, the way
+    // `_scrubSubjectBoundState` does; the starter's own unwind is not what
+    // empties them, and the two cases below are what hold it to that.
     mockFetchEmailStatus.mockResolvedValueOnce({ status: 'ok', data: { hasPassword: false } });
     let resolveStart;
     mockStartOrcid.mockReturnValueOnce(
@@ -995,13 +1013,94 @@ describe('teardown abandons in-flight acquisitions', () => {
 
     expect(outcome).toEqual({ ready: false, cancelled: true });
     expect(window.location.href).toBe('');
-    expect(sessionStorage.getItem('pevo_orcid_mode')).toBeNull();
-    expect(sessionStorage.getItem('pevo_fresh_auth_return_to')).toBeNull();
+    expect(sessionStorage.getItem(ORCID_MODE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(RETURN_PATH_KEY)).toBeNull();
     // Nothing downstream speaks for this unwind: the flight resolves the same
     // `cancelled` outcome a user's own dismissal produces, and the shared
     // table keeps that one silent. Without a report here the user watches a
     // full-page round-trip they asked for simply not happen.
     expect(mockToastStore.show).toHaveBeenCalledTimes(1);
+  });
+
+  // The two cases below are the other half of that boundary: what the departed
+  // flight must NOT do on its way out. Both stage a successor ORCID flow in the
+  // same tab after the teardown, because that is the only state in which the
+  // flow keys are populated when the stale flight resumes — the scrub emptied
+  // the ones this flight wrote before it ever got control back.
+  it('a stale start resolving mid-successor leaves the successor its own flow keys', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+    let resolveStale;
+    let resolveSuccessor;
+    mockStartOrcid
+      .mockReturnValueOnce(new Promise((resolve) => { resolveStale = resolve; }))
+      .mockReturnValueOnce(new Promise((resolve) => { resolveSuccessor = resolve; }));
+
+    const stale = ensureSessionWindow();
+    await tick(); // the previous subject's startOrcid round-trip is pending
+
+    teardownSubjectState();
+
+    // The successor is a fresh flow under the new subject, started from a
+    // different page so its return path is distinguishable from the one the
+    // departed flight wrote.
+    window.location.pathname = '/papers/alice/a-discovery';
+    const successor = ensureSessionWindow();
+    await tick(); // the successor wrote its own flow keys and is parked on its start
+    expect(mockStartOrcid).toHaveBeenCalledTimes(2);
+    expect(sessionStorage.getItem(ORCID_MODE_KEY)).toBe('session_auth');
+    expect(sessionStorage.getItem(RETURN_PATH_KEY)).toBe('/papers/alice/a-discovery');
+
+    resolveStale({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+    expect(await stale).toEqual({ ready: false, cancelled: true });
+
+    // The stale flight cancels silently past the keys: they are the successor's
+    // now, and removing them would send the successor to ORCID with no mode
+    // marker, so `completeOrcid` would post the callback unauthenticated and
+    // the round-trip would dead-end on return.
+    expect(window.location.href).toBe('');
+    expect(sessionStorage.getItem(ORCID_MODE_KEY)).toBe('session_auth');
+    expect(sessionStorage.getItem(RETURN_PATH_KEY)).toBe('/papers/alice/a-discovery');
+
+    resolveSuccessor({ redirect_url: 'https://orcid.org/oauth/authorize?x=2' });
+    expect(await successor).toEqual({ ready: false, redirect: true });
+    expect(window.location.href).toBe('https://orcid.org/oauth/authorize?x=2');
+  });
+
+  it('a stale start REJECTING mid-successor leaves the successor its own flow keys', async () => {
+    // The start round-trip carries a 30s timeout and nothing aborts it when the
+    // subject changes, so a rejection is at least as likely an ending for a
+    // flight that outlived its subject as a late resolution. The rejection
+    // unwind runs before the staleness re-check, so it needs the same rule.
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+    let rejectStale;
+    let resolveSuccessor;
+    mockStartOrcid
+      .mockReturnValueOnce(new Promise((_resolve, reject) => { rejectStale = reject; }))
+      .mockReturnValueOnce(new Promise((resolve) => { resolveSuccessor = resolve; }));
+
+    const stale = ensureSessionWindow();
+    await tick();
+
+    teardownSubjectState();
+
+    window.location.pathname = '/papers/alice/a-discovery';
+    const successor = ensureSessionWindow();
+    await tick();
+    expect(mockStartOrcid).toHaveBeenCalledTimes(2);
+
+    rejectStale(Object.assign(new Error('signal timed out'), { code: 'TIMEOUT' }));
+    // The rejection still escapes the departed flight (the page-level gate is
+    // what turns it into a refusal); what it may not do is take the successor's
+    // keys with it.
+    await expect(stale).rejects.toThrow('signal timed out');
+
+    expect(window.location.href).toBe('');
+    expect(sessionStorage.getItem(ORCID_MODE_KEY)).toBe('session_auth');
+    expect(sessionStorage.getItem(RETURN_PATH_KEY)).toBe('/papers/alice/a-discovery');
+
+    resolveSuccessor({ redirect_url: 'https://orcid.org/oauth/authorize?x=2' });
+    expect(await successor).toEqual({ ready: false, redirect: true });
+    expect(window.location.href).toBe('https://orcid.org/oauth/authorize?x=2');
   });
 
   it('one teardown across two cross-posture flights still reports exactly once', async () => {

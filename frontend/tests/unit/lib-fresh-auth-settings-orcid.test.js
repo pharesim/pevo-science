@@ -131,7 +131,8 @@ describe('beginSettingsActionOrcidFreshAuth', () => {
     // the orchestrator suites own that property (their staged teardown
     // performs the removal). The cleanup this function really is responsible
     // for stays pinned by the invalid-host, unparseable-URL and
-    // start-rejection cases in this file.
+    // start-rejection cases in this file, which pass no predicate and so
+    // unwind unconditionally.
     mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
 
     const res = await beginSettingsActionOrcidFreshAuth('change_email', () => true);
