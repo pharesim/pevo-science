@@ -177,3 +177,96 @@ admitted a NULL column with an epoch; tightened as described in item 2.
   path requires one, and `/custody/fresh-auth` refuses upgraded rows).
   Password-login state-D sessions were already there; routing that is the
   architect's call.
+
+## Architect re-review (2026-09-02) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` over `68fc1e91`, `c5846d1a`, `9fd22a7f`. The
+implementation is sound and the review confirmed the substance independently: the
+`wanted_def` deparse string is byte-exact on the deployed PostgreSQL 16.13 (probed
+directly, and the migration suite passes 6/6), fail-toward-`'self'` is the
+restrictive direction at all four consumers of the claim, both `upgraded_at`
+writers satisfy the new CHECK, the migration test executes the shipped SQL rather
+than a retyped copy, and the mint-parity test drives both logins against one real
+row. Five items below; none of them is a defect in the shipped derivation logic.
+
+1. **The canary's shape-refusal scan misses wrapped and alternate-access
+   spellings.** `occurrencesOf` tests each pattern per line and `EPOCH_TERNARY_RE`
+   is anchored with `[^;\n]*`, so a ternary split across lines, `account?.custody`,
+   and `account['custody']` all pass. The case that matters is a NEW row-reading
+   site that derives the claim inline and mints no JWT: it adds no key to the
+   caller-set scan and no `jwt.sign` line for the mint-classification scan, so the
+   shape scan is its only guard and that guard is line-scoped. This canary is the
+   change's only durability mechanism, by its own docblock's reasoning, so the gap
+   matters more here than it would elsewhere.
+   Requirement: detection must survive ordinary authoring shapes. Mechanism is
+   yours to choose. `agents/docs/solutions/conventions/source-discipline-canary-detection-must-survive-ordinary-authoring-shapes-2026-08-31.md`
+   states the rule, and both sibling canaries already solve it — the
+   revocation-epoch canary via its value-joining helper plus a planted wrapped-line
+   self-test, and the frontend password-factor resolver canary via `joinedStatement`.
+   Whatever you pick, add the wrapped and alternate-access spellings to the planted
+   self-tests so the fix is itself pinned.
+   Also note for the completion write-up: the "verified by mutation" claim does not
+   support what it was cited for. Both named mutations also remove the helper call,
+   so the caller-set scan fires whether or not the shape scan works.
+
+2. **Upgrade now widens the population matching the `/link` stuck-recovery
+   lookup.** Writing `custody = 'self'` makes an upgraded row match
+   `custody = 'self' AND verify_token IS NULL AND updated_at > NOW() - INTERVAL '1 hour'`,
+   which bypasses the signup session-binding check. Before this change the row
+   stayed `'light'` and matched neither stuck lookup. The task notes reach this and
+   conclude no code change; the review agrees no escalation is constructible today
+   (the bypass needs a fresh on-chain-owner signature and mints only a claim that
+   grants nothing), but the diff still re-widens what migration 016 deliberately
+   narrowed, and "no escalation today" is the same shape of argument this task
+   exists to reject.
+   Close the widening. Either tighten the `/link` lookup's own predicate or push the
+   row out of the window; if you move `updated_at`, verify the choice against its
+   other readers first — `registration-watch`'s completion sweep and the `/confirm`
+   stuck lookup both read it, and moving it backward is not obviously free. If the
+   investigation shows every available mechanism costs more than the widening, say
+   so with the evidence and this item can close as documented-accepted.
+
+3. **`CustodyRow`'s docblock justifies the loose type with a false statement.** It
+   says the row types annotate the column as a `Date` in some places and an ISO
+   string in others. All six call sites annotate `string | null`; none annotates
+   `Date`. The widening is still right, for a better reason: the column is
+   `TIMESTAMPTZ` and no `setTypeParser` is registered, so the driver returns a
+   `Date` at runtime everywhere despite those annotations. State that instead.
+
+4. **The comment edited in the ORCID login asserts a reachable row is
+   unreachable.** It claims the SELECT only matches states A/B/C/D with `custody`
+   set, and that the nullable annotation is not a defense against a currently
+   reachable null row. The same commit disproves both: `custodyClaimFor`'s docblock
+   documents that row, the ORCID-link UPDATE carries no custody predicate, and the
+   login SELECT filters only on the ORCID and a non-null username. Drop the
+   unreachability claim and state what the helper already says. Section 6.1 now
+   enumerates this row as state G, so there is a documented state to name.
+
+5. **Narrow the "cannot disagree" wording** in the helper docblock and the
+   migration header. The guarantee holds for one row *read*. `POST /login` reads the
+   row, awaits argon2, then derives from that snapshot, so a claim minted from a
+   pre-upgrade read is backstopped by the per-route epoch re-reads, not by the claim
+   itself. The window predates this change and needs no code fix; only the claim
+   written about it is new.
+
+Resolved architect-side, no action needed from you:
+
+- The `[TODO Architect]` deploy item is fixed. `destructive_pending_migrations()`
+  now has an `ADD CONSTRAINT` arm, so a constraint-adding migration forces the
+  brief-stop carve-out, and the DDL-shape enumeration in `ARCHITECTURE.md` names
+  constraint additions with migration 017 as the worked case. Five reviewers found
+  this independently; it was the highest-ranked item in the review.
+- Section 6.1 now carries the settings-email self-custody row as **state G**, with
+  the `custody` and `verify_token` field rationales corrected and `upgraded_at`
+  updated to name both writers and the new CHECK.
+
+Not to act on:
+
+- A proposal to add a structural presence guard for the `custody` key in
+  `custodyClaimFor` was raised and then dropped under validation: the mint-parity
+  suite you added already asserts a genuine light row reports `'light'` from all
+  three readers against real Postgres, so a SELECT that drops the column is a red
+  bar, not a silent pass. No guard needed.
+- The absent-`upgraded_at` leniency is correct as documented. The CHECK's
+  contrapositive means a non-`'self'` column implies no epoch, so the column alone
+  now yields the right claim.
