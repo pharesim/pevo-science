@@ -89,6 +89,13 @@ audit unnecessary over one that makes it careful:
   it catches is precisely the one that occurred here: a member added without a matching
   branch at one of the consumers.
 
+Both structures have since landed in `frontend/src/lib/fresh-auth.js`: the sentinel-to-outcome
+map (`WINDOW_OUTCOME_BY_SENTINEL`, exported as `WINDOW_OUTCOME_KEYS`), the per-outcome toast
+table (`WINDOW_OUTCOME_TOASTS`) behind one `showWindowOutcomeToast` dispatch, and an
+exhaustiveness suite (`frontend/tests/unit/lib-fresh-auth-outcome-dispatch.test.js`) pinned
+against `WINDOW_OUTCOME_KEYS`. A new member is registered in the map, never as a branch at a
+consumer.
+
 ## Why This Matters
 
 This is a fix reintroducing the defect it was written to close, which makes it expensive
@@ -156,3 +163,7 @@ nothing in the toolchain says so.
   Unavailable in this tree, which is the gap the test-from-constants recommendation fills.
 - `conventions/contract-field-removal-sweep-consumers-and-fixtures-2026-05-26.md` — the
   removal-direction sibling of the same contract-changed-shape family.
+- `conventions/fresh-auth-guard-coverage-must-sweep-the-callee-graph-2026-09-01.md` — the
+  guard-reach instance of the same rule in the same file: a teardown predicate threaded into
+  a shared helper for one caller is not coverage for the helper's other callers, so the audit
+  set is the callee graph reached after the guard opens and the helper's full caller set.

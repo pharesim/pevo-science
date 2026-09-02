@@ -30,12 +30,12 @@ related_components:
 
 Read literally, this prohibits adoption on every route that calls `argon2.verify` or verifies a fresh-auth proof. Yet two such routes adopt it at HEAD:
 
-- `backend/src/routes/custody.ts:57` — `freshAuthLimiter` (account-keyed, 10/min). Route is `POST /api/custody/fresh-auth`. Verifies password via argon2.verify.
-- `backend/src/routes/custody.ts:62` — `sessionAuthLimiter` (account-keyed, 10/min). Route is `POST /api/custody/session-auth`. Verifies password via argon2.verify.
+- `backend/src/routes/custody.ts` — `freshAuthLimiter` (account-keyed, 10/min). Route is `POST /api/custody/fresh-auth`. Verifies password via argon2.verify.
+- `backend/src/routes/custody.ts` — `sessionAuthLimiter` (account-keyed, 10/min). Route is `POST /api/custody/session-auth`. Verifies password via argon2.verify.
 
 Both adoptions were explicitly architect-requested in task 4 round-1 hold item 3 (commit `41e4d60`) to close the legitimate-user-lockout DoS surface: stolen JWT + 10 wrong-password probes = 60s lockout on the mint path. Adversarial review of task 4 round-2 flagged the adoption as enabling unbounded per-account password brute-force; the architect dismissed it as an accepted tradeoff.
 
-Without this carve-out captured in `agents/docs/solutions/`, the architect's reasoning lives in two task hold blocks (`41e4d60` + `c9c7c5f`) that will archive away within ~250 lines of `tasks-archive.md`. Future reviewers reading `custody.ts:57` see the JSDoc warning + the code's adoption and re-litigate the dismissal.
+Without this carve-out captured in `agents/docs/solutions/`, the architect's reasoning lives in two task hold blocks (`41e4d60` + `c9c7c5f`) that will archive away within ~250 lines of `tasks-archive.md`. Future reviewers reading `freshAuthLimiter` in `custody.ts` see the JSDoc warning + the code's adoption and re-litigate the dismissal.
 
 ## Guidance
 
@@ -61,7 +61,7 @@ The blanket JSDoc rule was written for the harder case: unauthenticated routes w
 
 Without this carve-out captured, two failure modes follow:
 
-1. **Re-litigation drift**: a future reviewer sees the JSDoc warning + the code's adoption + the gap in `docs/solutions/`, decides the adoption is a mistake, and removes `skipFailedRequests: true` from `custody.ts:57` and `:62`. Result: the legitimate-user-lockout DoS reappears, the architect re-discovers it in code review, the cycle restarts.
+1. **Re-litigation drift**: a future reviewer sees the JSDoc warning + the code's adoption + the gap in `agents/docs/solutions/`, decides the adoption is a mistake, and removes `skipFailedRequests: true` from `freshAuthLimiter` and `sessionAuthLimiter` in `custody.ts`. Result: the legitimate-user-lockout DoS reappears, the architect re-discovers it in code review, the cycle restarts.
 2. **Over-cautious omission**: a future implementer adds a sibling JWT-required credential-verify route (e.g., `/api/custody/change-password`) and omits `skipFailedRequests` per the JSDoc warning, recreating the lockout surface on the new route. Result: same DoS surface, expanding scope.
 
 The convention documented here is the durable rationale.
@@ -86,7 +86,7 @@ When triaging a `skipFailedRequests` adoption decision on a `rateLimit()` call s
 
 ## Examples
 
-**Correct adoption** (current HEAD, PEvO):
+**Correct adoption** (PEvO; the comment is abridged here, and the source carries the full threat-model rationale inline rather than citing this entry):
 
 ```typescript
 // backend/src/routes/custody.ts
@@ -98,9 +98,7 @@ const freshAuthLimiter = rateLimit({
   // Carve-out: JWT-required credential-verify route. Adoption closes the
   // legitimate-user-lockout DoS (stolen JWT + 10 wrong-passwords = 60s lockout
   // on the mint path). Brute-force rate bound by argon2 server-wide
-  // semaphore (~80 verifies/sec, not per-account). See
-  // agents/docs/solutions/conventions/skip-failed-requests-jwt-required-
-  // credential-verify-carve-out-2026-05-17.md for the threat-model rationale.
+  // semaphore (~80 verifies/sec, not per-account).
   skipFailedRequests: true,
 });
 
@@ -141,15 +139,15 @@ const recoverLimiter = rateLimit({
 
 | Site | Keying | skipFailed | Credential-verify? | JWT-required? | Disposition |
 |---|---|---|---|---|---|
-| `auth.ts:264 loginLimiter` | IP | ❌ | ✓ (argon2) | ❌ | Correct omission |
-| `auth.ts:265 resetRequestLimiter` | IP | ❌ | (existence-probing) | ❌ | Correct omission |
-| `auth.ts:266 resetLimiter` | IP | ❌ | ✓ (token guess) | ❌ | Correct omission |
-| `auth.ts:1072 recoverLimiter` | IP | ❌ | ✓ (token guess) | ❌ | Correct omission |
-| `custody.ts:43 broadcastLimiter` | account | ❌ | ❌ | ✓ | N/A — not credential-verify, no DoS concern |
-| `custody.ts:51 upgradeLimiter` | account | ✓ | ❌ (signed challenge) | ✓ | Correct adoption — one-shot ceremony |
-| `custody.ts:57 freshAuthLimiter` | account | ✓ | ✓ (argon2) | ✓ | **Carve-out adoption — this convention** |
-| `custody.ts:62 sessionAuthLimiter` | account | ✓ | ✓ (argon2) | ✓ | **Carve-out adoption — this convention** |
-| `accreditation.ts:35 accreditationRequestLimiter` | account | ✓ | ❌ (fresh-auth proof, not new credential) | ✓ | Correct adoption — one-shot ceremony |
+| `auth.ts loginLimiter` | IP | ❌ | ✓ (argon2) | ❌ | Correct omission |
+| `auth.ts resetRequestLimiter` | IP | ❌ | (existence-probing) | ❌ | Correct omission |
+| `auth.ts resetLimiter` | IP | ❌ | ✓ (token guess) | ❌ | Correct omission |
+| `recover.ts recoverLimiter` | IP | ❌ | ✓ (token guess) | ❌ | Correct omission |
+| `custody.ts broadcastLimiter` | account | ❌ | ❌ | ✓ | N/A — not credential-verify, no DoS concern |
+| `custody.ts upgradeLimiter` | account | ✓ | ❌ (signed challenge) | ✓ | Correct adoption — one-shot ceremony |
+| `custody.ts freshAuthLimiter` | account | ✓ | ✓ (argon2) | ✓ | **Carve-out adoption — this convention** |
+| `custody.ts sessionAuthLimiter` | account | ✓ | ✓ (argon2) | ✓ | **Carve-out adoption — this convention** |
+| `accreditation.ts accreditationRequestLimiter` | account | ✓ | ❌ (fresh-auth proof, not new credential) | ✓ | Correct adoption — one-shot ceremony |
 | `accreditation.ts accreditationVerifyLimiter` | IP | ✓ | ❌ (token claim, not credential probe) | ❌ | Correct adoption — IP-keyed one-shot ceremony; HAF outage / Redis pre-INCR transients are the legitimate-user-lockout surface; 256-bit token entropy is the brute-force rate-bound |
 
 The grid is the discriminator-in-practice: every site with `skipFailedRequests: true` is JWT-required AND has a concrete legitimate-user-lockout DoS surface that motivates the adoption.

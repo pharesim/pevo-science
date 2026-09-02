@@ -1,7 +1,7 @@
 ---
 title: "Test-fabricated error shape masks a dead production branch"
 date: 2026-06-09
-category: agents/docs/solutions/conventions/
+category: conventions
 module: settings-fresh-auth
 problem_type: convention
 component: testing_framework

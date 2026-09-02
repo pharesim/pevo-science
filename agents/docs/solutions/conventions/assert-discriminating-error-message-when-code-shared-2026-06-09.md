@@ -103,6 +103,6 @@ Now any refactor that runs a different guard in place of the equality check in `
 
 ## Sources
 
-- Detection: architect `/ce-code-review` of the UI tasks `ui-orcid-factor-negative-path-e2e` and `ui-orcid-stub-real-roundtrip-unfixme` (2026-06-09). Three independent reviewers (correctness, adversarial, testing) independently flagged the same finding → synthesis promoted to max confidence.
+- Detection: architect `/ce-code-review` of the ORCID-factor negative-path E2E work (2026-06-09). Three independent reviewers (correctness, adversarial, testing) independently flagged the same finding → synthesis promoted to max confidence.
 - Code verified at documentation time: `backend/src/routes/orcid.ts` `/callback` — `AUTHENTICATED_MODES` includes `fresh_auth`; the caller-mismatch guard and the `handleFreshAuth` registered-factor guard both emit `403 FORBIDDEN`; `FORBIDDEN` has dozens of `sendError` call sites across `backend/src/routes/`.
-- The fix (pin the message) was handed back to the UI agent as a held finding on `ui-orcid-factor-negative-path-e2e`, not yet landed at documentation time; this convention documents the trap and the rule independent of that specific edit.
+- The fix (pin the message) has since landed: the registered-factor mismatch case in `frontend/tests/e2e/settings-orcid-factor.spec.js` asserts the discriminating message from `handleFreshAuth`. This convention documents the trap and the rule independent of that specific edit.

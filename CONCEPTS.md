@@ -223,6 +223,20 @@ The platform operation that demotes a consented co-author of a name-only, approv
 
 It is a remedy, never a consent gate: it strips credit going forward, but a later valid consent operation can re-confer credit. It is the only mechanism that lets a third party remove someone else's consented status; no author's continuation can remove another. The anchored-route counterpart for self-withdrawal is author resign.
 
+### Consent Op
+
+An authorship operation a light account broadcasts through the platform that binds or releases an accredited co-author at an identity anchor: author accept and author resign. Every consent op requires a target-bound fresh-auth proof on top of the session token, because a stolen session alone must never change who is credited.
+*Avoid:* anchored-route op, consent operation.
+
+Its proof binds the paper root the slot belongs to, so a proof minted for one paper cannot be replayed against another. The proof kind is named after this family, the consent-op proof, and covers credit ops as well; only the payload shape, and with it what the proof's target binds, differs between the two families.
+
+### Credit Op
+
+An authorship operation on a name-only slot that mints or strips co-author credit: claim authorship, approve authorship, and revoke authorship. Credit ops are gated exactly like consent ops, with a target-bound fresh-auth proof on top of the session token, because they are identity-binding and reputation-weighty.
+*Avoid:* name-only-route op, credit operation.
+
+Its proof binds the paper and, per operation, the slot being claimed or approved and the account being credited or stripped, so a minted proof cannot be redirected to credit or strip a different co-author.
+
 ### Cumulative Author Union
 
 The display-ordered union of author slots across every admitted post in a paper's continuation chain (root plus continuations plus native edits), in first-occurrence order: the slot domain that claim and approve operations resolve against, not the root post's list alone.
@@ -610,3 +624,4 @@ It is a platform-attributed claim, not an independent proof: the operation is st
 - **Authority whitelist vs admin roster.** Both are chain-trust concepts about who is trusted, but they answer different questions. Settled: the Accreditation Authority Whitelist gates whose on-chain signatures a reader trusts (it contains the single signer); the Admin Roster gates which human may ask the platform to make the signer act. They are orthogonal and must not be conflated.
 - **Burn vs consume.** Both were used for presenting a fresh-auth proof. Settled: consuming is the broader act of presenting a proof and having it validated; a burn is specifically the spend of a consent-op proof, and session proofs are consumed but never burned. Unrelated to token burning in the crypto sense, which does not arise here because PEvO issues no custom token.
 - **Authority account.** Used in several places for the actor behind accreditation, revocation, retraction, and authorship approval. Settled: this is the Signer (the single on-chain authority account); the human who decides to trigger it is governed separately by the Admin Roster and Admin Tier.
+- **Consent op vs credit op.** Both families require the same kind of proof, and "consent op" was used loosely for either. Settled: Consent Ops (author accept, author resign) act on an identity anchor and bind the paper root; Credit Ops (claim, approve, revoke authorship) act on a name-only slot and bind the paper plus the slot or account concerned. The proof kind is named after the first family and covers both.

@@ -37,12 +37,12 @@ Without a canonical mapping at the primitive's boundary, every new route consumi
 - **403** for `username_mismatch | target_mismatch | kind_mismatch` — caller authenticated but the proof does not belong to them, the resource, or the proof category (caller is identified but lacks the right proof).
 - **401** for `missing | expired | malformed` — caller has not produced a valid proof at all (caller needs to (re)authenticate from scratch).
 
-The canonical mapping lives in `custody.ts:371-376` (`POST /api/custody/broadcast`'s fresh-auth gate) as the de-facto reference. The medium-term shape of this convention is to extract the mapping into a helper in `backend/src/lib/fresh-auth.ts` (e.g., `freshAuthFailureStatusCode(reason): 401 | 403`) so every consumer calls one function and a new reason added to the union forces every consumer to update the mapping at compile time. Until that helper lands, the canonical mapping is the rule and reviewers enforce it manually.
+The canonical mapping lives in `freshAuthFailureStatus(reason): 401 | 403` in `backend/src/lib/fresh-auth.ts`, extracted since this entry was written so that every consumer can call one function and a reason added to the union forces every consumer to update at compile time. At HEAD as of this writing, `POST /api/custody/broadcast` (`custody.ts`) and the shared `consumeFreshAuthProof` / `requireFreshAuth` wrappers call it; the three settings-route mint gates (`settings.ts`) still re-derive the split inline, currently in agreement with the helper. A consumer that re-derives inline is the live drift surface this convention exists for: reviewers enforce the mapping manually there until it routes through the helper.
 
 Concretely:
 
-1. New consumers of `consumeFreshAuthToken` MUST mirror the custody.ts split exactly, not collapse all reasons to 401 (closed-default-but-wrong-semantics) or re-derive a different split.
-2. When `consumeFreshAuthToken`'s reason union widens (or any sibling primitive's), every consumer must extend its mapping in the same commit. If extracting the helper is in flight, prefer landing that first.
+1. New consumers of `consumeFreshAuthToken` MUST call `freshAuthFailureStatus` rather than re-derive the split inline, collapse all reasons to 401 (closed-default-but-wrong-semantics), or invent a different split.
+2. When `consumeFreshAuthToken`'s reason union widens (or any sibling primitive's), the helper's return must change in the same commit, and every consumer still mapping inline (the settings gates, until they adopt the helper) must be extended alongside it.
 3. Architect review of a new auth-surface route MUST check the status-code mapping against the canonical reference, not just at type level (which doesn't catch this).
 
 ## Why This Matters
@@ -60,22 +60,22 @@ Type-level enforcement isn't free here because `sendError`'s `details` parameter
 - Reviewing any new route that calls `consumeFreshAuthToken` or `consumeSessionFreshAuthToken` and maps the result to a status code.
 - Reviewing any new shared verifier primitive that returns a discriminated failure-reason union.
 - Auditing the auth surface after a primitive's reason union widens (the audit must touch every consumer).
-- When the consumer count of any verifier primitive reaches 3+ — at that point, extracting a canonical-mapping helper becomes higher-value than the per-route inline maps.
+- When a consumer of a verifier primitive maps reasons inline instead of calling the primitive's canonical helper (`freshAuthFailureStatus` for fresh-auth): route it through the helper, and for a primitive that has no helper yet, extract one once its consumer count reaches 3+.
 - Reviewing a sibling-route pair where one is the canonical reference and the other is new code.
 
 ## Examples
 
 **Originating incident (2026-05-16):** Three routes consume `consumeFreshAuthToken` after commit `b27bcdf` lands:
 
-- `POST /api/custody/broadcast` (`custody.ts:371-376`) — canonical mapping: 403 for `username_mismatch | target_mismatch | kind_mismatch`; 401 for the rest.
-- `POST /api/settings/email` change-email branch (commit `b27bcdf`, `settings.ts:207-210`) — splits 403 for `username_mismatch | target_mismatch`; 401 for the rest. **Misses `kind_mismatch`** — falls through to 401 instead of 403.
-- `POST /api/settings/set-password` (commit `9818e32`, `settings.ts:208-230`) — collapses **all** reasons to 401. Diverges on three reasons (`username_mismatch`, `target_mismatch`, `kind_mismatch`).
+- `POST /api/custody/broadcast` (`custody.ts`, the de-facto reference at the time, since routed through `freshAuthFailureStatus`) — canonical mapping: 403 for `username_mismatch | target_mismatch | kind_mismatch`; 401 for the rest.
+- `POST /api/settings/email` change-email branch (commit `b27bcdf`) — splits 403 for `username_mismatch | target_mismatch`; 401 for the rest. **Misses `kind_mismatch`** — falls through to 401 instead of 403.
+- `POST /api/settings/set-password` (commit `9818e32`) — collapses **all** reasons to 401. Diverges on three reasons (`username_mismatch`, `target_mismatch`, `kind_mismatch`).
 
 Each route was implemented in a separate task by a separate worker subagent. Each re-derived the mapping inline. None of them looked at the canonical reference. The `/ce-code-review` fan-out caught the divergence by api-contract + security personas independently flagging the same finding; cross-reviewer agreement promoted it to P1. Without the cross-reviewer corroboration, single-reviewer findings could have been triaged below the gate.
 
-The corrective work: the email-reauth follow-up task (`backend-change-email-mint-path-and-followups.md`) adds `kind_mismatch` to the 403 branch; the set-password hold-block (`backend-settings-set-password-fresh-auth.md` in `tasks/pending/`) brings set-password's mapping fully into line with the canonical 401/403 split. Future drift prevention is this convention.
+The corrective work landed through since-archived follow-up tasks: the change-email mint path gained `kind_mismatch` on its 403 branch, and set-password's mapping was brought into line with the canonical 401/403 split; at HEAD as of this writing all three settings gates carry the full split. Future drift prevention is this convention.
 
-**Pattern for the helper extraction** (medium-term cleanup, not required by this convention but recommended once consumer count justifies the indirection):
+**Pattern for the helper extraction** (proposed here, since landed as `freshAuthFailureStatus` in `backend/src/lib/fresh-auth.ts` with a boolean expression instead of the switch; the settings routes have yet to adopt it):
 
 ```ts
 // in backend/src/lib/fresh-auth.ts
@@ -107,5 +107,5 @@ return sendError(res, freshAuthFailureStatusCode(result.reason), 'FRESH_AUTH_REQ
 - [[hive-signature-request-binding-shape-2026-04-21]] — the transport-layer auth this primitive composes with.
 - `agents/docs/ARCHITECTURE.md` § 6.4 (re-auth contract — drives which routes call the verifier) and § 6.5 invariant #1.
 - `backend/src/lib/fresh-auth.ts` (the verifier primitive — the eventual home of the canonical mapping helper).
-- `backend/src/routes/custody.ts:371-376` (canonical reference mapping).
+- `freshAuthFailureStatus` in `backend/src/lib/fresh-auth.ts` (canonical reference mapping), consumed by `backend/src/routes/custody.ts`.
 - `agents/docs/tasks-archive.md` BACKEND-SETTINGS-EMAIL-REAUTH-FRESH-AUTH entry (archived 2026-05-16) — full review-cycle context.
