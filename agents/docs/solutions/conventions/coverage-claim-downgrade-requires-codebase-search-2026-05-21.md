@@ -39,6 +39,8 @@ The downgrade path selects for skipping verification because the implementer's i
 
 When asked by an architect hold-block to downgrade an overstated coverage claim in a test-file header, follow this four-step procedure before writing any replacement text.
 
+The same procedure applies at **original write time**, when nobody has flagged anything. A companion citation written from memory is as likely to be false as one rewritten under a hold, and the recurrence recorded at the end of this section was authored that way, not under a downgrade instruction.
+
 **Step 1 — Identify the risk class the original claim addressed.**
 
 Read the clause-(b) and clause-(c) sections of the header. The risk class is the failure mode the original claim was written to cover, not the file's primary focus. Example: if the file's focus is SQL-shape predicates and the clause-(b) acknowledgment mentions `verifyHiveSignature`, the risk class is cryptographic-verification bypass (a caller sending a malformed or replayed signature reaching a protected route).
@@ -57,8 +59,12 @@ Search for the route path (e.g., `/api/notifications`) and for the risk-class sy
 
 After the search, two outcomes are possible:
 
-- **A real-path companion exists**: cite it by file name and describe what it covers (which failure modes it exercises against the route). Anchor on stable file path and route path, not line numbers.
+- **A real-path companion exists**: cite it by a repo-relative file path that resolves, paired with the risk-class token that actually occurs in that file, and describe what it covers (which failure modes it exercises against the route). Anchor on stable file path and route path, not line numbers. A suite family named collectively resolves to nothing and is not a citation.
 - **No real-path companion exists**: scope the absence narrowly. State which failure modes are uncovered (e.g., "no test exercises a valid-signature success path that proceeds to HAF") rather than that no coverage exists in the domain. A broad "no real-path test exists" claim can be just as wrong as the original over-claim if the domain is large.
+
+**Recurrence: this procedure has not held on its own.**
+
+It has been in force since this entry was written, and further false clause-(c) companion citations were authored afterwards and stood undetected until a later sweep found them. Manual write-time discipline is necessary and demonstrably not sufficient by itself, which is the argument for mechanical verification rather than more discipline. This entry owns the write-time search; the standing-verification half is its successor, under Related.
 
 **Step 4 — Audit the replacement for coordination-state phrasing.**
 
@@ -153,3 +159,4 @@ This wording: cites the actual companion by stable file path and route path, acc
 - `agents/docs/solutions/conventions/mutation-kill-claims-must-match-assertion-and-corpus-2026-05-15.md` — adjacent: governs accuracy of a test's own mutation-kill claims against the assertion-plus-corpus triple. Different verification target (the test's own behavior, not the surrounding coverage landscape), but the same underlying discipline of verifying claims against running code.
 - `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` — adjacent: when a fix purges convention violations, the fix's own added code must be audited for fresh violations. The downgrade-trap is a specific instance of "the fix introduced a new factual error while correcting the original."
 - `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md` — supports step 4. Coordination-state phrasing in test source ("no separate task filed yet") rots on task archive even when the underlying claim is correct.
+- `agents/docs/solutions/conventions/carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02.md` — the mechanization successor, and the record of this procedure's recurrence. The two divide the territory: this entry owns the manual search at write time and at downgrade, that one owns standing verification of the citation and proposes the canary.

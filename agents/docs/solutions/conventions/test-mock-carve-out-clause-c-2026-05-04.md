@@ -46,6 +46,8 @@ Auth/permission middleware (`verifyHiveSignature`) is real-by-default and MUST r
 
 The strict (literal-mirror) reading was considered and **dismissed**. Future findings citing "the cited companion does not assert the same thing" should be rejected as relitigating settled convention; reviewers must ask "do the two tests cover the same risk class?" instead.
 
+That dismissal presumes the cited companion has been opened and confirmed to cover the risk class. It does not reach a companion that asserts nothing about it, a citation naming a suite family rather than a resolvable file, or a companion that mocks the very surface it is cited for. Those are clause-(c) gaps. Absence is not difference.
+
 ## Why
 
 The carve-out paragraph in `CLAUDE.md` "Running Tests" was genuinely ambiguous in two dimensions, and reviewers (human and persona) kept relitigating the same finding on every audit:
@@ -65,7 +67,7 @@ Round-2 review of `backend-auth-smtp-status-code-oracle.md` produced two finding
 
 - Authoring any new test file that invokes the carve-out framework in its header. The header must name (i) the real path that is impractical and why (clause (a)), (ii) the mock target and confirm it is in the carve-out-eligible scope above, and (iii) the real-path companion that covers the same risk class — or the follow-up task filed to add that coverage.
 - Reviewing a test file in `tasks/review/` whose diff adds or extends mocked-helper / mocked-third-party / observability-spy usage. Verify clause (c) is satisfied at the risk-class level, not the literal-assertion level.
-- Triaging a `/ce-code-review` finding from project-standards or testing personas that flags "carve-out clause (c) compliance" against an existing test. If the finding cites "the companion does not assert the same thing", dismiss as settled-convention relitigation. If the finding cites "no real-path test exercises this failure mode anywhere", that is a genuine clause (c) gap and should be triaged.
+- Triaging a `/ce-code-review` finding from project-standards or testing personas that flags "carve-out clause (c) compliance" against an existing test. If the finding cites "the companion does not assert the same thing", dismiss as settled-convention relitigation. If the finding cites "no real-path test exercises this failure mode anywhere", that is a genuine clause (c) gap and should be triaged. If it cites "the named companion contains no assertion about this risk class", or names a referent that resolves to no file, that is a false citation and also a genuine gap: open the file and check before dismissing.
 - Authoring a follow-up task for a missing real-path companion. The follow-up must specify the failure mode being covered, not the assertion shape — e.g., "real-path test for the 504 BROADCAST_TIMEOUT branch of `/api/orcid/callback`", not "assert the same response object that the mocked test asserts".
 
 ## How to Apply
@@ -81,9 +83,11 @@ Round-2 review of `backend-auth-smtp-status-code-oracle.md` produced two finding
  * Risk class covered by THIS file: <failure mode this test catches>
  *   (e.g., "options-shape mutations at the SMTP transporter helper")
  *
- * Real-path companion: <test file path + describe-block name> covers the
- * complementary risk class <failure mode> with real <Postgres / Redis /
- * external service>. Together the two files cover the integrated path.
+ * Real-path companion: <repo-relative test file path that resolves> [<risk-class
+ * token that actually occurs in that file>] covers the complementary risk class
+ * <failure mode> with real <Postgres / Redis / external service>. Together the
+ * two files cover the integrated path. Name a file, never a suite family: a
+ * collective noun resolves to nothing and cannot be checked by anyone.
  *
  * (Or, if no companion exists yet:)
  * Follow-up task filed: agents/docs/tasks/pending/<task>.md will add a
@@ -96,15 +100,16 @@ Round-2 review of `backend-auth-smtp-status-code-oracle.md` produced two finding
 1. Does the header invoke the carve-out framework explicitly? If not — finding (clause (a) violation), regardless of clause (c).
 2. Is the mock target in the carve-out-eligible scope (shared helpers / third-party libs / observability surfaces)? If not — finding (scope violation; the carve-out does not cover, e.g., `verifyHiveSignature` mocking).
 3. Does a real-path test elsewhere catch the same failure mode? Or is a follow-up task filed?
+   - **Open the cited companion and grep it for the risk-class token first** (an error code, a claim name, a column), before evaluating equivalence. A citation that resolves to no file, or to a file containing no assertion about the named risk class, is a clause-(c) gap. Companion citations are unverified prose and have been found false more than once.
    - "Same failure mode" = the same class of bugs would surface if the real path broke. The companion does NOT need to assert the same shape.
    - Identify which axis the mocked test covers (transform-logic or wiring). If it covers only the transform axis, the wiring axis must be covered by a real-path companion or filed follow-up. The recurring failure mode is a transform-axis mocked test with a "vacuous on corpus" justification used to skip the wiring-axis companion entirely.
    - If a companion exists with risk-class equivalence — clause (c) satisfied.
    - If no companion AND no follow-up task — finding (genuine clause (c) gap, file follow-up).
-   - If a companion exists but asserts something different — NOT a finding. The whole point of the lenient reading is that complementary mutation classes are caught by complementary tests.
+   - If a companion exists, covers the risk class, and asserts something different — NOT a finding. The whole point of the lenient reading is that complementary mutation classes are caught by complementary tests. This applies only once the companion has been confirmed to cover the risk class; a companion asserting nothing about it is an absence, not a difference.
 
 **What NOT to flag (settled, do not relitigate):**
 
-- "The cited companion test does not assert the same thing the mocked test asserts." This is by design. Reviewers should ask "do the two tests cover the same risk class?" instead.
+- "The cited companion test does not assert the same thing the mocked test asserts." This is by design. Reviewers should ask "do the two tests cover the same risk class?" instead. Scope: this applies only after the companion has been opened and confirmed to cover the risk class. "The named companion asserts nothing about this risk class", "the citation names a suite rather than a file", and "the companion mocks the surface it is cited for" are NOT covered by this dismissal and must be flagged.
 - "The mock target (e.g., `nodemailer.createTransport`) is not literally `getPool` / `getAppPool`, so the carve-out does not apply." The mock-target scope is broader, see Rule above.
 
 **What TO flag (recurring implementer failure mode):**
@@ -144,3 +149,4 @@ A test whose focus IS authentication, or whose assertions depend on cryptographi
 - `agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md` — when mocking IS used under the carve-out, the mocked call must be asserted shape-and-args, not just call-count. Composes with this doc: clause (c) governs whether the mock is allowed at all; mock-guard governs the assertion strength once it is allowed.
 - `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md` — domain-specific application of the risk-class principle to SMTP-failure timing. The route-level oracle (uniform 200, equalized timing) is a behavioral risk class; the helper-level options-shape pin is a structural risk class.
 - `agents/docs/solutions/conventions/real-path-companion-dismissal-criteria-2026-05-11.md` — documents when reasoned dismissal satisfies the alternative half of clause (c) (the "follow-up task is filed" branch). When that filed task surfaces for implementation and the audit concludes the real-path companion would add only marginal mutation-class coverage, the criteria there determine whether dismissal is appropriate.
+- `agents/docs/solutions/conventions/carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02.md` — the precondition upstream of this doc's checklist. This doc defines the standard clause (c) is judged against; that one is about whether the sentence claiming to meet it is true, and supplies the resolve-and-grep step added to checklist item 3 above.

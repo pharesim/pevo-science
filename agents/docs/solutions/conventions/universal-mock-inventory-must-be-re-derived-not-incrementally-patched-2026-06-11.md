@@ -81,3 +81,4 @@ The rewrite names every factory and characterizes the wrapper honestly. When the
 - [[enumerated-exemption-lists-are-drift-vectors-2026-04-28]] — meta-principle ancestor: any complete-set claim must be mechanically derivable; this doc is the file-local comment-scope instance.
 - [[test-mock-carve-out-clause-c-2026-05-04]] — the carve-out framework whose clause (a) headers carry these inventories and require them to be truthful.
 - [[hold-block-must-not-contradict-convention-docs-2026-04-22]] — hold items prescribing inventory fixes must use the re-derive phrasing, not "add the missing element."
+- [[carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02]] — the clause-(c) sibling of this defect. Both are unverified prose inside the same carve-out header, and a header can be false in its mock inventory and in its companion citation independently; audit both in one pass.

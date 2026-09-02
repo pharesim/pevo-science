@@ -140,4 +140,9 @@ Durable-store references are the convention's allowed class, so a `solutions/` o
   forbidden in source in the first place.
 - [[docblock-anchor-stable-symbols-not-line-numbers-2026-05-15]] — the line-number-anchor rot
   class the line-cite arm screens for.
+- [[carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02]] — a second candidate for
+  mechanizing a prose convention, and a materially different gate shape. This gate's arms are pure
+  regex over added lines; resolving a companion citation to a file and grepping that file for a
+  risk-class token requires reading the repo, which a fast pre-commit hook should not do. That argues
+  for a vitest canary under `backend/tests/` rather than another arm here.
 - Root `CLAUDE.md` "Comment anchors" — the convention, now pointing at this gate.
