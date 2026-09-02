@@ -596,3 +596,130 @@ clock boundary, reproduced on a clean tree.
 No browser or Playwright run, as in the previous rounds: the change has no DOM
 surface of its own and its visible effects are two-tab, two-account races the
 unit suites stage deterministically.
+
+---
+
+## Architect re-review (2026-09-02) — HELD PENDING FIXES:
+
+Round-3 review of `69686a16` via `/ce-code-review` (nine reviewers plus an independent
+validator batch; no cross-model peer is installed on this host, so the adversarial lens
+ran in-process, as in rounds 1 and 2).
+
+**Both items held in the previous round are FIXED, with nothing further owed on them.**
+
+- Item 1: both suites' `teardownSubjectState()` and `teardownWithoutPromptDismissal()`
+  loop `SUBJECT_BOUND_STORAGE_KEYS`. Independently diffed against the real
+  `_scrubSubjectBoundState`: the only omission is the in-memory window mirror, which
+  neither surface under test can reach, and the file documents that exception. The direct
+  starter pin took the offered second option. All four clause-c companions named in the
+  rewritten headers exist and cover what they claim (checked by three reviewers
+  independently).
+- Item 2: both silent boundaries report through `guard.cancel()`, no report moved into
+  `windowProof`, and both remintable-401 clears are gated. **No reachable zero-message
+  path was found by any reviewer** — the item's objective holds. The invariant the gates
+  rest on was verified true at HEAD: the scrub clears the window cache before it bumps the
+  generation, in one synchronous body.
+- The six mutation probes the signal block claims were each re-executed independently in a
+  scratch export. All six fail exactly their own test.
+
+Two findings survived validation, and four smaller items are folded in with them. None is
+a blocker; the round's core objective is met.
+
+1. (P2, correctness + adversarial converged, reproduced) **The teardown claim is keyed to
+   the live generation, so a later teardown silences an earlier flight.** `cancel()`
+   compares `_reportedTeardownGeneration` against the live `_acquireGeneration` rather than
+   against the teardown that ended this flight, so a flight parked across two teardowns
+   unwinds silently once any party has claimed the newer generation, and the earlier
+   teardown gets no report of its own. Reproduced: two distinct teardowns, one message.
+   **Decision taken: keep the behaviour.** Collapsing a rapid double subject change into
+   one message is the better outcome and is consistent with this commit's own goal of not
+   talking over a self-narrating teardown. What must change is the docblock on
+   `_reportedTeardownGeneration`, which claims the compare "only ever suppresses a second
+   report of the SAME teardown" — that is false, and it is the comment-rot class the repo's
+   anchoring conventions exist to prevent. Fix: restate the invariant as what the mechanism
+   does (one report per teardown horizon: a claim suppresses any flight unwinding under the
+   current generation, whichever teardown abandoned it), and add the missing test staging
+   two distinct sequential teardowns with a flight parked across both, so the behaviour is
+   pinned as a decision rather than left as an accident. Do not change `cancel()`'s
+   comparison.
+
+2. (P2, security, validated) **A departed subject's flight still slides the successor's
+   session window.** `attemptOnce` calls `slideSessionWindow()` without consulting the
+   in-scope guard: the mirror image of the `clearCachedSessionProof()` call this commit
+   gated. The window store is a single unkeyed slot with no subject binding, so a response
+   landing after the scrub re-anchors whatever entry the successor has since minted and
+   extends their idle deadline on the departed subject's traffic. This behaviour was
+   recorded as an accepted residual in the previous round and is being re-opened
+   deliberately: the decline was made when neither half of the pair was gated, and gating
+   one half is what makes the remaining asymmetry a defect rather than a uniform gap. Fix:
+   `if (!guard.tornDown()) slideSessionWindow();` in `broadcastWithFreshAuth`'s
+   `attemptOnce` (the closure already captures the guard), and thread the guard into
+   `attemptOnce` in ipfs-upload.js from both the first attempt and `retryOnce`. One test
+   per surface.
+
+3. (P2, correctness, verified by deletion) **`consentOpFreshAuthRetryGate`'s teardown
+   report is unpinned.** Deleting its `guard.cancel()` leaves all five touched suites
+   green, yet it is the sole speaker for a teardown landing in the guarded call on both
+   consent-op surfaces; its removal would be a silent zero-message regression, the exact
+   class the previous round's second item existed to close. The check itself is correct and
+   predates this commit, which is why the round's own red-before-green discipline did not
+   reach it. Fix: one test per consent-op surface staging a teardown inside the retry
+   gate's guarded call, asserting exactly one report, each confirmed red with that
+   `guard.cancel()` removed.
+
+4. (P2, five reviewers noted it independently) **Nothing pins the scrub's
+   clear-before-bump ordering that both gated clears depend on.** The two gates are correct
+   only because the subject scrub clears the window cache before it bumps the generation,
+   in one synchronous body. `auth.test.js` asserts end state only, so a reorder — or a
+   yield point introduced between the two calls — silently inverts both gates from
+   "protect the successor's window" into "retain a dead window", with every existing test
+   still green. The invariant lives in the auth store while the code depending on it lives
+   in two other modules, so nothing points a future editor at the coupling. Fix: a
+   call-order assertion in `auth.test.js` pinning that the window clear is observed before
+   the in-flight abandonment within the scrub.
+
+5. (P3, maintainability) **`handleSessionInconsistency` claims the teardown report even
+   when the disconnect never ran.** The store read is optional-chained, but
+   `claimTeardownReport()` runs unconditionally after it. Harmless today because the
+   generation counter is monotonic, so a claim on an unbumped generation cannot suppress a
+   later real teardown — but the docblock reads as though the scrub is unconditional. Fix:
+   state the real invariant, or move the claim inside the branch that actually disconnects.
+
+6. (P3, project-standards) **The new settings-suite mocking header omits clause-a.**
+   `lib-settings-fresh-auth.test.js`'s header, added by this commit to satisfy the previous
+   round's fourth item, gives clause-b reasoning and accurate clause-c companions but never
+   states which real path is impractical and why, unlike every sibling header this same
+   commit touched. Fix: add that sentence, naming the concrete infrastructure cost.
+
+### Not held
+
+- **Routed to a new task** (`ui-session-inconsistency-report-idempotency`):
+  `handleSessionInconsistency` toasts unconditionally, so two concurrent flights that each
+  detect the same corrupted session produce two identical messages. Three reviewers raised
+  it and one reproduced it, but the validator established it as pre-existing and unaffected
+  by this diff — the toast was already unconditional at the base commit, and each call's
+  disconnect re-runs the scrub, so under the mechanism's own semantics two detectors are
+  two teardowns. Making it idempotent would also silence a second genuine teardown, which
+  is a behaviour decision this task should not absorb.
+- **Recorded, not owed here**: a stale start rejection surfacing as the re-auth failure
+  message instead of the teardown message; a torn-down broadcast with a non-remintable
+  reason falling through to a generic op error without reaching the guard; the claim being
+  written before the toast, so a throwing toast store would mark a teardown narrated with
+  no message delivered; the generation being bumped by same-subject teardowns too, which
+  both new gate comments read past.
+
+### Correction to the signal block above
+
+Its closing line says no `/ce-compound` entry was written. One was: the guard-report
+dedup entry in `agents/docs/solutions/conventions/`, committed immediately after the task
+moved to review. The claim is stale, not wrong-headed; no action needed beyond not
+repeating it next round.
+
+Verification expected at re-review: every new test observed red with its own target check
+or branch removed (including the two that pin checks which predate this round); the full
+frontend unit suite green apart from the recorded pre-existing failures; no coordination
+anchors in frontend source or tests.
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
+re-review signal. Do not edit this hold block; the commit diff is the evidence and the
+architect updates the block at re-review.
