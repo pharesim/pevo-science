@@ -4,12 +4,17 @@
  *
  * Coverage:
  *   (a) The CHECK constraint exists on the live test DB with the expected
- *       one-directional predicate (`upgraded_at IS NULL OR custody = 'self'`).
+ *       one-directional predicate: an epoch requires the column to be
+ *       `'self'`, spelled `IS NOT DISTINCT FROM` so a NULL column does not
+ *       slip through (a CHECK that evaluates to NULL is satisfied).
  *   (b) The row shape `(custody = 'light', upgraded_at NOT NULL)` is refused
  *       at the DB layer with SQLSTATE 23514 (check_violation), both as an
  *       INSERT and as an UPDATE that stamps the epoch on a light row without
  *       flipping the column. This is the shape the pre-fix upgrade route used
- *       to produce and the one ARCHITECTURE.md § 6.1 does not enumerate.
+ *       to produce and the one ARCHITECTURE.md § 6.1 does not enumerate. The
+ *       NULL-column sibling `(custody NULL, upgraded_at NOT NULL)`, which the
+ *       `/link` finalize would produce if it dropped its column write, is
+ *       refused the same way.
  *   (c) Every enumerated shape is still accepted: A/B/C (`light`, no epoch),
  *       D (`self`, epoch), E/F (NULL column, no epoch).
  *   (d) The back-fill repairs pre-existing divergent rows. Run against a
@@ -104,8 +109,34 @@ describe.skipIf(!dbReachable)('migration 017 — accounts_custody_upgraded_align
     // pre-existing row of that shape for no safety gain).
     expect(def).toMatch(/CHECK/);
     expect(def).toMatch(/upgraded_at IS NULL/);
-    expect(def).toMatch(/custody\s*=\s*'self'/);
     expect(def).toMatch(/\bOR\b/);
+    // `IS NOT DISTINCT FROM` deparses as `NOT (custody IS DISTINCT FROM ...)`.
+    // The plain `custody = 'self'` spelling evaluates to NULL for a NULL
+    // column, and a NULL CHECK passes, so that spelling would admit an epoch
+    // on a row with no custody value; the null-safe form is load-bearing.
+    expect(def).toMatch(/custody IS DISTINCT FROM 'self'/);
+    expect(def).toMatch(/NOT \(custody IS DISTINCT FROM/);
+  });
+
+  it('refuses INSERT of (custody NULL, upgraded_at set) with SQLSTATE 23514', async () => {
+    // The second epoch writer, the signup-verify /link finalize, starts from
+    // a pre-finalize row whose column is NULL. A regression that dropped its
+    // `custody = 'self'` write would produce exactly this shape, and a CHECK
+    // spelled with plain equality would let it through.
+    const pool = getAppPool()!;
+    let caught: unknown;
+    try {
+      await pool.query(
+        `INSERT INTO accounts (email, username, custody, upgraded_at)
+         VALUES ($1, $2, NULL, NOW())`,
+        [`${EMAIL_PREFIX}insnull@example.com`, `${USER_PREFIX}insnull`],
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeDefined();
+    expect((caught as Error & { code?: string }).code).toBe('23514');
+    expect((caught as Error).message).toMatch(new RegExp(CONSTRAINT));
   });
 
   it('refuses INSERT of (custody = light, upgraded_at set) with SQLSTATE 23514', async () => {
@@ -272,10 +303,18 @@ describe.skipIf(!dbReachable)('migration 017 — accounts_custody_upgraded_align
         );
         expect(def.rows.length).toBe(1);
         expect(def.rows[0].def).toMatch(/upgraded_at IS NULL/);
+        expect(def.rows[0].def).toMatch(/NOT \(custody IS DISTINCT FROM/);
 
-        // Second apply is a no-op: the DO block sees the constraint and the
-        // UPDATE matches nothing. `deploy.sh migrate` re-runs every file.
+        // Re-apply converges: the UPDATE matches nothing and the constraint
+        // is dropped and re-added under the same name. `deploy.sh migrate`
+        // re-runs every file on every run.
         await expect(client.query(MIGRATION_SQL)).resolves.toBeDefined();
+        const again = await client.query<{ n: number }>(
+          `SELECT COUNT(*)::int AS n FROM pg_constraint
+           WHERE conname = $1 AND conrelid = 'public.accounts'::regclass`,
+          [CONSTRAINT],
+        );
+        expect(again.rows[0].n).toBe(1);
       } finally {
         // ROLLBACK reverts the DROP CONSTRAINT, the seeds, the back-fill, and
         // the schema_migrations upsert, so every other suite sees the

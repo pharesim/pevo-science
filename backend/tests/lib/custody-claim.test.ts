@@ -4,11 +4,11 @@
  *
  * The helper is small on purpose; what these pins protect is its DIRECTION.
  * `'light'` is the claim that grants server-side signing, so the derivation
- * reads the `upgraded_at` epoch ahead of the `custody` column and mints
- * `'light'` only when neither says the account has left server custody. The
- * route suites show the mints agreeing on well-formed rows; only a unit test
- * can feed the derivation a row the schema CHECK would refuse and pin which
- * way it falls.
+ * mints it only from a row with no `upgraded_at` epoch AND an explicit
+ * `'light'` column, and everything else falls toward `'self'`. The route
+ * suites show the mints agreeing on well-formed rows; only a unit test can
+ * feed the derivation a row the schema CHECK would refuse and pin which way
+ * it falls.
  *
  * No mocks, no database: pure function.
  */
@@ -39,22 +39,33 @@ describe('custodyClaimFor', () => {
     expect(custodyClaimFor({ custody: null, upgraded_at: new Date() })).toBe('self');
   });
 
-  it('honours a self column with no epoch (fails toward the claim that grants nothing)', () => {
+  it('honours a self column with no epoch', () => {
     expect(custodyClaimFor({ custody: 'self', upgraded_at: null })).toBe('self');
   });
 
-  it('normalises anything that is not self and has no epoch to light', () => {
-    // The column is TEXT; the claim type is the closed pair. A NULL column
-    // (pre-finalize E/F rows, which no mint reads) and any unexpected string
-    // both land on the light side rather than leaking through as the claim.
-    expect(custodyClaimFor({ custody: null, upgraded_at: null })).toBe('light');
-    expect(custodyClaimFor({ custody: 'unexpected', upgraded_at: null })).toBe('light');
+  it('mints self for a row with no custody value: the Keychain account that added an email', () => {
+    // A pure self-custody Keychain user who registers an email through
+    // settings gets a row with a username and no custody value; the server
+    // holds no keys for it, so it must read as self. This is the row the
+    // settings reader reports on, and the one shape where the old inline
+    // derivations disagreed with each other (the settings reader said self,
+    // the mints said light).
+    expect(custodyClaimFor({ custody: null, upgraded_at: null })).toBe('self');
+  });
+
+  it('normalises an unexpected column value to self, the claim that grants nothing', () => {
+    // The column is TEXT; the claim type is the closed pair. Anything that is
+    // not the explicit light marker must not be promoted into the claim that
+    // lets the server sign.
+    expect(custodyClaimFor({ custody: 'unexpected', upgraded_at: null })).toBe('self');
+    expect(custodyClaimFor({ custody: '', upgraded_at: null })).toBe('self');
   });
 
   it('treats an absent epoch column as not upgraded', () => {
     // A mocked row that omits `upgraded_at` reads as undefined at runtime;
-    // that must mean "no epoch", never "self". The cast is the only way to
-    // hand the helper the shape a mock would.
+    // that must mean "no epoch", never "self", so the explicit light column
+    // still wins. The cast is the only way to hand the helper the shape a
+    // mock would.
     expect(custodyClaimFor({ custody: 'light' } as unknown as Parameters<typeof custodyClaimFor>[0])).toBe('light');
   });
 });

@@ -183,6 +183,12 @@ describe('Settings email (with DB)', () => {
     expect(res.body.data.verified).toBe(true);
     expect(res.body.data.pendingChange).toBe(false);
     expect(res.body.data.email).toMatch(/^s\*\*\*\d@\*\*\*\.com$/);
+    // The row seeded above is the Keychain add-email shape (username set, no
+    // custody value, no epoch): a pure self-custody account that registered
+    // an email. The server holds no keys for it, so the reader must report
+    // self, the same value the no-row branch returns for the account before
+    // it added the email. The contract promises "self" for Keychain accounts.
+    expect(res.body.data.custody).toBe('self');
 
     await pool.query('DELETE FROM accounts WHERE username = $1', [TEST_USER]);
   });
