@@ -29,14 +29,20 @@
  *   (b) verifyHiveSignature is NOT mocked: cryptographic signature recovery and
  *       posting-key match run real for the concurrent-replay path, and the focus
  *       here IS the middleware's own replay/revocation behavior.
- *   (c) Real-path companions: the signature success path runs with real
- *       verification in verifyHiveSignature-authmethod.test.ts. The live
- *       SESSION_INVALIDATED 401 against real Postgres, and the reissue sites
- *       that set reissuedAt against real Postgres, are covered by
- *       verifyHiveSignature-reissuedat-roundtrip.test.ts (the memo-key
- *       recovery second-phase round trip),
- *       verifyHiveSignature-reissuedat-orcid-roundtrip.test.ts (the ORCID
- *       recovery branch), and custody-upgrade.test.ts (the upgrade reissue).
+ *   (c) One companion per risk class, never a compound sentence:
+ *
+ *       Real-path companion: `backend/tests/middleware/
+ *         verifyHiveSignature-authmethod.test.ts` [hiveAuthMethod]
+ *         the signature success path with real cryptographic verification.
+ *       Real-path companion: `backend/tests/middleware/
+ *         verifyHiveSignature-reissuedat-roundtrip.test.ts` [reissuedAt]
+ *         the memo-key recovery second-phase round trip: a real epoch read back
+ *         out of Postgres, and a same-second token spared only by the claim.
+ *       Real-path companion: `backend/tests/middleware/
+ *         verifyHiveSignature-reissuedat-orcid-roundtrip.test.ts` [reissuedAt]
+ *         the ORCID recovery branch of the same round trip.
+ *       Real-path companion: `backend/tests/routes/custody-upgrade.test.ts` [SESSION_INVALIDATED]
+ *         the upgrade reissue, and the live 401 a pre-rotation token then gets.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';

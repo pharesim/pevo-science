@@ -15,13 +15,24 @@
  *       permitted carve-out target).
  *   (b) verifyHiveSignature is NOT mocked: the focus here IS the middleware's
  *       own failure-mode branch, so the real middleware runs.
- *   (c) Real-path companions: happy-path JWT acceptance runs against real
- *       Postgres in the settings password-reset suites. The live
- *       SESSION_INVALIDATED 401 is covered by
- *       verifyHiveSignature-reissuedat-roundtrip.test.ts,
- *       verifyHiveSignature-reissuedat-orcid-roundtrip.test.ts, and
- *       custody-upgrade.test.ts, which each stamp a real epoch and then
- *       present a pre-rotation bearer token to the real middleware.
+ *   (c) The lookup has two live outcomes this file cannot reach once the pool
+ *       is stubbed: it resolves and the request is admitted, or it resolves to
+ *       a revoking epoch and the request is refused. One companion each, so a
+ *       half-true compound cannot pass by the half that holds:
+ *
+ *       Real-path companion: `backend/tests/middleware/
+ *         verifyHiveSignature-authmethod.test.ts` [hiveAuthMethod]
+ *         admits a valid Bearer JWT (200, username stamped, method 'jwt') with
+ *         `getAppPool` unmocked, so the middleware takes the production
+ *         lookup branch rather than a stub.
+ *       Real-path companion: `backend/tests/middleware/
+ *         verifyHiveSignature-reissuedat-roundtrip.test.ts` [SESSION_INVALIDATED]
+ *       Real-path companion: `backend/tests/middleware/
+ *         verifyHiveSignature-reissuedat-orcid-roundtrip.test.ts` [SESSION_INVALIDATED]
+ *       Real-path companion: `backend/tests/routes/custody-upgrade.test.ts` [SESSION_INVALIDATED]
+ *         each stamps a real `sessions_invalidated_at` against real Postgres
+ *         and then presents a pre-rotation bearer token to the real middleware,
+ *         so the live 401 runs end to end.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';

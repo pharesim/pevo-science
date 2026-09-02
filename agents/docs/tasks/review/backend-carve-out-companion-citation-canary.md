@@ -83,3 +83,73 @@ The follow-up-task branch of clause (c) cannot be checked this way. Task files
 archive and the archive trims, so a task-slug citation is a dead pointer by
 construction and must not appear in test source at all. Those citations should
 name the uncovered risk class in behavioural terms and nothing else.
+
+## Backend completion note (2026-09-02)
+
+**Structured form settled** (scope 1). One companion per label occurrence, inside
+the clause-(c) block:
+
+```
+ *   (c) Real-path companion: `backend/tests/routes/some-route.test.ts` [SOME_TOKEN]
+```
+
+Path repo-relative and backtick-delimited; risk-class token bracket-delimited,
+whitespace-free, closing the line. The path may wrap mid-token across a ` * `
+continuation (all whitespace inside the backticks is stripped on parse); the
+token may not.
+
+**Canary** (scope 2):
+`backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`.
+Five arms per citation: repo-relative path shape, path resolves, not a
+self-citation, the token occurs in the companion's CODE (block comments and
+comment-only lines stripped, `vi.mock(` lines excluded), and the token is not
+generic enough to resolve in more than 40 files under `backend/tests`.
+
+**Scoping decided** (scope 3). Validation of structured citations is whole-tree.
+The "must be structured" requirement is an in-tree ratchet rather than a
+`.githooks/pre-commit` arm, for two reasons: `.githooks/` is architect zone and
+outside backend's boundary, and the in-tree list is the stronger mechanism
+anyway (whole-tree rather than one diff, and no env var turns it off). A comment
+block that carries the canonical `real-path <adjective>? companion` label AND
+names a `*.test.ts` file must use the structured form unless its file is in
+`DEFERRED_FREE_PROSE` or the block carries the `carve-out-citation-allow`
+marker. `DEFERRED_CEILING` makes the list one-way, and a listed file that stops
+carrying an unstructured citation fails the hygiene arm, so a citation cannot be
+deleted to escape the ratchet quietly.
+
+**Deferred, explicitly** (scope 5): 102 files still carry free-prose citations
+(104 at landing, minus the two converted below). Also not ratcheted, and stated
+in the canary header: the one-off label nouns the corpus uses for the same idea
+(sibling coverage, real-HAF variant, no-mock companion) and the citations whose
+referent is prose rather than a file, which no parser can resolve. Detection is
+deliberately precision-biased for the same reason the pre-commit anchor gate
+scopes itself to known slug prefix families.
+
+**Known violation resolved** (scope 4 / AC 6). The compound sentence in
+`verifyHiveSignature-session-invalidation-failclosed.test.ts` is split. The
+happy-path half was re-derived from the code rather than repaired in prose: it
+now cites `verifyHiveSignature-authmethod.test.ts` [hiveAuthMethod], which
+admits a real Bearer JWT through the real middleware with `getAppPool` unmocked.
+That sidesteps the referent ambiguity in "the settings password-reset suites"
+(a reviewer pass found it could plausibly mean either the settings set-password
+suites or the `/api/auth/reset` suites, so repairing the prose would have
+hardened a guess). The revocation half keeps its three companions, now
+structured with `SESSION_INVALIDATED`. The sibling
+`verifyHiveSignature-replay-revocation-hardening.test.ts` was converted too,
+since it is the other half of the documented exemplar pair.
+
+**Verification.** Five mutation probes, each observed red and then restored:
+cited path mutated to a nonexistent file; token mutated to one absent from the
+companion; companion swapped to a file where the token appears only in comments;
+a converted citation reverted to free prose; a brand-new file added carrying a
+prose citation. Control green after each. Probe one also exercised the wrapped
+path on real content, since the mutation landed on the continuation half and the
+failure message named the rejoined path (AC 4). `npm run typecheck` passes.
+`tests/eslint/` plus the two converted suites: 10 files, 113 tests, all passing.
+`npm run lint` not run: it lints `src/` only and no `src/` file changed.
+
+**[TODO Architect]** `agents/docs/solutions/conventions/carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02.md`
+ends its canary section with "Do not describe this canary as existing. It is a
+proposal." That is now false, and the entry's sketch of the citation shape
+should be reconciled with the form settled here. The file is architect-owned, so
+backend has not touched it.
