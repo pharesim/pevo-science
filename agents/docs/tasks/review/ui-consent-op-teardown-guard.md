@@ -83,8 +83,10 @@ was validated by an independent verification pass, not assumed.
 **Mechanism.** `subjectTeardownGuard()` (fresh-auth.js) is the new shared primitive:
 it snapshots the generation the subject scrub bumps and answers "was this stretch of
 work abandoned" plus "how does this flow report that". `mintViaPasswordFactor` takes a
-`guard` option (defaulting to one opened at its own entry, which is correct only for
-the session path, whose first await IS the prompt).
+`guard` option (defaulting to one opened at its own entry; the session path may rely
+on that default only because it re-checks its captured generation immediately before
+the call, with nothing awaited in between — its first await is the factor read, not
+the prompt). [Corrected at round-1 re-review; the docblock states the same rule.]
 
 **Three deviations from the Scope prescription, all deliberate:**
 
@@ -114,11 +116,13 @@ the session path, whose first await IS the prompt).
    replaces `details` with a `cause` string, so a status-gated check could never see the
    reason. One predicate is also what stops the two legs drifting.
 
-**One in-class parity fix inside a touched leg:** `retryOnce` in ipfs-upload.js branches
-on a null proof the way the first attempt always has. Reachable exactly in this task's
-scenario: a teardown between attempts leaves the store without light custody, so the
-re-acquisition answers ready-with-no-proof and the old code passed that null through as
-a proof.
+**One in-class parity alignment inside a touched leg:** `retryOnce` in ipfs-upload.js
+branches on a null proof the way the first attempt always has. Shape parity, not a fix:
+`freshAuthProof: null` takes the same api.js branch as no option at all. And it is not
+reachable in this task's teardown scenario — the reachable retry case is a same-subject
+cross-tab custody upgrade to self-custody between the attempts; a logged-out store never
+reaches an unproofed upload, because the api layer refuses UNAUTHORIZED before any
+upload runs. [Corrected at round-1 re-review; the tests are re-scoped to match.]
 
 **Not fixed, surfaced for triage** (per root CLAUDE.md "Code Review Findings"):
 
@@ -255,3 +259,79 @@ Verification expected at re-review: every new test confirmed red with its target
 check or branch removed; the full frontend unit suite green; no coordination anchors
 (task slugs, round or item numbers, line numbers, commit SHAs) in frontend source or
 tests. Move this file back to `review/` when done.
+
+---
+
+## UI re-review signal (2026-09-02, commits 01347275 + 646c23bb):
+
+All seven hold items landed. Fix commit `01347275` (12 files); follow-up
+`646c23bb` corrects a test-suite mock-factory comment the new ORCID-start cases
+invalidated (surfaced by the post-implementation simplify review; its other two
+reviewers returned nothing to flag).
+
+Per item, with verification evidence:
+
+1. Guards now span the retry legs. `uploadFile` opens one guard and threads it
+   through `windowProof` and both `retryOnce` legs; `broadcastWithFreshAuth`
+   opens one after its custody gate and checks it before the 401-retry's
+   re-acquisition. On teardown: `guard.cancel()` once, then the silent unwind
+   (upload: the new already-reported code; broadcast:
+   FRESH_AUTH_REDIRECT_PENDING). Tests: one per leg (two upload, one
+   broadcast), asserting no re-acquisition, no prompt, no mint, one toast.
+   Observed red before the fix commit (test-first), green after.
+2. The teardown cancel inside the upload's own acquisition now throws
+   UPLOAD_SUBJECT_CHANGED, whose `describeUploadError` arm is null, decided by
+   consulting the entry guard after a cancelled outcome (no vocabulary
+   widening). Consumer audit done anyway at the UPLOAD_* level: all four page
+   gates (editor, publish PDF, publish supplementary, edit supplementary) now
+   key on the null describe-key instead of per-code equality, so the new code
+   is silent everywhere and a future already-reported code needs no page
+   edits. Tests: teardown during the acquisition throws the silent code with
+   no second report; the null-key mapping is pinned. Red before, green after.
+3. Both consent-op starters take the staleness predicate and forward it to the
+   shared pre-navigation re-check (reusing the parameter the cross-user
+   teardown task added); each orchestrator routes all three starter paths
+   (passwordless, assumed-fallback, retry-gate hook) through one wrapper that
+   maps a stale start through `guard.cancel()`, and the retry gate maps the
+   cancelled sentinel to `{ cancelled: true }`, not `{ redirect: true }`.
+   Tests: per orchestrator, the real starter is driven with `startOrcid`
+   parked, teardown mid-round-trip, then resolved: no navigation, flow keys
+   cleared, `{ cancelled: true }`, one toast (settings covers the passwordless
+   and retry-gate paths; authorship the passwordless and assumed-fallback
+   paths; the starter's stale unwind and a non-stale control are pinned
+   directly in its own suite). All red before, green after.
+4. Two tests per orchestrator suite in the prescribed staging: the parked
+   second prompt resolving after a teardown spends no second mint; a
+   second-mint rejection after a teardown returns `{ cancelled: true }`, not
+   `{ freshAuthFailed: true }`. Probes per site on the committed baseline:
+   deleting the check after the second `modal.request()` fails exactly the two
+   second-prompt tests (both suites); deleting the check in the second
+   attempt's catch fails exactly the two second-mint tests. Both restored
+   clean.
+5. New test: a remintable 401 followed by INTERNAL_ERROR on the retry
+   propagates raw with `handleSessionInconsistency` never called. Probe:
+   replacing `retryOnce`'s catch body with an unconditional teardown fails
+   exactly this test.
+6. The null-proof retry test is re-scoped to the same-subject custody-upgrade
+   case, and a logged-out-store test pins the raw UNAUTHORIZED refusal (one
+   unproofed call; the api layer refuses before any upload, and that first
+   unproofed attempt sits outside the retry machinery, so no safety-net
+   retry). Probe: deleting the null-proof branch fails exactly the
+   custody-upgrade test. The implementation notes above are corrected
+   accordingly, as is the in-code comment.
+7. The guard-default docblock now states the real rule (no await before the
+   call, or an immediate pre-call generation re-check with nothing awaited in
+   between; otherwise pass a guard opened before the first await) and names
+   the session acquisition's pre-call check as load-bearing. The mechanism
+   note above is corrected to match.
+
+Suite: 1800/1800 frontend unit tests green at `646c23bb`; production build
+clean. The three vitest "unhandled rejection" errors in the edit-page suite
+reproduce identically on the pre-change baseline (verified by stashing the
+edit-page change and re-running). No coordination anchors in frontend source
+or tests (pre-commit anchor gate active and passing; quality reviewer
+double-checked the full diff). No browser or Playwright run, as in round 1:
+the change has no DOM surface of its own, and its visible effects are
+two-tab, two-account races the unit suites stage deterministically. No
+`/ce-compound` entry: the mechanisms extend patterns the existing learnings
+already record.
