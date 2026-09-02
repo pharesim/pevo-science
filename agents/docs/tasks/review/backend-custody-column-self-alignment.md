@@ -60,8 +60,9 @@ split that turns into a hole when a third consumer trusts the claim.
 
 ## Backend completion notes (2026-09-02)
 
-Landed in `68fc1e91` (implementation) and the round-2 commit that follows it
-(review fixes). Per scope item:
+Landed in `68fc1e91` (implementation), `c5846d1a` (review fixes, task to
+review/), and `9fd22a7f` (simplification pass on the migration). Per scope
+item:
 
 1. The upgrade UPDATE writes `custody = 'self'` in the same statement as the
    key-nulling, `upgraded_at`, and the revocation epoch. `updated_at` is
