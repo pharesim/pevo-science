@@ -1319,3 +1319,159 @@ signal should name the technique it used, not just the phrase it searched for.
 
 Nothing outstanding. AC4's convention entry stays correct as of the round-5
 correction; the possible refresh noted above is a new question, not a reopening.
+
+---
+
+## Backend re-review signal (2026-09-02, round 6, commits 417728d3 + cc8e2529 + b8b4277d)
+
+`417728d3` is the fix for the three held items. `cc8e2529` and `b8b4277d` are
+the fixes for what my own verification passes found wrong in each preceding
+commit. Symbols and test titles are named so the diff can be grepped rather
+than this prose trusted.
+
+**Item 1 — two race tests stubbed the wrong Redis command.** The hold's literal
+prescription was tried FIRST and does not work, so the fix deviates; the
+deviation is the substance of this item and is detailed below. Both tests now
+construct the split-tier race the lock actually exists for, and both die under
+the lock mutant. Titles: `consumeFreshAuthToken split-tier flap (one GETDEL
+resolves, the other rejects): Promise.all dual consume → exactly one winner`
+and `cross-helper split-tier flap: Promise.all on a consent-op token → exactly
+one winner`. `del` is re-described as the compensating delete at both sites,
+and the describe comment plus the suite header's concurrency bullet no longer
+claim that two callers on the same tier need the lock.
+
+**Item 2 — the burn docblock's one-event retirement contract.** The
+`burnConsentOpEntry` docblock now states both release events, naming the
+`alreadySpent` branch as the second, in the two-event form `spentConsentOps`
+already used.
+
+**Item 3 — the wrapped "delete-reply count".** Gone, along with the sentence
+that carried it; the surviving text says a non-nil `GETDEL` reply. Per the
+hold's closing instruction, the technique rather than the phrase: a script
+collapses comment prefixes (`*`, `//`, `/**`) and newlines into single spaces
+across `fresh-auth.ts`, `redis.ts`, the three fresh-auth suites and
+`argon2-error-mocks.ts`, then matches ~30 retired-model regexes over the
+collapsed text and reports hits with the ORIGINAL line span, so a phrase split
+across a wrap is found and a reader can still locate it. It is kept in the
+session scratchpad rather than committed, because a standing canary over this
+vocabulary is the architect's open question from the round-6 noted-not-held
+list, not something to pre-empt here. Current state: six hits, all verified
+correct in context (two are `memStore`, a genuine `Map`, matched by the
+ledger-Set heuristic; four are the sibling suites correctly describing a
+mutant or naming the disproved offline-queue assumption in order to reject it).
+
+### The deviation on item 1, and why the literal shape cannot work
+
+The hold prescribes stubbing `getdel` so the burn's Redis leg "genuinely
+reports nothing removed" for both callers. That shape was implemented and
+probed against the committed baseline with the lock gate neutralized: both
+tests still PASS. With both callers on the same tier, the in-memory
+`Map.delete` return value arbitrates atomically, so the second caller's burn
+returns false with no lock involved. This is what the `inFlightConsumes`
+docblock says in the file itself: each tier arbitrates its own callers, and
+the lock exists only for the SPLIT, where one caller's `GETDEL` resolves
+non-nil while the other's rejects and it wins on the in-memory tier.
+
+So the tests construct that split: `get` rejects for both callers, `getdel` is
+`mockImplementationOnce(realGetdel)` (bound before the spy is installed) and
+rejects on every later call, and `del` is stubbed as the compensating delete.
+Ordering is an event-loop invariant rather than a timing race: the rejecting
+caller's whole path settles as microtasks, while the real `GETDEL` reply is an
+I/O event, so the in-memory burn completes before the Redis-tier burn can.
+A call-count pin (`toHaveBeenCalledTimes(1)`) attributes the loser's refusal to
+the lock check rather than to its own burn.
+
+### Changed beyond the hold, and why
+
+The hold's own theme is statements of the retired model surviving where a
+rewrite did not reach, so each commit was swept before signalling. What that
+found, all of it in scope for that theme:
+
+1. **A third site of item 1's defect.** `a throwing Redis del does not break the
+   consume` stubbed `get` and `del` with `getdel` real, so the burn settled on
+   the Redis tier and the compensating branch its title and comment describe was
+   never reached; the `del` stub pinned nothing. It now rejects all three
+   commands and asserts the ledger size, which is what proves the branch ran and
+   its delete failed. Retitled to name the compensating delete.
+2. **Seven spy variables named after the wrong command** (`getdelSpy` on `get`
+   stubs, `delSpy` on a `getdel` spy). That misnaming is the reader confusion
+   behind this whole item, so it is fixed file-wide; every declaration now pairs
+   with exactly one restore of the same name, checked mechanically rather than
+   by eye.
+3. **Seven prose claims** corrected in `fresh-auth.ts` and the suite: the lock
+   docblock said a post-release loser's BURN finds both tiers empty, when in
+   that arm its non-destructive read refuses it and the burn never runs; the
+   consume-path comment credited the lock with serializing the read-then-burn
+   pair, when the read is outside it; the issuance docblock and backup-write
+   comment described a conditional fallback and credited exactly-once to the two
+   deletes alone; the `GETDEL` rationale gave a rejection hazard both command
+   shapes share as the reason to prefer `GETDEL`, when what `GET`-then-`DEL`
+   actually loses is the arbitration, and referred to the ledger by position
+   rather than by name; a "two statements ahead" count was both wrong and a
+   positional anchor; the describe paragraph counted two consent-op variants
+   where the block holds three; and the rejecting-burn test comment credited the
+   ledger with a refusal that, in the arm that test actually runs, comes from
+   both tiers being empty once the real compensating delete lands.
+
+### Self-verification, and what it caught
+
+`417728d3` was reviewed by six independent lenses (hold compliance, comment
+truth in `src`, comment truth across the test surface, test discrimination,
+ioredis truth against the installed 5.10.1 source, project conventions) with
+two adversarial validators per finding; `cc8e2529` is the result. `cc8e2529`
+was then put through three lenses of its own; `b8b4277d` is that result. The
+second pass's refuters all died on a rate limit, so its findings were
+adjudicated by trace instead of by vote, which is recorded here because it is
+weaker evidence than the first pass had.
+
+The second pass caught a REAL defect in `cc8e2529`, not just prose: the
+spy-rename pass replaced the wrong line in the reworked test's `finally`, so it
+restored `getSpy` twice and never restored `getdelSpy`, leaving `redis.getdel`
+mocked for the rest of the file. The next test to spy on `getdel` then captured
+`redis.getdel.bind(redis)` against that leaked mock, so its call-through arm
+recursed into a rejecting mock. Probed: with the leak restored, the split-tier
+test fails on its first attempt with 12 recorded calls instead of 1, and passes
+only because the suite retries. That is precisely the class this task keeps
+finding, arriving this time as a masked test failure rather than a stale
+sentence, and it is why every run reported below is `--retry=0` where the
+sibling-worker hazard permits it.
+
+### Evidence
+
+Mutation probes against a committed baseline, each killing exactly its intended
+tests: the `inFlightConsumes` gate neutralized (kills both rewritten split-tier
+tests and the pre-existing structural pin; the pre-fix versions of both survived
+it); the `getdel` stub removed from the reworked third-site test, so the burn
+settles on the Redis tier (kills its ledger-size assertion); and the duplicated
+restore reintroduced (kills the split-tier call-count pin, as above).
+
+Green with `--retry=0`: `npm run typecheck` (src + tests), `npm run lint` (the
+one pre-existing `author-supersession.ts` warning), and each of the three
+fresh-auth suites run alone. Green at the project's default retry setting: 512
+tests across the 26 files that import `lib/fresh-auth`, plus the stale-anchor
+canary.
+
+### One pre-existing failure found, confirmed not mine
+
+Running the three fresh-auth suites plus the anchor canary TOGETHER with
+`--retry=0` fails one offline-queue case deterministically (`refuses the replay
+even though the compensating delete never landed`, expecting a key a sibling
+worker's per-file `${appTag}:*` flush has removed). This is the hazard the
+round-4 signal already recorded as inherent at `maxWorkers: 2`, now with a
+deterministic reproduction. Confirmed pre-existing rather than chased: the
+identical failure reproduces at the pre-work baseline in a detached worktree,
+same assertion, before any commit of this round. Retries mask it, which is why
+it has not been seen before. Flagged rather than fixed, since a fix means
+either isolating that suite's keyspace or serializing it, and that is a
+test-infrastructure decision beyond this hold.
+
+### Not done, by choice
+
+The standing noted-not-held items are untouched: the `armDrainOnReady`
+listener-count pin, the recovery-composition end-to-end sequence, the
+offline-queue suite's discarded `afterEach` recovery boolean, no server-replied
+error rejection in any test, the stalled-server entry origin still planted
+rather than produced, and the `redis === null` drain leg undriven. None is
+load-bearing for the invariants this round pins.
+`backend/src/lib/ipfs-upload-token.ts` remains untouched per its own pending
+task, still the one place in the tree asserting the disproved rationale.
