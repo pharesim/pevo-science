@@ -372,3 +372,101 @@ Fix:
 **When the fix lands, `git mv` this file back to `tasks/review/`.** The move is
 the re-review signal. Do not edit this hold block; the commit diff is the
 evidence and the architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-09-02, commits 07c07fd1 + 39363364)
+
+The held item landed, plus one scope widening the user approved explicitly
+before implementation (see "Approved deviation" below). Verified before
+implementing rather than taken from the hold block: an investigation fan-out
+(four dimensions, two adversarial lenses each) re-derived the item's premises
+against current HEAD, since the consent-op work landed after the hold was
+written. Then a second fan-out reviewed the result: three simplify personas
+plus correctness/races, security/account-state and mutation-probing
+test-quality lenses, every finding refute-voted by three independent skeptics.
+Full frontend unit suite on the integrated tree: 81 files, 1810 tests green
+(the 3 vitest errors are the documented pre-existing `pages-edit`
+`_mountEditors` rejections). Playwright not run: no visual surface changed;
+same omission posture as the previous rounds.
+
+**Item 1, part 1 (the stale branch).** `if (isStale?.()) return FRESH_AUTH_CANCELLED;`
+with no storage writes. No ownership counter or nonce. The docblock sentence
+claiming the unwind "keeps that true even when it has not" is gone; the
+replacement states the ordering that makes the rule safe (`_scrubSubjectBoundState`
+bumps the generation the predicate reads and removes `SUBJECT_BOUND_STORAGE_KEYS`
+in one synchronous body, and the flight wrote its keys before the await the
+teardown landed in), and the consequence of taking a successor's marker
+(`completeOrcid` reads it to decide whether the callback carries the session
+JWT, so an authenticated-mode flow whose marker went missing posts its callback
+unauthenticated and dead-ends). Anchored on stable symbols only.
+
+**Item 1, part 2 (the staged teardown).** `teardownSubjectState()` now runs the
+scrub's `SUBJECT_BOUND_STORAGE_KEYS` loop, matching the two consent-op suites.
+`dismissOpenReauthPrompt()` is deliberately still omitted and the helper's
+comment says why (several cases hold the prompt open and resolve it by hand).
+The existing redirect-teardown case's comment claiming the keys are "cleared,
+mirroring the error unwinds" was false under the fix and is rewritten.
+
+**Item 1, part 3 (the successor test).** Both doors, one case each. Both were
+red at base for the right reason (the successor's mode key wiped by the
+departed flight). Each flight is parked on its own `startOrcid`, both read
+passwordless, and the successor starts from a different pathname so its return
+path is distinguishable from the departed flight's rather than coincidentally
+equal to it.
+
+**Approved deviation: the rejection door.** The `catch` around `await startOrcid`
+carried the identical unconditional removal and sits UPSTREAM of the staleness
+gate, so the prescribed fix closed only the resolve door. The start carries the
+api layer's 30s timeout and nothing aborts it on a subject change, which makes
+rejection at least as likely an ending for a flight that outlives its subject.
+Four reviewers converged on it independently and one reproduced it with item 1
+applied. Surfaced to the user before implementing; they chose to gate it here
+rather than route it out. Both doors and both throw sites now share one local
+`unwindFlowKeys` closure. Callers passing no predicate are unaffected.
+
+**Found and fixed by this task's own review pass, beyond the hold block:**
+
+1. The guard's non-stale direction had no coverage anywhere in the suite:
+   gating on whether a predicate was SUPPLIED rather than on what it ANSWERS
+   passed all 1809 tests. The three cases that pin the removals pass no
+   predicate, and no production call site has that shape. A live predicate
+   answering false now drives the rejection door.
+2. The docblock claimed a caller class that does not exist ("the page-level
+   start flows pass none"). Those flows never route through this helper; they
+   write their own mode marker and call `startOrcid` directly, and every real
+   caller threads a teardown guard. The previous round's prose leaned on the
+   claim; corrected.
+3. The session-window suite's `beforeEach` never abandoned in-flight
+   acquisitions, so a case failing while a flight was parked leaked the promise
+   and the next case joined it. One red case reported as several, including a
+   5s timeout in an innocent neighbour. It distorted this task's own probe
+   evidence until fixed.
+
+**Mutation probes (re-run after fix 3, so each kill set is now exactly one).**
+Stale branch removes the keys again -> the resolve-door case. Shared unwind
+loses its staleness guard -> the reject-door case, and only it. Staleness check
+deleted entirely -> nine cases across four suites. Staged teardown skips the key
+loop -> the pre-existing redirect-teardown case only. Unwind stops calling
+`clearReturnPath` -> the three no-predicate unwind cases in the settings-orcid
+suite. Predicate gated on presence instead of truth -> the new live-false case.
+
+**Recorded for the architect, not fixed here:**
+
+1. The hold block's justification ("anything present belongs to a later flow")
+   is confirmed for the session path but is not strictly implied on the two
+   consent-op assumed-password-ORCID-fallback legs: neither `resolveProof` nor
+   `consentOpFreshAuthRetryGate` re-checks `guard.tornDown()` after
+   `mintViaPasswordFactor` returns the fallback sentinel, so those two writes
+   can post-date a scrub across a microtask hop. The session path has that
+   re-check; the consent-op legs do not. The code is correct either way (the
+   residue is two inert keys the next starter overwrites), and the interleave
+   needs a same-tab scrub-bearing continuation queued ahead of the mint's
+   return while the singleton reauth modal refuses a second password flow, so
+   it is theoretical. Recorded because it is an asymmetry between siblings, on
+   a surface owned by `ui-consent-op-teardown-guard`, not because it is
+   actionable here.
+2. Two concurrent same-subject ORCID flows in one tab still clobber each
+   other's marker on the happy path, teardown or no teardown. Closing it needs
+   the per-flight ownership token the hold block forbids. Unchanged by this
+   work, and strictly narrower than before it.
