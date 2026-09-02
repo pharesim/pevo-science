@@ -285,3 +285,90 @@ also disclosed: a future subject-bound key scrubbed only via a new dedicated
 clear function and never registered in the shared list is never seeded, so
 parity passes vacuously — the docblocks at `_scrubSubjectBoundState` and
 `subject-bound-keys.js` both channel additions into the list.
+
+---
+
+## Architect re-review (2026-09-02) — HELD PENDING FIXES:
+
+Re-reviewed via `/ce-code-review` on `659131b8` (nine personas, an
+independent validator, no cross-model peer available). **Both items held on
+2026-09-01 are FIXED.** Item 1: the predicate is threaded from
+`acquireSessionProof` through `beginSessionAuthOrcidRedirect` into
+`beginOrcidFreshAuthRedirect`, both passwordless outcomes share the guarded
+closure, page-level callers are unchanged, and the mirror test kills the three
+relevant mutations (drop the check, drop the unwind, drop the predicate).
+Item 2: `subject-bound-keys.js` feeds `fresh-auth.js`, the auth store's scrub
+loop, and the fixture; the parity test runs the real `loginFromResponse`
+against the mirror on identically seeded storage and kills both disclosed
+probes; no key was dropped or added relative to the previous literal lists.
+ARCHITECTURE § 6.4.1 / § 6.5 invariant #9 hold (`cacheSessionProof` call sites
+identical to the parent commit). Project standards clean.
+
+One item, on the lines this round added. Two reviewers (adversarial,
+frontend-races) converged independently; the validator confirmed and picked
+the same fix shape.
+
+### Item 1 — the stale branch's key removals never clean the flight's own keys; they can only wipe a successor flow's
+
+`isStale()` is `generation !== _acquireGeneration`. The generation is bumped
+only inside `abandonInFlightAcquisitions`, whose only production caller is
+`_scrubSubjectBoundState`, and that scrub runs `clearReturnPath()` and the
+`SUBJECT_BOUND_STORAGE_KEYS` removal loop synchronously in the same call, with
+no await. Every path into `beginOrcidFreshAuthRedirect`'s two key writes is
+synchronous from the last generation check (both passwordless outcomes at this
+commit; the consent-op starters after `01347275` as well). So by the time the
+stale branch runs, the flight's own mode and return-path keys are already gone,
+and any key present was written by a later flow.
+
+Consequence: a successor ORCID flow started by the new subject in the same tab
+(logout, re-login, click a passwordless-gated action; or a cross-tab login
+then a click here) while the old `startOrcid` is still pending (up to the 30s
+api timeout; nothing aborts it on logout) loses its keys, navigates anyway,
+and on return `/orcid/callback` reads mode '' and completes unauthenticated.
+The backend refuses before consuming state, so nothing is minted, but the user
+lands on the generic "verification failed" dead-end after a full OAuth
+round-trip. That is a user-visible regression this round introduced. The
+2026-09-01 prescription "clear the keys, mirroring the error unwinds" was
+wrong at this boundary: the error unwinds clean keys when no scrub ran; here
+the scrub is what made the branch reachable. The mirror test hides it because
+`teardownSubjectState()` omits the key removal the real scrub performs, so its
+two null assertions pass only through the redundant removals.
+
+Fix:
+
+1. Make the stale branch `if (isStale?.()) return FRESH_AUTH_CANCELLED;` with
+   no storage writes. Say why in the comment, anchored on stable symbols: the
+   predicate reads true only after `_scrubSubjectBoundState` has removed the
+   keys, so anything present belongs to a later flow and is not this flight's
+   to remove. Do NOT add an ownership counter or nonce; it would guard a
+   window that does not exist. Rewrite the `beginOrcidFreshAuthRedirect`
+   docblock sentence claiming the unwind "keeps that true even when it has
+   not"; that claim is false.
+2. Make `teardownSubjectState()` in `lib-fresh-auth-session-window.test.js`
+   faithful to the real scrub: also remove the ORCID mode and return-path keys
+   (loop `SUBJECT_BOUND_STORAGE_KEYS` from `subject-bound-keys.js`), so the
+   redirect-teardown test's two null assertions hold for the right reason. The
+   consent-op suites' helpers carry the same shape; they belong to
+   `ui-consent-op-teardown-guard` and will be held there, not here.
+3. Add the successor test: `startOrcid` pending, teardown, a second
+   `ensureSessionWindow()` writes its own keys, resolve the stale start, assert
+   `window.location.href` unchanged AND the successor's keys intact, then
+   resolve the successor's start and assert it navigates. Red at base (the
+   current branch wipes the keys).
+
+### Not held, routed elsewhere
+
+- The page-level authenticated starters `settings.js#handleOrcidLink` and
+  `accreditation.js#handleOrcidVerify` navigate unconditionally after their own
+  `startOrcid` await (pre-existing, fail-closed): filed as
+  `ui-page-level-orcid-start-subject-pin`.
+- The unused `ORCID_RETURN_TO_KEY` export and the inline mode literals in the
+  page-level flows: dismissed; the module docblock discloses the scoping.
+- A `startOrcid` rejection after a teardown still throws out of the stale
+  flight (pre-existing, not prescribed on 2026-09-01), and the silent cancel on
+  the session path (routed to `ui-consent-op-teardown-guard` on 2026-09-01):
+  accepted as recorded.
+
+**When the fix lands, `git mv` this file back to `tasks/review/`.** The move is
+the re-review signal. Do not edit this hold block; the commit diff is the
+evidence and the architect updates the block at re-review.
