@@ -120,7 +120,7 @@ const DECLARATION_PATTERNS = [
   },
   // `async loadEmailStatus() {` / `_freshAuthCtx() {` inside a component object.
   {
-    re: /^\s*(?:async\s+)?(?!(?:if|for|while|switch|catch|function|return)\b)([A-Za-z_$][\w$]*)\s*\(([^()]*)\)\s*\{\s*$/,
+    re: /^\s*(?:async\s+)?(?!(?:if|for|while|switch|catch|function|return)\b)([A-Za-z_$][\w$]*)\s*\([^()]*\)\s*\{\s*$/,
     label: (m) => m[1],
   },
 ];
@@ -173,13 +173,26 @@ export function enclosingSymbol(lines, lineIndex) {
     // Only `}` counts, never `)` or `]`: a multi-line signature closes its
     // parameter list with `) {` at the declaration's own indentation, and
     // reading that as a block end would make every function with wrapped
-    // parameters resolve to module scope. Comment lines are skipped for the
-    // same class of reason: a `}` inside a docblock is prose.
+    // parameters resolve to module scope. A brace inside a comment is prose
+    // and does not count either: a commented-out block left at the
+    // declaration's own indentation would otherwise close it early. A `//`
+    // line or a `*` continuation begins with its own marker and can never
+    // begin with `}`, so the only comment shape that needs handling is the
+    // interior of a block comment opened at line start, tracked as a
+    // running open/closed state.
     let closedBefore = false;
+    let inBlockComment = false;
     for (let j = i + 1; j <= lineIndex; j++) {
       const line = lines[j];
       const trimmed = line.trim();
-      if (trimmed === '' || trimmed.startsWith('*') || trimmed.startsWith('//')) continue;
+      if (inBlockComment) {
+        if (trimmed.includes('*/')) inBlockComment = false;
+        continue;
+      }
+      if (trimmed.startsWith('/*') && trimmed.indexOf('*/', 2) === -1) {
+        inBlockComment = true;
+        continue;
+      }
       if (trimmed.startsWith('}') && indentOf(line) <= declIndent) {
         closedBefore = true;
         break;
@@ -192,35 +205,53 @@ export function enclosingSymbol(lines, lineIndex) {
 }
 
 /**
- * Every `.js` file under `root`, recursively, labelled relative to `root`
- * with forward slashes so an assertion reads `pages/settings.js` on every
- * platform.
+ * Every `.js` file under `root`, recursively, as `sources` labelled relative
+ * to `root` with forward slashes so an assertion reads `pages/settings.js`
+ * on every platform, plus `foreign`: the relative path of every OTHER file
+ * the walk passed over, sorted.
  *
  * Recursive on purpose: a scan over the top of one directory silently visits
  * none of its subdirectories, and everything it fails to visit passes
  * vacuously. Each consuming canary must also assert a floor on the number of
  * files returned, so a broken walk fails loudly instead.
+ *
+ * `foreign` exists because the walk reads `.js` only while the bundler
+ * resolves several other script extensions with no configuration. A module
+ * authored in one of them would join the bundle with no scan having seen it,
+ * and its `.js` importer need not write any name the scans look for. A
+ * consuming canary therefore pins what the walk may pass over (a stylesheet,
+ * by extension) and fails on anything else.
  */
 export function sourcesUnder(root) {
-  const out = [];
+  const sources = [];
+  const foreign = [];
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.isFile() && entry.name.endsWith('.js')) {
-        out.push({
-          rel: path.relative(root, full).split(path.sep).join('/'),
-          lines: readFileSync(full, 'utf8').split('\n'),
-        });
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const rel = path.relative(root, full).split(path.sep).join('/');
+      if (entry.name.endsWith('.js')) {
+        sources.push({ rel, lines: readFileSync(full, 'utf8').split('\n') });
+      } else {
+        foreign.push(rel);
       }
     }
   };
   walk(root);
-  return out;
+  return { sources, foreign: foreign.sort() };
 }
 
-/** A line that is entirely comment BY SHAPE: a `//` line, a block opener, or
- *  the `*` continuation inside a docblock.
+/** A line that is entirely comment BY SHAPE: a `//` line, the `*`
+ *  continuation inside a docblock, or a block comment opened at line start
+ *  that runs to the end of the line (or past it). A block comment that
+ *  closes on its own line with code after it is live code behind a comment
+ *  prefix, not prose, and is NOT skipped: a coverage pragma in front of a
+ *  factor read must not hide the read. Only further comment may follow the
+ *  close for the line to stay prose.
  *
  *  On a scan for a FORBIDDEN shape the match IS the violation, so every line
  *  skipped is a violation not reported: filter as little as possible, and
@@ -233,20 +264,30 @@ export function sourcesUnder(root) {
  *  silently satisfies a demand; such a scan needs a commented-out walk of its
  *  own, re-derived, not inherited. */
 export function isCommentLine(line) {
-  return /^\s*(?:\*|\/\/|\/\*)/.test(line);
+  const trimmed = line.trim();
+  if (trimmed.startsWith('*') || trimmed.startsWith('//')) return true;
+  if (!trimmed.startsWith('/*')) return false;
+  const close = trimmed.indexOf('*/', 2);
+  if (close === -1) return true;
+  const rest = trimmed.slice(close + 2).trim();
+  return rest === '' || isCommentLine(rest);
 }
 
 /**
  * Every `file#symbol` occurrence of `pattern` across `files`: the sorted
  * distinct `keys`, a `counts` object mapping each key to its number of
- * matching lines, and a human-readable site list for assertion messages.
+ * matches, and a human-readable site list for assertion messages (a line
+ * carrying more than one match is marked with its multiplicity).
  *
  * The counts exist because a key alone can absorb (see the file docblock):
  * an occurrence added inside a colliding declaration name or a wide template
  * literal resolves to a key its consumer already licensed, so key
  * set-equality stays green while the addition lives. A consumer that pins
  * each licensed key's exact width instead turns that addition into a
- * mismatch. The residual a width pin cannot see is a constant-width
+ * mismatch. Matches are counted per MATCH rather than per line for the same
+ * reason one level further down: a second read placed beside a licensed one
+ * on the same line adds no line, and a per-line tally would leave the pin
+ * satisfied. The residual a width pin cannot see is a constant-width
  * REPLACEMENT, an offending rewrite of the licensed lines themselves; that
  * edit touches licensed lines directly and is left to review of the diff.
  *
@@ -257,16 +298,25 @@ export function isCommentLine(line) {
  * needs that).
  */
 export function occurrencesOf(files, pattern, skipLine) {
+  // A global copy of the pattern makes `String#match` return every hit on
+  // the line at once; it resets its own cursor per call, so the copy holds
+  // no state across lines.
+  const everyMatch = new RegExp(
+    pattern.source,
+    pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`,
+  );
   const tally = new Map();
   const sites = [];
   for (const { rel, lines } of files) {
     lines.forEach((line, i) => {
-      if (!pattern.test(line)) return;
+      const matches = line.match(everyMatch)?.length ?? 0;
+      if (matches === 0) return;
       if (skipLine?.(line, i, lines)) return;
       const symbol = enclosingSymbol(lines, i);
       const key = `${rel}#${symbol}`;
-      tally.set(key, (tally.get(key) ?? 0) + 1);
-      sites.push(`${rel}:${i + 1} (${symbol}) ${line.trim()}`);
+      tally.set(key, (tally.get(key) ?? 0) + matches);
+      const multiplicity = matches > 1 ? ` x${matches}` : '';
+      sites.push(`${rel}:${i + 1} (${symbol})${multiplicity} ${line.trim()}`);
     });
   }
   const keys = [...tally.keys()].sort();

@@ -22,6 +22,15 @@
  * same name. Scan machinery lives beside it in `enclosing-symbol.js`, which
  * is not collected because only `.test.js` files are.
  *
+ * WALK. `sourcesUnder` reads `.js` files only, and the first assertion pins
+ * both a floor on how many it read and that nothing else script-shaped lives
+ * under `src`: Vite resolves `.mjs`, `.ts`, `.jsx` and friends with no
+ * configuration, so a module authored in one of them would join the bundle
+ * unscanned while its `.js` importer writes neither the fetch's name nor the
+ * discriminator. The non-script assets the walk may pass over (the
+ * stylesheet) are licensed by extension, so the first foreign script file
+ * is a red bar rather than a silent hole.
+ *
  * GRANULARITY. Occurrence assertions are over `file#symbol` pairs resolved by
  * `enclosingSymbol`, never over files: a file already on an allowed list
  * would absorb a second, different occurrence silently. The licensed sites
@@ -44,7 +53,9 @@
  * on the licensed member. Pinning the width turns both into a red bar: any
  * occurrence added under a licensed key moves its count, and a deliberate
  * change to a licensed site is a two-sided edit (the code and the pinned
- * width).
+ * width). Widths count MATCHES, not lines: the resolver's own status
+ * assignment names the property on both sides of its `=`, and a second read
+ * added beside a licensed one on the same line must move the count too.
  *
  * DETECTION. The occurrence scan matches the NAME `fetchEmailStatus`, not a
  * call shape: a call-shaped pattern is defeated by one line, since
@@ -84,6 +95,8 @@
  * markup gives a reviewer a second reason to reject it.
  */
 import { describe, it, expect } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -135,13 +148,21 @@ const joinedStatement = (lines, lineIndex) => {
  *  `export {` blocks, and only the import form deserves the skip: a
  *  re-export mints a new module path to the function that the import-site
  *  assertion (anchored on the api module's path) would never see. Walks
- *  upward a bounded distance; a specifier further than that from its opener
- *  counts as an occurrence, which is the loud direction. */
+ *  upward a bounded distance. On every line ABOVE the specifier the
+ *  terminator test (`;`, `}`, or `from`) runs before the opener test: a
+ *  complete single-line import sitting a few lines above an object-literal
+ *  member or a call argument is a closed statement and must not lend that
+ *  live reference its skip. A comment line inside the clause is neither. A
+ *  specifier further than the bound from its opener counts as an
+ *  occurrence, which is the loud direction. */
 const importStatementOpens = (lines, lineIndex) => {
   for (let j = lineIndex; j >= 0 && j >= lineIndex - 8; j--) {
+    if (j < lineIndex) {
+      if (isCommentLine(lines[j])) continue;
+      if (/[;}]|\bfrom\b/.test(lines[j])) return false;
+    }
     const m = lines[j].match(/\b(import|export)\s*\{/);
     if (m) return m[1] === 'import';
-    if (j < lineIndex && /[;}]|\bfrom\b/.test(lines[j])) return false;
   }
   return false;
 };
@@ -218,8 +239,10 @@ const ALLOWED_STATUS_FETCH_IMPORTERS = ['lib/fresh-auth.js', 'pages/settings.js'
 
 /** The only sites that may read or write the password-state discriminator,
  *  each pinned to its exact occurrence width: the resolver's in-flight
- *  resolution (the factor decision itself, every line of it), the settings
- *  page template (the section gate on the set-password affordance plus the
+ *  resolution (the factor decision itself, every read in it; its assignment
+ *  from the status response and its `assumed` expression each name the
+ *  property twice on one line, so the width exceeds the line count), the
+ *  settings page template (the section gate on the set-password affordance plus the
  *  markup comment explaining it; an HTML comment inside the literal is
  *  template content to this scan on purpose, since prose there can become an
  *  attribute expression without minting a new key), and the set-password
@@ -228,16 +251,29 @@ const ALLOWED_STATUS_FETCH_IMPORTERS = ['lib/fresh-auth.js', 'pages/settings.js'
  *  innocent edit, a reworded markup comment or reshaped resolver internals,
  *  is re-pinned here in the same change; that noise is the loud direction. */
 const ALLOWED_PASSWORD_STATE_SITES = {
-  'lib/fresh-auth.js#flight': 6,
+  'lib/fresh-auth.js#flight': 8,
   'pages/settings.js#handleSetPassword': 1,
   'pages/settings.js#template': 2,
 };
 
+/** The extensions the walk may pass over without scanning: assets that
+ *  cannot carry a module. Anything else under `src` that is not `.js` is a
+ *  script the bundler would resolve and no scan here would read. */
+const NON_SCRIPT_EXTENSIONS = new Set(['.css']);
+
+const UNSCANNED_EXTENSION =
+  'This canary scans .js files only, and Vite resolves other script extensions ' +
+  '(.mjs, .cjs, .ts, .jsx) with no configuration, so a module in one of them would ship ' +
+  'unscanned and could carry a second factor derivation unseen. Author frontend modules as ' +
+  '.js, or extend the walker (sourcesUnder) and its planted probe to the new extension in ' +
+  'the same change. A non-script asset the walk may pass over is licensed by its extension ' +
+  'in NON_SCRIPT_EXTENSIONS.';
+
 const here = path.dirname(fileURLToPath(import.meta.url));
-const sources = sourcesUnder(path.resolve(here, '..', '..', '..', 'src'));
+const { sources, foreign } = sourcesUnder(path.resolve(here, '..', '..', '..', 'src'));
 
 describe('single password-factor resolver: no second fetchEmailStatus-derived decision', () => {
-  it('walks a plausible number of source files (guards against a broken walker)', () => {
+  it('walks a plausible number of source files and finds nothing script-shaped it cannot read', () => {
     // Without this, a walker that returned nothing would make every assertion
     // below vacuously true and the canary would enforce nothing.
     expect(sources.length).toBeGreaterThan(40);
@@ -245,6 +281,35 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
     expect(rels).toContain('api.js');
     expect(rels).toContain('lib/fresh-auth.js');
     expect(rels).toContain('pages/settings.js');
+    // And a walker that read every `.js` file would still miss a module in
+    // any other extension the bundler resolves; the walk reports what it
+    // passed over, and only non-script assets may appear there.
+    const unscanned = foreign.filter((rel) => !NON_SCRIPT_EXTENSIONS.has(path.extname(rel)));
+    expect(unscanned, `${UNSCANNED_EXTENSION}\nunscanned files under src:\n${unscanned.join('\n')}`).toEqual([]);
+  });
+
+  it('the walker reads every .js file recursively and reports every other file it passed over', () => {
+    // The walk is the floor every scan above stands on. A walker that
+    // skipped a subdirectory, or silently dropped a module in an extension
+    // it does not read, would pass every scan vacuously for that file. The
+    // fixture is a throwaway tree so the probe owns exactly what it walks.
+    const root = mkdtempSync(path.join(os.tmpdir(), 'pevo-factor-canary-walk-'));
+    try {
+      mkdirSync(path.join(root, 'lib', 'deep'), { recursive: true });
+      writeFileSync(path.join(root, 'api.js'), 'export function fetchEmailStatus() {}\n');
+      writeFileSync(path.join(root, 'lib', 'deep', 'factor.js'), 'const factor = status.hasPassword;\n');
+      writeFileSync(path.join(root, 'lib', 'deep', 'sidecar.mjs'), 'export const usesPassword = status.hasPassword;\n');
+      writeFileSync(path.join(root, 'lib', 'typed.ts'), '');
+      writeFileSync(path.join(root, 'styles.css'), '');
+      const { sources, foreign } = sourcesUnder(root);
+      expect(sources.map((s) => s.rel).sort()).toEqual(['api.js', 'lib/deep/factor.js']);
+      expect(sources.find((s) => s.rel === 'lib/deep/factor.js').lines[0]).toBe(
+        'const factor = status.hasPassword;',
+      );
+      expect(foreign).toEqual(['lib/deep/sidecar.mjs', 'lib/typed.ts', 'styles.css']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('only the factor resolver and the settings rendering read name the status fetch, at pinned widths', () => {
@@ -363,6 +428,36 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
       '// prose: fetchEmailStatus as documented above',
     ];
     expect(countsAt(completeThenNoise, 0)).toBe(false);
+    // A live reference a few lines BELOW a complete single-line import: the
+    // walk up from the specifier-shaped line reaches that import's opener,
+    // but the import closed on its own line and must not lend the member
+    // its skip. A terminator on a line above the specifier is tested before
+    // the opener for exactly this shape, in both the object-literal-member
+    // and the call-argument form.
+    const memberBelowCompleteImport = [
+      "import { submitEmail } from '../api.js';",
+      'const statusSources = {',
+      '  fetchEmailStatus,',
+      '};',
+    ];
+    expect(countsAt(memberBelowCompleteImport, 2)).toBe(true);
+    const argumentBelowCompleteImport = [
+      "import { startOrcid } from '../api.js';",
+      '',
+      'registerStatusSources([',
+      '  fetchEmailStatus,',
+      ']);',
+    ];
+    expect(countsAt(argumentBelowCompleteImport, 3)).toBe(true);
+    // The genuine multi-line import is still spared, and a comment inside
+    // the clause is neither a terminator nor an opener.
+    const wrappedWithComment = [
+      'import {',
+      '  // status probes come from the api module',
+      '  fetchEmailStatus,',
+      "} from '../api.js';",
+    ];
+    expect(countsAt(wrappedWithComment, 2)).toBe(false);
   });
 
   it('the import matcher fires on every named import of the status fetch and on nothing else', () => {
@@ -508,6 +603,36 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
     expect(occurrencesOf([gatePlusInlineDecision], HAS_PASSWORD_RE, isCommentLine).counts).toEqual({
       'pages/settings.js#template': 2,
     });
+
+    // SAME LINE: a second read placed beside a licensed one on the same
+    // line adds no line, so a per-line tally would keep the pin satisfied.
+    // Occurrences are counted per match, so the width moves anyway. The
+    // resolver's own status assignment is this shape (it names the property
+    // on both sides of the `=`), which is why its pinned width exceeds its
+    // line count.
+    const gateWithSameLineSecondRead = {
+      rel: 'pages/settings.js',
+      lines: [
+        'const template = `',
+        '  <template x-if="emailStatus.hasPassword === false || emailStatus.hasPassword === undefined">',
+        '  </template>',
+        '`;',
+      ],
+    };
+    expect(occurrencesOf([gateWithSameLineSecondRead], HAS_PASSWORD_RE, isCommentLine).counts).toEqual({
+      'pages/settings.js#template': 2,
+    });
+    const twoFetchesOneLine = {
+      rel: 'lib/fresh-auth.js',
+      lines: [
+        '  const flight = (async () => {',
+        '    const [a, b] = await Promise.all([fetchEmailStatus(), fetchEmailStatus()]);',
+        '  })();',
+      ],
+    };
+    expect(occurrencesOf([twoFetchesOneLine], STATUS_FETCH_IDENT_RE, skipStatusFetchLine).counts).toEqual({
+      'lib/fresh-auth.js#flight': 2,
+    });
   });
 
   it('the password-state scan sees reads a factor decision cannot avoid writing', () => {
@@ -531,6 +656,14 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
         lines: ['function pick(data) {', "  return data['hasPassword'];", '}'],
       }),
     ).toEqual(['pages/anything.js#pick']);
+    // A leading inline block comment (a coverage pragma, say) does not make
+    // the rest of the line prose: the read behind it is live and counts.
+    expect(
+      passwordStateKeys({
+        rel: 'pages/anything.js',
+        lines: ['function pick(status) {', '  /* v8 ignore next */ return status.hasPassword === true;', '}'],
+      }),
+    ).toEqual(['pages/anything.js#pick']);
     // Prose is spared.
     expect(
       passwordStateKeys({
@@ -538,6 +671,24 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
         lines: ['// hasPassword drives the factor choice', 'function pick() {}'],
       }),
     ).toEqual([]);
+  });
+
+  it('the comment predicate skips whole-line prose only, never live code behind an inline block comment', () => {
+    // Whole-line prose in every shape it takes: skipped.
+    expect(isCommentLine('// hasPassword drives the factor choice')).toBe(true);
+    expect(isCommentLine('  * hasPassword is read once, in the resolver')).toBe(true);
+    expect(isCommentLine('  */')).toBe(true);
+    expect(isCommentLine('/* hasPassword lives in the resolver */')).toBe(true);
+    expect(isCommentLine('  /* an opener whose comment runs on')).toBe(true);
+    expect(isCommentLine('/* one */ /* two */')).toBe(true);
+    expect(isCommentLine('/* one */ // and trailing prose')).toBe(true);
+    // Live code behind a leading block comment is NOT prose. Skipping it
+    // would let a pragma hide a factor read from the scan.
+    expect(isCommentLine('/* v8 ignore next */ const usesPassword = status.hasPassword;')).toBe(false);
+    expect(isCommentLine('  /* istanbul ignore next */ hasPassword = data.hasPassword;')).toBe(false);
+    expect(isCommentLine('/* one */ /* two */ return status.hasPassword;')).toBe(false);
+    expect(isCommentLine('const usesPassword = status.hasPassword; // trailing prose')).toBe(false);
+    expect(isCommentLine('')).toBe(false);
   });
 
   it('the enclosing-symbol resolver names component methods, template literals, and locals, not files', () => {
@@ -587,5 +738,41 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
     expect(enclosingSymbol(['if (status) {', '  use(status.hasPassword);', '}'], 1)).toBe(
       MODULE_SCOPE,
     );
+
+    // A declaration whose parameter list wraps: the opening line shows
+    // neither `=>` nor `function`, so only its unbalanced open paren says it
+    // is a function, and a target inside resolves to it.
+    const wrappedParams = [
+      'const handler = async (',
+      '  status,',
+      '  options,',
+      ') => {',
+      '  return status.hasPassword;',
+      '};',
+    ];
+    expect(enclosingSymbol(wrappedParams, 4)).toBe('handler');
+    // The same `= (` opening a parenthesized EXPRESSION is not a
+    // declaration: its parens balance on the line, so the real enclosing
+    // function wins.
+    const parenExpression = [
+      'function outer(status) {',
+      '  const weight = (base + bonus) * scale;',
+      '  return status.hasPassword;',
+      '}',
+    ];
+    expect(enclosingSymbol(parenExpression, 2)).toBe('outer');
+    // A closing brace inside a block comment between the declaration and
+    // the target (a commented-out block left at the declaration's own
+    // indentation) is prose, not the end of the block.
+    const bracedComment = [
+      '    async pick() {',
+      '    /*',
+      '    if (legacy) {',
+      '    }',
+      '    */',
+      '      return this.emailStatus.hasPassword;',
+      '    },',
+    ];
+    expect(enclosingSymbol(bracedComment, 5)).toBe('pick');
   });
 });
