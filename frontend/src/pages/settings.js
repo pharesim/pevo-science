@@ -817,10 +817,15 @@ export function initSettingsPage() {
       // but the mnemonic + WIFs in this.* are reactive state that would
       // otherwise live until GC reclaims the orphaned component. Wiping
       // here closes the navigate-away XSS-surface window deterministically.
-      // Order: clear first so the writes land while _mounted is still
-      // true (purely cosmetic — the writes succeed either way because
-      // this is plain object mutation, but reads sequencing matches the
-      // happy-path order).
+      // Order: the wipe runs first and `_teardownTimers()` flips `_mounted`
+      // last. That is not cosmetic. Between those two statements the flag
+      // still reads true while the fields are already gone, and a continuation
+      // that resumes after this returns finds them zeroed either way. Which is
+      // why the in-flight legs snapshot what they need (the seed phrase, the
+      // pinned account) into frame-locals before their first await rather than
+      // reading these fields back: the flag is not a proxy for the wipe, and
+      // the stretch between the chain rotation and the backend cleanup has to
+      // finish on what it captured.
       this._clearSensitiveUpgradeState();
       // Remove the beforeunload listener so it does not remain bound to a
       // torn-down component (would leak handler closures and would flash a
