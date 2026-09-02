@@ -8,8 +8,11 @@
 // broadcast, the up-to-20s cleanup POST, and each of the three Keychain
 // popups. The rotation op's account, both key derivations, the proof
 // challenge, the bearer credential, and the Keychain import target are
-// therefore passed in explicitly, and the executor stops before the next
-// irreversible or credentialed step when the store has moved on.
+// therefore passed in explicitly, which is also why the flow does NOT stop
+// when the store moves mid-upgrade: with all of them fixed before the first
+// await, the backend acts on the upgrade's account whoever the tab now names,
+// so finishing is strictly better for that account than abandoning it between
+// the rotation and the cleanup. Only the session adoption is refused.
 //
 // Carve-out clause (a): mirrors the sibling settings suites' fixture shape.
 // Alpine stores, dhive, hive-keys and Keychain are stubbed because driving a
@@ -235,7 +238,7 @@ describe('custody-upgrade helper subject and credential threading', () => {
     expect(op.account).toBe('alice');
   });
 
-  it('stops before signing a proof when the store moves during the chain broadcast', async () => {
+  it('finishes the cleanup for the upgrade-start account when the store moves during the broadcast', async () => {
     const fetchMock = vi.fn(async () => okUpgradeResponse('alice-upgraded-jwt'));
     vi.stubGlobal('fetch', fetchMock);
     mockSendOperations.mockImplementation(async () => {
@@ -245,22 +248,43 @@ describe('custody-upgrade helper subject and credential threading', () => {
 
     const comp = createComponent();
     seedUpgradeEntry(comp);
-    const proofSpy = vi.spyOn(comp, '_signUpgradeProof');
-
     await comp.executeUpgrade();
 
-    // The broadcast landed, so the account's authorities have rotated. The
-    // flow stops there rather than signing with the new seed and spending
-    // the session on a step it can no longer attribute to this tab.
-    expect(mockSendOperations).toHaveBeenCalledTimes(1);
-    expect(proofSpy).not.toHaveBeenCalled();
-    expect(fetchMock).not.toHaveBeenCalled();
+    // The rotation has landed, so the account is mid-migration until the
+    // cleanup runs. Stopping here would prevent nothing: the proof and the
+    // bearer were both fixed before the first await, and the backend takes the
+    // account from that bearer, so the request acts on the upgrade's account
+    // whoever the tab now names.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer alice-jwt');
+    expect(String(mockSign.mock.calls[0][0])).toContain('|alice|');
+    // What the diverged tab does lose is the right to adopt the response.
     expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
+    expect(mockAuthStore.username).toBe('brenda');
+    expect(mockAuthStore.token).toBe('brenda-jwt');
     expect(comp.upgradePhase).toBe('error');
-    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChangedBeforeCleanup');
-    // The cleanup never ran, so the mnemonic is still the only key to the
-    // rotated account and the stop must not destroy it.
-    expect(comp.newSeedPhrase).not.toBe('');
+    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChangedAfterCleanup');
+    expect(mockRequestImportKey).not.toHaveBeenCalled();
+  });
+
+  it('finishes the cleanup for the upgrade-start account when the store moves while the proof is signed', async () => {
+    const fetchMock = vi.fn(async () => okUpgradeResponse('alice-upgraded-jwt'));
+    vi.stubGlobal('fetch', fetchMock);
+    mockSign.mockImplementation(() => {
+      driftToOtherUser();
+      return { toString: () => '20' + 'f'.repeat(128) };
+    });
+
+    const comp = createComponent();
+    seedUpgradeEntry(comp);
+    await comp.executeUpgrade();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer alice-jwt');
+    expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
+    expect(mockAuthStore.username).toBe('brenda');
+    expect(comp.upgradePhase).toBe('error');
+    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChangedAfterCleanup');
   });
 
   it('builds the proof challenge for the upgrade-start account when the store moves during its derivation', async () => {
@@ -277,26 +301,6 @@ describe('custody-upgrade helper subject and credential threading', () => {
     expect(mockSign).toHaveBeenCalledTimes(1);
     expect(String(mockSign.mock.calls[0][0])).toContain('|alice|');
     expect(vi.mocked(deriveHiveKeys).mock.calls[2][1]).toBe('alice');
-  });
-
-  it('stops before the cleanup POST when the store moves while the proof is signed', async () => {
-    const fetchMock = vi.fn(async () => okUpgradeResponse('alice-upgraded-jwt'));
-    vi.stubGlobal('fetch', fetchMock);
-    mockSign.mockImplementation(() => {
-      driftToOtherUser();
-      return { toString: () => '20' + 'f'.repeat(128) };
-    });
-
-    const comp = createComponent();
-    seedUpgradeEntry(comp);
-    await comp.executeUpgrade();
-
-    expect(mockSign).toHaveBeenCalledTimes(1);
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
-    expect(comp.upgradePhase).toBe('error');
-    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChangedBeforeCleanup');
-    expect(comp.newSeedPhrase).not.toBe('');
   });
 
   it('sends the cleanup POST with the credential held at upgrade start', async () => {
@@ -377,9 +381,8 @@ describe('custody-upgrade helper subject and credential threading', () => {
     const fetchMock = vi.fn(async () => okUpgradeResponse('alice-upgraded-jwt'));
     vi.stubGlobal('fetch', fetchMock);
     // Both at once: the tab is torn down AND the store really has moved to
-    // another account. The divergence is genuine, but there is no longer a
-    // component to show the terminal message on, and stopping would strand
-    // the account between the rotation and the cleanup.
+    // another account. Neither one gets to abandon the cleanup, and with no
+    // live component there is not even a terminal message to show.
     mockSendOperations.mockImplementation(async () => {
       driftToOtherUser();
       comp.destroy();

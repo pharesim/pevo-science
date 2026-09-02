@@ -1264,26 +1264,20 @@ export function initSettingsPage() {
         await this._performUpgradeKeyRotation(upgradeSubject, oldWords, newSeedPhrase);
         broadcastLanded = true;
 
-        // First checkpoint. The broadcast is a real chain round trip, and the
-        // dhive import behind it is the flow's first macrotask gap, so this is
-        // the earliest suspension a cross-tab login can land in. The rotation
-        // itself was bound to the pinned account and is already irreversible;
-        // what stops here is everything after it, because the next two steps
-        // spend credentials (a signature made with the new seed, then the
-        // session bearer) on behalf of a tab that no longer represents the
-        // account they are for.
-        //
-        // Gated on `_mounted` first, and not merely because the terminal route
-        // needs a live component to write to. An unmounted component has no
-        // business stopping here at all: the (b) to (c) pair in the ORDERING
-        // block above is the flow's one irreversible gap, and abandoning the
-        // cleanup POST inside it leaves the chain rotated while the backend
-        // still holds keys that no longer sign for the account. Navigating
-        // away has always let that POST finish; it must keep doing so.
-        if (this._mounted && this._upgradeSubjectDiverged(upgradeSubject)) {
-          this._endUpgradeAsSessionChanged({ cleanupLanded: false, upgradeSubject });
-          return;
-        }
+        // NO subject check between here and the POST, deliberately. A
+        // cross-tab login or a sign-out can land in any of the suspensions
+        // below, but every step from here on is bound to values captured
+        // before the first await: the proof is derived and signed for
+        // `upgradeSubject`, and the POST carries `upgradeToken`. The backend
+        // takes the account from that bearer and rebuilds the challenge from
+        // it, so neither the request body nor anything in this tab's store can
+        // redirect the cleanup to whoever the tab now names. A stop here would
+        // prevent no wrong-account action; it would only abandon step (c) of
+        // the pair the ORDERING block above calls the flow's one irreversible
+        // gap, leaving the account rotated on-chain while the backend still
+        // holds keys that no longer sign for it. What a diverged tab does lose
+        // is the right to adopt the response, and that is refused at the
+        // landing below.
 
         // Sign the upgrade proof with the NEW seed-derived active key. The
         // proof binds the JWT-authenticated session to the seed phrase that
@@ -1296,15 +1290,6 @@ export function initSettingsPage() {
         // executeUpgrade's frame. See `_performUpgradeKeyRotation` for the
         // closure-wipe invariant pattern this mirrors.
         const proof = await this._signUpgradeProof(upgradeSubject, newSeedPhrase);
-
-        // Second checkpoint, for the gap the signing itself opens. The proof
-        // is bound to the pinned account either way; what this refuses is
-        // sending it under a session the tab has stopped owning. Same
-        // `_mounted` gate, for the same reason as the first.
-        if (this._mounted && this._upgradeSubjectDiverged(upgradeSubject)) {
-          this._endUpgradeAsSessionChanged({ cleanupLanded: false, upgradeSubject });
-          return;
-        }
 
         // Notify backend to clean up stored keys. Failure here surfaces as
         // upgradeError. Post-broadcast 503 is retryable via
@@ -1442,15 +1427,10 @@ export function initSettingsPage() {
       const upgradeToken = Alpine.store('auth').token;
       try {
         const proof = await this._signUpgradeProof(upgradeSubject, newSeedPhrase);
-
-        // The retry's proof await is the same gap the executor checkpoints,
-        // and the POST after it is the same credentialed step, under the same
-        // `_mounted` gate: a navigate-away here must still let the cleanup
-        // land, since that is the whole point of the retry.
-        if (this._mounted && this._upgradeSubjectDiverged(upgradeSubject)) {
-          this._endUpgradeAsSessionChanged({ cleanupLanded: false, upgradeSubject });
-          return;
-        }
+        // No mid-flight subject check here either, for the reason spelled out
+        // in `executeUpgrade`: both the proof and the bearer below were fixed
+        // before this leg's first await, so letting the cleanup land is
+        // strictly better for the account than stopping.
         const result = await this._postUpgradeBackend(proof, upgradeToken);
         // Post-await unmount guard before loginFromResponse. The backend
         // cleanup can take up to 20s and post-503 retry is exactly when the
@@ -1490,18 +1470,24 @@ export function initSettingsPage() {
     // True when the singleton auth store no longer represents the account
     // this upgrade started for: the tab signed out, or a login from another
     // tab advanced the store (and the tab-subject marker) to a different
-    // user. Consulted after every suspension point that precedes a store
-    // mutation. The disconnected arm is not redundant with the username
+    // user. The disconnected arm is not redundant with the username
     // comparison — it states the rule the guard enforces, which is that a
     // store with no subject represents nobody, not that null happens to
     // compare unequal.
     //
+    // Three call sites, and all three are about a STORE MUTATION rather than
+    // about the upgrade's own steps: the two `loginFromResponse` landings, and
+    // the retry's start guard, which is the one place the flow genuinely
+    // cannot act for the pinned account, because the only credential available
+    // to it there belongs to whoever the store now names. Everything in
+    // between runs on values pinned before the first await and needs no
+    // permission from the live store.
+    //
     // The subject is an argument so the predicate compares against the same
     // value every other step of the calling leg uses, rather than re-reading a
     // field `destroy()` can null out from under an in-flight continuation. The
-    // `_mounted` gate at the post-await call sites is what keeps an unmount
-    // from reaching this at all; the argument is why a future call site that
-    // forgets that gate still asks the right question.
+    // landings already return on `!_mounted` before reaching this; the start
+    // guard runs synchronously, before anything can unmount.
     _upgradeSubjectDiverged(upgradeSubject) {
       const auth = Alpine.store('auth');
       return !auth.isConnected || auth.username !== upgradeSubject;
