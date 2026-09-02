@@ -26,7 +26,7 @@ tags:
 
 Alpine.js's documented contract is "`init()` runs once per component instance, `destroy()` runs once before re-instantiation." In practice, x-data scope changes and SPA route re-mounts can call `init()` again WITHOUT an intervening `destroy()`. When `init()` registers a `window` event listener and stores the handler reference on a `this.*` property for paired `removeEventListener` parity, the second `init()` orphans the first handler in `window`'s listener list. That orphan carries a closure over the now-dead component scope, fires for every navigation for the tab's lifetime, and attempts to access reactive state on a disposed component.
 
-Surfaced in `ui-custody-upgrade-seed-phrase-derive-flow` round-2 review (julik-frontend-races persona, JFR-1) and fixed in round-3 commit `7fdeae7`. The bug class is invisible until the orphan handler tries to access state — at which point the user sees a confusing "you have unsaved changes" beforeunload prompt on unrelated navigation, or a thrown error in console.
+Surfaced by the julik-frontend-races reviewer persona on the custody-upgrade seed-phrase derive flow, and fixed in `frontend/src/pages/settings.js`'s `init()`. The bug class is invisible until the orphan handler tries to access state, at which point the user sees a confusing "you have unsaved changes" beforeunload prompt on unrelated navigation, or a thrown error in console.
 
 ## Guidance
 
@@ -90,7 +90,7 @@ The framework doesn't warn. There is no Alpine-level diagnostic. The bug is invi
 
 ## Examples
 
-**Wrong (the original code in `frontend/src/pages/settings.js` before round-3):**
+**Wrong (the original shape in `frontend/src/pages/settings.js`, before the deregister block was added):**
 
 ```js
 init() {
@@ -111,7 +111,7 @@ destroy() {
 
 Second `init()` without intervening `destroy()` → first handler reference is overwritten, first registration leaks to `window` for the tab's lifetime.
 
-**Right (round-3 fix, `frontend/src/pages/settings.js:583-586`):**
+**Right (the shape now in `frontend/src/pages/settings.js`, in the `init()` block that assigns `this._beforeUnloadHandler`; production additionally wraps it in a `typeof window !== 'undefined'` guard):**
 
 ```js
 init() {
@@ -135,6 +135,7 @@ Second `init()` → branch fires, first handler is removed from `window`, then t
 
 ## Related
 
-- [synchronous-flag-before-await-idempotency-guard-2026-05-16.md](synchronous-flag-before-await-idempotency-guard-2026-05-16.md) — sibling Alpine lifecycle convention: idempotency guards must set their flag BEFORE the first `await`. Same class of "Alpine async/lifecycle code must be defensive about re-entry."
-- [alpine-factory-exposure-vs-template-mutation-coverage-2026-04-28.md](alpine-factory-exposure-vs-template-mutation-coverage-2026-04-28.md) — broader Alpine testing/lifecycle pattern from earlier PEvO work.
-- `agents/docs/tasks/review/ui-custody-upgrade-seed-phrase-derive-flow.md` — origin task (round-2 hold JFR-1 surfaced the bug; round-3 commit `7fdeae7` landed this fix; archived alongside this entry).
+- `agents/docs/solutions/conventions/synchronous-flag-before-await-idempotency-guard-2026-05-16.md` is the sibling Alpine lifecycle convention: idempotency guards must set their flag BEFORE the first `await`. Same class of "Alpine async/lifecycle code must be defensive about re-entry."
+- `agents/docs/solutions/conventions/alpine-factory-exposure-vs-template-mutation-coverage-2026-04-28.md` is the broader Alpine testing and lifecycle pattern from earlier PEvO work.
+- `agents/docs/solutions/conventions/alpine-destroy-wipes-pinned-field-before-flipping-mounted-2026-09-02.md` covers the other half of the same `destroy()` body in the same file. This entry is about detaching the listener; that one is about the reactive fields the teardown wipes, and about where in the statement order the wipe sits relative to the mount flag. Read together they say both halves of that teardown have constraints on them.
+- `frontend/src/lib/orcid-redirect-guard.js` is this pattern extracted into a reusable mixin. Its `_installOrcidRedirectGuard()` runs the deregister branch before binding `pageshow`, and `settings.js` applies the same shape a third time to its router navigation guard. Those are the live reference implementations.

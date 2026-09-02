@@ -94,7 +94,7 @@ The impact: a silent, hard-to-reproduce UI dead-end on a navigation pattern user
 
 Apply this rule to every PEvO Alpine handler that satisfies **all three** of these conditions:
 
-- Lives in a page managed by `frontend/src/components/page-mount.js` and is reachable via sibling-page navigation where the route NAME does not change but params do (`paper-detail.js`, `profile.js`, `review-detail.js`, and any future page in the same shape).
+- Lives in a page managed by `frontend/src/components/page-mount.js` and is reachable via sibling-page navigation where the route NAME does not change but params do (`paper-detail.js`, `profile.js`, `review.js`, and any future page in the same shape).
 - Captures identity at entry (`const author = this.author`, `const username = this.username`, etc.) for use across one or more `await` boundaries.
 - Sets UI-only state flags during the handler that template-bind to `:disabled="..."`, `:class="{ ... : flag }"`, or similar render-gating bindings.
 
@@ -108,7 +108,7 @@ The rule does NOT apply to:
 
 - Per-entity state that legitimately belongs to a paper/user/review (use a Map keyed by identity instead).
 - Backend or non-Alpine handlers (no persistent-component-across-params lifecycle).
-- Pages where `page-mount.js` already destroys and recreates the component on the navigation in question.
+- Pages where `page-mount.js` already destroys and recreates the component on the navigation in question. The wedge this entry describes cannot occur there, because the flag dies with the instance. That exclusion is about this failure mode only, not a claim that the destroy path is safe: a `destroy()` that clears reactive fields has its own trap, and it is a more severe one. See the destroy-wipes-pinned-field entry under Related.
 
 ## Examples
 
@@ -167,5 +167,6 @@ The captured-closure arguments (`fetchCitationExport(author, permlink, format)`,
 ## Related
 
 - `agents/docs/solutions/conventions/synchronous-flag-before-await-idempotency-guard-2026-05-16.md` — post-await `_mounted` teardown-guard pattern. That covers teardown-during-init re-entry within one mount cycle; this learning covers a different lifecycle dimension (persistent instance surviving param changes with no re-init at all). The two stack: teardown guards collapse re-init races; unconditional UI-flag reset collapses persistent-instance wedges.
-- `agents/docs/solutions/conventions/alpine-init-handler-deregister-before-reassign-2026-05-17.md` — three documented re-init paths (x-data scope change, SPA route re-mount, HMR). This learning adds the fourth lifecycle path: **no re-init at all** — same instance survives sibling-page navigation. The implicit framing "these are the lifecycle paths to defend against" is now known incomplete; this entry completes the enumeration.
+- `agents/docs/solutions/conventions/alpine-init-handler-deregister-before-reassign-2026-05-17.md` documents three re-init paths (x-data scope change, SPA route re-mount, HMR). This learning adds a fourth lifecycle path: no re-init at all, where the same instance survives sibling-page navigation. Treat the enumeration as open rather than closed.
+- `agents/docs/solutions/conventions/alpine-destroy-wipes-pinned-field-before-flipping-mounted-2026-09-02.md` is the mirror of this entry and adds a fifth path: the component that IS destroyed, where the hazard is not a flag surviving the navigation but a field the teardown wiped being read back by a continuation that outlived it. It takes this entry's rule 1 (capture identity at entry, pass the local) and extends the reason for it from "the value may have changed" to "the value may be gone." Its scope is the destroy path this entry's When to Apply excludes.
 - `agents/docs/solutions/conventions/object-shape-fix-every-reset-site-2026-04-21.md` — every-reset-site grep for component-state objects. Adjacent meta-pattern: that doc covers enumeration completeness of reset sites; this entry covers the **conditional-vs-unconditional shape** of those resets when identity capture is in play.

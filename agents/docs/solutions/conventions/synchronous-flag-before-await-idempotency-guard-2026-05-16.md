@@ -63,6 +63,8 @@ Three structural rules apply:
 
 3. **Reset the flag in `destroy()` (or the equivalent lifecycle teardown).** The component instance may be reused (Alpine's keyed `x-for` rebind, route re-entry). Without the destroy-time reset, the next instance starts with `_editorsInitialized === true` from the previous lifecycle and skips initialization.
 
+   Where in `destroy()` is free for this flag, because nothing reads `_editorsInitialized` across an await. Do not generalize that freedom. `destroy()` is a sequence, not an instant, and PEvO pages do not agree on its order: `edit.js`, `publish.js`, `search.js`, `paper-detail.js` and `review.js` flip the mount flag first via `_teardownTimers()`, while `settings.js` wipes its sensitive upgrade fields first and flips the flag last. Any field a continuation still reads after an await has a position constraint that this flag does not, and the mount flag is not a proxy for whether the rest of teardown has run. See the destroy-wipes-pinned-field entry under Cross-references.
+
 ## Why This Matters
 
 The intuition for guard-flag placement is often "set the flag after the work is done, so we only mark complete when complete." That intuition is right for completion-tracking flags but wrong for idempotency guards. The flag is not "did this finish" — it's "is this already in flight". A guard set after the await answers "did some prior call finish first" which is a strictly weaker invariant: two calls dispatched in the same microtask batch both see the flag false at the entry-check, both await, both proceed.
@@ -122,7 +124,7 @@ The unit-test pattern that pins this placement is to assert the flag's value aft
 ```js
 it('is a no-op when the component was destroyed before the import resolved', async () => {
   const comp = createComponent();
-  comp.destroy();                                  // _mounted = false, _editorsInitialized = false
+  comp.destroy();                                  // real teardown; by the time it returns both flags are false
   comp.$refs = { abstractEditor: null, bodyEditor: null };
   await comp._mountEditors();
   expect(mockCreateEditor).not.toHaveBeenCalled();
@@ -145,3 +147,4 @@ The assertion `_editorsInitialized === false` is reachable on unmutated code onl
 - `agents/docs/solutions/conventions/mutation-kill-claims-must-match-assertion-and-corpus-2026-05-15.md` — the test-side companion. The unit-test mutation-kill claim in the example above is honest by this convention's standard: the assertion structurally requires the guard's reset, and the corpus (synthetic teardown) reliably exercises the branch.
 - `frontend/src/pages/edit.js` (`_mountEditors`) and `frontend/src/pages/publish.js` (`_mountEditors`) — the canonical sites where this pattern is in production today.
 - `frontend/tests/unit/pages-edit.test.js` and `frontend/tests/unit/pages-publish.test.js` — the unit tests that pin the placement via the destroyed-during-mount fixture.
+- `agents/docs/solutions/conventions/alpine-destroy-wipes-pinned-field-before-flipping-mounted-2026-09-02.md` sharpens rule 3. It works the same before-the-first-await axis, but for a value rather than a flag: a field the teardown wipes must be snapshotted into a frame-local before the suspension, because the mount flag is set last in `destroy()` and so is not a proxy for the wipe having happened. It also states the test-side corollary this entry's fixture already satisfies by accident: simulating unmount by assigning the mount flag tests the guard, not the teardown.
