@@ -1134,9 +1134,13 @@ export async function freshAuthWindowReady(opts) {
 // subject it no longer represents. A stale flight resolves as
 // FRESH_AUTH_CANCELLED — the same silent clean-cancel every other teardown
 // boundary in the acquisition resolves to; when the predicate is a consent-op
-// guard's `tornDown`, the guarded caller owns the report. Callers without a
-// teardown-scoped flight (the page-level start flows) pass none and keep the
-// unconditional navigation.
+// guard's `tornDown`, the guarded caller owns the report. Every production
+// caller threads one: the session acquisition through
+// `beginSessionAuthOrcidRedirect`, and both consent-op orchestrators through
+// `beginOrcidUnderGuard`. The page-level ORCID flows (login, signup, recover,
+// the settings link, accreditation) do not come through here at all — they
+// write their own mode marker and call `startOrcid` directly — so the
+// parameter is optional for the unit seam, not for a second caller class.
 //
 // The predicate also gates every unwind past that await, because the flow keys
 // the start wrote are the subject scrub's to remove and not this unwind's: the
@@ -1163,8 +1167,9 @@ async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault, isSta
   sessionStorage.setItem(ORCID_MODE_KEY, mode);
 
   // The one unwind, so no exit past the start round-trip can drift from the
-  // ownership rule in the docblock. A stale flight leaves the keys alone; every
-  // other exit, and every caller that passes no predicate, removes them.
+  // ownership rule in the docblock. What decides is what the predicate ANSWERS,
+  // not that a caller supplied one: a stale flight leaves the keys alone, and
+  // every other exit removes them.
   const unwindFlowKeys = () => {
     if (isStale?.()) return;
     sessionStorage.removeItem(ORCID_MODE_KEY);

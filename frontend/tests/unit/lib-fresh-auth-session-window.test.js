@@ -139,6 +139,12 @@ beforeEach(() => {
   // `hasPassword: true` answer from one test's account into the next test's
   // differently-provisioned one.
   clearPasswordFactorMemo();
+  // The module-level acquisition slots outlive a case that fails while a flight
+  // is parked: the pending promise stays installed, and the next case's
+  // `ensureSessionWindow()` joins it instead of starting cold. One red case then
+  // reports as several, which is worst exactly when a mutation probe is being
+  // read for which case it killed. Start every case with no flights in hand.
+  abandonInFlightAcquisitions();
   mockReauthModal.request.mockResolvedValue('hunter2');
   mockMintSessionAuthProof.mockImplementation(async () => issuance('window-proof'));
   mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });

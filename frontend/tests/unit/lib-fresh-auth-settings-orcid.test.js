@@ -116,6 +116,21 @@ describe('beginSettingsActionOrcidFreshAuth', () => {
     expect(window.location.href).toBe('');
   });
 
+  it('a live predicate answering false still cleans up when startOrcid throws', async () => {
+    // The other direction of the same branch, and the one every production
+    // caller is in: all of them thread a teardown guard, so the unwind must
+    // turn on what the predicate ANSWERS, not on whether one was supplied.
+    // The case above passes none, which cannot tell those two apart.
+    mockStartOrcid.mockRejectedValue(new Error('network down'));
+
+    await expect(beginSettingsActionOrcidFreshAuth('set_password', () => false))
+      .rejects.toThrow('network down');
+
+    expect(sessionStorage.getItem(MODE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(RETURN_PATH_KEY)).toBeNull();
+    expect(window.location.href).toBe('');
+  });
+
   it('a start that comes back stale unwinds without navigating, as a clean cancel', async () => {
     // The staleness predicate is the consent-op orchestrators' teardown
     // guard, threaded through so a subject change landing during the start
