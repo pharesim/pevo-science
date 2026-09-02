@@ -566,6 +566,8 @@ The tab-local discarding of everything that belonged to the subject a browser ta
 
 A teardown clears the departed subject's cached fresh-auth proofs, remembered auth-factor state, and per-tab flow markers, dismisses any open re-auth prompt, and abandons re-auth work still in flight. In-flight work does not stop by itself: each stretch of re-auth work snapshots a teardown marker when it starts, re-checks it after every pause during which a teardown could have landed, and unwinds as a clean cancel rather than spending a credential or running a captured action for a subject the tab no longer represents. The marker protects only the code that carries it, so a helper reached during such a stretch that pauses before an irreversible effect must receive it too. Distinct from Session Invalidation, which is the platform revoking a subject's tokens; a teardown is the client refusing to let one subject's unfinished work run as another.
 
+A teardown is narrated to the user exactly once, however many stretches of work it abandons. One teardown can abandon several at once, each carrying its own marker, so the narration is claimed against the teardown itself rather than raised by each abandoned stretch; and a teardown path that already shows a message of its own claims that narration before speaking, so the work it abandoned stays quiet instead of talking over it with vaguer copy. The bound matters because the interface keeps only the most recent few messages: past that, duplicates evict the very narration they duplicate.
+
 ## Admin Authority
 
 ### Signer
