@@ -53,10 +53,11 @@ split that turns into a hole when a third consumer trusts the claim.
 - **[TODO Architect]** § 6.1's state D row shape (and any state-table text
   that describes the custody column post-upgrade) is architect-owned and will
   be updated at archive to match whichever shape lands.
-- Sequencing: the custody-upgrade task currently holds one comment-line fix in
-  the same file area (`verifyHiveSignature.ts` / `routes/custody.ts`). Not a
-  blocker, but land after that hold's one-liner to avoid churn on the same
-  hunks.
+- Sequencing: CLEARED (2026-09-02, architect). This asked to land after a
+  one-line comment fix the custody-upgrade session-invalidation work held in
+  the same file area (`verifyHiveSignature.ts` / `routes/custody.ts`). That
+  fix landed and its task is archived, so nothing remains to sequence behind
+  and the five held items below can be picked up directly.
 
 ## Backend completion notes (2026-09-02)
 
