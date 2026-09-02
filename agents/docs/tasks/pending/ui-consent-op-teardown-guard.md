@@ -335,3 +335,142 @@ the change has no DOM surface of its own, and its visible effects are
 two-tab, two-account races the unit suites stage deterministically. No
 `/ce-compound` entry: the mechanisms extend patterns the existing learnings
 already record.
+
+---
+
+## Architect re-review (2026-09-02) — HELD PENDING FIXES:
+
+Round-2 review of `01347275` + `646c23bb` via `/ce-code-review` (nine reviewers plus
+an independent validator batch; no cross-model peer is installed on this host, so the
+adversarial lens ran in-process).
+
+**All seven items held on 2026-09-01 are implemented as prescribed.** Every per-site
+deletion probe the signal block claims was re-executed independently and held at each
+site: the three retry-leg guards, the `windowProof` cancelled-plus-teardown branch, the
+starter's staleness re-check, both `mintViaPasswordFactor` second-attempt checks, and
+`retryOnce`'s non-mismatch rethrow each fail exactly the named tests and leave the rest
+of the five touched suites green. Items 1, 4, 5, 6 and 7 are **FIXED** with nothing
+further owed. Items 2 and 3 are fixed in the production code, but each leaves one defect
+on the surface it touched: those are the two items below.
+
+Suite re-run in a scratch export of the reviewed head: 1796 passed. The single
+collection failure (`sec-001-equivalence.test.js`, three unhandled rejections)
+reproduces identically at the parent commit, so it is not this task's. The anchor scan
+over every added line is clean, and the pre-commit gate's own self-test passes.
+
+Both items were confirmed by an independent validator after two or three reviewers
+converged on them separately.
+
+### Item 1 — the consent-op teardown helpers pin the stale branch's key removals, not the scrub
+
+`teardownSubjectState()` and `teardownWithoutPromptDismissal()` in both consent-op
+suites compose the real primitives the subject scrub delegates to, but omit the
+`SUBJECT_BOUND_STORAGE_KEYS` removal loop that `_scrubSubjectBoundState` also performs.
+So the five new ORCID-start tests (two per orchestrator suite plus the direct pin in the
+starter suite) assert the mode and return-path keys are null after a teardown, while
+nothing in the staged teardown removes them. They pass only through the redundant
+removals inside `beginOrcidFreshAuthRedirect`'s stale branch, which is exactly the write
+the cross-user teardown task's 2026-09-02 hold prescribes deleting (that branch can only
+ever wipe a successor flow's keys, never its own flight's). That hold names these
+helpers as belonging to this task.
+
+Verified, not inferred: reducing the stale branch to a bare `return FRESH_AUTH_CANCELLED`
+turns all five red on the mode-key assertion while production behaviour stays correct;
+adding the removal loop to both helpers turns the four orchestrator tests green again for
+the right reason.
+
+Fix:
+
+1. Loop `SUBJECT_BOUND_STORAGE_KEYS` (from the shared key module) in both helpers, in
+   both suites, so they mirror the scrub rather than a subset of it.
+2. Re-scope the direct starter pin in the starter suite. It has no scrub to lean on, so
+   its key assertions cannot survive the sibling fix: either seed the scrubbed state
+   before resolving the parked start, or keep only its no-navigation and clean-cancel
+   assertions. Do not leave it asserting a removal the starter will no longer perform.
+3. Correct the three claims that the sibling fix makes false, anchored on the scrub's own
+   removal rather than the starter's: the settings helper docblock's "touches neither"
+   sentence, the import comment stating the stale unwind must clear those keys, and the
+   `(flow keys cleared)` clauses in both `beginOrcidUnderGuard` docblocks and on
+   `beginSettingsActionOrcidFreshAuth`.
+4. While that settings suite is open, give it the explicit mocking-justification header
+   paragraph its authorship sibling already carries. The inline per-mock comments hold the
+   substance; the project's test carve-out asks for it in the file header.
+
+Sequencing: land this with, or after, the cross-user teardown task's round-2 fix. If that
+work lands in a different shape, adapt; the condition to satisfy is that these tests fail
+when the guard is absent and pass because the scrub removed the keys, never because the
+starter re-removed them.
+
+### Item 2 — a teardown inside the upload's own factor read now reports nothing at all
+
+`windowProof`'s new branch assumes the acquisition has already reported by the time it
+sees a cancelled outcome. At one boundary it has not: `acquireSessionProof`'s generation
+check immediately after the factor read returns the clean-cancel sentinel with no report,
+and the shared dispatch maps that outcome to a deliberately null toast row. A cross-tab
+subject change landing in that status fetch therefore produces zero messages: the new
+silent code is thrown, all four page gates honour its null describe-key, and the page
+drops to idle having said nothing. Before this commit the same race produced one
+(mis-worded) upload-cancelled toast, so this is a regression on a surface this task
+touched, and item 2's "exactly one toast" does not hold there. The status fetch is a real
+round-trip and negative or assumed factor answers are not memoized, so the window is
+reachable on any cold acquisition, not only the first of a session.
+
+Reproduced with the real modules by two reviewers and the validator: zero toasts at the
+factor-read boundary, exactly one at the prompt boundary as the control.
+
+Decision taken: keep "exactly one" as the contract; do not weaken it to "at most one".
+
+Fix:
+
+1. Make the two genuinely silent teardown boundaries inside the acquisition report once
+   through the guard's own cancel: the post-factor-read generation check, and the stale
+   return from the passwordless policy closure's ORCID start. Leave the prompt, the mint,
+   and the post-mint boundaries exactly as they are. `mintViaPasswordFactor`'s own guard
+   already reports there, and adding a second report at those sites is the double toast
+   the round-1 review rejected. This also makes the window-outcome table's
+   "already reported at the abort site" comment true, and closes the same silence on the
+   broadcast surface's own acquisition.
+2. Do NOT move the report into `windowProof`. The upload layer cannot know whether the
+   acquisition spoke; the existing assertion that the guard's cancel does not fire at that
+   site stays correct and must keep passing.
+3. Test with the real modules, not the wholesale mock: park the status fetch, run the
+   scrub, resolve, and assert exactly one toast together with the silent upload code. If
+   an existing test pins silence at either boundary, it is pinning this defect. Update it
+   and say so in the commit message.
+4. Same visit, both remintable-401 branches: the cached-window clear runs before the new
+   teardown check, so a departed subject's late 401 can evict a window the successor
+   subject has already minted in this tab, costing them an extra re-auth. Make the clear
+   conditional on the flight not being torn down, on the upload surface and the broadcast
+   surface alike, leaving the mismatch teardown path's behaviour unchanged. One test per
+   surface: seed a window after the generation bump inside the rejected first attempt and
+   assert it survives.
+
+### Not held
+
+- **Routed to a new task** (`ui-upload-batch-teardown-guard`): each `uploadFile` call
+  opens its own guard, so a teardown landing between two files of one submit, or between
+  the last upload and the broadcast, opens the next leg's guard after the fact. Four
+  reviewers converged on it independently. The round-1 hold marked a batch-level guard
+  optional and it sits outside this diff's lines, so it is filed rather than held.
+- **Dismissed**: the duplicated `beginOrcidUnderGuard` wrapper across the two
+  orchestrators. Three lines per surface, the outcome mapping that could actually drift is
+  already centralized in the shared retry gate, and hoisting it would add a hop to an
+  already deep delegation chain.
+- **Dismissed**: the page suites' hand-rolled upload-error mocks never producing the new
+  code. The null-key contract is pinned at the unit level and every gate keys on the null
+  key rather than on a code, so this is preemptive hardening of a failure mode nothing
+  reaches.
+- **Recorded, unchanged from round 1 and not owed here**: one wasted start request for the
+  departed subject before the pre-navigation re-check; a start rejection after a teardown
+  throwing out of the wrapper rather than cancelling; a late upload response sliding a
+  successor's idle deadline; a stale flight's teardown toast landing while the successor's
+  own prompt is open. `fresh-auth.js` line growth is noted, with no decomposition demanded
+  now.
+
+Verification expected at re-review: each new test observed red with its own target check
+or branch removed; the full frontend unit suite green apart from the pre-existing
+collection failure named above; no coordination anchors in frontend source or tests.
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
+re-review signal. Do not edit this hold block; the commit diff is the evidence and the
+architect updates the block at re-review.
