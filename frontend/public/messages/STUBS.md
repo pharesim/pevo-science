@@ -3832,3 +3832,37 @@ pt: auth.reauthCancelled
 sv: auth.reauthCancelled
 tr: auth.reauthCancelled
 zh: auth.reauthCancelled
+
+### Added 2026-09-02 (ui-custody-upgrade-subject-pin)
+
+ar: upgrade.sessionChanged
+cs: upgrade.sessionChanged
+da: upgrade.sessionChanged
+de: upgrade.sessionChanged
+es: upgrade.sessionChanged
+fa: upgrade.sessionChanged
+fr: upgrade.sessionChanged
+he: upgrade.sessionChanged
+it: upgrade.sessionChanged
+nl: upgrade.sessionChanged
+pl: upgrade.sessionChanged
+pt: upgrade.sessionChanged
+sv: upgrade.sessionChanged
+tr: upgrade.sessionChanged
+zh: upgrade.sessionChanged
+
+ar: upgrade.sessionChangedIncomplete
+cs: upgrade.sessionChangedIncomplete
+da: upgrade.sessionChangedIncomplete
+de: upgrade.sessionChangedIncomplete
+es: upgrade.sessionChangedIncomplete
+fa: upgrade.sessionChangedIncomplete
+fr: upgrade.sessionChangedIncomplete
+he: upgrade.sessionChangedIncomplete
+it: upgrade.sessionChangedIncomplete
+nl: upgrade.sessionChangedIncomplete
+pl: upgrade.sessionChangedIncomplete
+pt: upgrade.sessionChangedIncomplete
+sv: upgrade.sessionChangedIncomplete
+tr: upgrade.sessionChangedIncomplete
+zh: upgrade.sessionChangedIncomplete

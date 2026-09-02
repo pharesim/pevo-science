@@ -1,14 +1,17 @@
 // Custody-upgrade re-login subject pin.
 //
-// Test focus: the subject-adoption contract of the two custody-upgrade
+// Test focus: the subject contract of the two custody-upgrade
 // `loginFromResponse` call sites (the upgrade executor and its backend-only
-// retry). The backend cleanup POST can take up to 20 seconds; a cross-tab
-// login as a different user during that window advances the auth store's
-// username and the tab-subject marker before the upgrade response lands.
-// Each call site must capture the subject before its first await and pass
-// it explicitly, so adoption recognizes the stale landing as a subject
-// change (scrub fires, the upgraded token does not land under the other
-// user's username) while an ordinary same-subject upgrade stays scrub-free.
+// retry). The backend cleanup POST can take up to 20 seconds, and the error
+// screen the retry starts from has no timeout at all; a sign-out or a
+// cross-tab login as a different user inside either window moves the
+// singleton auth store off the account the upgrade started for. Each call
+// site pins that account before its first await, and a landing for a subject
+// the tab no longer represents is dropped rather than adopted: the store is
+// left to its current owner and the flow ends in a terminal sub-case. An
+// ordinary same-subject upgrade still lands and keeps its live fresh-auth
+// window, and the retry leg refuses to spend a proof attempt against a
+// store that has moved on.
 //
 // Carve-out clause (a): mirrors the sibling settings suites' fixture shape —
 // Alpine stores, dhive, and hive-keys are stubbed because driving a real
@@ -160,17 +163,53 @@ function okUpgradeResponse(token) {
 // The net tab-local effect of a different user logging in from another tab
 // while this tab's upgrade POST is in flight: the storage event's restore
 // adopts the new subject (store fields + tab marker), and the new subject
-// accrues their own subject-bound tab state afterwards.
+// accrues their own subject-bound tab state afterwards. The accreditation
+// pair is part of that restore, and it is what makes a carry-over visible:
+// the upgrade payload omits both fields, so a landing that adopted this
+// store would file the intervening user's badge under the upgrade subject.
 function simulateCrossTabLoginAs(username, token) {
   mockAuthStore.username = username;
   mockAuthStore.token = token;
   mockAuthStore.custody = 'light';
+  mockAuthStore.isAccredited = false;
+  mockAuthStore.accreditation = { orcid: '0000-0002' };
   sessionStorage.setItem(TAB_SUBJECT_KEY, username);
   sessionStorage.setItem(SESSION_PROOF_KEY, `${username}-proof`);
 }
 
+// The net tab-local effect of the header sign-out landing while this tab's
+// upgrade POST is in flight: `disconnect()` nulls every store field and the
+// tab marker is one of the subject-bound keys its scrub removes. Sign-out
+// does not navigate, so the settings component stays mounted and its
+// post-await continuation still runs.
+function simulateSignOut() {
+  mockAuthStore.isConnected = false;
+  mockAuthStore.username = null;
+  mockAuthStore.token = null;
+  mockAuthStore.expiresAt = null;
+  mockAuthStore.custody = null;
+  mockAuthStore.isAccredited = false;
+  mockAuthStore.accreditation = null;
+  sessionStorage.removeItem(TAB_SUBJECT_KEY);
+  sessionStorage.removeItem(SESSION_PROOF_KEY);
+}
+
+// Drives the executor to the retryable post-broadcast 503 state: the chain
+// rotation lands, the backend cleanup fails, and the seed survives so
+// `retryUpgradeBackend` can re-derive.
+async function driveToBackendUnavailable(comp) {
+  vi.stubGlobal('fetch', vi.fn(async () => ({
+    ok: false,
+    status: 503,
+    json: async () => ({ error: { code: 'SERVICE_UNAVAILABLE' } }),
+  })));
+  seedUpgradeEntry(comp);
+  await comp.executeUpgrade();
+}
+
 describe('custody-upgrade re-login subject pin', () => {
   let warnSpy;
+  let mockRequestImportKey;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -183,10 +222,11 @@ describe('custody-upgrade re-login subject pin', () => {
     mockAuthStore.token = 'alice-jwt';
     mockAuthStore.expiresAt = '2099-01-01T00:00:00.000Z';
     mockIsKeychainInstalled.mockReturnValue(true);
+    mockRequestImportKey = vi.fn((_a, _k, cb) => { queueMicrotask(() => cb({ success: true })); });
     vi.stubGlobal('window', {
       ...globalThis.window,
       hive_keychain: {
-        requestImportKey: (_a, _k, cb) => { queueMicrotask(() => cb({ success: true })); },
+        requestImportKey: (...args) => mockRequestImportKey(...args),
       },
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
@@ -201,7 +241,7 @@ describe('custody-upgrade re-login subject pin', () => {
     sessionStorage.clear();
   });
 
-  it('executeUpgrade: a response landing after a cross-tab login as a different user is a recognized subject change', async () => {
+  it('executeUpgrade: a landing for a subject this tab no longer represents is dropped, not adopted', async () => {
     const { gate, release } = deferredResponse();
     const fetchMock = vi.fn(() => gate);
     vi.stubGlobal('fetch', fetchMock);
@@ -218,20 +258,63 @@ describe('custody-upgrade re-login subject pin', () => {
     release(okUpgradeResponse('alice-upgraded-jwt'));
     await run;
 
-    expect(comp.upgradePhase).toBe('done');
-    // The upgraded token must not land under the intervening user's
-    // username: adoption pins to the subject the upgrade started for.
-    expect(mockAuthStore.username).toBe('alice');
-    expect(mockAuthStore.token).toBe('alice-upgraded-jwt');
-    expect(mockAuthStore.custody).toBe('self');
-    // Recognized subject change: the intervening subject's tab state is
-    // scrubbed and the marker names the upgrade's subject again.
-    expect(sessionStorage.getItem(SESSION_PROOF_KEY)).toBe(null);
-    expect(sessionStorage.getItem(TAB_SUBJECT_KEY)).toBe('alice');
-    // The call site pins the subject explicitly rather than relying on the
-    // helper's current-username fallback.
-    expect(mockAuthStore.loginFromResponse).toHaveBeenCalledTimes(1);
-    expect(mockAuthStore.loginFromResponse.mock.calls[0][0].username).toBe('alice');
+    // The singleton store belongs to the intervening user now, so the stale
+    // landing must not touch it at all: no adoption, no token rotation, no
+    // durable session write.
+    expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
+    expect(mockAuthStore._saveSession).not.toHaveBeenCalled();
+    expect(mockAuthStore.username).toBe('brenda');
+    expect(mockAuthStore.token).toBe('brenda-jwt');
+    expect(mockAuthStore.custody).toBe('light');
+    // The intervening user's own accreditation stays theirs. Adopting the
+    // payload would have preserved these under the upgrade subject's name,
+    // because the upgrade response omits both fields.
+    expect(mockAuthStore.isAccredited).toBe(false);
+    expect(mockAuthStore.accreditation).toEqual({ orcid: '0000-0002' });
+    // Their tab state is untouched too: no scrub fires for a landing that
+    // never reaches the store.
+    expect(sessionStorage.getItem(TAB_SUBJECT_KEY)).toBe('brenda');
+    expect(sessionStorage.getItem(SESSION_PROOF_KEY)).toBe('brenda-proof');
+    // Terminal sub-case: the upgrade did complete on-chain and at the
+    // backend, so there is nothing to retry and the seed has no further use.
+    expect(comp.upgradePhase).toBe('error');
+    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChanged');
+    expect(comp.canRetryUpgrade).toBe(false);
+    expect(comp.newSeedPhrase).toBe('');
+    // The Keychain tail belongs to a session this tab no longer holds.
+    expect(mockRequestImportKey).not.toHaveBeenCalled();
+  });
+
+  it('executeUpgrade: a sign-out during the backend window is not reversed by the landing', async () => {
+    const { gate, release } = deferredResponse();
+    const fetchMock = vi.fn(() => gate);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const comp = createComponent();
+    seedUpgradeEntry(comp);
+    sessionStorage.setItem(TAB_SUBJECT_KEY, 'alice');
+
+    const run = comp.executeUpgrade();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    simulateSignOut();
+
+    release(okUpgradeResponse('alice-upgraded-jwt'));
+    await run;
+
+    // A disconnected store is a diverged store. Adopting here would write a
+    // full durable session for a user who just signed out, and propagate it
+    // to every other tab.
+    expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
+    expect(mockAuthStore._saveSession).not.toHaveBeenCalled();
+    expect(mockAuthStore.isConnected).toBe(false);
+    expect(mockAuthStore.username).toBe(null);
+    expect(mockAuthStore.token).toBe(null);
+    expect(sessionStorage.getItem(TAB_SUBJECT_KEY)).toBe(null);
+    expect(comp.upgradePhase).toBe('error');
+    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChanged');
+    expect(comp.canRetryUpgrade).toBe(false);
+    expect(mockRequestImportKey).not.toHaveBeenCalled();
   });
 
   it('executeUpgrade: an ordinary upgrade with no intervening login stays same-subject with no spurious scrub', async () => {
@@ -257,20 +340,11 @@ describe('custody-upgrade re-login subject pin', () => {
     expect(mockAuthStore.loginFromResponse.mock.calls[0][0].username).toBe('alice');
   });
 
-  it('retryUpgradeBackend: the retry leg pins the subject across the same race window', async () => {
-    // Drive the executor to the retryable backend-unavailable error state
-    // first: broadcast lands, backend cleanup 503s, seed preserved.
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: false,
-      status: 503,
-      json: async () => ({ error: { code: 'SERVICE_UNAVAILABLE' } }),
-    })));
-
+  it('retryUpgradeBackend: a stale landing after a cross-tab login is dropped, not adopted', async () => {
     const comp = createComponent();
-    seedUpgradeEntry(comp);
     sessionStorage.setItem(TAB_SUBJECT_KEY, 'alice');
 
-    await comp.executeUpgrade();
+    await driveToBackendUnavailable(comp);
     expect(comp.upgradePhase).toBe('error');
     expect(comp.upgradeErrorKey).toBe('upgrade.backendUnavailable');
     expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
@@ -289,13 +363,72 @@ describe('custody-upgrade re-login subject pin', () => {
     release(okUpgradeResponse('alice-upgraded-jwt'));
     await run;
 
+    expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
+    expect(mockAuthStore._saveSession).not.toHaveBeenCalled();
+    expect(mockAuthStore.username).toBe('brenda');
+    expect(mockAuthStore.token).toBe('brenda-jwt');
+    expect(sessionStorage.getItem(TAB_SUBJECT_KEY)).toBe('brenda');
+    expect(sessionStorage.getItem(SESSION_PROOF_KEY)).toBe('brenda-proof');
+    expect(comp.upgradePhase).toBe('error');
+    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChanged');
+    expect(comp.canRetryUpgrade).toBe(false);
+    expect(mockRequestImportKey).not.toHaveBeenCalled();
+  });
+
+  it('retryUpgradeBackend: a subject flip while the error screen idles stops the retry before the POST', async () => {
+    const comp = createComponent();
+    sessionStorage.setItem(TAB_SUBJECT_KEY, 'alice');
+
+    await driveToBackendUnavailable(comp);
+    expect(comp.upgradePhase).toBe('error');
+    const preservedSeed = comp.newSeedPhrase;
+    expect(preservedSeed).not.toBe('');
+
+    // The error screen has no timeout: the user can leave the tab idle for
+    // minutes before pressing Try Again, and a cross-tab login in that window
+    // is already baked in by the time the click arrives.
+    simulateCrossTabLoginAs('brenda', 'brenda-jwt');
+
+    const retryFetchMock = vi.fn(() => { throw new Error('retry must not POST'); });
+    vi.stubGlobal('fetch', retryFetchMock);
+
+    await comp.retryUpgradeBackend();
+
+    // No proof signed for the wrong account, no POST, no proof attempt spent.
+    expect(retryFetchMock).not.toHaveBeenCalled();
+    expect(comp._proofRetryAttempts).toBe(0);
+    expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
+    // The backend cleanup never ran, so the seed is still the user's only
+    // key to the rotated account. Declining to act must not destroy it.
+    expect(comp.newSeedPhrase).toBe(preservedSeed);
+    expect(comp.upgradePhase).toBe('error');
+    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChangedIncomplete');
+    expect(comp.canRetryUpgrade).toBe(false);
+  });
+
+  it('retryUpgradeBackend: an ordinary retry pins the upgrade-start subject and keeps the live window', async () => {
+    const comp = createComponent();
+    sessionStorage.setItem(TAB_SUBJECT_KEY, 'alice');
+
+    await driveToBackendUnavailable(comp);
+    expect(comp.upgradePhase).toBe('error');
+
+    sessionStorage.setItem(SESSION_PROOF_KEY, 'alice-live-proof');
+    vi.stubGlobal('fetch', vi.fn(async () => okUpgradeResponse('alice-upgraded-jwt')));
+
+    await comp.retryUpgradeBackend();
+
     expect(comp.upgradePhase).toBe('done');
+    expect(mockAuthStore.loginFromResponse).toHaveBeenCalledTimes(1);
+    // The pinned subject is the one the upgrade started for, not whatever the
+    // store happened to hold when Try Again was clicked.
+    expect(mockAuthStore.loginFromResponse.mock.calls[0][0].username).toBe('alice');
     expect(mockAuthStore.username).toBe('alice');
     expect(mockAuthStore.token).toBe('alice-upgraded-jwt');
     expect(mockAuthStore.custody).toBe('self');
-    expect(sessionStorage.getItem(SESSION_PROOF_KEY)).toBe(null);
+    // Same-subject retry: the live fresh-auth window survives and the marker
+    // is unchanged.
+    expect(sessionStorage.getItem(SESSION_PROOF_KEY)).toBe('alice-live-proof');
     expect(sessionStorage.getItem(TAB_SUBJECT_KEY)).toBe('alice');
-    expect(mockAuthStore.loginFromResponse).toHaveBeenCalledTimes(1);
-    expect(mockAuthStore.loginFromResponse.mock.calls[0][0].username).toBe('alice');
   });
 });

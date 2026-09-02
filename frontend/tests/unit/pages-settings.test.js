@@ -2562,6 +2562,13 @@ describe('settingsPage', () => {
       // The 503 catch in executeUpgrade does NOT wipe; mirror that.
       comp.newSeedWords = comp.newSeedPhrase.split(' ');
       comp.upgradePassword = 'light-password';
+      // executeUpgrade pins the account the upgrade is for before its first
+      // await and the 503 catch preserves the pin along with the seed, so a
+      // faithful mirror of the state the retry starts from carries it. The
+      // retry's start guard declines outright when the pin does not match the
+      // live store, which is a different behaviour from every sub-case these
+      // tests exercise.
+      comp._upgradeSubject = mockAuthStore.username;
       return comp;
     }
 

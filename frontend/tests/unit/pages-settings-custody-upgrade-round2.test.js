@@ -336,9 +336,13 @@ describe('settingsPage round-2 hold-block findings', () => {
       const comp = createComponent();
       const newMnemonic = Array(12).fill('new').join(' ');
       comp.newSeedPhrase = newMnemonic;
-      // Set up the error state retryUpgradeBackend reads
+      // Set up the error state retryUpgradeBackend reads. The pinned upgrade
+      // subject is part of it: the retry's start guard declines when the pin
+      // does not match the live store, which would short-circuit before the
+      // concurrency gate under test.
       comp.upgradePhase = 'error';
       comp.upgradeErrorKey = 'upgrade.backendUnavailable';
+      comp._upgradeSubject = mockAuthStore.username;
 
       // Fire two in parallel without awaiting between them. The phase flip
       // to 'upgrading' is synchronous at the top of retryUpgradeBackend, so
@@ -382,6 +386,10 @@ describe('settingsPage round-2 hold-block findings', () => {
       comp.newSeedPhrase = Array(12).fill('new').join(' ');
       comp.upgradePhase = 'error';
       comp.upgradeErrorKey = 'upgrade.backendUnavailable';
+      // Pin the same subject the store holds, so the retry's start guard
+      // passes and the unmount guard under test is the one that stops the
+      // landing.
+      comp._upgradeSubject = mockAuthStore.username;
 
       await comp.retryUpgradeBackend();
 

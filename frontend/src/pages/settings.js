@@ -49,6 +49,17 @@ const UPGRADE_ERROR_KEYS = {
   partialApplyFailed: 'upgrade.partialApplyFailed',
   alreadyUpgraded: 'upgrade.alreadyUpgraded',
   rateLimited: 'upgrade.rateLimited',
+  // The two halves of "this tab stopped representing the account the upgrade
+  // started for". Both are terminal and both are reached only after the chain
+  // rotation landed; they differ in whether the backend cleanup also landed,
+  // which is the only thing left for the user to act on. `sessionChanged`
+  // means the upgrade is complete and only the local Keychain import is
+  // missing; `sessionChangedIncomplete` means the cleanup never ran, so the
+  // copy has to route the user to support rather than promise a finished
+  // upgrade. Splitting them is what keeps each message true: one string for
+  // both would have to lie in one of the two cases.
+  sessionChanged: 'upgrade.sessionChanged',
+  sessionChangedIncomplete: 'upgrade.sessionChangedIncomplete',
 };
 
 const RETRYABILITY = {
@@ -61,6 +72,8 @@ const RETRYABILITY = {
   [UPGRADE_ERROR_KEYS.partialApplyFailed]: 'terminal',
   [UPGRADE_ERROR_KEYS.alreadyUpgraded]: 'terminal',
   [UPGRADE_ERROR_KEYS.rateLimited]: 'terminal',
+  [UPGRADE_ERROR_KEYS.sessionChanged]: 'terminal',
+  [UPGRADE_ERROR_KEYS.sessionChangedIncomplete]: 'terminal',
 };
 
 // Clock-skew tolerance before warning advisory fires. Backend's freshness
@@ -599,6 +612,19 @@ export function initSettingsPage() {
     // the budget the catch wipes and routes to terminal `partialApplyFailed`.
     // Reset on `resetUpgrade` (a fresh wizard run is a new budget).
     _proofRetryAttempts: 0,
+
+    // The account this upgrade is for, captured before `executeUpgrade`'s
+    // first await. Every later step reads this instead of the live store:
+    // `this.username` is a getter over the singleton auth store, the backend
+    // cleanup window is up to 20 seconds, and the error screen the retry
+    // starts from has no timeout at all, so the store can name a different
+    // account by the time a continuation resumes. One field rather than a
+    // capture per call site, because `retryUpgradeBackend` runs on a click
+    // that can arrive long after the drift it would otherwise bake in.
+    // Cleared with the rest of the upgrade's state so its lifetime matches
+    // the seed's: while a retry is still possible both survive, and once the
+    // flow is spent both go.
+    _upgradeSubject: null,
 
     // beforeunload listener installed in init() and torn down in destroy()
     // + on terminal phases. Held as a bound reference so addEventListener
@@ -1173,13 +1199,9 @@ export function initSettingsPage() {
       // closure-wipe hygiene, not for surviving a wipe-before-import.
       const newSeedPhrase = this.newSeedPhrase;
 
-      // Pin the re-login subject to the account this upgrade started for,
-      // captured before the first await. The backend cleanup can take up to
-      // 20s, and a cross-tab login as a different user during that window
-      // advances `this.username` (and the tab-subject marker) before the
-      // response lands; the pinned value keeps the loginFromResponse call
-      // below comparing against the intended subject.
-      const upgradeSubject = this.username;
+      // Pin the account this upgrade is for, before the first await. See the
+      // `_upgradeSubject` field for why the pin outlives this frame.
+      this._upgradeSubject = this.username;
 
       // ORDERING:
       //   (a) validate
@@ -1241,24 +1263,41 @@ export function initSettingsPage() {
         // a user who has navigated away or explicitly disconnected.
         if (!this._mounted) return;
 
+        // A landing for a subject this tab no longer represents must not
+        // touch the singleton store at all. Two ways the tab gets there
+        // during the backend window, both of which adoption would wave
+        // through: a sign-out (`disconnect()` nulls the tab-subject marker,
+        // so adoption sees no change and skips the scrub, and the landing
+        // would write a full durable session for a user who just signed out
+        // and propagate it to every tab), and a cross-tab login as a
+        // different user (the payload omits `is_accredited` and
+        // `accreditation`, which are preserve-on-undefined, so the
+        // intervening user's badge would end up filed under the upgrade
+        // subject's username). Dropping the landing leaves the store to its
+        // current owner; the upgrade itself is finished, so the terminal
+        // copy only has to route the user back for the Keychain import.
+        if (this._upgradeSubjectDiverged()) {
+          this._endUpgradeAsSessionChanged({ cleanupLanded: true });
+          return;
+        }
+
         // Update session via the shared helper. The upgrade response
         // rotates the session token; the helper enforces the atomic
         // {token, expires_at} pair invariant — both rotate together or
         // neither does. The decoupled-guard form this site used to ship
         // allowed `{token: new, expires_at: undefined}` to persist a
         // server-invalidated old token with new expiry. `username` is the
-        // pinned upgrade subject, not the store's current value, so a
-        // cross-tab login as a different user during the backend window is
-        // recognized by subject adoption as a subject change instead of
-        // filing the upgraded token under the other user's username.
-        // is_accredited and accreditation are omitted from the data
-        // payload so the helper preserves them (the upgrade flips
-        // custody and rotates session credentials, not accreditation
-        // status).
+        // pinned upgrade subject rather than the store's current value:
+        // belt-and-braces now that the guard above has already established
+        // they are the same, and it keeps the helper's current-username
+        // fallback out of this call site entirely. is_accredited and
+        // accreditation are omitted from the data payload so the helper
+        // preserves them (the upgrade flips custody and rotates session
+        // credentials, not accreditation status).
         Alpine.store('auth').loginFromResponse({
           token: result.data?.token,
           expires_at: result.data?.expires_at,
-          username: upgradeSubject,
+          username: this._upgradeSubject,
           custody: 'self',
         });
         // Re-check post-loginFromResponse: the helper resolves synchronously
@@ -1305,10 +1344,6 @@ export function initSettingsPage() {
       this.upgradeError = null;
       this.upgradeErrorKey = null;
       const newSeedPhrase = this.newSeedPhrase;
-      // Pin the re-login subject before the first await, mirroring
-      // executeUpgrade: the retry's backend POST has the same multi-second
-      // window in which a cross-tab login can advance `this.username`.
-      const upgradeSubject = this.username;
       if (!newSeedPhrase) {
         // Defensive: `newSeedPhrase` is cleared on every terminal
         // sub-case, so reaching here means the state machine drifted.
@@ -1321,6 +1356,24 @@ export function initSettingsPage() {
         this.upgradePhase = 'error';
         return;
       }
+      // Start guard, after the drift check above so a state that lost the
+      // seed keeps its own diagnosis (the seed and the pin are written and
+      // wiped in lockstep, so a missing seed means a missing pin). The
+      // subject is read from the pin `executeUpgrade` set, never re-captured
+      // here: this handler runs on a Try Again click that can arrive minutes
+      // after the failure, with the error screen idling and no timeout on
+      // it, so a re-capture would silently adopt whatever account a
+      // cross-tab login left in the store. If the store has moved off the
+      // upgrade's subject, decline before spending anything: no proof signed
+      // with the new seed for the wrong account, no POST, and no attempt
+      // against the proof-retry budget whose exhaustion is what wipes the
+      // seed. Nothing here wipes it either: the backend cleanup has not run,
+      // so the mnemonic is still the only key to an account whose on-chain
+      // authorities already rotated.
+      if (this._upgradeSubjectDiverged()) {
+        this._endUpgradeAsSessionChanged({ cleanupLanded: false });
+        return;
+      }
       try {
         const proof = await this._signUpgradeProof(newSeedPhrase);
         const result = await this._postUpgradeBackend(proof);
@@ -1330,10 +1383,17 @@ export function initSettingsPage() {
         // singleton auth store mutates for a user whose component has
         // unmounted.
         if (!this._mounted) return;
+        // Same drop-the-landing rule as `executeUpgrade`: the POST window is
+        // the same multi-second one, and the store may have moved to another
+        // subject (or to nobody) inside it.
+        if (this._upgradeSubjectDiverged()) {
+          this._endUpgradeAsSessionChanged({ cleanupLanded: true });
+          return;
+        }
         Alpine.store('auth').loginFromResponse({
           token: result.data?.token,
           expires_at: result.data?.expires_at,
-          username: upgradeSubject,
+          username: this._upgradeSubject,
           custody: 'self',
         });
         // Re-check post-loginFromResponse for the same reason as executeUpgrade:
@@ -1350,6 +1410,52 @@ export function initSettingsPage() {
         return;
       }
       await this._completeUpgradeAfterBackend(newSeedPhrase);
+    },
+
+    // True when the singleton auth store no longer represents the account
+    // this upgrade started for: the tab signed out, or a login from another
+    // tab advanced the store (and the tab-subject marker) to a different
+    // user. Consulted after every suspension point that precedes a store
+    // mutation. The disconnected arm is not redundant with the username
+    // comparison — it states the rule the guard enforces, which is that a
+    // store with no subject represents nobody, not that null happens to
+    // compare unequal.
+    _upgradeSubjectDiverged() {
+      const auth = Alpine.store('auth');
+      return !auth.isConnected || auth.username !== this._upgradeSubject;
+    },
+
+    // Terminal route for a diverged subject. Every caller reaches it after
+    // the chain rotation landed, so a fresh wizard run is structurally
+    // unavailable (it would re-broadcast account_update signed with the old
+    // seed's keys and the chain would reject it) and both sub-cases are
+    // terminal. `cleanupLanded` picks between them, and with it the fate of
+    // the mnemonic: once the backend cleanup succeeded the phrase is written
+    // down and spent, so it is wiped like every other completed path, but
+    // before that it is the user's only key to an account whose authorities
+    // already rotated, and a guard that declines to act must not destroy it
+    // (the backendTimeout sub-case preserves it for the same reason).
+    //
+    // The error copy is rendered by the settings page, which is itself bound
+    // to the live store: after a sign-out, or a login as a self-custody
+    // user, the surrounding sections stop rendering and the message is not
+    // seen. That is the accepted cost of leaving the store alone; the
+    // recovery it describes (sign in as the pinned subject with the new
+    // phrase) does not depend on having read it here.
+    _endUpgradeAsSessionChanged({ cleanupLanded }) {
+      // Mirrors _handlePostBroadcastError's entry guard: callers reach this
+      // after at least one await, and writing phase/error state on an
+      // unmounted component is silent mutation with no observer.
+      if (!this._mounted) return;
+      // Read before the wipe below, which clears the pin along with the seed.
+      const subject = this._upgradeSubject;
+      const key = cleanupLanded
+        ? UPGRADE_ERROR_KEYS.sessionChanged
+        : UPGRADE_ERROR_KEYS.sessionChangedIncomplete;
+      if (cleanupLanded) this._clearSensitiveUpgradeState();
+      this.upgradeError = this.$t(key, { username: subject });
+      this.upgradeErrorKey = key;
+      this.upgradePhase = 'error';
     },
 
     // Shared post-broadcast error router. Consumes UPGRADE_ERROR_KEYS so the
@@ -1776,6 +1882,11 @@ export function initSettingsPage() {
       // surface as leaking the seed phrase, just for a different
       // credential. Wipe alongside the mnemonics.
       this.upgradePassword = '';
+      // Not sensitive on its own — a username, not a secret. It is cleared
+      // here so its lifetime is exactly the seed's: the pin exists to serve
+      // the steps that still have work to do, and every site that decides
+      // there is no work left calls this helper.
+      this._upgradeSubject = null;
     },
 
     resetUpgrade() {

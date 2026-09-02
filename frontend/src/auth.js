@@ -123,9 +123,10 @@ export function initAuth() {
     //   Atomic-pair enforcement closes both halves.
     //
     // - `username`, `is_accredited`, `accreditation` are preserve-on-
-    //   undefined: the upgrade response carries only `{token, expires_at,
-    //   custody}` and must not clobber the user's accreditation or
-    //   username. Callers whose response shape omits `is_accredited` or
+    //   undefined: the custody-upgrade sites pass `{token, expires_at,
+    //   username, custody}` and omit only the accreditation pair, which a
+    //   flow that changes neither must not clobber. Callers whose response
+    //   shape omits `is_accredited` or
     //   `accreditation` (e.g., the bare password-login responses at
     //   `sign-in-modal.js#handleEmailLogin` and `signup.js#_resolveExistingAccount`)
     //   MUST pass explicit `false` / `null` overrides via spread, e.g.:
@@ -144,11 +145,16 @@ export function initAuth() {
     //   _adoptSubject BEFORE any field lands, so a login as a different
     //   user scrubs the previous subject's state instead of inheriting it
     //   while a same-subject re-login keeps its live fresh-auth window.
-    //   Every live call site passes `username` explicitly — the custody-
-    //   upgrade sites pin it to the subject captured before their own
-    //   first await, so a response landing after a cross-tab login as a
-    //   different user still counts as a subject change. The fallback to the current username
-    //   is defensive only; no caller relies on it.
+    //   Every live call site passes `username` explicitly; the fallback to
+    //   the current username is defensive only, and no caller relies on it.
+    //   The custody-upgrade sites go further and never reach this helper
+    //   with a stale subject: they pin the account their upgrade started
+    //   for and drop the landing outright when the live store has moved off
+    //   it. Routing such a landing through adoption instead would file the
+    //   intervening user's accreditation under the upgrade subject's
+    //   username (both fields are omitted, so preserve-on-undefined keeps
+    //   them), and after a sign-out it would write a full durable session
+    //   for a user who just left.
     loginFromResponse(data) {
       const subject = data.username !== undefined ? data.username : this.username;
       if (subject) this._adoptSubject(subject);
@@ -214,11 +220,10 @@ export function initAuth() {
     // Same-subject re-login is deliberately NOT a subject change: the live
     // fresh-auth window and proof caches belong to the same account, and
     // discarding them would cost the user a re-auth they do not owe. The
-    // custody-upgrade call sites qualify by pinning `username` to a
-    // subject captured before their first await: an ordinary upgrade
-    // re-login stays same-subject, while an upgrade response that lands
-    // after a cross-tab login as a different user counts as a subject
-    // change and scrubs.
+    // custody-upgrade call sites only ever reach here in that same-subject
+    // case: they pin the account their upgrade started for, pass it as
+    // `username`, and drop the landing without calling the helper at all
+    // when the live store has moved to a different subject or to none.
     //
     // The marker read falls back to the in-memory username so the check
     // still works within a page load when sessionStorage is unavailable
