@@ -1212,8 +1212,15 @@ export function initSettingsPage() {
       const newSeedPhrase = this.newSeedPhrase;
 
       // Pin the account this upgrade is for, before the first await. See the
-      // `_upgradeSubject` field for why the pin outlives this frame.
+      // `_upgradeSubject` field for why the pin outlives this frame, and take a
+      // frame-local copy for this leg's own use: `destroy()` wipes the field,
+      // and every step below resumes after an await, so reading the field
+      // across one would hand a helper a null account name the moment the user
+      // navigates away. The seed phrase is snapshotted just above for the same
+      // reason. The field is what a LATER leg (the retry) reads; this local is
+      // what THIS leg uses.
       this._upgradeSubject = this.username;
+      const upgradeSubject = this._upgradeSubject;
       // Pin the credential beside it. The bearer the cleanup POST carries is
       // what identifies the account server-side, and the store's token can be
       // replaced across any of the suspensions below: by a login as someone
@@ -1254,7 +1261,7 @@ export function initSettingsPage() {
         // BEFORE `_clearSensitiveUpgradeState()` runs below. Reachability
         // invariant: no variable bound inside `_performUpgradeKeyRotation()`
         // escapes to `executeUpgrade()` other than control flow.
-        await this._performUpgradeKeyRotation(this._upgradeSubject, oldWords, newSeedPhrase);
+        await this._performUpgradeKeyRotation(upgradeSubject, oldWords, newSeedPhrase);
         broadcastLanded = true;
 
         // First checkpoint. The broadcast is a real chain round trip, and the
@@ -1265,8 +1272,16 @@ export function initSettingsPage() {
         // spend credentials (a signature made with the new seed, then the
         // session bearer) on behalf of a tab that no longer represents the
         // account they are for.
-        if (this._upgradeSubjectDiverged()) {
-          this._endUpgradeAsSessionChanged({ cleanupLanded: false });
+        //
+        // Gated on `_mounted` first, and not merely because the terminal route
+        // needs a live component to write to. An unmounted component has no
+        // business stopping here at all: the (b) to (c) pair in the ORDERING
+        // block above is the flow's one irreversible gap, and abandoning the
+        // cleanup POST inside it leaves the chain rotated while the backend
+        // still holds keys that no longer sign for the account. Navigating
+        // away has always let that POST finish; it must keep doing so.
+        if (this._mounted && this._upgradeSubjectDiverged(upgradeSubject)) {
+          this._endUpgradeAsSessionChanged({ cleanupLanded: false, upgradeSubject });
           return;
         }
 
@@ -1280,13 +1295,14 @@ export function initSettingsPage() {
         // the derived private key stays local and doesn't escape into
         // executeUpgrade's frame. See `_performUpgradeKeyRotation` for the
         // closure-wipe invariant pattern this mirrors.
-        const proof = await this._signUpgradeProof(this._upgradeSubject, newSeedPhrase);
+        const proof = await this._signUpgradeProof(upgradeSubject, newSeedPhrase);
 
         // Second checkpoint, for the gap the signing itself opens. The proof
         // is bound to the pinned account either way; what this refuses is
-        // sending it under a session the tab has stopped owning.
-        if (this._upgradeSubjectDiverged()) {
-          this._endUpgradeAsSessionChanged({ cleanupLanded: false });
+        // sending it under a session the tab has stopped owning. Same
+        // `_mounted` gate, for the same reason as the first.
+        if (this._mounted && this._upgradeSubjectDiverged(upgradeSubject)) {
+          this._endUpgradeAsSessionChanged({ cleanupLanded: false, upgradeSubject });
           return;
         }
 
@@ -1317,8 +1333,8 @@ export function initSettingsPage() {
         // subject's username). Dropping the landing leaves the store to its
         // current owner; the upgrade itself is finished, so the terminal
         // copy only has to route the user back for the Keychain import.
-        if (this._upgradeSubjectDiverged()) {
-          this._endUpgradeAsSessionChanged({ cleanupLanded: true });
+        if (this._upgradeSubjectDiverged(upgradeSubject)) {
+          this._endUpgradeAsSessionChanged({ cleanupLanded: true, upgradeSubject });
           return;
         }
 
@@ -1338,7 +1354,7 @@ export function initSettingsPage() {
         Alpine.store('auth').loginFromResponse({
           token: result.data?.token,
           expires_at: result.data?.expires_at,
-          username: this._upgradeSubject,
+          username: upgradeSubject,
           custody: 'self',
         });
         // Re-check post-loginFromResponse: the helper resolves synchronously
@@ -1356,7 +1372,7 @@ export function initSettingsPage() {
         return;
       }
 
-      await this._completeUpgradeAfterBackend(this._upgradeSubject, newSeedPhrase);
+      await this._completeUpgradeAfterBackend(upgradeSubject, newSeedPhrase);
     },
 
     // Backend-cleanup retry. Reachable from the 'error' phase whenever
@@ -1414,8 +1430,9 @@ export function initSettingsPage() {
       // seed. Nothing here wipes it either: the backend cleanup has not run,
       // so the mnemonic is still the only key to an account whose on-chain
       // authorities already rotated.
-      if (this._upgradeSubjectDiverged()) {
-        this._endUpgradeAsSessionChanged({ cleanupLanded: false });
+      const upgradeSubject = this._upgradeSubject;
+      if (this._upgradeSubjectDiverged(upgradeSubject)) {
+        this._endUpgradeAsSessionChanged({ cleanupLanded: false, upgradeSubject });
         return;
       }
       // Pin the credential for this attempt, beside the subject the guard
@@ -1424,12 +1441,14 @@ export function initSettingsPage() {
       // without the account changing.
       const upgradeToken = Alpine.store('auth').token;
       try {
-        const proof = await this._signUpgradeProof(this._upgradeSubject, newSeedPhrase);
+        const proof = await this._signUpgradeProof(upgradeSubject, newSeedPhrase);
 
         // The retry's proof await is the same gap the executor checkpoints,
-        // and the POST after it is the same credentialed step.
-        if (this._upgradeSubjectDiverged()) {
-          this._endUpgradeAsSessionChanged({ cleanupLanded: false });
+        // and the POST after it is the same credentialed step, under the same
+        // `_mounted` gate: a navigate-away here must still let the cleanup
+        // land, since that is the whole point of the retry.
+        if (this._mounted && this._upgradeSubjectDiverged(upgradeSubject)) {
+          this._endUpgradeAsSessionChanged({ cleanupLanded: false, upgradeSubject });
           return;
         }
         const result = await this._postUpgradeBackend(proof, upgradeToken);
@@ -1442,14 +1461,14 @@ export function initSettingsPage() {
         // Same drop-the-landing rule as `executeUpgrade`: the POST window is
         // the same multi-second one, and the store may have moved to another
         // subject (or to nobody) inside it.
-        if (this._upgradeSubjectDiverged()) {
-          this._endUpgradeAsSessionChanged({ cleanupLanded: true });
+        if (this._upgradeSubjectDiverged(upgradeSubject)) {
+          this._endUpgradeAsSessionChanged({ cleanupLanded: true, upgradeSubject });
           return;
         }
         Alpine.store('auth').loginFromResponse({
           token: result.data?.token,
           expires_at: result.data?.expires_at,
-          username: this._upgradeSubject,
+          username: upgradeSubject,
           custody: 'self',
         });
         // Re-check post-loginFromResponse for the same reason as executeUpgrade:
@@ -1465,7 +1484,7 @@ export function initSettingsPage() {
         this._handlePostBroadcastError(err, { broadcastLanded: true, logTag: '[custody upgrade retry]' });
         return;
       }
-      await this._completeUpgradeAfterBackend(this._upgradeSubject, newSeedPhrase);
+      await this._completeUpgradeAfterBackend(upgradeSubject, newSeedPhrase);
     },
 
     // True when the singleton auth store no longer represents the account
@@ -1476,9 +1495,16 @@ export function initSettingsPage() {
     // comparison — it states the rule the guard enforces, which is that a
     // store with no subject represents nobody, not that null happens to
     // compare unequal.
-    _upgradeSubjectDiverged() {
+    //
+    // The subject is an argument so the predicate compares against the same
+    // value every other step of the calling leg uses, rather than re-reading a
+    // field `destroy()` can null out from under an in-flight continuation. The
+    // `_mounted` gate at the post-await call sites is what keeps an unmount
+    // from reaching this at all; the argument is why a future call site that
+    // forgets that gate still asks the right question.
+    _upgradeSubjectDiverged(upgradeSubject) {
       const auth = Alpine.store('auth');
-      return !auth.isConnected || auth.username !== this._upgradeSubject;
+      return !auth.isConnected || auth.username !== upgradeSubject;
     },
 
     // Terminal route for a diverged subject. Every caller reaches it after
@@ -1498,13 +1524,15 @@ export function initSettingsPage() {
     // seen. That is the accepted cost of leaving the store alone; the
     // recovery it describes (sign in as the pinned subject with the new
     // phrase) does not depend on having read it here.
-    _endUpgradeAsSessionChanged({ cleanupLanded }) {
-      // Mirrors _handlePostBroadcastError's entry guard: callers reach this
-      // after at least one await, and writing phase/error state on an
-      // unmounted component is silent mutation with no observer.
+    _endUpgradeAsSessionChanged({ cleanupLanded, upgradeSubject }) {
+      // Mirrors _handlePostBroadcastError's entry guard: most callers reach
+      // this after at least one await (the retry's start guard is the one
+      // synchronous caller), and writing phase/error state on an unmounted
+      // component is silent mutation with no observer.
       if (!this._mounted) return;
-      // Read before the wipe below, which clears the pin along with the seed.
-      const subject = this._upgradeSubject;
+      // The subject comes from the caller's frame, not the field: the wipe
+      // below clears the field, and so does `destroy()`.
+      const subject = upgradeSubject;
       const key = cleanupLanded
         ? UPGRADE_ERROR_KEYS.sessionChangedAfterCleanup
         : UPGRADE_ERROR_KEYS.sessionChangedBeforeCleanup;

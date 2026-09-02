@@ -340,6 +340,91 @@ describe('custody-upgrade helper subject and credential threading', () => {
     expect(vi.mocked(deriveHiveKeys).mock.calls[3][1]).toBe('alice');
   });
 
+  it('a navigate-away during the broadcast still lets the cleanup POST land', async () => {
+    const fetchMock = vi.fn(async () => okUpgradeResponse('alice-upgraded-jwt'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const comp = createComponent();
+    seedUpgradeEntry(comp);
+    // Real teardown, not a hand-flipped flag: destroy() wipes the upgrade's
+    // reactive state (the pinned account among it) and only then marks the
+    // component unmounted.
+    mockSendOperations.mockImplementation(async () => {
+      comp.destroy();
+      return { id: 'stub-tx' };
+    });
+
+    await comp.executeUpgrade();
+
+    // The chain rotation has landed. Abandoning the cleanup here would leave
+    // the account rotated on-chain while the backend still holds keys that no
+    // longer sign for it, which is the one irreversible gap this flow has.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/custody/upgrade');
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer alice-jwt');
+    // The wiped pin must not have reached the proof: a null account name
+    // would derive the wrong key and sign a challenge the backend rebuilds
+    // differently.
+    expect(String(mockSign.mock.calls[0][0])).toContain('|alice|');
+    // Unmounted: the store stays untouched and no popup opens.
+    expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
+    expect(mockRequestImportKey).not.toHaveBeenCalled();
+    // And the teardown is not reported to the user as a session change.
+    expect(comp.upgradeErrorKey).toBe(null);
+  });
+
+  it('a navigate-away that coincides with a real subject change still lets the cleanup POST land', async () => {
+    const fetchMock = vi.fn(async () => okUpgradeResponse('alice-upgraded-jwt'));
+    vi.stubGlobal('fetch', fetchMock);
+    // Both at once: the tab is torn down AND the store really has moved to
+    // another account. The divergence is genuine, but there is no longer a
+    // component to show the terminal message on, and stopping would strand
+    // the account between the rotation and the cleanup.
+    mockSendOperations.mockImplementation(async () => {
+      driftToOtherUser();
+      comp.destroy();
+      return { id: 'stub-tx' };
+    });
+
+    const comp = createComponent();
+    seedUpgradeEntry(comp);
+    await comp.executeUpgrade();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer alice-jwt');
+    expect(String(mockSign.mock.calls[0][0])).toContain('|alice|');
+    // The other user's store is left exactly as it was.
+    expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
+    expect(mockAuthStore.username).toBe('brenda');
+    expect(mockRequestImportKey).not.toHaveBeenCalled();
+  });
+
+  it('a navigate-away during the retry proof still lets the cleanup POST land', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({ error: { code: 'SERVICE_UNAVAILABLE' } }),
+    })));
+
+    const comp = createComponent();
+    seedUpgradeEntry(comp);
+    await comp.executeUpgrade();
+    expect(comp.upgradeErrorKey).toBe('upgrade.backendUnavailable');
+
+    const retryFetch = vi.fn(async () => okUpgradeResponse('alice-upgraded-jwt'));
+    vi.stubGlobal('fetch', retryFetch);
+    mockSign.mockImplementation(() => {
+      comp.destroy();
+      return { toString: () => '20' + 'f'.repeat(128) };
+    });
+
+    await comp.retryUpgradeBackend();
+
+    expect(retryFetch).toHaveBeenCalledTimes(1);
+    expect(retryFetch.mock.calls[0][1].headers.Authorization).toBe('Bearer alice-jwt');
+    expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
+  });
+
   it('sends the retry POST with the credential held when the retry started', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: false,

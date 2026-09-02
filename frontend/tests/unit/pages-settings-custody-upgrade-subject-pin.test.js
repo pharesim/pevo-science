@@ -287,6 +287,8 @@ describe('custody-upgrade re-login subject pin', () => {
     expect(comp.upgradeError).toBe('upgrade.sessionChangedAfterCleanup({"username":"alice"})');
     expect(comp.canRetryUpgrade).toBe(false);
     expect(comp.newSeedPhrase).toBe('');
+    // The pin's lifetime is the seed's: a spent flow keeps neither.
+    expect(comp._upgradeSubject).toBe(null);
     // The Keychain tail belongs to a session this tab no longer holds.
     expect(mockRequestImportKey).not.toHaveBeenCalled();
   });
@@ -392,6 +394,8 @@ describe('custody-upgrade re-login subject pin', () => {
     expect(comp.upgradePhase).toBe('error');
     const preservedSeed = comp.newSeedPhrase;
     expect(preservedSeed).not.toBe('');
+    // The retryable sub-case keeps both halves of what a retry needs.
+    expect(comp._upgradeSubject).toBe('alice');
 
     // The error screen has no timeout: the user can leave the tab idle for
     // minutes before pressing Try Again, and a cross-tab login in that window
