@@ -55,14 +55,16 @@ const UPGRADE_ERROR_KEYS = {
   // The two halves of "this tab stopped representing the account the upgrade
   // started for". Both are terminal and both are reached only after the chain
   // rotation landed; they differ in whether the backend cleanup also landed,
-  // which is the only thing left for the user to act on. `sessionChanged`
-  // means the upgrade is complete and only the local Keychain import is
-  // missing; `sessionChangedIncomplete` means the cleanup never ran, so the
-  // copy has to route the user to support rather than promise a finished
-  // upgrade. Splitting them is what keeps each message true: one string for
-  // both would have to lie in one of the two cases.
-  sessionChanged: 'upgrade.sessionChanged',
-  sessionChangedIncomplete: 'upgrade.sessionChangedIncomplete',
+  // which is the only thing left for the user to act on. The after-cleanup
+  // half means the upgrade is complete and only the local Keychain import is
+  // missing; the before-cleanup half means the cleanup never ran, so its copy
+  // has to route the user to support rather than promise a finished upgrade.
+  // Splitting them is what keeps each message true: one string for both would
+  // have to lie in one of the two cases. Neither name is a prefix of the
+  // other, so the per-key grep over the translation-stub ledger still names
+  // one key at a time.
+  sessionChangedAfterCleanup: 'upgrade.sessionChangedAfterCleanup',
+  sessionChangedBeforeCleanup: 'upgrade.sessionChangedBeforeCleanup',
 };
 
 const RETRYABILITY = {
@@ -75,8 +77,8 @@ const RETRYABILITY = {
   [UPGRADE_ERROR_KEYS.partialApplyFailed]: 'terminal',
   [UPGRADE_ERROR_KEYS.alreadyUpgraded]: 'terminal',
   [UPGRADE_ERROR_KEYS.rateLimited]: 'terminal',
-  [UPGRADE_ERROR_KEYS.sessionChanged]: 'terminal',
-  [UPGRADE_ERROR_KEYS.sessionChangedIncomplete]: 'terminal',
+  [UPGRADE_ERROR_KEYS.sessionChangedAfterCleanup]: 'terminal',
+  [UPGRADE_ERROR_KEYS.sessionChangedBeforeCleanup]: 'terminal',
 };
 
 // Clock-skew tolerance before warning advisory fires. Backend's freshness
@@ -1396,8 +1398,11 @@ export function initSettingsPage() {
         return;
       }
       // Start guard, after the drift check above so a state that lost the
-      // seed keeps its own diagnosis (the seed and the pin are written and
-      // wiped in lockstep, so a missing seed means a missing pin). The
+      // seed keeps its own diagnosis. Ordering them the other way would
+      // re-label that drifted state as a session change, and the pin is
+      // present here whenever the seed is: this handler is only reachable
+      // from a post-broadcast error key, and the only writer of those keys
+      // is a leg that set the pin before anything else it does. The
       // subject is read from the pin `executeUpgrade` set, never re-captured
       // here: this handler runs on a Try Again click that can arrive minutes
       // after the failure, with the error screen idling and no timeout on
@@ -1501,8 +1506,8 @@ export function initSettingsPage() {
       // Read before the wipe below, which clears the pin along with the seed.
       const subject = this._upgradeSubject;
       const key = cleanupLanded
-        ? UPGRADE_ERROR_KEYS.sessionChanged
-        : UPGRADE_ERROR_KEYS.sessionChangedIncomplete;
+        ? UPGRADE_ERROR_KEYS.sessionChangedAfterCleanup
+        : UPGRADE_ERROR_KEYS.sessionChangedBeforeCleanup;
       if (cleanupLanded) this._clearSensitiveUpgradeState();
       this.upgradeError = this.$t(key, { username: subject });
       this.upgradeErrorKey = key;

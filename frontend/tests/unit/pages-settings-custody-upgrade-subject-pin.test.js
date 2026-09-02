@@ -135,7 +135,7 @@ function createComponent() {
   initSettingsPage();
   const factory = Alpine.data.mock.calls[Alpine.data.mock.calls.length - 1][1];
   const comp = factory();
-  comp.$t = (key) => key;
+  comp.$t = (key, params) => (params ? `${key}(${JSON.stringify(params)})` : key);
   comp.$watch = vi.fn();
   return comp;
 }
@@ -281,7 +281,10 @@ describe('custody-upgrade re-login subject pin', () => {
     // Terminal sub-case: the upgrade did complete on-chain and at the
     // backend, so there is nothing to retry and the seed has no further use.
     expect(comp.upgradePhase).toBe('error');
-    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChanged');
+    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChangedAfterCleanup');
+    // The copy names the account the upgrade was for, so the user knows who
+    // to sign back in as. The pin is read before the wipe that clears it.
+    expect(comp.upgradeError).toBe('upgrade.sessionChangedAfterCleanup({"username":"alice"})');
     expect(comp.canRetryUpgrade).toBe(false);
     expect(comp.newSeedPhrase).toBe('');
     // The Keychain tail belongs to a session this tab no longer holds.
@@ -315,7 +318,10 @@ describe('custody-upgrade re-login subject pin', () => {
     expect(mockAuthStore.token).toBe(null);
     expect(sessionStorage.getItem(TAB_SUBJECT_KEY)).toBe(null);
     expect(comp.upgradePhase).toBe('error');
-    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChanged');
+    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChangedAfterCleanup');
+    // Still named after a sign-out, where the store has no username at all
+    // to fall back on.
+    expect(comp.upgradeError).toBe('upgrade.sessionChangedAfterCleanup({"username":"alice"})');
     expect(comp.canRetryUpgrade).toBe(false);
     expect(mockRequestImportKey).not.toHaveBeenCalled();
   });
@@ -373,7 +379,7 @@ describe('custody-upgrade re-login subject pin', () => {
     expect(sessionStorage.getItem(TAB_SUBJECT_KEY)).toBe('brenda');
     expect(sessionStorage.getItem(SESSION_PROOF_KEY)).toBe('brenda-proof');
     expect(comp.upgradePhase).toBe('error');
-    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChanged');
+    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChangedAfterCleanup');
     expect(comp.canRetryUpgrade).toBe(false);
     expect(mockRequestImportKey).not.toHaveBeenCalled();
   });
@@ -405,7 +411,8 @@ describe('custody-upgrade re-login subject pin', () => {
     // key to the rotated account. Declining to act must not destroy it.
     expect(comp.newSeedPhrase).toBe(preservedSeed);
     expect(comp.upgradePhase).toBe('error');
-    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChangedIncomplete');
+    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChangedBeforeCleanup');
+    expect(comp.upgradeError).toBe('upgrade.sessionChangedBeforeCleanup({"username":"alice"})');
     expect(comp.canRetryUpgrade).toBe(false);
   });
 

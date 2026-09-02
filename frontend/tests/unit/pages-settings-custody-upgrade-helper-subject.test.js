@@ -134,7 +134,7 @@ function createComponent() {
   initSettingsPage();
   const factory = Alpine.data.mock.calls[Alpine.data.mock.calls.length - 1][1];
   const comp = factory();
-  comp.$t = (key) => key;
+  comp.$t = (key, params) => (params ? `${key}(${JSON.stringify(params)})` : key);
   comp.$watch = vi.fn();
   return comp;
 }
@@ -257,7 +257,7 @@ describe('custody-upgrade helper subject and credential threading', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
     expect(comp.upgradePhase).toBe('error');
-    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChangedIncomplete');
+    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChangedBeforeCleanup');
     // The cleanup never ran, so the mnemonic is still the only key to the
     // rotated account and the stop must not destroy it.
     expect(comp.newSeedPhrase).not.toBe('');
@@ -295,7 +295,7 @@ describe('custody-upgrade helper subject and credential threading', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
     expect(comp.upgradePhase).toBe('error');
-    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChangedIncomplete');
+    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChangedBeforeCleanup');
     expect(comp.newSeedPhrase).not.toBe('');
   });
 

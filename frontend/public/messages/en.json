@@ -1076,8 +1076,8 @@
       "memo": "Your memo key was not imported into Hive Keychain. Use your seed phrase to import the account from the Keychain extension, or contact support if you need help."
     },
     "keychainImportFailed": "Hive Keychain import did not complete. Use your seed phrase to import the account from the Keychain extension, or contact support if you need help.",
-    "sessionChanged": "Your account upgrade finished, but this browser is no longer signed in as {username}. Sign in again with your new recovery phrase to finish setting up Hive Keychain.",
-    "sessionChangedIncomplete": "Your account keys were updated, but this browser is no longer signed in as {username}, so the upgrade stopped before it could finish. Keep your new recovery phrase safe and contact support with your account name. Do not share your recovery phrase."
+    "sessionChangedAfterCleanup": "Your account upgrade finished, but this browser is no longer signed in as {username}. Sign in again with your new recovery phrase to finish setting up Hive Keychain.",
+    "sessionChangedBeforeCleanup": "Your account keys were updated, but this browser is no longer signed in as {username}, so the upgrade stopped before it could finish. Keep your new recovery phrase safe and contact support with your account name. Do not share your recovery phrase."
   },
   "resetPassword": {
     "requestTitle": "Reset your password",
