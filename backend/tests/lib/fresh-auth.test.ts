@@ -62,11 +62,14 @@
  * Concurrency, which the two kinds also invert:
  *  - Consent-op dual-consume must produce exactly ONE winner. Two variants per
  *    path: Redis-up (the non-nil `GETDEL` reply arbitrates, with the in-process
- *    lock layered on) and Redis stubbed down (both callers reach the in-memory
- *    tier, where the lock is what closes the race), plus a no-mock companion. A
- *    cross-helper variant pins that the lock domain is the TOKEN, not the
- *    calling helper: a consent-op proof reaches the session surface through the
- *    cross-kind accept, so both helpers can burn the same entry at once.
+ *    lock layered on) and a split-tier flap (one caller's `GETDEL` resolves
+ *    while the other's rejects and falls through to the in-memory tier, so the
+ *    lock is the only thing that stops both from winning), plus a no-mock
+ *    companion. Two callers on the SAME tier need no lock, since each tier
+ *    arbitrates its own. A cross-helper variant pins that the lock domain is
+ *    the TOKEN, not the calling helper: a consent-op proof reaches the session
+ *    surface through the cross-kind accept, so both helpers can burn the same
+ *    entry at once.
  *  - Session dual-consume must produce TWO winners. Serializing them would turn
  *    ordinary client behaviour (two votes in one tick, an upload-token mint
  *    racing a broadcast) into a spurious 401. Structural pins sample the
@@ -1076,21 +1079,24 @@ describe('session-kind issue / consume — issueSessionFreshAuthToken + consumeS
 
 describe('concurrent dual-consume produces exactly one winner (in-process lock)', () => {
   // The race: a `Promise.all` dual-consume on the same token could authorize
-  // TWO broadcasts because Redis GETDEL is atomic but the memStore fallback's
-  // `get` + `delete` window admits interleaving on a single-instance JS event
-  // loop (and widens on Redis-down, where both callers fall through to
-  // memStore). The in-process lock closes the door with a module-scoped
-  // `Set<string>` of in-flight tokens guarded by a synchronous `has` → `add`
-  // critical section before any awaits.
+  // TWO broadcasts when a Redis flap splits the two callers across the storage
+  // tiers. Each tier already arbitrates its own callers — `GETDEL` is atomic,
+  // and the in-memory tier arbitrates on the `Map.delete` return value — so two
+  // callers that land on the SAME tier resolve to one winner with no lock at
+  // all. What the tiers cannot cover is one caller's `GETDEL` resolving non-nil
+  // while the other's rejects and falls through to the in-memory backup: both
+  // burns report a win. The in-process lock closes that door with a
+  // module-scoped `Set<string>` of in-flight tokens guarded by a synchronous
+  // `has` → `add` critical section before any awaits.
   //
-  // Acceptance: both helpers must serialize concurrent dual-consume to
-  // exactly one winner under both Redis-up GETDEL atomicity and Redis-
-  // stubbed in-process-lock conditions. Two variants per helper exercise
-  // each tier independently — the Redis-up variant validates that the
-  // lock layers cleanly with Redis GETDEL without false-rejecting valid
-  // sequential consumes; the Redis-stubbed variant forces both consumes
-  // onto the memStore fallback path where the lock is the only thing
-  // closing the race.
+  // Acceptance: both helpers must serialize concurrent dual-consume to exactly
+  // one winner. Two variants per helper — the Redis-up variant validates that
+  // the lock layers cleanly over `GETDEL` atomicity without false-rejecting
+  // valid sequential consumes (it cannot kill a dropped lock, because Redis
+  // arbitrates on its own); the split-tier variant is the mutation kill, since
+  // there the lock is the only thing standing between two callers and two wins.
+  // A stub that fails Redis identically for BOTH callers is not a kill either:
+  // it lands both on the in-memory tier, where `Map.delete` settles it.
 
   it.skipIf(!redisAvailable)('consumeFreshAuthToken Redis-up: Promise.all dual consume → exactly one winner', async () => {
     const issued = await issueFreshAuthToken('race-alice', 'password', T);
@@ -1110,20 +1116,36 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
     }
   });
 
-  it.skipIf(!redisAvailable)('consumeFreshAuthToken Redis-stubbed-to-throw (memStore fallback): Promise.all dual consume → exactly one winner', async () => {
-    // Force the widest race window — both consumes fall through to memStore.
-    // Pre-fix, both callers would synchronously read the entry before either
-    // reached `memStore.delete`, returning two valids.
+  it.skipIf(!redisAvailable)('consumeFreshAuthToken split-tier flap (one GETDEL resolves, the other rejects): Promise.all dual consume → exactly one winner', async () => {
+    // The one race the lock exists for. Without it, the caller whose `GETDEL`
+    // resolves non-nil wins on the Redis tier and the caller whose `GETDEL`
+    // rejects falls through and wins on the in-memory tier: two valids.
+    //
+    // Ordering is an event-loop invariant, not a timing race. The rejected
+    // `GETDEL` and the stubbed compensating `DEL` both settle as microtasks, so
+    // the in-memory-tier burn runs to completion before the real `GETDEL`
+    // reply, an I/O event, can be processed; the in-memory delete therefore
+    // happens while the Redis-tier burn is still in flight, and the two wins
+    // cannot collapse into one by chance.
     const redis = getRedis()!;
     const issued = await issueFreshAuthToken('race-bob', 'password', T);
-    // Stub the Redis read to throw on BOTH calls. mockImplementation, not
+    // Both reads fall back to the in-memory tier. mockImplementation, not
     // mockRejectedValueOnce — Promise.all may fire both calls before either
     // resolves.
-    const getdelSpy = vi.spyOn(redis, 'get').mockImplementation(() => {
+    const getSpy = vi.spyOn(redis, 'get').mockImplementation(() => {
       return Promise.reject(new Error('forced Redis-down for race test'));
     });
-    // Stub the Redis leg of the burn to report "removed nothing" so the
-    // in-memory tier is the only arbiter — that is the window the lock closes.
+    // The Redis leg of the burn: the flap lets the first `GETDEL` through to
+    // real Redis and eats every later one. With the lock in place only one
+    // burn ever runs, so the rejecting branch is reached only under the
+    // mutation this test kills.
+    const realGetdel = redis.getdel.bind(redis);
+    const getdelSpy = vi
+      .spyOn(redis, 'getdel')
+      .mockImplementationOnce(realGetdel)
+      .mockImplementation(() => Promise.reject(new Error('forced Redis flap mid-burn')));
+    // The compensating delete an in-memory-arbitrated burn issues after its
+    // ledger write, stubbed so that path settles without a round trip.
     const delSpy = vi.spyOn(redis, 'del').mockResolvedValue(0);
     try {
       const [a, b] = await Promise.all([
@@ -1132,7 +1154,11 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
       ]);
       const winners = [a, b].filter((r) => r.valid);
       expect(winners).toHaveLength(1);
+      // The loser was refused by the lock BEFORE its burn, not inside it: a
+      // second `GETDEL` is issued only when the lock is gone.
+      expect(getdelSpy).toHaveBeenCalledTimes(1);
     } finally {
+      getSpy.mockRestore();
       getdelSpy.mockRestore();
       delSpy.mockRestore();
     }
@@ -1300,22 +1326,31 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
     }
   });
 
-  it.skipIf(!redisAvailable)('cross-helper Redis-stubbed Promise.all on a consent-op token → exactly one winner', async () => {
+  it.skipIf(!redisAvailable)('cross-helper split-tier flap: Promise.all on a consent-op token → exactly one winner', async () => {
     // The lock domain is the TOKEN, not the calling helper. A consent-op proof
     // reaches the session surface through the cross-kind accept, so both helpers
     // can be burning the same entry at once; a lock split per helper would let a
-    // `Promise.all` across the two race to the in-memory tier under Redis-down
-    // and both win, double-spending a single-use proof.
+    // `Promise.all` across the two split over the tiers under a flap and both
+    // win, double-spending a single-use proof.
     //
     // Either helper as winner is acceptable; the load-bearing claim is "exactly
-    // one winner". Redis-stubbed rather than Redis-up because the delete-reply
-    // count alone would also produce one winner under the mutation — the kill
-    // requires forcing both helpers onto the in-memory tier.
+    // one winner". Split across the tiers rather than Redis-up because a non-nil
+    // `GETDEL` reply on its own would also produce one winner under the
+    // mutation — the kill requires one helper to win on the Redis tier while the
+    // other wins on the in-memory tier, which only the lock forbids. Same
+    // stub shape and same event-loop ordering argument as the single-helper
+    // split-tier variant above.
     const redis = getRedis()!;
     const issued = await issueFreshAuthToken('race-cross', 'password', T);
-    const getdelSpy = vi.spyOn(redis, 'get').mockImplementation(() => {
+    const getSpy = vi.spyOn(redis, 'get').mockImplementation(() => {
       return Promise.reject(new Error('forced Redis-down for cross-helper race test'));
     });
+    const realGetdel = redis.getdel.bind(redis);
+    const getdelSpy = vi
+      .spyOn(redis, 'getdel')
+      .mockImplementationOnce(realGetdel)
+      .mockImplementation(() => Promise.reject(new Error('forced Redis flap mid-burn')));
+    // The compensating delete, not the Redis leg of the burn.
     const delSpy = vi.spyOn(redis, 'del').mockResolvedValue(0);
     try {
       const [a, b] = await Promise.all([
@@ -1324,7 +1359,9 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
       ]);
       const winners = [a, b].filter((r) => r.valid);
       expect(winners).toHaveLength(1);
+      expect(getdelSpy).toHaveBeenCalledTimes(1);
     } finally {
+      getSpy.mockRestore();
       getdelSpy.mockRestore();
       delSpy.mockRestore();
     }

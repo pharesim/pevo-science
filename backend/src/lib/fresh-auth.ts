@@ -1865,8 +1865,10 @@ async function readFreshAuthEntry(
  *  than an ordinary Redis restart; a dispatched one can reject exactly as the
  *  `GETDEL` before it did. The guarantee therefore comes from
  *  `spentConsentOps`: the burn records the proof as spent BEFORE attempting the
- *  delete and clears the record only once the delete is confirmed, so a proof
- *  burned during an outage stays refused however the delete resolves.
+ *  delete, and the record leaves on either of two events only — the delete is
+ *  CONFIRMED to have landed, or a later presentation's own `GETDEL` proves the
+ *  canonical copy gone (the `alreadySpent` branch below) — so a proof burned
+ *  during an outage stays refused however the delete resolves.
  *  `drainSpentConsentOps` retries the delete on the client's next `ready`
  *  transition and on the periodic tick, to keep an orphaned key from outliving
  *  its ledger entry. */
