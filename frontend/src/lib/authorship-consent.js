@@ -74,6 +74,20 @@ function getCachedProof(target) {
   );
 }
 
+// Start this surface's ORCID round-trip under the op's teardown guard. The
+// start is itself an await a subject teardown can land in, so the starter
+// re-checks `guard.tornDown` immediately before assigning window.location:
+// stale starts unwind without navigating (flow keys cleared) and resolve the
+// shared clean-cancel sentinel, which this wrapper reports through
+// `guard.cancel()` — once, here, for all three paths into the redirect (the
+// passwordless branch, the assumed-password fallback, and the retry gate's
+// hook), so no path can navigate the new subject's tab to ORCID for the
+// subject that left, and none can drift on how the unwind reports.
+async function beginOrcidUnderGuard(target, guard) {
+  const started = await beginAuthorshipOrcidFreshAuth(target, guard.tornDown);
+  return started === FRESH_AUTH_CANCELLED ? guard.cancel() : started;
+}
+
 // Resolve a target-bound proof for a light account. A freshly-returned ORCID
 // proof in the consent-op cache wins; otherwise the factor the shared resolver
 // selects — the inline password prompt unless the account is KNOWN to be
@@ -91,10 +105,10 @@ async function resolveProof(target, guard) {
   // subject that left. The shared mint's own guard cannot see this one: it is
   // only entered after this point.
   if (guard.tornDown()) return guard.cancel();
-  if (!factor.usesPassword) return beginAuthorshipOrcidFreshAuth(target);
+  if (!factor.usesPassword) return beginOrcidUnderGuard(target, guard);
   const minted = await mintViaPassword(target, factor.assumed, guard);
   if (minted === FRESH_AUTH_ORCID_FALLBACK) {
-    return beginAuthorshipOrcidFreshAuth(target);
+    return beginOrcidUnderGuard(target, guard);
   }
   return minted;
 }
@@ -159,7 +173,7 @@ export async function withAuthorshipFreshAuth(target, ctx, run) {
       guard,
       resolveFactor: resolvePasswordFactor,
       mint: (assumed) => mintViaPassword(target, assumed, guard),
-      beginOrcidRedirect: () => beginAuthorshipOrcidFreshAuth(target),
+      beginOrcidRedirect: () => beginOrcidUnderGuard(target, guard),
       run,
       clearProofCache: clearCachedConsentOpProof,
     });

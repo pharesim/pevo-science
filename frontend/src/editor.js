@@ -14,7 +14,7 @@ import remarkMath from 'remark-math';
 import remarkGfm from 'remark-gfm';
 import DOMPurify from 'dompurify';
 import { visit } from 'unist-util-visit';
-import { uploadFile, describeUploadError, UPLOAD_SESSION_TORN_DOWN } from './lib/ipfs-upload.js';
+import { uploadFile, describeUploadError } from './lib/ipfs-upload.js';
 import { escapeHtml } from './lib/escape-html.js';
 
 // --- Markdown -> HTML conversion ---
@@ -1225,12 +1225,13 @@ export class PevoEditor {
       }
     } catch (err) {
       console.warn('[editor image upload]', err);
-      // A torn-down session already showed its own re-login toast inside
-      // uploadFile; an image-upload-failed toast on top would double-report.
-      if (err?.code === UPLOAD_SESSION_TORN_DOWN) return;
+      // A null key is an already-reported failure (a torn-down session, a
+      // subject change abandoning the upload): its own toast has spoken, and
+      // an image-upload-failed toast on top would double-report.
+      const key = describeUploadError(err);
+      if (key === null) return;
       try {
         const Alpine = (await import('alpinejs')).default;
-        const key = describeUploadError(err);
         const msg = key === 'common.uploadFailed'
           ? this._t('imageUploadFailed')
           : (Alpine.store('i18n')?.t(key) || this._t('imageUploadFailed'));

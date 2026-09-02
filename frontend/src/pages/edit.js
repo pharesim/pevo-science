@@ -1,6 +1,6 @@
 import Alpine from 'alpinejs';
 import { fetchPaper, fetchPaperEnrichment, invalidatePaperCache } from '../api.js';
-import { uploadFile, describeUploadError, UPLOAD_SESSION_TORN_DOWN } from '../lib/ipfs-upload.js';
+import { uploadFile, describeUploadError } from '../lib/ipfs-upload.js';
 import {
   broadcastWithFreshAuth,
   freshAuthWindowReady,
@@ -1110,14 +1110,17 @@ export function initEditPage() {
               // Inline error shows the specific reason for a cancelled or
               // failed re-auth and the generic per-file message otherwise; the
               // thrown Error (swallowed by the outer catch) just aborts.
-              // Torn-down session: the teardown's re-login toast already
-              // reported it. No inline row (it would invite a retry that
-              // cannot succeed until re-login) and no error surface on top.
-              if (err?.code === UPLOAD_SESSION_TORN_DOWN) {
+              // A null key is an already-reported failure (a torn-down
+              // session, a subject change abandoning the batch): its own
+              // toast has spoken. No inline row (it would invite a retry
+              // that cannot succeed for this session) and no error surface
+              // on top.
+              const uploadErrorKey = describeUploadError(err);
+              if (uploadErrorKey === null) {
                 this.step = 'idle';
                 return;
               }
-              sf.error = this.$t(describeUploadError(err));
+              sf.error = this.$t(uploadErrorKey);
               throw new Error(this.$t('publish.supplementaryUploadFailed', { name: sf.fileName }));
             } finally {
               sf.uploading = false;

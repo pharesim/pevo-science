@@ -82,6 +82,13 @@ import {
   dismissOpenReauthPrompt,
 } from '../../src/lib/fresh-auth.js';
 import { REAUTH_PROMPT_BUSY } from '../../src/components/reauth-modal.js';
+// The mocked start round-trip (api.js factory above): the ORCID-start cases
+// park it to hold the flow at the pre-navigation boundary.
+import { startOrcid } from '../../src/api.js';
+// The flow keys the redirect starter writes and its stale unwind must clear —
+// from the shared single source of truth, so the assertions cannot drift from
+// the keys the module actually uses.
+import { ORCID_MODE_KEY, RETURN_PATH_KEY } from '../../src/lib/subject-bound-keys.js';
 
 // The subject-bound scrub as this surface feels it, composed from the exported
 // pieces the real auth-store scrub delegates to (that store's own suite drives
@@ -185,7 +192,7 @@ describe('withAuthorshipFreshAuth', () => {
     passwordless();
     const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
     expect(reauthRequest).not.toHaveBeenCalled();
-    expect(mockBeginAuthorshipOrcid).toHaveBeenCalledWith(TARGET);
+    expect(mockBeginAuthorshipOrcid).toHaveBeenCalledWith(TARGET, expect.any(Function));
     expect(out).toEqual({ redirect: true });
     expect(run).not.toHaveBeenCalled();
   });
@@ -287,7 +294,7 @@ describe('withAuthorshipFreshAuth', () => {
     const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
     expect(out).toEqual({ redirect: true });
     expect(reauthRequest).toHaveBeenCalledTimes(1);
-    expect(mockBeginAuthorshipOrcid).toHaveBeenCalledWith(TARGET);
+    expect(mockBeginAuthorshipOrcid).toHaveBeenCalledWith(TARGET, expect.any(Function));
     expect(run).not.toHaveBeenCalled();
   });
 
@@ -307,7 +314,7 @@ describe('withAuthorshipFreshAuth', () => {
     run.mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'));
     const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
     expect(out).toEqual({ redirect: true });
-    expect(mockBeginAuthorshipOrcid).toHaveBeenCalledWith(TARGET);
+    expect(mockBeginAuthorshipOrcid).toHaveBeenCalledWith(TARGET, expect.any(Function));
     expect(run).toHaveBeenCalledTimes(1);
   });
 
@@ -493,5 +500,130 @@ describe('withAuthorshipFreshAuth', () => {
     expect(await pending).toEqual({ cancelled: true });
     expect(run).not.toHaveBeenCalled();
     expect(toastShow).toHaveBeenCalledTimes(1);
+  });
+
+  // ─── A subject change while the second attempt is in flight ──────────────
+  //
+  // The wrong-password re-prompt is as human-length a pause as the first
+  // prompt, and the retry mint behind it reads the JWT at call time all the
+  // same. These stage the same teardown one attempt later, where the second
+  // prompt's resumption and the second mint's rejection are the only
+  // boundaries left standing between the op and the new subject.
+
+  it('a password typed into the second prompt left open across a subject change does not spend a mint', async () => {
+    i18nMessages = { auth: { reauthCancelled: TEARDOWN_CANCEL_SENTINEL } };
+    let resolveSecondPrompt;
+    reauthRequest
+      .mockResolvedValueOnce('first-try')
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSecondPrompt = resolve; }));
+    mockMintAuthorshipFreshAuthProof.mockRejectedValueOnce(codedError('UNAUTHORIZED'));
+
+    const pending = withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    await tick(); // the first mint 401'd; the second prompt is now open
+    teardownWithoutPromptDismissal();
+
+    resolveSecondPrompt('second-try');
+
+    expect(await pending).toEqual({ cancelled: true });
+    // The first attempt's mint stays the only one: nothing was spent on the
+    // answer that arrived after the teardown.
+    expect(mockMintAuthorshipFreshAuthProof).toHaveBeenCalledTimes(1);
+    expect(run).not.toHaveBeenCalled();
+    expect(toastShow).toHaveBeenCalledTimes(1);
+    expect(toastShow).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
+  });
+
+  it('a second-mint rejection landing after a subject change cancels rather than reporting a spent re-auth', async () => {
+    // Without the teardown check at the second attempt's catch, the rejection
+    // reads as a spent re-auth and whoever the tab now represents is told
+    // "re-authentication failed" for an op the departed subject started.
+    i18nMessages = { auth: { reauthCancelled: TEARDOWN_CANCEL_SENTINEL } };
+    reauthRequest.mockResolvedValueOnce('first-try').mockResolvedValueOnce('second-try');
+    let rejectSecondMint;
+    mockMintAuthorshipFreshAuthProof
+      .mockRejectedValueOnce(codedError('UNAUTHORIZED'))
+      .mockImplementationOnce(() => new Promise((resolve, reject) => { rejectSecondMint = reject; }));
+
+    const pending = withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    await tick(); // both prompts answered; the second mint is now pending
+    teardownWithoutPromptDismissal();
+
+    rejectSecondMint(codedError('UNAUTHORIZED'));
+
+    expect(await pending).toEqual({ cancelled: true });
+    expect(run).not.toHaveBeenCalled();
+    expect(toastShow).toHaveBeenCalledTimes(1);
+    expect(toastShow).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
+  });
+
+  // ─── A subject change during the ORCID start round-trip ──────────────────
+  //
+  // The redirect starter awaits the start round-trip and then assigns
+  // window.location; the orchestrator's own guard check sits one await
+  // earlier. A teardown landing inside the round-trip therefore used to
+  // navigate the new subject's tab to ORCID for the subject that left. These
+  // drive the REAL starter (the mock delegates to it) so the pre-navigation
+  // re-check, the flow-key unwind, and the single report are pinned end to
+  // end on this surface too.
+
+  it('an ORCID start resolving after a subject change cancels instead of navigating', async () => {
+    i18nMessages = { auth: { reauthCancelled: TEARDOWN_CANCEL_SENTINEL } };
+    sessionStorage.clear();
+    passwordless();
+    const actual = await vi.importActual('../../src/lib/fresh-auth.js');
+    mockBeginAuthorshipOrcid.mockImplementation((...a) => actual.beginAuthorshipOrcidFreshAuth(...a));
+    let resolveStart;
+    startOrcid.mockImplementationOnce(() => new Promise((resolve) => { resolveStart = resolve; }));
+    vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/paper/alice/perm' } });
+    try {
+      const pending = withAuthorshipFreshAuth(TARGET, LIGHT, run);
+      await tick(); // the start round-trip is now pending
+      teardownSubjectState();
+
+      resolveStart({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+
+      expect(await pending).toEqual({ cancelled: true });
+      // No navigation for the departed subject, and no flow keys left for the
+      // callback to mis-dispatch on.
+      expect(window.location.href).toBe('');
+      expect(sessionStorage.getItem(ORCID_MODE_KEY)).toBeNull();
+      expect(sessionStorage.getItem(RETURN_PATH_KEY)).toBeNull();
+      expect(toastShow).toHaveBeenCalledTimes(1);
+      expect(toastShow).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('an assumed-password fallback whose start resolves after a subject change cancels instead of navigating', async () => {
+    // The second path into the starter on this surface: the status read is
+    // down, the guessed password 401s at the mint, and the op falls back to
+    // the round-trip — whose start is itself an await the teardown can land
+    // in.
+    i18nMessages = { auth: { reauthCancelled: TEARDOWN_CANCEL_SENTINEL } };
+    sessionStorage.clear();
+    statusUnavailable();
+    mockMintAuthorshipFreshAuthProof.mockRejectedValueOnce(codedError('UNAUTHORIZED'));
+    const actual = await vi.importActual('../../src/lib/fresh-auth.js');
+    mockBeginAuthorshipOrcid.mockImplementation((...a) => actual.beginAuthorshipOrcidFreshAuth(...a));
+    let resolveStart;
+    startOrcid.mockImplementationOnce(() => new Promise((resolve) => { resolveStart = resolve; }));
+    vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/paper/alice/perm' } });
+    try {
+      const pending = withAuthorshipFreshAuth(TARGET, LIGHT, run);
+      await tick(); // the assumed mint 401'd; the start round-trip is pending
+      teardownWithoutPromptDismissal();
+
+      resolveStart({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+
+      expect(await pending).toEqual({ cancelled: true });
+      expect(window.location.href).toBe('');
+      expect(sessionStorage.getItem(ORCID_MODE_KEY)).toBeNull();
+      expect(sessionStorage.getItem(RETURN_PATH_KEY)).toBeNull();
+      expect(toastShow).toHaveBeenCalledTimes(1);
+      expect(toastShow).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

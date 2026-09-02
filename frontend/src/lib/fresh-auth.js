@@ -190,11 +190,18 @@ function toastLocalized(section, name, fallback) {
 // whoever the tab now represents, not to whoever opened the prompt. `guard`
 // turns every such resumption into a clean cancel.
 //
-// A caller that awaited BEFORE reaching here — both consent-op orchestrators
-// read the account status first — must pass its own guard, opened before that
-// await. A guard opened here would capture a generation the teardown has
-// already moved and so compare it against itself, never firing; the default is
-// only correct for a caller whose first await is the prompt.
+// A guard opened here captures whatever the generation is by the time this
+// function is entered, so relying on the default is correct ONLY for a caller
+// that either has no await ahead of this call, or re-checks its own captured
+// generation immediately before it, with nothing awaited in between. The
+// session acquisition is the second kind: its factor read awaits first, and
+// only its pre-call generation check keeps the default sound — remove that
+// "redundant" check and a teardown landing in the factor read reopens the
+// cross-subject mint there. Every other caller — both consent-op
+// orchestrators read the account status first — must pass a guard opened
+// before its first await, or a teardown landing in that earlier await has
+// already moved the generation and the default compares the post-teardown
+// value against itself, never firing.
 export async function mintViaPasswordFactor(
   mintFn,
   { message, assumed = false, guard = subjectTeardownGuard() },
@@ -1078,9 +1085,10 @@ export async function freshAuthWindowReady(opts) {
 // represents. A stale flight unwinds the keys written above (the scrub has
 // usually removed them already; the unwind keeps that true even when it has
 // not) and resolves as FRESH_AUTH_CANCELLED — the same silent clean-cancel
-// every other teardown boundary in the acquisition resolves to. Callers
-// without a teardown-scoped flight (the page-level and consent-op redirect
-// starters) pass none and keep the unconditional navigation.
+// every other teardown boundary in the acquisition resolves to; when the
+// predicate is a consent-op guard's `tornDown`, the guarded caller owns the
+// report. Callers without a teardown-scoped flight (the page-level start
+// flows) pass none and keep the unconditional navigation.
 async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault, isStale) {
   const returnPath = window.location.pathname || returnPathDefault;
   try {
@@ -1148,8 +1156,15 @@ async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault, isSta
 // sent. Returns `FRESH_AUTH_REDIRECT_PENDING` after starting the full-page
 // redirect; callers abort cleanly and resume after the user returns. Throws on
 // transport / config / invalid-redirect-host errors.
-export async function beginSettingsActionOrcidFreshAuth(action) {
-  return beginOrcidFreshAuthRedirect('fresh_auth', { action }, '/settings');
+//
+// `isStale` is the orchestrator's teardown predicate (`guard.tornDown`),
+// threaded to the redirect helper's pre-navigation re-check: the start
+// round-trip is an await a subject teardown can land in, and without the
+// re-check the navigation would fire for the subject that left. A stale start
+// resolves FRESH_AUTH_CANCELLED with the flow keys cleared; reporting stays
+// with the caller's guard.
+export async function beginSettingsActionOrcidFreshAuth(action, isStale) {
+  return beginOrcidFreshAuthRedirect('fresh_auth', { action }, '/settings', isStale);
 }
 
 // Initiate an ORCID fresh-auth round-trip for an authorship consent/credit op.
@@ -1158,8 +1173,10 @@ export async function beginSettingsActionOrcidFreshAuth(action) {
 // target travels in the start `extra` via consentOpRequestFields. The
 // `/orcid/callback` handler caches the echoed proof through cacheConsentOpProof
 // keyed on that target; withAuthorshipFreshAuth retrieves it post-redirect.
-export async function beginAuthorshipOrcidFreshAuth(target) {
-  return beginOrcidFreshAuthRedirect('fresh_auth', consentOpRequestFields(target), '/');
+// `isStale` is the same orchestrator teardown predicate the settings sibling
+// threads: a stale start resolves FRESH_AUTH_CANCELLED instead of navigating.
+export async function beginAuthorshipOrcidFreshAuth(target, isStale) {
+  return beginOrcidFreshAuthRedirect('fresh_auth', consentOpRequestFields(target), '/', isStale);
 }
 
 // The remintable-401 retry gate shared by the consent-op orchestrators
@@ -1201,7 +1218,10 @@ export async function beginAuthorshipOrcidFreshAuth(target) {
 //                       settings orchestrator threads its set_password
 //                       ORCID-only exception through its `passwordFactorFor`)
 //   mint(assumed)       the surface's target-bound password mint
-//   beginOrcidRedirect  the surface's ORCID round-trip starter
+//   beginOrcidRedirect  the surface's ORCID round-trip starter, run under the
+//                       caller's guard: on a teardown landing during the
+//                       start round-trip it resolves FRESH_AUTH_CANCELLED
+//                       (already reported by the guard) instead of navigating
 //   run(proof)          the guarded call, retried once with the fresh proof
 //   clearProofCache     drops the surface's cached proof (before the retry
 //                       mints, and again after a successful retry run)
@@ -1233,7 +1253,13 @@ export async function consentOpFreshAuthRetryGate(err, {
     if (factor.usesPassword) {
       const retry = await mint(factor.assumed);
       if (retry === FRESH_AUTH_ORCID_FALLBACK) {
-        await beginOrcidRedirect();
+        const started = await beginOrcidRedirect();
+        // A teardown landing during the start round-trip unwinds the starter
+        // without navigating, and the surface's guard has already reported
+        // it — so this is the same clean cancel every other teardown boundary
+        // resolves to, never a redirect outcome for a navigation that is not
+        // happening.
+        if (started === FRESH_AUTH_CANCELLED) return { cancelled: true };
         return { redirect: true };
       }
       if (retry === FRESH_AUTH_PROMPT_BUSY) return promptBusy();
@@ -1329,6 +1355,14 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
     return res;
   };
 
+  // Opened before the first await so it spans both attempts. The acquisition
+  // and the broadcast are each a boundary a cross-tab subject change can land
+  // in, and every step inside them re-checks the generation for itself — but
+  // the 401 retry below starts a NEW acquisition whose own snapshot would
+  // post-date such a teardown and so never notice it. This guard is the only
+  // cross-attempt memory of which subject the broadcast belongs to.
+  const guard = subjectTeardownGuard();
+
   const proof = await acquireSessionProof(0, { allowRedirect });
   if (acquisitionAborted(proof)) return FRESH_AUTH_REDIRECT_PENDING;
 
@@ -1352,6 +1386,16 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
         err.status === 401 &&
         REMINTABLE_REASONS.includes(err.details?.reason)
       ) {
+        // A teardown that landed since this wrapper began outranks the retry:
+        // the re-acquisition reads the store at call time, so past a subject
+        // change it would prompt the NEW subject with the generic re-auth
+        // message, spend their mint, and broadcast the departed subject's
+        // operations under their name. Report the teardown once and take the
+        // same silent abort every other non-ready outcome unwinds through.
+        if (guard.tornDown()) {
+          guard.cancel();
+          return FRESH_AUTH_REDIRECT_PENDING;
+        }
         // Normalize any error thrown by the re-acquisition or the retry
         // broadcastOps to the `{ status, code, details }` shape callers expect.
         // Without this wrap, a network failure during re-auth surfaces with

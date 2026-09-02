@@ -38,7 +38,7 @@ vi.mock('../../src/api.js', () => ({
 vi.mock('../../src/signer.js', () => ({ broadcastOps: vi.fn() }));
 vi.mock('alpinejs', () => ({ default: { store: vi.fn(() => ({})) } }));
 
-const { beginSettingsActionOrcidFreshAuth, FRESH_AUTH_REDIRECT_PENDING } =
+const { beginSettingsActionOrcidFreshAuth, FRESH_AUTH_REDIRECT_PENDING, FRESH_AUTH_CANCELLED } =
   await import('../../src/lib/fresh-auth.js');
 
 const MODE_KEY = 'pevo_orcid_mode';
@@ -115,5 +115,34 @@ describe('beginSettingsActionOrcidFreshAuth', () => {
     expect(sessionStorage.getItem(MODE_KEY)).toBeNull();
     expect(sessionStorage.getItem(RETURN_PATH_KEY)).toBeNull();
     expect(window.location.href).toBe('');
+  });
+
+  it('a start that comes back stale unwinds without navigating: flow keys cleared, clean cancel', async () => {
+    // The staleness predicate is the consent-op orchestrators' teardown
+    // guard, threaded through so a subject change landing during the start
+    // round-trip cannot navigate the new subject's tab to ORCID for the
+    // subject that left. The unwind clears the flow keys the callback would
+    // otherwise mis-dispatch on and resolves the shared clean-cancel
+    // sentinel; reporting belongs to the guard at the call site, so the
+    // starter itself stays silent.
+    mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+
+    const res = await beginSettingsActionOrcidFreshAuth('change_email', () => true);
+
+    expect(res).toBe(FRESH_AUTH_CANCELLED);
+    expect(window.location.href).toBe('');
+    expect(sessionStorage.getItem(MODE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(RETURN_PATH_KEY)).toBeNull();
+  });
+
+  it('a fresh (non-stale) predicate leaves the navigation untouched', async () => {
+    // The control for the case above: threading the predicate must cost the
+    // ordinary flow nothing.
+    mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+
+    const res = await beginSettingsActionOrcidFreshAuth('change_email', () => false);
+
+    expect(res).toBe(FRESH_AUTH_REDIRECT_PENDING);
+    expect(window.location.href).toBe('https://orcid.org/oauth/authorize?x=1');
   });
 });

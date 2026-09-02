@@ -45,9 +45,10 @@ const FALLBACK_ENGLISH = 'Session inconsistency detected. Please sign in again.'
 const REAUTH_FAILED_SENTINEL = 'LOCALIZED-reauth-failed-sentinel';
 const PROMPT_BUSY_SENTINEL = 'LOCALIZED-prompt-busy-sentinel';
 const REAUTH_REQUIRED_SENTINEL = 'LOCALIZED-reauth-required-sentinel';
+const TEARDOWN_CANCEL_SENTINEL = 'LOCALIZED-teardown-cancel-sentinel';
 const mockI18nStore = {
   messages: {
-    auth: { sessionInconsistency: LOCALIZED_SENTINEL },
+    auth: { sessionInconsistency: LOCALIZED_SENTINEL, reauthCancelled: TEARDOWN_CANCEL_SENTINEL },
     settings: { reauthFailed: REAUTH_FAILED_SENTINEL },
     common: { reauthPromptOpen: PROMPT_BUSY_SENTINEL, reauthRequired: REAUTH_REQUIRED_SENTINEL },
   },
@@ -78,8 +79,12 @@ vi.mock('alpinejs', () => ({
   },
 }));
 
-const { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING, clearPasswordFactorMemo } =
-  await import('../../src/lib/fresh-auth.js');
+const {
+  broadcastWithFreshAuth,
+  FRESH_AUTH_REDIRECT_PENDING,
+  clearPasswordFactorMemo,
+  abandonInFlightAcquisitions,
+} = await import('../../src/lib/fresh-auth.js');
 const { REAUTH_PROMPT_BUSY } = await import('../../src/components/reauth-modal.js');
 
 const PROOF_KEY = 'pevo_fresh_auth_session_proof';
@@ -221,6 +226,34 @@ describe('broadcastWithFreshAuth — error-recovery paths', () => {
     expect(mockToastStore.show).toHaveBeenCalledWith(LOCALIZED_SENTINEL, 'error');
     // No retry on this branch — broadcastOps called exactly once.
     expect(mockBroadcastOps).toHaveBeenCalledTimes(1);
+  });
+
+  it('a teardown between the first attempt and the 401 retry re-acquires nothing for the new subject', async () => {
+    // The retry's re-acquisition reads the store at call time: after a
+    // cross-tab login as someone else, an unguarded retry would read the NEW
+    // subject's factor, prompt them with the generic re-auth message, spend
+    // their mint, and broadcast the departed subject's operations under their
+    // name. The guard opened at entry is the only cross-attempt memory of
+    // which subject the broadcast belongs to, so the retry must refuse and
+    // report rather than re-acquire.
+    setWindow('doomed-by-teardown');
+    mockBroadcastOps.mockImplementationOnce(async () => {
+      abandonInFlightAcquisitions();
+      throw freshAuthError(401, 'expired');
+    });
+
+    const result = await broadcastWithFreshAuth('alice', [['vote', {}]]);
+
+    expect(result).toBe(FRESH_AUTH_REDIRECT_PENDING);
+    // One attempt, no retry: nothing was re-acquired for the new subject.
+    expect(mockBroadcastOps).toHaveBeenCalledTimes(1);
+    expect(mockReauthModal.request).not.toHaveBeenCalled();
+    expect(mockMintSessionAuthProof).not.toHaveBeenCalled();
+    expect(mockFetchEmailStatus).not.toHaveBeenCalled();
+    // The teardown reported exactly once, with its own message — not the
+    // generic re-auth copy a fresh prompt would have carried.
+    expect(mockToastStore.show).toHaveBeenCalledTimes(1);
+    expect(mockToastStore.show).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
   });
 
   it('username_mismatch on the 401 retry tears down too, not just on the first attempt', async () => {

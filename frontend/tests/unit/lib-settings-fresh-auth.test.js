@@ -76,6 +76,13 @@ import {
   dismissOpenReauthPrompt,
 } from '../../src/lib/fresh-auth.js';
 import { REAUTH_PROMPT_BUSY } from '../../src/components/reauth-modal.js';
+// The mocked start round-trip (api.js factory above): the ORCID-start cases
+// park it to hold the flow at the pre-navigation boundary.
+import { startOrcid } from '../../src/api.js';
+// The flow keys the redirect starter writes and its stale unwind must clear —
+// from the shared single source of truth, so the assertions cannot drift from
+// the keys the module actually uses.
+import { ORCID_MODE_KEY, RETURN_PATH_KEY } from '../../src/lib/subject-bound-keys.js';
 
 // The subject-bound scrub as this surface feels it, composed from the exported
 // pieces the real auth-store scrub delegates to (that store's own suite drives
@@ -197,7 +204,7 @@ describe('withSettingsFreshAuth', () => {
   it('set_password is ORCID-only even when the account has a password', async () => {
     const out = await withSettingsFreshAuth('set_password', LIGHT, run);
     expect(out).toEqual({ redirect: true });
-    expect(mockBeginOrcid).toHaveBeenCalledWith('set_password');
+    expect(mockBeginOrcid).toHaveBeenCalledWith('set_password', expect.any(Function));
     expect(reauthRequest).not.toHaveBeenCalled();
     expect(mockMintSettingsActionProof).not.toHaveBeenCalled();
     expect(run).not.toHaveBeenCalled();
@@ -207,7 +214,7 @@ describe('withSettingsFreshAuth', () => {
     passwordless();
     const out = await withSettingsFreshAuth('change_email', LIGHT, run);
     expect(out).toEqual({ redirect: true });
-    expect(mockBeginOrcid).toHaveBeenCalledWith('change_email');
+    expect(mockBeginOrcid).toHaveBeenCalledWith('change_email', expect.any(Function));
     expect(reauthRequest).not.toHaveBeenCalled();
     expect(run).not.toHaveBeenCalled();
   });
@@ -311,7 +318,7 @@ describe('withSettingsFreshAuth', () => {
     passwordless();
     const out = await withSettingsFreshAuth('delete_account', LIGHT, run);
     expect(out).toEqual({ redirect: true });
-    expect(mockBeginOrcid).toHaveBeenCalledWith('delete_account');
+    expect(mockBeginOrcid).toHaveBeenCalledWith('delete_account', expect.any(Function));
     expect(reauthRequest).not.toHaveBeenCalled();
     expect(run).not.toHaveBeenCalled();
   });
@@ -372,7 +379,7 @@ describe('withSettingsFreshAuth', () => {
     statusUnavailable();
     const out = await withSettingsFreshAuth('set_password', LIGHT, run);
     expect(out).toEqual({ redirect: true });
-    expect(mockBeginOrcid).toHaveBeenCalledWith('set_password');
+    expect(mockBeginOrcid).toHaveBeenCalledWith('set_password', expect.any(Function));
     expect(reauthRequest).not.toHaveBeenCalled();
   });
 
@@ -421,7 +428,7 @@ describe('withSettingsFreshAuth', () => {
     const out = await withSettingsFreshAuth('change_email', LIGHT, run);
     expect(out).toEqual({ redirect: true });
     expect(reauthRequest).toHaveBeenCalledTimes(1);
-    expect(mockBeginOrcid).toHaveBeenCalledWith('change_email');
+    expect(mockBeginOrcid).toHaveBeenCalledWith('change_email', expect.any(Function));
     expect(run).not.toHaveBeenCalled();
   });
 
@@ -450,7 +457,7 @@ describe('withSettingsFreshAuth', () => {
     run.mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'));
     const out = await withSettingsFreshAuth('change_email', LIGHT, run);
     expect(out).toEqual({ redirect: true });
-    expect(mockBeginOrcid).toHaveBeenCalledWith('change_email');
+    expect(mockBeginOrcid).toHaveBeenCalledWith('change_email', expect.any(Function));
     expect(run).toHaveBeenCalledTimes(1);
   });
 
@@ -723,5 +730,133 @@ describe('withSettingsFreshAuth', () => {
     expect(out).toEqual({ freshAuthFailed: true });
     expect(run).toHaveBeenCalledTimes(1);
     expect(mockBeginOrcid).not.toHaveBeenCalled();
+  });
+
+  // ─── A subject change while the second attempt is in flight ──────────────
+  //
+  // The wrong-password re-prompt is as human-length a pause as the first
+  // prompt, and the retry mint behind it reads the JWT at call time all the
+  // same. These stage the same teardown one attempt later, where the second
+  // prompt's resumption and the second mint's rejection are the only
+  // boundaries left standing between the flow and the new subject.
+
+  it('a password typed into the second prompt left open across a subject change does not spend a mint', async () => {
+    i18nMessages = { auth: { reauthCancelled: TEARDOWN_CANCEL_SENTINEL } };
+    let resolveSecondPrompt;
+    reauthRequest
+      .mockResolvedValueOnce('first-try')
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSecondPrompt = resolve; }));
+    mockMintSettingsActionProof.mockRejectedValueOnce(codedError('UNAUTHORIZED'));
+
+    const pending = withSettingsFreshAuth('delete_account', LIGHT, run);
+    await tick(); // the first mint 401'd; the second prompt is now open
+    teardownWithoutPromptDismissal();
+
+    resolveSecondPrompt('second-try');
+
+    expect(await pending).toEqual({ cancelled: true });
+    // The first attempt's mint stays the only one: nothing was spent on the
+    // answer that arrived after the teardown.
+    expect(mockMintSettingsActionProof).toHaveBeenCalledTimes(1);
+    expect(run).not.toHaveBeenCalled();
+    expect(toastShow).toHaveBeenCalledTimes(1);
+    expect(toastShow).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
+  });
+
+  it('a second-mint rejection landing after a subject change cancels rather than reporting a spent re-auth', async () => {
+    // Without the teardown check at the second attempt's catch, the rejection
+    // reads as a spent re-auth and whoever the tab now represents is told
+    // "re-authentication failed" for an action the departed subject started.
+    i18nMessages = { auth: { reauthCancelled: TEARDOWN_CANCEL_SENTINEL } };
+    reauthRequest.mockResolvedValueOnce('first-try').mockResolvedValueOnce('second-try');
+    let rejectSecondMint;
+    mockMintSettingsActionProof
+      .mockRejectedValueOnce(codedError('UNAUTHORIZED'))
+      .mockImplementationOnce(() => new Promise((resolve, reject) => { rejectSecondMint = reject; }));
+
+    const pending = withSettingsFreshAuth('delete_account', LIGHT, run);
+    await tick(); // both prompts answered; the second mint is now pending
+    teardownWithoutPromptDismissal();
+
+    rejectSecondMint(codedError('UNAUTHORIZED'));
+
+    expect(await pending).toEqual({ cancelled: true });
+    expect(run).not.toHaveBeenCalled();
+    expect(toastShow).toHaveBeenCalledTimes(1);
+    expect(toastShow).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
+  });
+
+  // ─── A subject change during the ORCID start round-trip ──────────────────
+  //
+  // The redirect starter awaits the start round-trip and then assigns
+  // window.location; the orchestrator's own guard check sits one await
+  // earlier. A teardown landing inside the round-trip therefore used to
+  // navigate the new subject's tab to ORCID for the subject that left — and
+  // with the flow keys already scrubbed, the return would dead-end in the
+  // callback's generic error arm. These drive the REAL starter (the mock
+  // delegates to it) so the pre-navigation re-check, the flow-key unwind, and
+  // the single report are all pinned end to end.
+
+  it('an ORCID start resolving after a subject change cancels instead of navigating', async () => {
+    i18nMessages = { auth: { reauthCancelled: TEARDOWN_CANCEL_SENTINEL } };
+    sessionStorage.clear();
+    passwordless();
+    const actual = await vi.importActual('../../src/lib/fresh-auth.js');
+    mockBeginOrcid.mockImplementation((...a) => actual.beginSettingsActionOrcidFreshAuth(...a));
+    let resolveStart;
+    startOrcid.mockImplementationOnce(() => new Promise((resolve) => { resolveStart = resolve; }));
+    vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/settings' } });
+    try {
+      const pending = withSettingsFreshAuth('change_email', LIGHT, run);
+      await tick(); // the start round-trip is now pending
+      teardownSubjectState();
+
+      resolveStart({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+
+      expect(await pending).toEqual({ cancelled: true });
+      // No navigation for the departed subject, and no flow keys left for the
+      // callback to mis-dispatch on.
+      expect(window.location.href).toBe('');
+      expect(sessionStorage.getItem(ORCID_MODE_KEY)).toBeNull();
+      expect(sessionStorage.getItem(RETURN_PATH_KEY)).toBeNull();
+      expect(toastShow).toHaveBeenCalledTimes(1);
+      expect(toastShow).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('the retry gate\'s ORCID fallback cancels rather than redirects when the start resolves after a subject change', async () => {
+    // The gate's starter hook is the third path into the redirect, and the
+    // outcome mapping is the gate's own: a stale start must come back as
+    // { cancelled }, never as { redirect } for a navigation that is not
+    // happening.
+    i18nMessages = { auth: { reauthCancelled: TEARDOWN_CANCEL_SENTINEL } };
+    sessionStorage.clear();
+    statusUnavailable();
+    mockGetCachedConsentOpProof.mockReturnValueOnce('cached-proof');
+    mockMintSettingsActionProof.mockRejectedValue(codedError('UNAUTHORIZED'));
+    run.mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'));
+    const actual = await vi.importActual('../../src/lib/fresh-auth.js');
+    mockBeginOrcid.mockImplementation((...a) => actual.beginSettingsActionOrcidFreshAuth(...a));
+    let resolveStart;
+    startOrcid.mockImplementationOnce(() => new Promise((resolve) => { resolveStart = resolve; }));
+    vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/settings' } });
+    try {
+      const pending = withSettingsFreshAuth('change_email', LIGHT, run);
+      await tick(); // the assumed mint 401'd at the gate; the start round-trip is pending
+      teardownWithoutPromptDismissal();
+
+      resolveStart({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+
+      expect(await pending).toEqual({ cancelled: true });
+      expect(window.location.href).toBe('');
+      expect(sessionStorage.getItem(ORCID_MODE_KEY)).toBeNull();
+      expect(sessionStorage.getItem(RETURN_PATH_KEY)).toBeNull();
+      expect(toastShow).toHaveBeenCalledTimes(1);
+      expect(toastShow).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

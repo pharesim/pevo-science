@@ -34,11 +34,23 @@ const mockEnsureSessionWindow = vi.fn();
 const mockClearCachedSessionProof = vi.fn();
 const mockSlideSessionWindow = vi.fn();
 const mockHandleSessionInconsistency = vi.fn();
+// The subject-teardown guard as the upload path sees it: a snapshot factory
+// whose answer flips when the mocked teardown "lands". Tests flip
+// `guardTornDown` at the boundary they stage (inside a rejection, inside the
+// acquisition) to model a cross-tab subject change at that instant; `cancel`
+// is observable so a test can assert the teardown reported exactly once (its
+// real body toasts, which is out of this suite's boundary).
+let guardTornDown = false;
+const mockGuardCancel = vi.fn();
 vi.mock('../../src/lib/fresh-auth.js', () => ({
   ensureSessionWindow: (...a) => mockEnsureSessionWindow(...a),
   clearCachedSessionProof: (...a) => mockClearCachedSessionProof(...a),
   slideSessionWindow: (...a) => mockSlideSessionWindow(...a),
   handleSessionInconsistency: (...a) => mockHandleSessionInconsistency(...a),
+  subjectTeardownGuard: () => ({
+    tornDown: () => guardTornDown,
+    cancel: (...a) => mockGuardCancel(...a),
+  }),
   REMINTABLE_REASONS: ['missing', 'expired', 'malformed'],
   // Mirrors the real shared discriminator: the reason is the whole gate, and
   // the ApiRequestErrors this surface sees carry no status to gate on.
@@ -54,6 +66,7 @@ import {
   UPLOAD_REAUTH_REQUIRED,
   UPLOAD_REAUTH_BUSY,
   UPLOAD_SESSION_TORN_DOWN,
+  UPLOAD_SUBJECT_CHANGED,
 } from '../../src/lib/ipfs-upload.js';
 import { ApiRequestError } from '../../src/api.js';
 
@@ -72,6 +85,8 @@ describe('uploadFile', () => {
     mockClearCachedSessionProof.mockReset();
     mockSlideSessionWindow.mockReset();
     mockHandleSessionInconsistency.mockReset();
+    guardTornDown = false;
+    mockGuardCancel.mockReset();
     mockEnsureSessionWindow.mockResolvedValue({ ready: true, proof: 'window-1' });
     mockUploadFileToIpfs.mockResolvedValue(okUpload('bafy'));
   });
@@ -303,11 +318,92 @@ describe('uploadFile', () => {
     expect(mockClearCachedSessionProof).not.toHaveBeenCalled();
   });
 
-  it('a retry after the session went away uploads without a proof rather than a null one', async () => {
-    // A teardown between the attempts leaves the store with no light custody,
-    // so the re-acquisition answers ready-with-no-proof — the self-custody
-    // shape. The first attempt has always branched on that; the retries had
-    // not, and passed the null straight through as a proof.
+  // ─── A subject teardown landing between an attempt and its retry ─────────
+  //
+  // Both retry legs re-acquire the window at call time, and the store answers
+  // for whoever the tab represents NOW. After a cross-tab login as someone
+  // else, an unguarded retry would prompt the new subject with the generic
+  // re-auth message, spend their mint, and push the departed subject's file
+  // through under their name. The guard opened at `uploadFile` entry is the
+  // only cross-attempt memory of which subject the batch belongs to.
+
+  it('a teardown between the rejected-proof attempt and its retry re-acquires nothing', async () => {
+    mockUploadFileToIpfs.mockImplementationOnce(async () => {
+      guardTornDown = true;
+      throw freshAuthRejected('expired');
+    });
+
+    await expect(uploadFile(file())).rejects.toMatchObject({
+      code: UPLOAD_SUBJECT_CHANGED,
+      name: 'UploadSessionError',
+    });
+    // No re-acquisition for the new subject: the only window call is the
+    // first attempt's own pre-flight.
+    expect(mockEnsureSessionWindow).toHaveBeenCalledTimes(1);
+    expect(mockUploadFileToIpfs).toHaveBeenCalledTimes(1);
+    // The teardown reported exactly once, through the guard's own cancel.
+    expect(mockGuardCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('a teardown between the refused-token attempt and its retry re-acquires nothing', async () => {
+    mockUploadFileToIpfs.mockImplementationOnce(async () => {
+      guardTornDown = true;
+      throw codedError('UNAUTHORIZED');
+    });
+
+    await expect(uploadFile(file())).rejects.toMatchObject({
+      code: UPLOAD_SUBJECT_CHANGED,
+      name: 'UploadSessionError',
+    });
+    expect(mockEnsureSessionWindow).toHaveBeenCalledTimes(1);
+    expect(mockUploadFileToIpfs).toHaveBeenCalledTimes(1);
+    expect(mockGuardCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('a teardown cancel during the upload\'s own acquisition throws the silent code, reporting nothing new', async () => {
+    // The acquisition's own teardown boundaries have already reported (or
+    // deliberately stayed silent); the upload layer's job is only to stop the
+    // page speaking a second time. Mapping this cancelled outcome to
+    // UPLOAD_CANCELLED would stack the page's upload-cancelled message on top
+    // of the teardown's own report.
+    mockEnsureSessionWindow.mockImplementationOnce(async () => {
+      guardTornDown = true;
+      return { ready: false, cancelled: true };
+    });
+
+    await expect(uploadFile(file())).rejects.toMatchObject({
+      code: UPLOAD_SUBJECT_CHANGED,
+      name: 'UploadSessionError',
+    });
+    expect(mockUploadFileToIpfs).not.toHaveBeenCalled();
+    // The guard's cancel is NOT this site's to fire: the boundary inside the
+    // acquisition owns the report, and a second cancel here would toast twice.
+    expect(mockGuardCancel).not.toHaveBeenCalled();
+  });
+
+  it('a non-mismatch failure on the retry propagates raw, with no teardown', async () => {
+    // The retry's catch reclassifies exactly one thing: a username mismatch.
+    // Any other failure keeps its own identity so the page layer describes the
+    // real cause instead of tearing down a session that is still consistent.
+    mockUploadFileToIpfs
+      .mockRejectedValueOnce(freshAuthRejected('expired'))
+      .mockRejectedValueOnce(codedError('INTERNAL_ERROR'));
+    mockEnsureSessionWindow
+      .mockResolvedValueOnce({ ready: true, proof: 'window-1' })
+      .mockResolvedValueOnce({ ready: true, proof: 'window-2' });
+
+    await expect(uploadFile(file())).rejects.toMatchObject({ code: 'INTERNAL_ERROR' });
+    expect(mockHandleSessionInconsistency).not.toHaveBeenCalled();
+    expect(mockUploadFileToIpfs).toHaveBeenCalledTimes(2);
+  });
+
+  it('a retry after a cross-tab custody upgrade uploads without a proof rather than a null one', async () => {
+    // A custody upgrade to self-custody landing between the attempts is a
+    // same-subject change: no teardown fires, and the re-acquisition answers
+    // ready-with-no-proof — the self-custody shape, where Keychain signs the
+    // pre-flight and no window exists. The first attempt has always branched
+    // on that; the retries must take the same branch rather than passing the
+    // null through in the options bag.
     mockUploadFileToIpfs
       .mockRejectedValueOnce(codedError('UNAUTHORIZED'))
       .mockResolvedValueOnce(okUpload('bafy2'));
@@ -319,6 +415,27 @@ describe('uploadFile', () => {
 
     expect(res).toEqual(okUpload('bafy2'));
     expect(mockUploadFileToIpfs).toHaveBeenNthCalledWith(2, expect.anything());
+  });
+
+  it('a logged-out store surfaces the API layer\'s raw UNAUTHORIZED, never an unproofed upload', async () => {
+    // With no username in the store the API layer refuses before any upload
+    // runs, so "uploads without a proof after the session went away" cannot
+    // happen: the ready-with-no-proof answer only ever pairs with a
+    // self-custody store. The unproofed attempt sits outside the retry
+    // machinery entirely — no safety-net retry, no teardown — so the refusal
+    // propagates raw with its own identity intact.
+    mockEnsureSessionWindow.mockResolvedValue({ ready: true, proof: null });
+    mockUploadFileToIpfs.mockRejectedValue(new ApiRequestError('UNAUTHORIZED', 'Not logged in'));
+
+    const rejection = await uploadFile(file()).then(
+      () => null,
+      (err) => err,
+    );
+    expect(rejection).toBeInstanceOf(ApiRequestError);
+    expect(rejection).toMatchObject({ code: 'UNAUTHORIZED' });
+    expect(mockUploadFileToIpfs).toHaveBeenCalledTimes(1);
+    expect(mockUploadFileToIpfs).toHaveBeenCalledWith(expect.anything());
+    expect(mockHandleSessionInconsistency).not.toHaveBeenCalled();
   });
 
   it('never blocks a passwordless account up front', async () => {
@@ -351,5 +468,13 @@ describe('describeUploadError', () => {
     // fallthrough into 'common.uploadFailed' is exactly the double-report the
     // code exists to prevent.
     expect(describeUploadError({ code: UPLOAD_SESSION_TORN_DOWN })).toBeNull();
+  });
+
+  it('maps the already-reported subject-change code to null too', () => {
+    // Same contract as the torn-down code: the guard's own cancel has spoken
+    // (or the teardown deliberately stayed silent), so the page layer owes
+    // nothing on top. A null key is what the pages' silent-abort branch keys
+    // on, so this pin is what keeps a future code from toasting twice.
+    expect(describeUploadError({ code: UPLOAD_SUBJECT_CHANGED })).toBeNull();
   });
 });

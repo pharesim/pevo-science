@@ -5,6 +5,7 @@ import {
   clearCachedSessionProof,
   handleSessionInconsistency,
   isUsernameMismatch,
+  subjectTeardownGuard,
   REMINTABLE_REASONS,
 } from './fresh-auth.js';
 
@@ -21,6 +22,13 @@ export const UPLOAD_REAUTH_BUSY = 'UPLOAD_REAUTH_BUSY';
 // message-suppression contract on the broadcast surface). `describeUploadError`
 // maps it to null rather than an i18n key.
 export const UPLOAD_SESSION_TORN_DOWN = 'UPLOAD_SESSION_TORN_DOWN';
+// Already-reported outcome for the other teardown shape: a cross-tab subject
+// change abandoned the batch. The teardown guard's own cancel (or the
+// teardown boundary inside the window acquisition) has spoken by the time
+// this is thrown, so it carries the same null-key silence contract as
+// UPLOAD_SESSION_TORN_DOWN — the page layer must not stack an
+// upload-cancelled or upload-failed message on top.
+export const UPLOAD_SUBJECT_CHANGED = 'UPLOAD_SUBJECT_CHANGED';
 
 class UploadSessionError extends Error {
   constructor(code, message) {
@@ -32,9 +40,12 @@ class UploadSessionError extends Error {
 
 // Map an upload failure to a stable i18n key for the toast / inline message so
 // the page layer never has to branch on raw error codes. Returns null for the
-// already-reported UPLOAD_SESSION_TORN_DOWN code: the teardown's re-login
-// toast has fired by then, so there is no key to show and callers must stay
-// quiet instead of stacking a generic upload-failure message on top.
+// already-reported codes (a torn-down session, a subject change abandoning
+// the batch): the teardown's own toast has fired by then, so there is no key
+// to show and callers must stay quiet instead of stacking a generic
+// upload-failure message on top. The null key IS the page-layer contract for
+// "this failure already spoke" — consumers branch on it, never on the
+// individual codes, so a new already-reported code needs no page edits.
 export function describeUploadError(err) {
   switch (err?.code) {
     case UPLOAD_CANCELLED:
@@ -46,6 +57,7 @@ export function describeUploadError(err) {
     case UPLOAD_REAUTH_BUSY:
       return 'common.reauthPromptOpen';
     case UPLOAD_SESSION_TORN_DOWN:
+    case UPLOAD_SUBJECT_CHANGED:
       return null;
     default:
       return 'common.uploadFailed';
@@ -111,6 +123,7 @@ const UPLOAD_ERROR_TEXT = Object.freeze({
   [UPLOAD_REAUTH_BUSY]: 'Another confirmation is open',
   [UPLOAD_REAUTH_REQUIRED]: 'Re-authentication required',
   [UPLOAD_SESSION_TORN_DOWN]: 'Session torn down. Sign in again.',
+  [UPLOAD_SUBJECT_CHANGED]: 'Session changed. Upload abandoned.',
 });
 
 // Every UploadSessionError this module raises is built here, so the table above
@@ -118,10 +131,20 @@ const UPLOAD_ERROR_TEXT = Object.freeze({
 // inline strings at the raise sites.
 const uploadError = (code) => new UploadSessionError(code, UPLOAD_ERROR_TEXT[code]);
 
-async function windowProof() {
+async function windowProof(guard) {
   const outcome = await ensureSessionWindow({ minRemainingMs: 0, allowRedirect: false });
   if (outcome.ready) return outcome.proof;
   const outcomeKey = Object.keys(UPLOAD_CODE_BY_WINDOW_OUTCOME).find((key) => outcome[key]);
+  // A cancelled outcome that coincides with a subject teardown is the
+  // teardown's own unwind, not the user stopping: the acquisition's teardown
+  // boundary has reported it (or deliberately stayed silent), so it carries
+  // the already-reported silent code rather than UPLOAD_CANCELLED — whose
+  // upload-cancelled message the page would stack on top as a second toast.
+  // The guard is consulted, never cancelled here: firing `guard.cancel()` at
+  // this site too would be that same double report.
+  if (outcomeKey === 'cancelled' && guard.tornDown()) {
+    throw uploadError(UPLOAD_SUBJECT_CHANGED);
+  }
   const code = outcomeKey ? UPLOAD_CODE_BY_WINDOW_OUTCOME[outcomeKey] : UPLOAD_CANCELLED;
   throw uploadError(code);
 }
@@ -155,12 +178,26 @@ function tornDownSession() {
 // Only a mismatch is reclassified. `windowProof()`'s own UploadSessionErrors
 // (a dismissed prompt, a spent re-auth, a refused round-trip) are the coded
 // vocabulary every consumer already describes, so they pass straight through.
-async function retryOnce(file) {
+async function retryOnce(file, guard) {
+  // The re-acquisition reads the store at call time: past a cross-tab subject
+  // change it would prompt whoever the tab NOW represents with the generic
+  // re-auth message, spend their mint, and push the departed subject's file
+  // through under their name. The guard opened at `uploadFile` entry is the
+  // only cross-attempt memory of which subject the batch belongs to, so a
+  // torn-down retry reports once and unwinds with the silent code instead of
+  // re-acquiring.
+  if (guard.tornDown()) {
+    guard.cancel();
+    throw uploadError(UPLOAD_SUBJECT_CHANGED);
+  }
   try {
-    const proof = await windowProof();
+    const proof = await windowProof(guard);
     // Same self-custody branch the first attempt takes: no window means no
-    // proof to attach. Reachable on a retry because a teardown between the
-    // attempts leaves the store with no light custody at all.
+    // proof to attach. Shape parity with the first attempt — a null proof
+    // takes the same unproofed api.js call as no option at all — and the one
+    // reachable retry case is a same-subject cross-tab custody upgrade to
+    // self-custody between the attempts (a logged-out store never gets this
+    // far: the api layer refuses unauthenticated uploads before any leg runs).
     if (!proof) return await uploadFileToIpfs(file);
     return await attemptOnce(file, proof);
   } catch (err) {
@@ -175,7 +212,12 @@ async function retryOnce(file) {
 // proof — `ensureSessionWindow` returns a null proof for it. Light accounts
 // attach their live window proof.
 export async function uploadFile(file) {
-  const proof = await windowProof();
+  // Opened before the first await so it spans the whole upload, retries
+  // included: the pre-flight, the transfer, and both retry legs are each a
+  // boundary a cross-tab subject change can land in, and the retries below
+  // re-acquire the window for whoever the tab represents at that moment.
+  const guard = subjectTeardownGuard();
+  const proof = await windowProof(guard);
   if (!proof) return uploadFileToIpfs(file);
 
   try {
@@ -188,7 +230,7 @@ export async function uploadFile(file) {
     // real re-auth act.
     if (err?.code === 'FRESH_AUTH_REQUIRED' && REMINTABLE_REASONS.includes(err.details?.reason)) {
       clearCachedSessionProof();
-      return retryOnce(file);
+      return retryOnce(file, guard);
     }
     // username_mismatch means the proof in hand belongs to a different account
     // than the JWT subject — a corrupted session no re-mint fixes, because a
@@ -214,7 +256,7 @@ export async function uploadFile(file) {
     // Retry the two-step once as a safety net; the pre-flight cache-hits the
     // live window and mints a fresh token.
     if (err?.code === 'UNAUTHORIZED') {
-      return retryOnce(file);
+      return retryOnce(file, guard);
     }
     throw err;
   }

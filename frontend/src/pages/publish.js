@@ -1,5 +1,5 @@
 import Alpine from 'alpinejs';
-import { uploadFile, describeUploadError, UPLOAD_SESSION_TORN_DOWN } from '../lib/ipfs-upload.js';
+import { uploadFile, describeUploadError } from '../lib/ipfs-upload.js';
 import {
   broadcastWithFreshAuth,
   freshAuthWindowReady,
@@ -860,17 +860,19 @@ export function initPublishPage() {
             uploadRes = await uploadFile(this.pdfFile);
           } catch (err) {
             console.warn('[publish pdf upload]', err);
-            // A torn-down session already spoke through the teardown's own
-            // re-login toast inside uploadFile; a second toast here would
-            // double-report. Unwind to idle with no further message, the same
-            // clean abort the FRESH_AUTH_REDIRECT_PENDING branch below takes.
-            if (err?.code === UPLOAD_SESSION_TORN_DOWN) {
+            // A null key is an already-reported failure (a torn-down session,
+            // a subject change abandoning the batch): its own toast has
+            // spoken, and a second toast here would double-report. Unwind to
+            // idle with no further message, the same clean abort the
+            // FRESH_AUTH_REDIRECT_PENDING branch below takes.
+            const uploadErrorKey = describeUploadError(err);
+            if (uploadErrorKey === null) {
               this.step = 'idle';
               return;
             }
             // The PDF row has no inline error slot; surface the reason as a
             // toast before aborting.
-            Alpine.store('toast').show(this.$t(describeUploadError(err)), 'error');
+            Alpine.store('toast').show(this.$t(uploadErrorKey), 'error');
             throw err;
           }
           if (!this._mounted) return;
@@ -901,14 +903,17 @@ export function initPublishPage() {
               // failures and the specific reason for a cancelled or failed
               // re-auth; the thrown Error (swallowed by the outer catch) aborts.
               console.warn('[publish supplementary upload]', err);
-              // Torn-down session: the teardown's re-login toast already
-              // reported it. No inline row (it would invite a retry that
-              // cannot succeed until re-login) and no error surface on top.
-              if (err?.code === UPLOAD_SESSION_TORN_DOWN) {
+              // A null key is an already-reported failure (a torn-down
+              // session, a subject change abandoning the batch): its own
+              // toast has spoken. No inline row (it would invite a retry
+              // that cannot succeed for this session) and no error surface
+              // on top.
+              const uploadErrorKey = describeUploadError(err);
+              if (uploadErrorKey === null) {
                 this.step = 'idle';
                 return;
               }
-              sf.error = this.$t(describeUploadError(err));
+              sf.error = this.$t(uploadErrorKey);
               throw new Error(this.$t('publish.supplementaryUploadFailed', { name: sf.fileName }));
             } finally {
               sf.uploading = false;
