@@ -6,6 +6,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // assert the orchestration: custody routing, cache reuse, factor selection,
 // password re-prompt, ORCID redirect, the 401 re-mint+retry, and the 403/wrong-
 // mechanism generic-failure outcome.
+//
+// Mocking justification (project-CLAUDE.md carve-out, clause-a/b): the mocked
+// modules are mint transport + cache, not auth-verification paths; the proof's
+// cryptographic binding is verified server-side (backend integration tests).
+// Clause-c real-path companion: both factors are driven against the real
+// test-mode stack. tests/e2e/settings.spec.js covers the PASSWORD factor (the
+// change-email reauth modal), and tests/e2e/settings-orcid-factor.spec.js
+// covers the ORCID factor's full start/callback/resume round-trip, including
+// one case that completes on a genuine backend-minted proof.
 const mockMintSettingsActionProof = vi.fn();
 const mockFetchEmailStatus = vi.fn();
 vi.mock('../../src/api.js', () => ({
@@ -82,19 +91,29 @@ import { REAUTH_PROMPT_BUSY } from '../../src/components/reauth-modal.js';
 // The mocked start round-trip (api.js factory above): the ORCID-start cases
 // park it to hold the flow at the pre-navigation boundary.
 import { startOrcid } from '../../src/api.js';
-// The flow keys the redirect starter writes and its stale unwind must clear —
-// from the shared single source of truth, so the assertions cannot drift from
-// the keys the module actually uses.
-import { ORCID_MODE_KEY, RETURN_PATH_KEY } from '../../src/lib/subject-bound-keys.js';
+// The storage half of the subject scrub, plus the two flow keys the redirect
+// starter writes and the assertions below read back — all from the shared
+// single source of truth, so neither the staged teardown nor the assertions
+// can drift from the keys the module actually uses.
+import {
+  ORCID_MODE_KEY,
+  RETURN_PATH_KEY,
+  SUBJECT_BOUND_STORAGE_KEYS,
+} from '../../src/lib/subject-bound-keys.js';
 
-// The subject-bound scrub as this surface feels it, composed from the exported
-// pieces the real auth-store scrub delegates to (that store's own suite drives
-// the whole scrub end to end). The window cache and the ORCID flow keys are
-// omitted: this surface touches neither.
+// The subject-bound scrub as this surface feels it: the exported module-state
+// clears this surface can observe, plus the same storage-key removal loop the
+// real auth-store scrub runs (that store's own suite drives the whole scrub end
+// to end). The loop is what makes the ORCID flow keys null after a staged
+// teardown here, exactly as the scrub does in production — the redirect
+// starter's own unwind must never be what these assertions rest on. One piece
+// the loop cannot reach is the session window's in-memory mirror, which only
+// `clearCachedSessionProof` drops; this surface never populates it.
 function teardownSubjectState() {
   clearPasswordFactorMemo();
   abandonInFlightAcquisitions();
   dismissOpenReauthPrompt();
+  for (const key of SUBJECT_BOUND_STORAGE_KEYS) sessionStorage.removeItem(key);
 }
 
 // The same teardown MINUS the prompt dismissal, for the cases that have to
@@ -106,6 +125,7 @@ function teardownSubjectState() {
 function teardownWithoutPromptDismissal() {
   clearPasswordFactorMemo();
   abandonInFlightAcquisitions();
+  for (const key of SUBJECT_BOUND_STORAGE_KEYS) sessionStorage.removeItem(key);
 }
 
 // Real timers in this file; a macrotask hop lets a pending orchestration
@@ -797,8 +817,8 @@ describe('withSettingsFreshAuth', () => {
   // navigate the new subject's tab to ORCID for the subject that left — and
   // with the flow keys already scrubbed, the return would dead-end in the
   // callback's generic error arm. These drive the REAL starter (the mock
-  // delegates to it) so the pre-navigation re-check, the flow-key unwind, and
-  // the single report are all pinned end to end.
+  // delegates to it) so the pre-navigation re-check, the scrub's own key
+  // removal, and the single report are all pinned end to end.
 
   it('an ORCID start resolving after a subject change cancels instead of navigating', async () => {
     i18nMessages = { auth: { reauthCancelled: TEARDOWN_CANCEL_SENTINEL } };

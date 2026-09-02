@@ -360,10 +360,28 @@ describe('uploadFile', () => {
     expect(mockGuardCancel).toHaveBeenCalledTimes(1);
   });
 
+  it('a teardown between the attempt and its retry leaves the successor\'s window alone', async () => {
+    // Same invariant as the broadcast surface's (pinned there against a real
+    // cache; here the cache is mocked, so the pin is that the eviction never
+    // runs). The subject scrub drops this flight's window before it bumps the
+    // generation, so past a teardown the cached entry belongs to whoever the
+    // tab represents next, and dropping it would charge them a re-auth for a
+    // rejection that was never theirs.
+    mockUploadFileToIpfs.mockImplementationOnce(async () => {
+      guardTornDown = true;
+      throw freshAuthRejected('expired');
+    });
+
+    await expect(uploadFile(file())).rejects.toMatchObject({
+      code: UPLOAD_SUBJECT_CHANGED,
+    });
+    expect(mockClearCachedSessionProof).not.toHaveBeenCalled();
+  });
+
   it('a teardown cancel during the upload\'s own acquisition throws the silent code, reporting nothing new', async () => {
-    // The acquisition's own teardown boundaries have already reported (or
-    // deliberately stayed silent); the upload layer's job is only to stop the
-    // page speaking a second time. Mapping this cancelled outcome to
+    // Whatever owed the user a word about this teardown has already said it;
+    // the upload layer's job is only to stop the page speaking a second time.
+    // Mapping this cancelled outcome to
     // UPLOAD_CANCELLED would stack the page's upload-cancelled message on top
     // of the teardown's own report.
     mockEnsureSessionWindow.mockImplementationOnce(async () => {
@@ -471,9 +489,9 @@ describe('describeUploadError', () => {
   });
 
   it('maps the already-reported subject-change code to null too', () => {
-    // Same contract as the torn-down code: the guard's own cancel has spoken
-    // (or the teardown deliberately stayed silent), so the page layer owes
-    // nothing on top. A null key is what the pages' silent-abort branch keys
+    // Same contract as the torn-down code: whatever owed the user a word has
+    // said it by the time this code is thrown, so the page owes nothing on
+    // top. A null key is what the pages' silent-abort branch keys
     // on, so this pin is what keeps a future code from toasting twice.
     expect(describeUploadError({ code: UPLOAD_SUBJECT_CHANGED })).toBeNull();
   });

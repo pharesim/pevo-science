@@ -89,19 +89,29 @@ import { REAUTH_PROMPT_BUSY } from '../../src/components/reauth-modal.js';
 // The mocked start round-trip (api.js factory above): the ORCID-start cases
 // park it to hold the flow at the pre-navigation boundary.
 import { startOrcid } from '../../src/api.js';
-// The flow keys the redirect starter writes and its stale unwind must clear —
-// from the shared single source of truth, so the assertions cannot drift from
-// the keys the module actually uses.
-import { ORCID_MODE_KEY, RETURN_PATH_KEY } from '../../src/lib/subject-bound-keys.js';
+// The storage half of the subject scrub, plus the two flow keys the redirect
+// starter writes and the assertions below read back — all from the shared
+// single source of truth, so neither the staged teardown nor the assertions
+// can drift from the keys the module actually uses.
+import {
+  ORCID_MODE_KEY,
+  RETURN_PATH_KEY,
+  SUBJECT_BOUND_STORAGE_KEYS,
+} from '../../src/lib/subject-bound-keys.js';
 
-// The subject-bound scrub as this surface feels it, composed from the exported
-// pieces the real auth-store scrub delegates to (that store's own suite drives
-// the whole scrub end to end). The window cache is omitted: this surface never
-// touches it.
+// The subject-bound scrub as this surface feels it: the exported module-state
+// clears this surface can observe, plus the same storage-key removal loop the
+// real auth-store scrub runs (that store's own suite drives the whole scrub end
+// to end). The loop is what makes the ORCID flow keys null after a staged
+// teardown here, exactly as the scrub does in production — the redirect
+// starter's own unwind must never be what these assertions rest on. One piece
+// the loop cannot reach is the session window's in-memory mirror, which only
+// `clearCachedSessionProof` drops; this surface never populates it.
 function teardownSubjectState() {
   clearPasswordFactorMemo();
   abandonInFlightAcquisitions();
   dismissOpenReauthPrompt();
+  for (const key of SUBJECT_BOUND_STORAGE_KEYS) sessionStorage.removeItem(key);
 }
 
 // The same teardown MINUS the prompt dismissal, for the cases that have to
@@ -111,6 +121,7 @@ function teardownSubjectState() {
 function teardownWithoutPromptDismissal() {
   clearPasswordFactorMemo();
   abandonInFlightAcquisitions();
+  for (const key of SUBJECT_BOUND_STORAGE_KEYS) sessionStorage.removeItem(key);
 }
 
 // Real timers in this file; a macrotask hop lets a pending orchestration
@@ -567,8 +578,8 @@ describe('withAuthorshipFreshAuth', () => {
   // earlier. A teardown landing inside the round-trip therefore used to
   // navigate the new subject's tab to ORCID for the subject that left. These
   // drive the REAL starter (the mock delegates to it) so the pre-navigation
-  // re-check, the flow-key unwind, and the single report are pinned end to
-  // end on this surface too.
+  // re-check, the scrub's own key removal, and the single report are pinned
+  // end to end on this surface too.
 
   it('an ORCID start resolving after a subject change cancels instead of navigating', async () => {
     i18nMessages = { auth: { reauthCancelled: TEARDOWN_CANCEL_SENTINEL } };

@@ -77,12 +77,14 @@ function getCachedProof(target) {
 // Start this surface's ORCID round-trip under the op's teardown guard. The
 // start is itself an await a subject teardown can land in, so the starter
 // re-checks `guard.tornDown` immediately before assigning window.location:
-// stale starts unwind without navigating (flow keys cleared) and resolve the
-// shared clean-cancel sentinel, which this wrapper reports through
+// stale starts unwind without navigating and resolve the shared clean-cancel
+// sentinel, which this wrapper reports through
 // `guard.cancel()` — once, here, for all three paths into the redirect (the
 // passwordless branch, the assumed-password fallback, and the retry gate's
 // hook), so no path can navigate the new subject's tab to ORCID for the
-// subject that left, and none can drift on how the unwind reports.
+// subject that left, and none can drift on how the unwind reports. The flow
+// keys the start wrote are the subject scrub's to remove, not this unwind's:
+// the predicate reads true only after that scrub has run.
 async function beginOrcidUnderGuard(target, guard) {
   const started = await beginAuthorshipOrcidFreshAuth(target, guard.tornDown);
   return started === FRESH_AUTH_CANCELLED ? guard.cancel() : started;

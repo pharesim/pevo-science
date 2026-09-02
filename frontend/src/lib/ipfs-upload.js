@@ -23,10 +23,10 @@ export const UPLOAD_REAUTH_BUSY = 'UPLOAD_REAUTH_BUSY';
 // maps it to null rather than an i18n key.
 export const UPLOAD_SESSION_TORN_DOWN = 'UPLOAD_SESSION_TORN_DOWN';
 // Already-reported outcome for the other teardown shape: a cross-tab subject
-// change abandoned the batch. The teardown guard's own cancel (or the
-// teardown boundary inside the window acquisition) has spoken by the time
-// this is thrown, so it carries the same null-key silence contract as
-// UPLOAD_SESSION_TORN_DOWN — the page layer must not stack an
+// change abandoned the batch. Whatever owed the user a word about that
+// teardown has already said it — the guard's own cancel, or the teardown that
+// narrated itself — so this carries the same null-key silence contract as
+// UPLOAD_SESSION_TORN_DOWN and the page layer must not stack an
 // upload-cancelled or upload-failed message on top.
 export const UPLOAD_SUBJECT_CHANGED = 'UPLOAD_SUBJECT_CHANGED';
 
@@ -136,9 +136,10 @@ async function windowProof(guard) {
   if (outcome.ready) return outcome.proof;
   const outcomeKey = Object.keys(UPLOAD_CODE_BY_WINDOW_OUTCOME).find((key) => outcome[key]);
   // A cancelled outcome that coincides with a subject teardown is the
-  // teardown's own unwind, not the user stopping: the acquisition's teardown
-  // boundary has reported it (or deliberately stayed silent), so it carries
-  // the already-reported silent code rather than UPLOAD_CANCELLED — whose
+  // teardown's own unwind, not the user stopping: whatever spoke for that
+  // teardown has already spoken by now (and where the cancel was the user's
+  // own dismissal, the silence is the decision), so this outcome carries the
+  // already-reported silent code rather than UPLOAD_CANCELLED — whose
   // upload-cancelled message the page would stack on top as a second toast.
   // The guard is consulted, never cancelled here: firing `guard.cancel()` at
   // this site too would be that same double report.
@@ -229,7 +230,14 @@ export async function uploadFile(file) {
     // means the session window itself was rejected: drop it and re-acquire, a
     // real re-auth act.
     if (err?.code === 'FRESH_AUTH_REQUIRED' && REMINTABLE_REASONS.includes(err.details?.reason)) {
-      clearCachedSessionProof();
+      // Only this flight's own window is this leg's to drop. The generation
+      // moves solely inside the subject scrub, which evicts the window slot in
+      // the same synchronous block BEFORE it bumps — so past a teardown this
+      // flight's window is already gone and the entry sitting here belongs to
+      // whoever the tab represents next. Evicting it would charge them a
+      // re-auth for a rejection that was never theirs; `retryOnce` unwinds the
+      // flight one statement later anyway.
+      if (!guard.tornDown()) clearCachedSessionProof();
       return retryOnce(file, guard);
     }
     // username_mismatch means the proof in hand belongs to a different account

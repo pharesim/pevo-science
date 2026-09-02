@@ -147,6 +147,11 @@ export function passwordPromptMessage() {
 // fallback for the not-yet-loaded-bundle case.
 export function handleSessionInconsistency() {
   Alpine.store('auth')?.disconnect();
+  // The disconnect runs the subject scrub, which abandons every in-flight
+  // acquisition. Claim that teardown before speaking: the message below is the
+  // one the user needs, and a flight parked at its own teardown boundary would
+  // otherwise resume and stack a second, vaguer message on top of it.
+  claimTeardownReport();
   toastLocalized('auth', 'sessionInconsistency', 'Session inconsistency detected. Please sign in again.');
 }
 
@@ -289,19 +294,45 @@ export async function mintViaPasswordFactor(
 // silent — but it speaks first, because the two are otherwise
 // indistinguishable to a user who typed a password and watched nothing happen.
 // A user's own dismissal stays silent; only a teardown-driven cancel reports.
+//
+// The report is once per TEARDOWN, not once per guard. One subject change can
+// abandon several flights at once — the acquisition slots are keyed on the
+// redirect posture, so a page's own submit gate and the editor's inline-image
+// upload can be parked on the same coalesced factor read — and each holds its
+// own guard. Reporting per guard would stack identical messages describing one
+// event. The claim below is what collapses them, and it is also how a teardown
+// that already narrates itself (`handleSessionInconsistency`) keeps the flights
+// it abandoned from talking over it.
 export function subjectTeardownGuard() {
   const generation = _acquireGeneration;
   return {
     tornDown: () => generation !== _acquireGeneration,
     cancel: () => {
-      toastLocalized(
-        'auth',
-        'reauthCancelled',
-        'Your session changed, so the confirmation was cancelled.',
-      );
+      if (_reportedTeardownGeneration !== _acquireGeneration) {
+        claimTeardownReport();
+        toastLocalized(
+          'auth',
+          'reauthCancelled',
+          'Your session changed, so the confirmation was cancelled.',
+        );
+      }
       return FRESH_AUTH_CANCELLED;
     },
   };
+}
+
+// The teardown generation whose message has already been delivered. Compared
+// against `_acquireGeneration`, so it only ever suppresses a second report of
+// the SAME teardown: the next scrub bumps the generation past this mark and the
+// first guard to unwind under it speaks again.
+let _reportedTeardownGeneration = -1;
+
+// Mark the current teardown as narrated. Called by `cancel()` as it reports,
+// and by any teardown that shows a message of its own BEFORE the flights it
+// abandoned resume — those flights then unwind silently rather than adding a
+// second message about one event.
+function claimTeardownReport() {
+  _reportedTeardownGeneration = _acquireGeneration;
 }
 
 // The corrupted-session discriminator, in one place so the first-attempt and
@@ -836,38 +867,57 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
   const slot = allowRedirect ? 'permissive' : 'suppressed';
   if (_acquireInFlight[slot]) return _acquireInFlight[slot];
 
-  // Captured before any await: a teardown bumping the generation mid-flight
+  // Opened before any await: a teardown bumping the generation mid-flight
   // turns every later step into a clean cancel (see
   // abandonInFlightAcquisitions).
-  const generation = _acquireGeneration;
+  //
+  // Which boundaries REPORT that cancel is a deliberate split. The two below
+  // that call `guard.cancel()` are the ones no other layer speaks for: past
+  // them the flight resolves `cancelled`, an outcome the shared dispatch
+  // table keeps silent by design, and the upload pre-flight then throws its
+  // own already-reported code — so without a word here the user would answer
+  // nothing, see nothing, and watch the action end. The prompt, the mint and
+  // the post-mint boundaries stay silent for the opposite reason:
+  // `mintViaPasswordFactor` holds its own guard across exactly those awaits
+  // and has already spoken by the time control returns here, so a second
+  // report would be the double toast rather than the missing one.
+  const guard = subjectTeardownGuard();
   const flight = (async () => {
     // The navigation policy for the passwordless outcome, applied in one
     // place: the known-passwordless branch and the assumed-password fallback
     // below share it, so the two cannot diverge on when a redirect may fire.
     // The redirect leg carries the flight's teardown predicate: the start
-    // round-trip inside it is the one await left between the generation
-    // checks here and the navigation, so the helper re-checks at that
-    // boundary and unwinds a stale flight as a clean cancel instead of
-    // navigating for a subject this tab no longer represents.
-    const orcidOrRefuse = () =>
-      allowRedirect
-        ? beginSessionAuthOrcidRedirect(() => generation !== _acquireGeneration)
-        : FRESH_AUTH_REAUTH_REQUIRED;
+    // round-trip inside it is the one await left between the teardown checks
+    // here and the navigation, so the helper re-checks at that boundary and
+    // unwinds a stale flight instead of navigating for a subject this tab no
+    // longer represents. Nothing downstream of that unwind reports it, so the
+    // report belongs here.
+    const orcidOrRefuse = async () => {
+      if (!allowRedirect) return FRESH_AUTH_REAUTH_REQUIRED;
+      const started = await beginSessionAuthOrcidRedirect(guard.tornDown);
+      return started === FRESH_AUTH_CANCELLED ? guard.cancel() : started;
+    };
 
     const factor = await resolvePasswordFactor();
-    if (generation !== _acquireGeneration) return FRESH_AUTH_CANCELLED;
+    // The status read is a real round-trip, and a negative or assumed answer
+    // is never memoized, so every cold acquisition awaits it — this is the
+    // teardown boundary a cross-tab subject change is likeliest to land in.
+    // It is also the pre-call re-check `mintViaPasswordFactor`'s default
+    // guard depends on (see its docblock): nothing may be awaited between
+    // here and the call below.
+    if (guard.tornDown()) return guard.cancel();
     if (!factor.usesPassword) return orcidOrRefuse();
 
     const minted = await mintViaPasswordFactor(
       async (password) => {
         // The prompt can sit open across a teardown; do not spend a mint on
         // a subject this tab no longer represents.
-        if (generation !== _acquireGeneration) return FRESH_AUTH_CANCELLED;
+        if (guard.tornDown()) return FRESH_AUTH_CANCELLED;
         const issued = await mintSessionAuthProof(password);
         // A teardown while the mint round-trip was pending: the scrub has
         // already emptied the window slot, and this write would repopulate
         // it under the wrong subject. Drop the issuance and unwind.
-        if (generation !== _acquireGeneration) return FRESH_AUTH_CANCELLED;
+        if (guard.tornDown()) return FRESH_AUTH_CANCELLED;
         cacheSessionProof(
           issued.fresh_auth_proof,
           issued.expires_at,
@@ -877,7 +927,7 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
       },
       { message: passwordPromptMessage(), assumed: factor.assumed },
     );
-    if (generation !== _acquireGeneration) return FRESH_AUTH_CANCELLED;
+    if (guard.tornDown()) return FRESH_AUTH_CANCELLED;
     // The assumed factor turned out to be the wrong guess: the account has no
     // password to prompt for, so the ORCID round-trip is the way through.
     if (minted === FRESH_AUTH_ORCID_FALLBACK) return orcidOrRefuse();
@@ -1161,8 +1211,9 @@ async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault, isSta
 // threaded to the redirect helper's pre-navigation re-check: the start
 // round-trip is an await a subject teardown can land in, and without the
 // re-check the navigation would fire for the subject that left. A stale start
-// resolves FRESH_AUTH_CANCELLED with the flow keys cleared; reporting stays
-// with the caller's guard.
+// resolves FRESH_AUTH_CANCELLED without navigating; the flow keys it wrote are
+// the subject scrub's to remove (the predicate reads true only after that
+// scrub has run), and reporting stays with the caller's guard.
 export async function beginSettingsActionOrcidFreshAuth(action, isStale) {
   return beginOrcidFreshAuthRedirect('fresh_auth', { action }, '/settings', isStale);
 }
@@ -1380,7 +1431,16 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
       // account recovery ended every outstanding proof. That is not a spent
       // single-use token to be re-minted behind the user's back: drop the dead
       // window and put a real re-auth act in front of them.
-      clearCachedSessionProof();
+      //
+      // Only this flight's own window is ours to drop. The generation moves
+      // solely inside the subject scrub, which evicts the window slot in the
+      // same synchronous block BEFORE it bumps — so a torn-down flight's own
+      // window is already gone, and whatever sits in the cache now was minted
+      // by whoever the tab represents next. Evicting that would charge the
+      // successor a re-auth for a rejection that was never theirs. The
+      // mismatch arm below is unaffected either way: its
+      // `handleSessionInconsistency` disconnect runs the same scrub again.
+      if (!guard.tornDown()) clearCachedSessionProof();
 
       if (
         err.status === 401 &&

@@ -81,10 +81,15 @@ vi.mock('alpinejs', () => ({
 
 const {
   broadcastWithFreshAuth,
+  freshAuthWindowReady,
   FRESH_AUTH_REDIRECT_PENDING,
   clearPasswordFactorMemo,
   abandonInFlightAcquisitions,
 } = await import('../../src/lib/fresh-auth.js');
+
+// Real timers in this file; a macrotask hop lets a parked acquisition advance
+// to the await currently blocking it.
+const tick = () => new Promise((resolve) => { setTimeout(resolve, 0); });
 const { REAUTH_PROMPT_BUSY } = await import('../../src/components/reauth-modal.js');
 
 const PROOF_KEY = 'pevo_fresh_auth_session_proof';
@@ -252,6 +257,66 @@ describe('broadcastWithFreshAuth — error-recovery paths', () => {
     expect(mockFetchEmailStatus).not.toHaveBeenCalled();
     // The teardown reported exactly once, with its own message — not the
     // generic re-auth copy a fresh prompt would have carried.
+    expect(mockToastStore.show).toHaveBeenCalledTimes(1);
+    expect(mockToastStore.show).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
+  });
+
+  it('a mismatch teardown is not talked over by the flights it abandoned', async () => {
+    // handleSessionInconsistency disconnects, which runs the subject scrub and
+    // so abandons every acquisition in flight. Its own message is the one the
+    // user needs. A gate parked at its factor read resumes into a torn-down
+    // guard, and without the teardown claim it would stack a second, vaguer
+    // message on top of a report the user has already been given.
+    //
+    // The window is seeded short: past the gate's pre-flight margin (so the
+    // gate acquires cold and parks) but still live for the broadcast, whose
+    // acquisition takes no margin at all.
+    mockAuthStore.disconnect.mockImplementation(() => { abandonInFlightAcquisitions(); });
+    // The tab-lifetime factor memo would answer the gate's status question
+    // without a round-trip, leaving nothing parked for the teardown to land in.
+    clearPasswordFactorMemo();
+    setWindow('about-to-close', { idleMs: 30_000 });
+    let resolveStatus;
+    mockFetchEmailStatus.mockReturnValueOnce(new Promise((resolve) => { resolveStatus = resolve; }));
+
+    const gate = freshAuthWindowReady();
+    await tick(); // the gate's factor read is now parked
+    mockBroadcastOps.mockRejectedValueOnce(freshAuthError(403, 'username_mismatch'));
+    const broadcast = await broadcastWithFreshAuth('alice', [['vote', {}]]);
+
+    resolveStatus({ status: 'ok', data: { hasPassword: true } });
+    expect(await gate).toBe(false);
+    expect(broadcast).toBe(FRESH_AUTH_REDIRECT_PENDING);
+    // Exactly one message, and it is the teardown's own.
+    expect(mockToastStore.show).toHaveBeenCalledTimes(1);
+    expect(mockToastStore.show).toHaveBeenCalledWith(LOCALIZED_SENTINEL, 'error');
+  });
+
+  it('a late 401 from a departed subject leaves the successor\'s window alone', async () => {
+    // The dead-window eviction above is right for the flight that owns the
+    // window, and wrong the instant that flight is no longer the tab's. The
+    // subject scrub evicts this flight's window before it bumps the
+    // generation, so once the guard reads torn-down the only entry that can
+    // be in the cache was minted by whoever the tab represents NOW. Evicting
+    // it charges the successor a re-auth act for a rejection that was never
+    // theirs.
+    setWindow('doomed-by-teardown');
+    mockBroadcastOps.mockImplementationOnce(async () => {
+      abandonInFlightAcquisitions(); // the scrub's generation bump
+      setWindow('successor-window'); // the next subject opened their own
+      throw freshAuthError(401, 'expired');
+    });
+
+    const result = await broadcastWithFreshAuth('alice', [['vote', {}]]);
+
+    expect(result).toBe(FRESH_AUTH_REDIRECT_PENDING);
+    // Read the raw entry first: an eviction leaves null, and asserting on the
+    // parsed token would surface that as a TypeError instead of a diff.
+    const survivor = sessionStorage.getItem(PROOF_KEY);
+    expect(survivor).not.toBeNull();
+    expect(JSON.parse(survivor).token).toBe('successor-window');
+    // The departed flight still unwinds without re-acquiring, reporting once.
+    expect(mockBroadcastOps).toHaveBeenCalledTimes(1);
     expect(mockToastStore.show).toHaveBeenCalledTimes(1);
     expect(mockToastStore.show).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
   });

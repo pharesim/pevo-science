@@ -10,8 +10,11 @@
 // review, and edit, and that redirect is what the old tests asserted.
 //
 // Mocking justification (clause-a of project-CLAUDE.md "Carve-out for
-// deterministic edge-case coverage"): `fetchEmailStatus`, `mintSessionAuthProof`
-// and `startOrcid` perform real fetch() against the backend. Reproducing the
+// deterministic edge-case coverage"): `fetchEmailStatus`, `mintSessionAuthProof`,
+// `startOrcid` and `uploadFileToIpfs` perform real fetch() against the backend.
+// The upload transport is here because one case drives the real
+// `lib/ipfs-upload.js` over this suite's real acquisition, to pin which
+// teardown boundary speaks and how often. Reproducing the
 // three factor branches per-test (password registered / passwordless / status
 // unreachable) would need three differently-provisioned live accounts plus an
 // induced network failure, and asserting that the password path performs NO
@@ -24,7 +27,11 @@
 // models the window it was handed.
 //
 // Clause-c real-path companion: `frontend/tests/e2e/non-consent-fresh-auth.spec.js`
-// exercises acquisition + broadcast against the real backend.
+// exercises acquisition + broadcast against the real backend, and
+// `frontend/tests/e2e/publish.spec.js` drives the upload leg against the real
+// upload endpoint (on the self-custody path, where no window is involved).
+// The one case here that reaches the real upload module does so for the
+// acquisition underneath it, not for the transport, which stays mocked.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
@@ -32,6 +39,10 @@ const mockBroadcastOps = vi.fn();
 const mockStartOrcid = vi.fn();
 const mockFetchEmailStatus = vi.fn();
 const mockMintSessionAuthProof = vi.fn();
+// The upload leg's transport. The upload path is exercised here (rather than in
+// its own wholesale-mocked suite) for the one assertion that needs the REAL
+// acquisition underneath it: which teardown boundary speaks, and how often.
+const mockUploadFileToIpfs = vi.fn();
 const mockReauthModal = { request: vi.fn() };
 const mockToastStore = { show: vi.fn() };
 const mockAuthStore = { custody: 'light', username: 'alice', disconnect: vi.fn() };
@@ -45,6 +56,7 @@ vi.mock('../../src/api.js', () => ({
   consentOpRequestFields: (t) => t,
   fetchEmailStatus: (...args) => mockFetchEmailStatus(...args),
   mintSessionAuthProof: (...args) => mockMintSessionAuthProof(...args),
+  uploadFileToIpfs: (...args) => mockUploadFileToIpfs(...args),
 }));
 
 vi.mock('alpinejs', () => ({
@@ -71,6 +83,11 @@ const {
   resolvePasswordFactor,
   abandonInFlightAcquisitions,
 } = await import('../../src/lib/fresh-auth.js');
+// The real upload pre-flight, over the real acquisition above: the two
+// together are what decide whether a teardown mid-acquisition reaches the user.
+const { uploadFile, describeUploadError, UPLOAD_SUBJECT_CHANGED } = await import(
+  '../../src/lib/ipfs-upload.js'
+);
 
 const PROOF_KEY = 'pevo_fresh_auth_session_proof';
 const IDLE_MS = 900_000;      // 15 minutes, the backend's idle period
@@ -980,6 +997,72 @@ describe('teardown abandons in-flight acquisitions', () => {
     expect(window.location.href).toBe('');
     expect(sessionStorage.getItem('pevo_orcid_mode')).toBeNull();
     expect(sessionStorage.getItem('pevo_fresh_auth_return_to')).toBeNull();
+    // Nothing downstream speaks for this unwind: the flight resolves the same
+    // `cancelled` outcome a user's own dismissal produces, and the shared
+    // table keeps that one silent. Without a report here the user watches a
+    // full-page round-trip they asked for simply not happen.
+    expect(mockToastStore.show).toHaveBeenCalledTimes(1);
+  });
+
+  it('one teardown across two cross-posture flights still reports exactly once', async () => {
+    // The acquisition slots are keyed on the redirect posture, so a page can
+    // hold two cold flights at once: its own submit gate (permissive) and the
+    // editor's inline-image upload (suppressed). They share ONE coalesced
+    // factor read, so one subject change abandons both — but each carries its
+    // own guard, and a report per guard would stack two identical messages
+    // describing a single event.
+    let resolveStatus;
+    mockFetchEmailStatus.mockReturnValueOnce(
+      new Promise((resolve) => { resolveStatus = resolve; }),
+    );
+
+    const suppressed = ensureSessionWindow({ minRemainingMs: 0, allowRedirect: false });
+    const permissive = freshAuthWindowReady();
+    await tick(); // both are parked on the same factor read
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(1);
+
+    teardownSubjectState();
+    resolveStatus({ status: 'ok', data: { hasPassword: true } });
+
+    expect(await suppressed).toEqual({ ready: false, cancelled: true });
+    expect(await permissive).toBe(false);
+    // Both flights unwound; the user is told once.
+    expect(mockToastStore.show).toHaveBeenCalledTimes(1);
+  });
+
+  it('a teardown inside the upload\'s own factor read reports exactly once', async () => {
+    // The upload pre-flight's acquisition is a cold one on any first upload of
+    // a window, and the status read it awaits is a real round-trip whose
+    // negative and assumed answers are never memoized — so this boundary is
+    // reachable, not theoretical.
+    //
+    // Every layer past it is deliberately quiet: the flight resolves
+    // `cancelled`, the shared dispatch table keeps that outcome silent, and
+    // the upload layer throws an already-reported code whose describe-key is
+    // null so the page stays quiet too. The acquisition is therefore the only
+    // site that can speak, and it must — exactly once.
+    let resolveStatus;
+    mockFetchEmailStatus.mockReturnValueOnce(
+      new Promise((resolve) => { resolveStatus = resolve; }),
+    );
+
+    const pending = uploadFile(new Blob(['x'], { type: 'application/pdf' }));
+    await tick(); // the status read is now pending
+    teardownSubjectState();
+
+    resolveStatus({ status: 'ok', data: { hasPassword: true } });
+    const err = await pending.then(() => null, (e) => e);
+
+    expect(err).toMatchObject({ code: UPLOAD_SUBJECT_CHANGED });
+    // The page layer is told the failure already spoke...
+    expect(describeUploadError(err)).toBeNull();
+    // ...so this is the only message the user gets, and it is not zero.
+    expect(mockToastStore.show).toHaveBeenCalledTimes(1);
+    expect(mockToastStore.show).toHaveBeenCalledWith(expect.any(String), 'error');
+    // No prompt, no mint, no upload for the subject the tab no longer has.
+    expect(mockReauthModal.request).not.toHaveBeenCalled();
+    expect(mockMintSessionAuthProof).not.toHaveBeenCalled();
+    expect(mockUploadFileToIpfs).not.toHaveBeenCalled();
   });
 
   it('a stale factor resolution settling late does not evict its successor from the in-flight slot', async () => {

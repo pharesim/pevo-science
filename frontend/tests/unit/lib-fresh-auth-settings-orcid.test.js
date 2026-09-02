@@ -18,14 +18,13 @@
 // Auth-focus carve-out (clause b): this function is not itself an
 // auth-verification path — it initiates an OAuth redirect; the cryptographic
 // fresh_auth_proof is minted and verified server-side. No frontend auth
-// middleware is mocked. Clause-c real-path companion: only the PASSWORD-factor
-// settings actions have an end-to-end companion (the E2E settings spec drives
-// the change-email reauth-modal against the real test-mode stack). The
-// ORCID-factor settings path -- this entry point, the only factor for
-// set_password and the passwordless fallback for change_email / delete_account
-// -- has NO end-to-end companion yet; a follow-up to drive the ORCID round-trip
-// (start -> callback -> cached-proof resume) against the test-mode stack is
-// tracked separately.
+// middleware is mocked. Clause-c real-path companion: tests/e2e/settings.spec.js
+// drives the PASSWORD-factor settings actions (the change-email reauth modal)
+// against the real test-mode stack, and tests/e2e/settings-orcid-factor.spec.js
+// drives the ORCID-factor path this entry point begins -- the only factor for
+// set_password and the passwordless fallback for change_email /
+// delete_account -- through the whole start -> callback -> cached-proof resume
+// round-trip, one case of it on a genuine backend-minted proof.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
@@ -117,22 +116,28 @@ describe('beginSettingsActionOrcidFreshAuth', () => {
     expect(window.location.href).toBe('');
   });
 
-  it('a start that comes back stale unwinds without navigating: flow keys cleared, clean cancel', async () => {
+  it('a start that comes back stale unwinds without navigating, as a clean cancel', async () => {
     // The staleness predicate is the consent-op orchestrators' teardown
     // guard, threaded through so a subject change landing during the start
     // round-trip cannot navigate the new subject's tab to ORCID for the
-    // subject that left. The unwind clears the flow keys the callback would
-    // otherwise mis-dispatch on and resolves the shared clean-cancel
+    // subject that left. The unwind resolves the shared clean-cancel
     // sentinel; reporting belongs to the guard at the call site, so the
     // starter itself stays silent.
+    //
+    // No flow-key assertion here, deliberately. The predicate reads true only
+    // once the subject scrub has run, and the scrub is what removes the mode
+    // marker and the return path — a stale flight's own keys are already gone
+    // by the time this branch is reached. This unit has no scrub to stage, so
+    // the orchestrator suites own that property (their staged teardown
+    // performs the removal). The cleanup this function really is responsible
+    // for stays pinned by the invalid-host, unparseable-URL and
+    // start-rejection cases in this file.
     mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
 
     const res = await beginSettingsActionOrcidFreshAuth('change_email', () => true);
 
     expect(res).toBe(FRESH_AUTH_CANCELLED);
     expect(window.location.href).toBe('');
-    expect(sessionStorage.getItem(MODE_KEY)).toBeNull();
-    expect(sessionStorage.getItem(RETURN_PATH_KEY)).toBeNull();
   });
 
   it('a fresh (non-stale) predicate leaves the navigation untouched', async () => {
