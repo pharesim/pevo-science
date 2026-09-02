@@ -6,13 +6,13 @@
  * reaches a session-window consume through the proof middleware. Deleting the
  * `sessionsInvalidatedAtMs` property from the surface literal inside
  * `consumeFreshAuthProof` used to typecheck and silently un-revoke every
- * pre-reset upload window while the whole suite stayed green: the custody
+ * pre-rotation upload window while the whole suite stayed green: the custody
  * broadcast route passes the epoch through its own separate
  * `consumeSessionFreshAuthToken` call, so its tests cannot observe this one.
  *
  * Why the epoch and not the sweep. `invalidateSessionFreshAuthTokens` is
  * best-effort across the Redis tiers, while `accounts.sessions_invalidated_at`
- * is committed by the same Postgres transaction as the reset. Every spec here
+ * is committed by the same Postgres transaction as the rotation. Every spec here
  * stamps the column WITHOUT calling the sweep, reproducing the state a missed,
  * re-planted, or Redis-down sweep leaves behind: the proof stays fully present
  * and structurally valid in the store, and only Postgres knows it is dead.
@@ -152,7 +152,7 @@ afterAll(async () => {
 });
 
 describe.skipIf(!dbReachable)(
-  'POST /api/ipfs/upload-token — the account revocation epoch closes a pre-reset window',
+  'POST /api/ipfs/upload-token — the account revocation epoch closes a pre-rotation window',
   () => {
     it('a window minted before the epoch is rejected with 401 + reason expired, even though the proof is still in the store', async () => {
       const proof = await issueSessionFreshAuthToken(USER, 'password');

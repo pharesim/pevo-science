@@ -113,9 +113,10 @@ declare global {
        *
        * The revocation epoch this middleware already reads to reject stale
        * JWTs, plumbed onto the request so the fresh-auth layer can apply the
-       * SAME cut-off to a session-kind proof window. A password reset or an
-       * account recovery stamps the column; every session window minted at or
-       * before that instant is dead from that point on, whether or not the
+       * SAME cut-off to a session-kind proof window. A password reset, an
+       * account recovery, or a custody upgrade stamps the column; every session
+       * window minted at or before that instant is dead from that point on,
+       * whether or not the
        * best-effort Redis sweep in `invalidateSessionFreshAuthTokens` managed
        * to remove it. That makes revocation authoritative from Postgres — the
        * store the mutation itself committed to — rather than from a cache
@@ -151,8 +152,10 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
         req.hiveCustody = payload.custody || 'self';
         req.hiveAuthMethod = 'jwt';
 
-        // Session-invalidation revocation for light accounts (password reset /
-        // key rotation invalidates all prior JWTs). Fail closed when `iat` is
+        // Session-invalidation revocation (password reset / key rotation
+        // invalidates all prior JWTs). Applies whatever custody the account now
+        // holds: a custody upgrade both rotates keys and flips the row to
+        // self-custody. Fail closed when `iat` is
         // absent or non-numeric: the entire revocation check rides on `iat`, so a
         // token without it would be permanently unrevocable. Every server mint
         // sets `iat`; this guard keeps revocation completeness from depending on
@@ -171,19 +174,20 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
             const invalidatedAt = rows.length > 0 ? rows[0].sessions_invalidated_at : null;
             // Published to the request before the revocation verdict below, so
             // the fresh-auth session-window consume can apply the same cut-off
-            // to a proof the JWT itself survives (a window minted before a reset
-            // whose reissued token is spared by the `reissuedAt` identity match).
+            // to a proof the JWT itself survives (a window minted before an
+            // account recovery or a custody upgrade, whose reissued token is
+            // spared by the `reissuedAt` identity match).
             req.hiveSessionsInvalidatedAt = invalidatedAt ? invalidatedAt.getTime() : null;
             if (invalidatedAt) {
               const invalidatedAtMs = invalidatedAt.getTime();
               const invalidatedAtSec = Math.floor(invalidatedAtMs / 1000);
-              // Same-second discrimination. A password reset sets
+              // Same-second discrimination. A revoke-and-reissue site stamps
               // sessions_invalidated_at and reissues a fresh session token in the
-              // same integer second; that token and any pre-reset token minted in
-              // the same second share one `iat`, so a second-grained `iat < sec`
-              // lets the pre-reset token survive (and flipping to `<=` would wrongly
-              // revoke the legitimate reissued one). Revoke any token issued at or
-              // before the invalidation second EXCEPT the token reissued by that
+              // same integer second; that token and any pre-rotation token minted
+              // in the same second share one `iat`, so a second-grained `iat < sec`
+              // lets the pre-rotation token survive (and flipping to `<=` would
+              // wrongly revoke the legitimate reissued one). Revoke any token issued
+              // at or before the invalidation second EXCEPT the token reissued by that
               // very event — identified by a `reissuedAt` claim carrying the exact
               // stored sessions_invalidated_at epoch-ms (set at the reissue sites in
               // routes/recover.ts and the custody-upgrade handler). Identity, not
@@ -200,7 +204,7 @@ export async function verifyHiveSignature(req: Request, res: Response, next: Nex
               // SAME integer second as the reset is revoked on its first request and
               // self-heals on the next login (a second later, iat > invalidatedSec).
               // That sub-second window is an accepted, self-healing residual on the
-              // email-reset path; only the recover.ts reissue is spared here.
+              // email-reset path; only the revoke-and-reissue sites above are spared here.
               if (payload.iat <= invalidatedAtSec && payload.reissuedAt !== invalidatedAtMs) {
                 return sendError(res, 401, 'SESSION_INVALIDATED', 'Session has been invalidated. Please log in again.');
               }

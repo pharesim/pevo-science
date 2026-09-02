@@ -1361,9 +1361,9 @@ export async function issueSessionFreshAuthToken(
  *
  * `accounts.sessions_invalidated_at` (`agents/docs/ARCHITECTURE.md` § 6.7)
  * revokes bearer JWTs. On its own that leaves a live broadcast window standing:
- * a password reset or recovery that does not also close the window has not
- * actually cut off the compromised session. Every writer of
- * `sessions_invalidated_at` MUST call this.
+ * a credential rotation that does not also close the window has not actually
+ * cut off the compromised session. Every writer of `sessions_invalidated_at`
+ * MUST call this.
  *
  * This sweep is the storage-reclamation half of invalidation, NOT the
  * authoritative half. The authoritative close is the revocation-epoch check in
@@ -1381,11 +1381,11 @@ export async function issueSessionFreshAuthToken(
  * Both storage tiers are swept. The in-memory tier is scanned directly (the map
  * is process-local and small). The Redis tier is swept via the per-user index
  * written at mint; consent-op proofs are deliberately NOT swept — they are
- * target-bound, single-use, and outlive the reset by at most
+ * target-bound, single-use, and outlive the rotation by at most
  * `FRESH_AUTH_TTL_SECONDS`.
  *
- * Never throws. A Redis failure here must not fail the password reset that
- * triggered it: the in-memory sweep has already run, the revocation epoch
+ * Never throws. A Redis failure here must not fail the credential rotation
+ * that triggered it: the in-memory sweep has already run, the revocation epoch
  * closes every surviving window on its next consume, the revoked JWT alone
  * makes a surviving proof inert (the consume binds the proof to the
  * authenticated username), and the absolute cap bounds what survives. The
@@ -1524,7 +1524,7 @@ interface FreshAuthConsumeSurface {
   /** Epoch-ms of the account's `sessions_invalidated_at`, or `null` when the
    *  account has never had its sessions revoked. A session window whose
    *  `issued_at` is at or before this instant is dead regardless of what the
-   *  storage tiers still hold: it predates the reset or recovery that revoked
+   *  storage tiers still hold: it predates the credential rotation that revoked
    *  the account's sessions.
    *
    *  This is the authoritative half of session invalidation.
@@ -1962,7 +1962,7 @@ async function burnConsentOpEntry(token: string): Promise<boolean> {
  *   1. The revocation epoch. `sessionsInvalidatedAtMs` is the account's
  *      `accounts.sessions_invalidated_at` as read from Postgres on this same
  *      request; a window whose `issued_at` is at or before it predates the
- *      reset or recovery that revoked the account's sessions. This check is
+ *      credential rotation that revoked the account's sessions. This check is
  *      what makes invalidation authoritative rather than best-effort: it holds
  *      for a window the Redis sweep never reached, one re-planted by a consume
  *      that was in flight while the sweep ran, and one whose per-user index

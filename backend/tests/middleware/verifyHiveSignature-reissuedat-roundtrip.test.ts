@@ -12,7 +12,7 @@
  * recover -> Postgres -> middleware path and would stay green if a future change
  * switched `recover.ts` from a Node `Date` to SQL `NOW()` (microsecond precision)
  * or rounded `reissuedAt` to seconds, silently logging out every user
- * immediately after a password reset. Of those two regressions, this file
+ * immediately after a recovery. Of those two regressions, this file
  * catches seconds-rounding deterministically; a NOW()-switch (writing
  * `sessions_invalidated_at` via SQL `NOW()` instead of the captured Node `Date`)
  * it catches only probabilistically — a just-captured Node `Date` and the

@@ -156,3 +156,67 @@ the ORCID login mint reads the column raw where auth.ts derives from
 (`backend-custody-column-self-alignment`); not part of this hold.
 
 ---
+
+## Backend re-review signal (2026-09-02, working tree)
+
+Hold item 1 is fixed, and so is the sibling class it turned out to belong to.
+
+**Hold item 1.** The exemption block's tail sentence now reads "only the
+revoke-and-reissue sites above are spared here."
+
+**Sibling sweep (surfaced in chat and user-triaged before applying).** Commit
+`79b57f8d` widened exactly two prose sites and left the rest of the two files
+it edited describing the retired model. A seven-lens sweep with three
+adversarial verifiers per finding, plus an independent re-enumeration, found
+18 more statements of the same class. All are fixed:
+
+- `middleware/verifyHiveSignature.ts` — the `hiveSessionsInvalidatedAt`
+  docblock named two of the four stampers; the "Same-second discrimination"
+  head said a password reset "reissues a fresh session token", which the same
+  comment block contradicts twelve lines below; the comment above
+  `req.hiveSessionsInvalidatedAt` illustrated the spared-token case with a
+  reset, which mints no `reissuedAt` at all; the revocation branch was scoped
+  "for light accounts" though the upgrade flips the row to self-custody in the
+  same UPDATE that stamps the epoch.
+- `lib/fresh-auth.ts` — the `invalidateSessionFreshAuthTokens` docblock and
+  its two `sessionsInvalidatedAtMs` siblings named the reset/recovery pair.
+  Widened to "credential rotation", the term the pinned-set guard is already
+  named after, rather than to an exhaustive caller list: such a list re-stales
+  on the fifth writer, and the universally quantified "Every writer of
+  `sessions_invalidated_at` MUST call this" is the rot-proof half, left as is.
+- tests — the invalidation suite header contradicted its own "There are four
+  such writers" nine lines further down, and claimed "All three reissue a JWT"
+  when `POST /api/auth/reset` returns only a message; the wiring canary said
+  three writers where the block below pins four; the replay-hardening header
+  described a token "reissued by that reset"; two spec titles and the IPFS
+  revocation-epoch suite narrowed the epoch to a reset.
+
+**Two mock carve-out clause-(c) citations were factually wrong**, found while
+fixing the above and corrected here. `recover.test.ts` was named as the
+real-path `reissuedAt` companion and contains zero `reissuedAt` assertions.
+"The settings password-reset suites" were named in two separate files as the
+live `SESSION_INVALIDATED` companion, and no settings suite asserts that code
+at all. Both now name the suites that actually do it
+(`verifyHiveSignature-reissuedat-roundtrip`, the `-orcid-roundtrip` sibling,
+and `custody-upgrade`), with the ORCID reissue site included rather than
+dropped.
+
+**Self-audit.** A second five-lens pass over this round's own diff caught two
+inaccuracies this round had introduced: an over-widening that named the custody
+upgrade in a suite that cannot reach it, and a companion list that said "the
+reissue sites" while naming two of the three. Both are fixed above.
+
+Deliberately unchanged, with the reasoning: the "(password reset, key
+rotation)" phrasing in the middleware is a two-category taxonomy rather than a
+route enumeration, and "key rotation" already covers the upgrade; the
+single-cause mentions in `custody.ts` and `fresh-auth.ts` are illustrative and
+assert no exclusivity or count; the "pre-reset" wording inside the `recover.ts`
+handlers is locally accurate, since those handlers do reset a password.
+
+Verification: `npm run typecheck` and `npm run lint` clean; 177 tests across 19
+files pass, covering the whole `tests/middleware/` tree, every `tests/eslint/`
+canary, and the invalidation, custody-upgrade and IPFS revocation-epoch suites;
+both `.githooks` self-test suites pass (26 and 47).
+
+No code behaviour changed in this round. The diff is comments, docblocks, two
+spec titles and one canary failure message.

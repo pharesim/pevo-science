@@ -2,9 +2,9 @@
  * Session invalidation closes open session-proof windows.
  *
  * `accounts.sessions_invalidated_at` (`agents/docs/ARCHITECTURE.md` § 6.7) is
- * the bearer-JWT revocation mechanism: a password reset or an account recovery
- * stamps it, and `verifyHiveSignature` then rejects every token minted at or
- * before that second. On its own that is not enough once a session-kind
+ * the bearer-JWT revocation mechanism: a credential rotation stamps it, and
+ * `verifyHiveSignature` then rejects every token minted at or before that
+ * second. On its own that is not enough once a session-kind
  * fresh-auth proof is windowed (§ 6.4.1): the proof is target-less and
  * multi-use for up to its absolute cap, so revoking tokens while leaving a live
  * window standing has not actually cut off the compromised session. Every
@@ -35,9 +35,10 @@
  * blast-radius test pins the other direction: an unrelated account's window
  * must survive.
  *
- * These three routes must also not OPEN a window while closing one. All three
- * reissue a JWT, which makes them session-establishment surfaces in the sense
- * of § 6.5 invariant #9, and the real recovery fixtures live here (a seeded
+ * These three routes must also not OPEN a window while closing one. The two
+ * recovery phases reissue a JWT, which makes them session-establishment
+ * surfaces in the sense of § 6.5 invariant #9; the reset reissues nothing and
+ * must not open a window either. The real recovery fixtures live here (a seeded
  * `reset_token`, a seeded ORCID receipt, an inserted `pending_recovery` row),
  * so the wire-level no-proof assertion rides along rather than a second suite
  * rebuilding them.
@@ -322,8 +323,9 @@ describe('session invalidation closes outstanding session-proof windows', () => 
 });
 
 describe('every toucher of the revocation column also closes session-proof windows', () => {
-  // Standing wiring canary. The three routes above are today's writers; the
-  // failure this guards against is a fourth one added later that stamps
+  // Standing wiring canary. Four routes write the column today (the password
+  // reset, both recovery phases, and the custody upgrade); the failure this
+  // guards against is a fifth one added later that stamps
   // `sessions_invalidated_at` and stops there, leaving a live broadcast window
   // attached to a session the operator believes they cut off. That omission is
   // invisible to every test in this file, because those tests name their routes.

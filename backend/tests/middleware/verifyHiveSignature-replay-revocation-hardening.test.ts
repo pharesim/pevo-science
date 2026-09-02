@@ -7,9 +7,11 @@
  *     identical signatures cannot both pass the start-of-request check before
  *     either records. Exactly one of the pair is admitted.
  * (2) Same-second JWT revocation. A token issued in the same integer second as
- *     a password reset must be revoked UNLESS it is the token reissued by that
- *     reset — identified by a `reissuedAt` claim equal to the stored
- *     sessions_invalidated_at epoch-ms, not by its (identical) iat second.
+ *     a session-revoking credential rotation must be revoked UNLESS it is the
+ *     token that rotation reissued in the same act — identified by a
+ *     `reissuedAt` claim equal to the stored sessions_invalidated_at epoch-ms,
+ *     not by its (identical) iat second. `POST /api/auth/reset` stamps the
+ *     epoch and reissues nothing, so it has no spared token.
  * (3) iat-absent JWT fail-closed. A bearer token without a numeric `iat` is
  *     rejected rather than skipping the session-invalidation lookup, so
  *     revocation completeness never rides on the unenforced "every mint sets
@@ -28,10 +30,13 @@
  *       posting-key match run real for the concurrent-replay path, and the focus
  *       here IS the middleware's own replay/revocation behavior.
  *   (c) Real-path companions: the signature success path runs with real
- *       verification in verifyHiveSignature-authmethod.test.ts; the live
- *       SESSION_INVALIDATED 401 against real Postgres is covered by the settings
- *       password-reset suites; the recover reissue (which sets reissuedAt against
- *       real Postgres) is covered by recover.test.ts.
+ *       verification in verifyHiveSignature-authmethod.test.ts. The live
+ *       SESSION_INVALIDATED 401 against real Postgres, and the reissue sites
+ *       that set reissuedAt against real Postgres, are covered by
+ *       verifyHiveSignature-reissuedat-roundtrip.test.ts (the memo-key
+ *       recovery second-phase round trip),
+ *       verifyHiveSignature-reissuedat-orcid-roundtrip.test.ts (the ORCID
+ *       recovery branch), and custody-upgrade.test.ts (the upgrade reissue).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -160,7 +165,7 @@ describe('verifyHiveSignature — same-second JWT revocation (item 2)', () => {
     queryMock.mockResolvedValue({ rows: [{ sessions_invalidated_at: new Date(INVALIDATED_AT_MS) }] });
   });
 
-  it('revokes a pre-reset token minted in the same integer second (no reissuedAt)', async () => {
+  it('revokes a pre-rotation token minted in the same integer second (no reissuedAt)', async () => {
     const token = jwt.sign(
       { sub: TEST_USERNAME, custody: 'light', iat: INVALIDATED_SEC, exp: FAR_FUTURE_EXP },
       config.sessionSecret,
@@ -180,8 +185,8 @@ describe('verifyHiveSignature — same-second JWT revocation (item 2)', () => {
     expect(res.body.hiveUsername).toBe(TEST_USERNAME);
   });
 
-  it('still revokes a stale reissued token whose reissuedAt is from an earlier reset', async () => {
-    // A token reissued by a PRIOR reset (reissuedAt = an older ms) must not survive
+  it('still revokes a stale reissued token whose reissuedAt is from an earlier rotation', async () => {
+    // A token reissued by a PRIOR rotation (reissuedAt = an older ms) must not survive
     // a later invalidation — its reissuedAt no longer matches the current stored ms.
     const token = jwt.sign(
       { sub: TEST_USERNAME, custody: 'light', iat: INVALIDATED_SEC, reissuedAt: INVALIDATED_AT_MS - 5_000, exp: FAR_FUTURE_EXP },

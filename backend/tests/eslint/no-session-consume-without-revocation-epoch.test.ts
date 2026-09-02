@@ -281,8 +281,8 @@ describe('every session-window consume carries the account revocation epoch', ()
     expect(
       offenders,
       'these functions consume a session fresh-auth window without passing the ' +
-        "account's revocation epoch, so the window survives the password reset " +
-        'or recovery that was supposed to close it whenever the best-effort ' +
+        "account's revocation epoch, so the window survives the credential " +
+        'rotation that was supposed to close it whenever the best-effort ' +
         `Redis sweep did not reach it:\n${offenders.join('\n')}\n\n` +
         `all consume sites:\n${consumes.sites.join('\n')}`,
     ).toEqual([]);

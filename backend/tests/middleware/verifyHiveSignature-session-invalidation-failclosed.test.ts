@@ -15,9 +15,13 @@
  *       permitted carve-out target).
  *   (b) verifyHiveSignature is NOT mocked: the focus here IS the middleware's
  *       own failure-mode branch, so the real middleware runs.
- *   (c) Real-path companion: happy-path JWT acceptance and the live
- *       SESSION_INVALIDATED 401 against real Postgres are covered by the
- *       settings password-reset suites.
+ *   (c) Real-path companions: happy-path JWT acceptance runs against real
+ *       Postgres in the settings password-reset suites. The live
+ *       SESSION_INVALIDATED 401 is covered by
+ *       verifyHiveSignature-reissuedat-roundtrip.test.ts,
+ *       verifyHiveSignature-reissuedat-orcid-roundtrip.test.ts, and
+ *       custody-upgrade.test.ts, which each stamp a real epoch and then
+ *       present a pre-rotation bearer token to the real middleware.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
