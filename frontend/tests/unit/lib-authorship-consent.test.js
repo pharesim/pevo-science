@@ -19,7 +19,11 @@ vi.mock('../../src/api.js', () => ({
   // which reads the account status. This mock is what the resolver sees.
   fetchEmailStatus: (...a) => mockFetchEmailStatus(...a),
   // The real fresh-auth.js (loaded via importActual below) imports these at
-  // module load; stub them so the import resolves. Never called from here.
+  // module load; stub them so the import resolves. `mintSessionAuthProof` is
+  // never called from here. `startOrcid` and `consentOpRequestFields` ARE
+  // exercised: the ORCID-start teardown cases below drive the real redirect
+  // starter via importActual, which builds the start payload and calls the
+  // start round-trip.
   startOrcid: vi.fn(),
   consentOpRequestFields: vi.fn(),
   mintSessionAuthProof: vi.fn(),
