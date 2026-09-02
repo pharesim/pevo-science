@@ -116,3 +116,57 @@ subject from item 2.
 Comment-anchor reminder: no task slugs, round numbers, or line numbers in code or
 test comments; anchor on `executeUpgrade`, `retryUpgradeBackend`, `_adoptSubject`,
 and the sub-case key names.
+
+## UI re-review signal (2026-09-02, commits 9e0ce60d, 08bb7fc3, 6bf1c7f9, fdc67b55):
+
+Landed across four commits; the diffs are the evidence for the three hold items.
+Coverage lives in `pages-settings-custody-upgrade-subject-pin.test.js` (rewritten:
+both race tests now assert the landing is dropped, plus a sign-out-mid-flight test,
+a retry-start subject-flip test, and a retry happy path that pins the username the
+pre-existing partial-object assertion could not).
+
+Four things the architect should weigh rather than assume:
+
+1. **Two error keys, not one.** `upgrade.sessionChangedAfterCleanup` (cleanup
+   landed, only the local Keychain import is missing) and
+   `upgrade.sessionChangedBeforeCleanup` (cleanup never ran). Both terminal. One
+   string could not be true in both cases: item 1's prescribed copy says the
+   upgrade completed at the backend, which is false on the retry-start path that
+   item 2 routes to the same sub-case. Neither name is a prefix of the other, so
+   the per-key `STUBS.md` grep still resolves one key at a time.
+
+2. **`sessionChangedBeforeCleanup` is terminal and that is a recoverability
+   dead-end.** It is now reachable only from the retry start guard. Before this
+   task the same event produced a first-401 `proofRejected`, which is
+   `retryable-backend-only`: the user signed back in and pressed Try Again. Now
+   Try Again is hidden for good. Making it `retryable-backend-only` would restore
+   that (the start guard already refuses to spend anything while the store is
+   still diverged, and the sign-in modal is mounted globally so re-login does not
+   unmount `/settings`), at the cost of copy that says "sign back in, then try
+   again" instead of "contact support". Left as specified; flagged as a one-line
+   change if you want it.
+
+3. **The pin is a frame-local inside each leg, not a field read across awaits.**
+   `destroy()` runs `_clearSensitiveUpgradeState()` before `_teardownTimers()`, so
+   the field is null while a continuation is still running. Reading it after an
+   await derived keys and built a challenge for `null`. Each leg now snapshots it
+   the way it already snapshots the seed phrase.
+
+4. **Two clause-(c) citations in this area were false and are corrected.** Both
+   this suite and the round-2 suite cited `sec-001-equivalence.test.js` plus "the
+   backend custody tests" for the bypassed proof-correctness class.
+   `sec-001-equivalence.test.js` covers the auth-request canonical message and
+   never mentions the upgrade challenge (`grep -c` for `derived_pubkey` /
+   `custody-upgrade` returns 0), and a suite family is not a resolvable citation.
+   Both now name `backend/tests/routes/custody-upgrade.test.ts` and the token it
+   asserts.
+
+Out of scope, found while working here and NOT fixed: the `_beforeUnloadHandler`
+field docblock claims the listener is "torn down in destroy() + on terminal
+phases". There is no terminal-phase teardown; `removeEventListener` appears only
+in `init()`'s deregister-before-reassign and in `destroy()`.
+
+Review evidence: `/ce-code-review` is the architect's, but this diff was put
+through a six-lens adversarial pass with three refuters per finding (26 raised, 25
+refuted). The one survivor was real and is fixed in 6bf1c7f9, with both halves of
+the fix mutation-checked.
