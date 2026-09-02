@@ -148,9 +148,9 @@ input shapes.
 ## Related
 
 - `agents/docs/solutions/conventions/fresh-auth-guard-coverage-must-sweep-the-callee-graph-2026-09-01.md`
-  is the direct predecessor on this same guard: it prescribes a test per caller that tears down
-  and asserts the side effect did not fire, which is the answers-true direction only. This entry
-  supplies the complementary direction.
+  is the direct predecessor on this same guard: its sweep is what threads a predicate into every
+  caller, which is precisely what leaves a suite's no-predicate cases matching no caller. Its
+  checklist now carries a step for this entry's direction.
 - `agents/docs/solutions/conventions/control-pair-pins-only-varied-axis-enumerate-mutation-space-2026-06-12.md`
   states the same shape of gap for a comparison rather than a callback: a control pair proves only
   the axis it varies.

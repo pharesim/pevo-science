@@ -43,9 +43,9 @@ PEvO's light-account fresh-auth flows run in a tab whose JWT subject can change 
 
 The two consent-op orchestrators adopt the rule. `withSettingsFreshAuth` (`frontend/src/lib/settings-fresh-auth.js`) opens one guard at entry, described as covering the whole action: the status read, the prompt, the mint, the guarded call, and the retry gate's re-mint. It passes the guard into `resolveProof`, which checks it after the status-read await and threads it into `mintViaPassword`, and into `consentOpFreshAuthRetryGate` as the `guard` hook. `withAuthorshipFreshAuth` (`frontend/src/lib/authorship-consent.js`) is the same shape. `consentOpFreshAuthRetryGate` checks the guard after its own status-read await and calls the `mint` hook with the guard threaded.
 
-Every await in those bodies was covered. The enumeration stopped at the call boundary. Both `resolveProof`s have two branches that leave the body: the passwordless branch and the ORCID-fallback branch after an assumed-password 401. The retry gate has a third exit, its `beginOrcidRedirect` hook. All three resolve to `beginSettingsActionOrcidFreshAuth` or `beginAuthorshipOrcidFreshAuth`, one-line wrappers around `beginOrcidFreshAuthRedirect`. That helper writes the return path and the per-tab mode marker, then awaits `startOrcid(mode, extra)`, a network round-trip, and then navigates with `window.location.href = data.redirect_url`. A subject change landing inside the `startOrcid` await is invisible to it unless a predicate is threaded in. At HEAD as of this writing neither consent-op starter threads one, and the helper's own docblock records that as intended: callers without a teardown-scoped flight, the page-level and consent-op redirect starters, pass none and keep the unconditional navigation.
+Every await in those bodies was covered. The enumeration stopped at the call boundary. Both `resolveProof`s have two branches that leave the body: the passwordless branch and the ORCID-fallback branch after an assumed-password 401. The retry gate has a third exit, its `beginOrcidRedirect` hook. All three resolve to `beginSettingsActionOrcidFreshAuth` or `beginAuthorshipOrcidFreshAuth`, one-line wrappers around `beginOrcidFreshAuthRedirect`. That helper writes the return path and the per-tab mode marker, then awaits `startOrcid(mode, extra)`, a network round-trip, and then navigates with `window.location.href = data.redirect_url`. A subject change landing inside the `startOrcid` await is invisible to it unless a predicate is threaded in. When this entry was written neither consent-op starter threaded one, and the helper's own docblock recorded that as intended, naming the page-level and consent-op redirect starters as callers that pass none and keep the unconditional navigation. Both halves of that sentence have since been corrected. The consent-op starters now thread the orchestrator's predicate through `beginOrcidUnderGuard`, and the docblock's claim about the page-level flows was itself false: those flows never reach this helper at all, they write their own mode marker and call `startOrcid` directly. Every caller of the helper supplies a predicate today.
 
-The identical gap had already been found on the session-window path. `acquireSessionProof` snapshots the generation itself, checks it after every await in its body, and reaches the same helper through `beginSessionAuthOrcidRedirect`. The fix for that leg threaded a staleness predicate, `isStale`, into `beginOrcidFreshAuthRedirect` as an optional fourth parameter, re-checked immediately after the round-trip and before the navigation, and passed `() => generation !== _acquireGeneration` from the session leg. That fix is present at HEAD as of this writing; it was scoped to its own caller. At architect review of the consent-op guard work, three reviewers converged independently on the same finding: the shared helper still has an unguarded await-then-navigate for the two consent-op callers. The consent-op fix is pending as of this writing.
+The identical gap had already been found on the session-window path. `acquireSessionProof` snapshots the generation itself, checks it after every await in its body, and reaches the same helper through `beginSessionAuthOrcidRedirect`. The fix for that leg threaded a staleness predicate, `isStale`, into `beginOrcidFreshAuthRedirect` as an optional fourth parameter, re-checked immediately after the round-trip and before the navigation, and passed `() => generation !== _acquireGeneration` from the session leg. That fix landed scoped to its own caller. At architect review of the consent-op guard work, three reviewers converged independently on the same finding: the shared helper still had an unguarded await-then-navigate for the two consent-op callers. That gap is now closed, and the audit this entry prescribes is what closed it.
 
 How the split happened (session history): the review pass that first found the `startOrcid` gap found it on the session-window leg and held it there. The same pass found that the consent-op orchestrators had no generation check at all and routed that as a new task; the redirect helper was not carried into the new task's scope. The implementation session for the consent-op guard never referenced `startOrcid` or `beginOrcidFreshAuthRedirect`; its scope stopped at the mint primitives and the retry legs. Asked whether to compound the pattern after the first pass, the architect declined it as another instance of the general "sibling surfaces reopen a completed sweep" rule rather than a new class. The recurrence is the evidence that the general rule did not prevent it; the actionable form is the one below.
 
@@ -53,42 +53,39 @@ How the split happened (session history): the review pass that first found the `
 
 A teardown or staleness guard protects exactly the code that holds it. "Check after every await" is a property of a call tree, not of a function body, so the audit unit is the callee graph reached after the guard opens, and, for any shared helper, the helper's full caller set.
 
-1. **Enumerate the callee graph from the guard's open site.** Walk every call expression reached after the guard is opened, including hooks and callbacks handed to other modules. For the consent-op flows at HEAD the chain is: `withSettingsFreshAuth` / `withAuthorshipFreshAuth` -> `resolveProof` -> the factor read (`passwordFactorFor` / `resolvePasswordFactor`) -> `mintViaPassword` -> `mintViaPasswordFactor` -> (ORCID branch) `beginSettingsActionOrcidFreshAuth` / `beginAuthorshipOrcidFreshAuth` -> `beginOrcidFreshAuthRedirect` -> `startOrcid` -> `window.location.href`. Plus the retry gate: `consentOpFreshAuthRetryGate` -> `resolveFactor` hook -> `mint` hook -> `beginOrcidRedirect` hook -> the same starter -> the same helper -> the same navigation, and `run(retry)`.
+1. **Enumerate the callee graph from the guard's open site.** Walk every call expression reached after the guard is opened, including hooks and callbacks handed to other modules. For the consent-op flows the chain is: `withSettingsFreshAuth` / `withAuthorshipFreshAuth` -> `resolveProof` -> the factor read (`passwordFactorFor` / `resolvePasswordFactor`) -> `mintViaPassword` -> `mintViaPasswordFactor` -> (ORCID branch) `beginOrcidUnderGuard` -> `beginSettingsActionOrcidFreshAuth` / `beginAuthorshipOrcidFreshAuth` -> `beginOrcidFreshAuthRedirect` -> `startOrcid` -> `window.location.href`. Plus the retry gate: `consentOpFreshAuthRetryGate` -> `resolveFactor` hook -> `mint` hook -> `beginOrcidRedirect` hook -> the same starter -> the same helper -> the same navigation, and `run(retry)`.
 
 2. **Classify each callee by "await before side effect".** Read the callee's body, not its name. If it performs no await before its irreversible effect (navigation, broadcast, storage or cache write, toast), it is safe under the caller's last check. If it does, thread the guard, or a predicate derived from it such as `guard.tornDown`, into it and re-check right after that await and before the effect. `beginOrcidFreshAuthRedirect` is the second kind: one await (`startOrcid`) between the caller's last check and a full-page navigation.
 
-3. **When a shared helper gains a predicate parameter, grade every caller.** The fix that added `isStale` to `beginOrcidFreshAuthRedirect` was correct for `beginSessionAuthOrcidRedirect` and left the two consent-op starters passing nothing. A caller that passes no predicate must be one that genuinely runs outside any guarded flight, not one that happens to belong to a different task. `git grep -n 'beginOrcidFreshAuthRedirect('` returns the audit set; a docblock that lists the unguarded callers by name is a finding, not a resolution.
+3. **When a shared helper gains a predicate parameter, grade every caller.** The fix that added `isStale` to `beginOrcidFreshAuthRedirect` was correct for `beginSessionAuthOrcidRedirect` and left the two consent-op starters passing nothing. A caller that passes no predicate must be one that genuinely runs outside any guarded flight, not one that happens to belong to a different task. `git grep -n 'beginOrcidFreshAuthRedirect('` returns the audit set; a docblock that lists the unguarded callers by name is a finding, not a resolution. Grade the tests by the same rule: once every caller threads a live predicate, a suite whose cases omit the parameter is exercising a shape production no longer has, and cannot tell the guard's condition from its mere presence.
 
 4. **Pass the guard down as a value; do not let each layer capture its own.** The existing rationale in the `subjectTeardownGuard` docblock already says why: a guard opened inside a callee, after the caller's earlier awaits, captures a generation the teardown may already have moved and never fires. The consent-op starters are exactly such a callee, so the predicate must originate at the orchestrator's guard and travel through the starter, as it already does through `mintViaPassword` and the retry gate's `guard` hook.
 
-The helper at HEAD already has the seam; the pending consent-op change is to thread the orchestrator's predicate through the two starters and their three call sites. One possible shape:
+The helper carries the seam and every caller now reaches it through the orchestrator's own guard. The landed shape, abridged to the seam (the real helper also stashes the return path, unwinds its throw exits, and validates the redirect host):
 
 ```js
-// fresh-auth.js: the seam that exists at HEAD (re-check between the
-// round-trip and the navigation)
+// fresh-auth.js: the re-check between the round-trip and the navigation
 async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault, isStale) {
   sessionStorage.setItem(ORCID_MODE_KEY, mode);
   const data = await startOrcid(mode, extra);          // teardown can land here
-  if (isStale?.()) {                                    // re-check before the effect
-    sessionStorage.removeItem(ORCID_MODE_KEY);
-    clearReturnPath();
-    return FRESH_AUTH_CANCELLED;
-  }
+  if (isStale?.()) return FRESH_AUTH_CANCELLED;         // re-check before the effect
   window.location.href = data.redirect_url;             // the irreversible effect
   return FRESH_AUTH_REDIRECT_PENDING;
 }
 
-// pending: the consent-op starters thread the orchestrator's guard through
+// the consent-op starters thread the orchestrator's guard through
 export async function beginSettingsActionOrcidFreshAuth(action, isStale) {
   return beginOrcidFreshAuthRedirect('fresh_auth', { action }, '/settings', isStale);
 }
-// settings-fresh-auth.js resolveProof, both ORCID branches:
-if (!factor.usesPassword) return beginSettingsActionOrcidFreshAuth(action, guard.tornDown);
-// withSettingsFreshAuth, retry-gate hook:
-beginOrcidRedirect: () => beginSettingsActionOrcidFreshAuth(action, guard.tornDown),
+// settings-fresh-auth.js, both ORCID branches and the retry-gate hook, via one
+// wrapper that also maps the cancel through the guard:
+async function beginOrcidUnderGuard(action, guard) {
+  const started = await beginSettingsActionOrcidFreshAuth(action, guard.tornDown);
+  return started === FRESH_AUTH_CANCELLED ? guard.cancel() : started;
+}
 ```
 
-The authorship starter and `withAuthorshipFreshAuth` take the same change. Whatever the final parameter shape, the invariant to preserve is that no caller inside a guarded flight reaches the navigation without the flight's own predicate, and a cancelled return from the starter is mapped through `guard.cancel()` so the teardown reports once.
+The authorship starter and `withAuthorshipFreshAuth` took the same change. Note what the stale branch does NOT do: it leaves the flow keys alone. The predicate reads true only after the subject scrub has already removed them, so anything standing in their place belongs to a later flow in the tab, and a departed flight that tidied on its way out would strand it. The invariant to preserve is that no caller inside a guarded flight reaches the navigation without the flight's own predicate, and a cancelled return from the starter is mapped through `guard.cancel()` so the teardown reports once.
 
 ## Why This Matters
 
@@ -110,9 +107,9 @@ This is the guard-reach instance of two conventions already in this corpus: muta
 
 ## Examples
 
-**The PEvO instance.** At HEAD as of this writing, `withSettingsFreshAuth` and `withAuthorshipFreshAuth` open a guard at entry and re-check it after every await in their own bodies, in `resolveProof`, in `mintViaPasswordFactor`, and in `consentOpFreshAuthRetryGate`. `beginOrcidFreshAuthRedirect`, reached from three sites per orchestrator (the passwordless branch, the ORCID-fallback branch, the retry gate's `beginOrcidRedirect` hook), awaits `startOrcid` and then navigates, and the two consent-op starters pass it no predicate. The fix is pending.
+**The PEvO instance.** `withSettingsFreshAuth` and `withAuthorshipFreshAuth` open a guard at entry and re-check it after every await in their own bodies, in `resolveProof`, in `mintViaPasswordFactor`, and in `consentOpFreshAuthRetryGate`. `beginOrcidFreshAuthRedirect`, reached from three sites per orchestrator (the passwordless branch, the ORCID-fallback branch, the retry gate's `beginOrcidRedirect` hook), awaits `startOrcid` and then navigates. For a period the two consent-op starters passed it no predicate while the session-window caller did; all three sites per orchestrator now route through `beginOrcidUnderGuard`, which threads the orchestrator's `guard.tornDown`.
 
-**The session-window twin.** `acquireSessionProof` reaches the same helper through `beginSessionAuthOrcidRedirect` and, at HEAD, passes `() => generation !== _acquireGeneration`, which the helper checks before navigating. That is the finished shape for one caller; the consent-op starters are the other callers of the same helper.
+**The session-window twin.** `acquireSessionProof` reaches the same helper through `beginSessionAuthOrcidRedirect` and passes its flight's staleness predicate, which the helper checks before navigating. That was the finished shape for one caller while the consent-op starters, the other callers of the same helper, still lacked it.
 
 **A checklist an implementer can run.**
 
@@ -122,9 +119,11 @@ This is the guard-reach instance of two conventions already in this corpus: muta
 4. Classify: no await before the effect, safe under the caller's last check; otherwise thread the predicate and re-check after the await and before the effect.
 5. For any helper that gained a predicate parameter: `git grep -n '<helper>('` and grade every caller. A caller passing nothing must be provably outside any guarded flight.
 6. Add a test per caller, not per fix: tear down (bump the generation, or run the real scrub) while the awaited round-trip is pending, and assert the side effect did not fire and the flow resolved as `FRESH_AUTH_CANCELLED`.
+7. Add the same test's opposite: a live predicate that answers false, driving the same helper to the same exit, asserting the effect DID fire. Step 6 alone leaves the guard's other direction unpinned, and a suite holding only step 6's cases plus cases that omit the parameter cannot distinguish a guard that reads its predicate from one that merely checks a predicate was passed.
 
 ## Related
 
+- `agents/docs/solutions/conventions/optional-predicate-gate-needs-live-false-case-not-just-absent-2026-09-02.md`: what step 7 above exists for. Once the sweep prescribed here threads a predicate into every caller, the suite's no-predicate cases match no caller, and the guard's presence-vs-truth reading goes untested.
 - `agents/docs/solutions/conventions/mutation-probes-are-per-site-not-per-fix-2026-08-31.md`: the test-coverage form of the same rule (per site, not per fix); its worked example names the same settings/authorship twin pair.
 - `agents/docs/solutions/conventions/outcome-vocabulary-widening-requires-a-consumer-audit-2026-08-31.md`: the outcome-vocabulary form (every consumer of a shared fresh-auth mechanism, not the one the finding named).
 - `agents/docs/solutions/conventions/helper-contract-flip-untouched-adopter-audit-2026-05-16.md`: when a shared helper's contract changes, untouched adopters are the audit set.
