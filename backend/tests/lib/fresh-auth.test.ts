@@ -800,12 +800,12 @@ describe('Symmetric dual-tier deletion', () => {
     // The burn's Redis leg is the one that can silently half-apply: the read
     // that discovered the entry already succeeded, so a rejecting `GETDEL`
     // leaves the canonical copy alive while the in-memory delete still reports
-    // a win, and the consume returns valid. The spent-proof ledger is what
-    // refuses a replay of that proof; the compensating delete is what keeps the
-    // orphaned key from outliving the ledger entry, and the key-absence
-    // assertion below is ITS mutation-kill: the replay assertions after it are
-    // NOT, because the ledger refuses a replayed consent-op proof whether or not
-    // that delete ever runs.
+    // a win, and the consume returns valid. The compensating delete is what
+    // keeps that orphaned key from outliving the ledger entry guarding it, and
+    // the key-absence assertion below is ITS mutation-kill. The replay
+    // assertions after it are NOT: a replayed consent-op proof is refused
+    // either way — by both tiers being empty once that delete has landed, as it
+    // does here, or by the spent-proof ledger if it never runs at all.
     const redis = getRedis()!;
     const issued = await issueFreshAuthToken('flap-burn', 'password', T);
     const key = `${config.appTag}:fresh_auth:token:${issued.token}`;
@@ -861,7 +861,7 @@ describe('Symmetric dual-tier deletion', () => {
       expect(_getSpentConsentOpsSizeForTests()).toBe(1);
     } finally {
       getSpy.mockRestore();
-      getSpy.mockRestore();
+      getdelSpy.mockRestore();
       delSpy.mockRestore();
     }
   });
@@ -1100,7 +1100,8 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
   // `has` → `add` critical section before any awaits.
   //
   // Acceptance: both helpers must serialize concurrent dual-consume to exactly
-  // one winner. Two variants of the consent-op consume, plus a cross-helper one
+  // one winner. Three variants of the consent-op consume (Redis-up, split-tier,
+  // and a no-Redis real-path companion), plus a cross-helper one
   // — the Redis-up variant validates that the lock layers cleanly over `GETDEL`
   // atomicity: one winner and one `expired` loser, never both callers refused
   // (it cannot kill a dropped lock, because Redis arbitrates on its own); the

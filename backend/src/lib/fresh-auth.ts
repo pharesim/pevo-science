@@ -875,11 +875,14 @@ const memStore = new Map<string, { entry: StoredEntry; expiresAt: number }>();
  *  burn cleans up. Because JS is single-threaded, the `has` -> `add` pair is an
  *  uninterruptible synchronous critical section. A loser that arrives after the
  *  winner released the lock still fails closed, by one of two refusals.
- *  Ordinarily its own burn finds the entry already gone in both tiers. In the
+ *  Ordinarily its own non-destructive read finds the entry gone from both
+ *  tiers, so it reports `expired` without ever reaching the lock. In the
  *  split-tier arm where the winner's Redis leg did not run and its compensating
- *  `DEL` did not land, the canonical copy is still readable, so the loser is
- *  refused by `spentConsentOps` instead, and its own resolved `GETDEL` clears
- *  that copy and retires the ledger entry. Either way it reports `expired`.
+ *  `DEL` did not land, the canonical copy is still readable, so that read
+ *  succeeds and the refusal falls to `spentConsentOps` inside the burn; if the
+ *  loser's own `GETDEL` resolves, that clears the copy and retires the ledger
+ *  entry, and if it rejects too, the entry stays for the drain. Either way it
+ *  reports `expired`.
  *
  *  Deliberately NOT applied to the session kind. Session proofs are multi-use
  *  inside their window, so serializing them would turn legitimate concurrency
@@ -1160,8 +1163,9 @@ interface IssuedSessionFreshAuth extends IssuedFreshAuth {
  * broadcast `author_resign` on paper Y under the same TTL.
  *
  * Storage path: the module-local map is written unconditionally as the flap
- * backup, and Redis holds the canonical copy whenever it is available. Both
- * are TTL-bounded.
+ * backup, and Redis holds the canonical copy when it was ready at issuance and
+ * the `SET` resolved. A consume whose Redis read answers nil, for either
+ * reason, falls through to that backup. Both are TTL-bounded.
  */
 export async function issueFreshAuthToken(
   username: string,
@@ -1183,9 +1187,10 @@ export async function issueFreshAuthToken(
   // doc-comment above for why epoch-seconds breaks the SPA cache.
   const expiresAt = new Date(memExpiresAtMs).toISOString();
 
-  // Write to memStore as a backup whenever Redis-issuance succeeds. Storing
-  // the token only in Redis on the happy path means that if Redis flaps
-  // between issue and consume, the consume side falls through to
+  // Write to memStore as the flap backup before the Redis write, and
+  // independently of whether that write succeeds, is skipped, or rejects.
+  // Storing the token only in Redis on the happy path means that if Redis
+  // flaps between issue and consume, the consume side falls through to
   // memStore.get(token) → empty → spurious 'expired' 401 (the user just
   // authenticated). With the backup write, a Redis-down consume can recover
   // the entry from memStore. Single-use is the burn's job, not this write's:
@@ -1841,13 +1846,15 @@ async function readFreshAuthEntry(
  *  one that removed it — the caller treats `false` as `expired`.
  *
  *  The Redis leg is `GETDEL`, not `GET`-then-`DEL`. The read that discovered the
- *  entry's kind is deliberately non-destructive, but the BURN must stay atomic:
- *  with a separate `DEL`, a command that rejects mid-flight (connection drop,
- *  command timeout, retry ceiling) leaves the canonical entry alive while the
- *  in-memory delete still reports a win, and only the ledger below would then
- *  stand between that proof and a second critical action once the client
- *  reconnects inside the TTL. A non-nil `GETDEL` reply proves this call is the
- *  one that removed it.
+ *  entry's kind is deliberately non-destructive, but the BURN must stay atomic.
+ *  What a separate `GET`-then-`DEL` loses is the ARBITRATION: a non-nil `GET`
+ *  does not
+ *  prove this call removed the entry, since two concurrent callers can both
+ *  read it non-nil, whereas a non-nil `GETDEL` reply does. The hazard of a
+ *  command that rejects mid-flight (connection drop, command timeout, retry
+ *  ceiling) is shared by both shapes and is not what picks between them: either
+ *  way the canonical entry can stand while the in-memory delete reports a win,
+ *  which is the case `spentConsentOps` exists to refuse.
  *
  *  The in-memory delete runs unconditionally so a Redis-side burn also clears
  *  the backup (otherwise a sibling consume could replay through the fallback
