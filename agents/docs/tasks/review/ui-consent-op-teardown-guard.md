@@ -474,3 +474,125 @@ collection failure named above; no coordination anchors in frontend source or te
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
 re-review signal. Do not edit this hold block; the commit diff is the evidence and the
 architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-09-02, commit 69686a16):
+
+Both round-3 items landed in one commit. Per item, with verification evidence.
+
+### Item 1 — the helpers now mirror the scrub
+
+1. `teardownSubjectState()` and `teardownWithoutPromptDismissal()` in both
+   consent-op suites loop `SUBJECT_BOUND_STORAGE_KEYS` from the shared key
+   module alongside the module-state clears.
+2. The direct starter pin keeps its no-navigation and clean-cancel assertions
+   and drops the key ones (the second option offered). Its title and comment
+   are re-scoped to match; the three genuine key-clearing pins on this unit's
+   error paths are untouched.
+3. Prose corrected, anchored on the scrub's own removal: both suites' import
+   comments, both helper docblocks, both `beginOrcidUnderGuard` docblocks, and
+   `beginSettingsActionOrcidFreshAuth`. **Two sites beyond the three the hold
+   enumerated** were found by an independent sweep and are also fixed: the
+   authorship helper docblock ("the window cache is omitted"), which fix 1
+   itself falsifies, and the ORCID-start **section headers** in both suites,
+   which claimed these tests pin "the flow-key unwind".
+   `beginOrcidFreshAuthRedirect`'s own docblock sentence is left untouched as
+   sibling-owned.
+4. The settings suite has the header paragraph. Its clause-c names the real
+   companions rather than a gap: an independent check found
+   `tests/e2e/settings-orcid-factor.spec.js` has covered the ORCID factor's
+   round-trip since 2026-08-25, so the first draft of this paragraph asserted a
+   gap that does not exist. Corrected, and the same stale claim in the starter
+   suite's own header (which the draft had cited as authority) is corrected in
+   the same pass.
+
+Both directions of the architect's success condition were run, not inferred.
+With the stale branch reduced to a bare `return FRESH_AUTH_CANCELLED`, the four
+suites yield **exactly one** red: `an ORCID redirect start resolving after
+teardown does not navigate` in `lib-fresh-auth-session-window.test.js`, whose
+helper `ui-cross-user-session-teardown`'s own item 2 claims. With the staleness
+check deleted entirely, **all five** ORCID-start tests go red. So they fail when
+the guard is absent and pass because the scrub removed the keys.
+
+### Item 2 — the silent boundaries, the gated clears, and one-per-teardown
+
+1. `acquireSessionProof` opens a guard; the post-factor-read check and the
+   stale return from the ORCID-start closure report through it. The prompt,
+   mint and post-mint boundaries are unchanged and silent.
+2. Nothing moved into `windowProof`; its `not.toHaveBeenCalled` assertion still
+   passes.
+3. New test with the real `fresh-auth.js` **and** the real `ipfs-upload.js`:
+   the status fetch is parked, the scrub runs, it resolves, and the assertion
+   is exactly one toast plus the silent upload code and a null describe-key.
+   Hosting it meant adding the upload transport to the session-window suite's
+   api.js mock factory and importing the real upload module; both header
+   paragraphs are updated for it. The boundary the hold did not require a test
+   for (the ORCID start) gained its own report assertion on the existing case.
+   **The clause "if an existing test pins silence at either boundary, update
+   it" has no target** — no test anywhere pinned zero toasts at either.
+4. Both clears are gated on the flight not being torn down. On the broadcast
+   surface the clear is wrapped **in place**, above the remintable gate:
+   relocating it below would stop clearing on the kind_mismatch and
+   unknown-reason arms with no teardown at all. Those arms do stop clearing
+   when torn down, which is the intended direction and is called out in the
+   commit message. The mismatch arm is unchanged, since its disconnect runs the
+   same scrub. One test per surface: the broadcast one seeds a real window
+   after the generation bump and asserts it survives; the upload suite mocks
+   the cache wholesale, so its pin is that the eviction never runs.
+
+### Beyond the hold: the report is now once per teardown, not once per guard
+
+An adversarial review pass found two reachable ways the first shape broke the
+"exactly one" contract the hold set, both reproduced before and after:
+
+- Two **cross-posture** flights parked on one coalesced factor read each
+  reported: two identical stacked toasts where the pre-fix code showed none.
+  Reachable on the publish and edit pages, which hold both the editor's
+  suppressed inline-image upload and their own permissive gates.
+- A teardown that **narrates itself** was talked over: `handleSessionInconsistency`
+  showed its message and a flight parked at its factor read added a second,
+  vaguer one on top. One toast before the fix, two after.
+
+Both were confirmed independently before acting. `subjectTeardownGuard`'s
+`cancel()` now claims the teardown generation as it reports, and
+`handleSessionInconsistency` claims it before speaking. Every pre-existing
+"exactly one" assertion passes unchanged.
+
+### Surfaced, not fixed
+
+- The editor's image queue turns one teardown into **two** messages after this
+  change: file 1 reports through the acquisition guard and unwinds silently,
+  then file 2 opens a fresh guard post-teardown, re-acquires, and refuses with
+  a different message. The per-teardown claim does not absorb it because the
+  second message is a different one. This is the batch-guard family already
+  routed to `ui-upload-batch-teardown-guard`; the new fact is that its per-batch
+  guard now also closes a double report, not only a wasted acquisition. The
+  publish and edit batches are unaffected (both abort on a null describe-key).
+- `consentOpFreshAuthRetryGate` has the identical clear-before-check ordering on
+  the consent-op cache. Not widened into: that cache is written only by the
+  ORCID callback, i.e. only after a full page load, so no live departed flight
+  can coexist with a successor's entry.
+- An explicit user logout with an acquisition parked now shows the session-changed
+  message. Left as is; the message is true and the alternative needs the scrub to
+  carry a reason.
+
+### Verification
+
+Six mutation probes, each failing **exactly** its own test and leaving the rest
+of the touched suites green: the two acquisition reports, both gated clears, the
+per-teardown claim, and the self-narrating teardown's claim. Full frontend unit
+suite **1807 passed / 81 files**, against 1802 on the parent commit (+5 new
+tests), with the same three pre-existing unhandled rejections in the edit-page
+suite. Production build clean. No coordination anchors on any of the 354 added
+lines, checked against every arm of the pre-commit gate plus the slug families it
+defers.
+
+One **pre-existing flake** worth recording, unrelated to this diff: `window model
+> the slide never pushes past the absolute cap` in
+`lib-fresh-auth-session-window.test.js` fails roughly one run in three on a 1 ms
+clock boundary, reproduced on a clean tree.
+
+No browser or Playwright run, as in the previous rounds: the change has no DOM
+surface of its own and its visible effects are two-tab, two-account races the
+unit suites stage deterministically.
