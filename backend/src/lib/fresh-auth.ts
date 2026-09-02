@@ -874,8 +874,12 @@ const memStore = new Map<string, { entry: StoredEntry; expiresAt: number }>();
  *  to the set BEFORE any awaits and removes it in a `finally` so a throwing
  *  burn cleans up. Because JS is single-threaded, the `has` -> `add` pair is an
  *  uninterruptible synchronous critical section. A loser that arrives after the
- *  winner released the lock still fails closed: its own burn finds the entry
- *  already gone in both tiers and reports `expired`.
+ *  winner released the lock still fails closed, by one of two refusals.
+ *  Ordinarily its own burn finds the entry already gone in both tiers. In the
+ *  split-tier arm where the winner's Redis leg did not run and its compensating
+ *  `DEL` did not land, the canonical copy is still readable, so the loser is
+ *  refused by `spentConsentOps` instead, and its own resolved `GETDEL` clears
+ *  that copy and retires the ledger entry. Either way it reports `expired`.
  *
  *  Deliberately NOT applied to the session kind. Session proofs are multi-use
  *  inside their window, so serializing them would turn legitimate concurrency
@@ -947,10 +951,10 @@ const spentConsentOps = new Set<string>();
  *  `drainSpentConsentOps` is the point. Retirement is only safe when it is
  *  paired with PROOF the guarded key is unreadable — the drain takes that proof
  *  from a `DEL` that resolved, a refused replay takes it from its own `GETDEL`
- *  — and this predicate can produce no such proof: it runs inside
- *  `burnConsentOpEntry` two statements ahead of that call's own `GETDEL`, so a
- *  fire-and-forget delete here would race the burn it is deciding, and dropping
- *  the entry bare would hand that same `GETDEL` a key to report as a win.
+ *  — and this predicate can produce no such proof: it is sampled inside
+ *  `burnConsentOpEntry` ahead of that call's own `GETDEL`, so a fire-and-forget
+ *  delete here would race the burn it is deciding, and dropping the entry bare
+ *  would hand that same `GETDEL` a key to report as a win.
  *
  *  Age proves nothing here. However stale the entry, the key it guards can
  *  still be readable — an unreplied issuing `SET` is resent at recovery with a
@@ -1155,8 +1159,9 @@ interface IssuedSessionFreshAuth extends IssuedFreshAuth {
  * authenticate the user for `author_accept` on paper X then use the proof to
  * broadcast `author_resign` on paper Y under the same TTL.
  *
- * Storage path: Redis preferred; falls back to the module-local map on
- * unavailable Redis or write failure. Both paths are TTL-bounded.
+ * Storage path: the module-local map is written unconditionally as the flap
+ * backup, and Redis holds the canonical copy whenever it is available. Both
+ * are TTL-bounded.
  */
 export async function issueFreshAuthToken(
   username: string,
@@ -1183,10 +1188,11 @@ export async function issueFreshAuthToken(
   // between issue and consume, the consume side falls through to
   // memStore.get(token) → empty → spurious 'expired' 401 (the user just
   // authenticated). With the backup write, a Redis-down consume can recover
-  // the entry from memStore. Single-use semantics are preserved: a successful
-  // Redis GETDEL deletes the canonical entry; the mem-store fallback path also
-  // calls memStore.delete() so the entry is consumed exactly once across the
-  // storage tiers.
+  // the entry from memStore. Single-use is the burn's job, not this write's:
+  // `burnConsentOpEntry` deletes the in-memory copy unconditionally alongside
+  // its Redis `GETDEL`, the in-process lock keeps a flap from splitting two
+  // concurrent callers across the tiers, and the spent-proof ledger refuses a
+  // replay whenever the canonical copy could not be confirmed gone.
   memStore.set(token, { entry, expiresAt: memExpiresAtMs });
 
   const redis = getRedis();
@@ -1768,9 +1774,10 @@ async function consumeFreshAuthTokenForSurface(
     return consumeSessionWindow(token, entry, read.fromMemStore, surface.sessionsInvalidatedAtMs);
   }
 
-  // Consent-op: single-use. The lock makes the read-then-burn pair
-  // non-overlapping so a Redis flap cannot hand two concurrent callers a
-  // successful burn each; the loser sees the same `expired` a stale replay does.
+  // Consent-op: single-use. The read above runs outside the lock, so two
+  // concurrent callers can both read the entry; the lock makes the BURNS
+  // non-overlapping, so a Redis flap cannot hand each of them a successful burn
+  // on a different tier. The loser sees the same `expired` a stale replay does.
   if (inFlightConsumes.has(token)) {
     return { valid: false, reason: 'expired' };
   }
@@ -1837,9 +1844,10 @@ async function readFreshAuthEntry(
  *  entry's kind is deliberately non-destructive, but the BURN must stay atomic:
  *  with a separate `DEL`, a command that rejects mid-flight (connection drop,
  *  command timeout, retry ceiling) leaves the canonical entry alive while the
- *  in-memory delete still reports a win, and the same proof authorizes a second
- *  critical action once the client reconnects inside the TTL. A non-nil `GETDEL`
- *  reply proves this call is the one that removed it.
+ *  in-memory delete still reports a win, and only the ledger below would then
+ *  stand between that proof and a second critical action once the client
+ *  reconnects inside the TTL. A non-nil `GETDEL` reply proves this call is the
+ *  one that removed it.
  *
  *  The in-memory delete runs unconditionally so a Redis-side burn also clears
  *  the backup (otherwise a sibling consume could replay through the fallback

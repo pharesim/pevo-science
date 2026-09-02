@@ -133,6 +133,7 @@ import {
   issueSessionFreshAuthToken,
   validFreshAuthActionsMessage,
   _getInFlightConsumesSizeForTests,
+  _getSpentConsentOpsSizeForTests,
   _resetFreshAuthMemStoreForTests,
   _restartCleanupForTests,
   _setMemStoreEntryForTests,
@@ -719,7 +720,7 @@ describe('Redis-flap recovery via memStore backup', () => {
     const issued = await issueFreshAuthToken('carol', 'password', T);
     // Single-call mock: the consume falls through to memStore (which has the
     // backup written at issuance) and recovers.
-    const getdelSpy = vi.spyOn(redis, 'get').mockRejectedValueOnce(new Error('simulated Redis flap'));
+    const getSpy = vi.spyOn(redis, 'get').mockRejectedValueOnce(new Error('simulated Redis flap'));
     try {
       const result = await consumeFreshAuthToken(issued.token, 'carol', TH);
       expect(result.valid).toBe(true);
@@ -727,7 +728,7 @@ describe('Redis-flap recovery via memStore backup', () => {
         expect(result.mechanism).toBe('password');
       }
     } finally {
-      getdelSpy.mockRestore();
+      getSpy.mockRestore();
     }
   });
 
@@ -745,7 +746,7 @@ describe('Redis-flap recovery via memStore backup', () => {
     // Now simulate the Redis read coming back empty and check that the memStore
     // copy is gone too (a successful Redis burn deletes the memStore backup, so
     // the symmetric-deletion pin holds).
-    const getdelSpy = vi.spyOn(redis, 'get').mockResolvedValueOnce(null);
+    const getSpy = vi.spyOn(redis, 'get').mockResolvedValueOnce(null);
     try {
       const replay = await consumeFreshAuthToken(issued.token, 'dave', TH);
       expect(replay.valid).toBe(false);
@@ -753,7 +754,7 @@ describe('Redis-flap recovery via memStore backup', () => {
         expect(replay.reason).toBe('expired');
       }
     } finally {
-      getdelSpy.mockRestore();
+      getSpy.mockRestore();
     }
   });
 });
@@ -771,13 +772,13 @@ describe('Symmetric dual-tier deletion', () => {
     // Step 1: stub the Redis read to throw once. This forces the fallback to
     // memStore on consume — which succeeds via the memStore backup written at
     // issuance. The burn is NOT stubbed, so it still reaches Redis.
-    const getdelSpy = vi.spyOn(redis, 'get').mockRejectedValueOnce(new Error('simulated Redis flap on read'));
+    const getSpy = vi.spyOn(redis, 'get').mockRejectedValueOnce(new Error('simulated Redis flap on read'));
 
     let firstResult;
     try {
       firstResult = await consumeFreshAuthToken(issued.token, 'eve', TH);
     } finally {
-      getdelSpy.mockRestore();
+      getSpy.mockRestore();
     }
     expect(firstResult.valid).toBe(true);
 
@@ -797,13 +798,14 @@ describe('Symmetric dual-tier deletion', () => {
 
   it.skipIf(!redisAvailable)('a burn whose Redis leg fails still clears the canonical entry, so a replay after recovery is refused', async () => {
     // The burn's Redis leg is the one that can silently half-apply: the read
-    // that discovered the entry already succeeded, so a rejecting delete leaves
-    // the canonical copy alive while the in-memory delete still reports a win.
-    // The consume returns valid, and the SAME proof authorizes a second critical
-    // action once the client reconnects inside the TTL. A compensating delete is
-    // what closes that, and the key-absence assertion below is its mutation-kill:
-    // the replay assertions after it are NOT, because the spent-proof ledger
-    // refuses a replayed consent-op proof whether or not that delete ever runs.
+    // that discovered the entry already succeeded, so a rejecting `GETDEL`
+    // leaves the canonical copy alive while the in-memory delete still reports
+    // a win, and the consume returns valid. The spent-proof ledger is what
+    // refuses a replay of that proof; the compensating delete is what keeps the
+    // orphaned key from outliving the ledger entry, and the key-absence
+    // assertion below is ITS mutation-kill: the replay assertions after it are
+    // NOT, because the ledger refuses a replayed consent-op proof whether or not
+    // that delete ever runs.
     const redis = getRedis()!;
     const issued = await issueFreshAuthToken('flap-burn', 'password', T);
     const key = `${config.appTag}:fresh_auth:token:${issued.token}`;
@@ -834,15 +836,21 @@ describe('Symmetric dual-tier deletion', () => {
     }
   });
 
-  it.skipIf(!redisAvailable)('a throwing Redis del does not break the consume — the in-memory tier arbitrates the burn', async () => {
-    // The Redis leg of the burn runs inside a try/catch: if Redis is flaky on
-    // the del side too, the in-memory delete's return value decides whether this
-    // caller won, and the user's broadcast must still proceed. Pin that the
-    // consume reports valid even when both Redis legs throw.
+  it.skipIf(!redisAvailable)('a throwing compensating Redis del does not break the consume — the in-memory tier arbitrates the burn', async () => {
+    // Every Redis command on the consume path runs inside a try/catch: the
+    // read, the burn's `GETDEL`, and the compensating `DEL` that follows an
+    // in-memory-arbitrated burn. If all three reject, the in-memory delete's
+    // return value decides whether this caller won and the user's broadcast
+    // must still proceed. All three are stubbed to reject: with `GETDEL` left
+    // real the burn would be settled on the Redis tier and the compensating
+    // branch never reached, so the `del` stub would pin nothing. The ledger
+    // size afterwards is what proves the branch was reached and its delete
+    // really did fail.
     const redis = getRedis()!;
     const issued = await issueFreshAuthToken('frank', 'password', T);
 
-    const getdelSpy = vi.spyOn(redis, 'get').mockRejectedValueOnce(new Error('flap on read'));
+    const getSpy = vi.spyOn(redis, 'get').mockRejectedValueOnce(new Error('flap on read'));
+    const getdelSpy = vi.spyOn(redis, 'getdel').mockRejectedValueOnce(new Error('flap on the burn'));
     const delSpy = vi.spyOn(redis, 'del').mockRejectedValueOnce(new Error('flap persists on del'));
     try {
       const result = await consumeFreshAuthToken(issued.token, 'frank', TH);
@@ -850,8 +858,10 @@ describe('Symmetric dual-tier deletion', () => {
       if (result.valid) {
         expect(result.mechanism).toBe('password');
       }
+      expect(_getSpentConsentOpsSizeForTests()).toBe(1);
     } finally {
-      getdelSpy.mockRestore();
+      getSpy.mockRestore();
+      getSpy.mockRestore();
       delSpy.mockRestore();
     }
   });
@@ -1090,13 +1100,14 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
   // `has` → `add` critical section before any awaits.
   //
   // Acceptance: both helpers must serialize concurrent dual-consume to exactly
-  // one winner. Two variants per helper — the Redis-up variant validates that
-  // the lock layers cleanly over `GETDEL` atomicity without false-rejecting
-  // valid sequential consumes (it cannot kill a dropped lock, because Redis
-  // arbitrates on its own); the split-tier variant is the mutation kill, since
-  // there the lock is the only thing standing between two callers and two wins.
-  // A stub that fails Redis identically for BOTH callers is not a kill either:
-  // it lands both on the in-memory tier, where `Map.delete` settles it.
+  // one winner. Two variants of the consent-op consume, plus a cross-helper one
+  // — the Redis-up variant validates that the lock layers cleanly over `GETDEL`
+  // atomicity: one winner and one `expired` loser, never both callers refused
+  // (it cannot kill a dropped lock, because Redis arbitrates on its own); the
+  // split-tier variant is the mutation kill, since there the lock is the only
+  // thing standing between two callers and two wins. A stub that fails Redis
+  // identically for BOTH callers is not a kill either: it lands both on the
+  // in-memory tier, where `Map.delete` settles it.
 
   it.skipIf(!redisAvailable)('consumeFreshAuthToken Redis-up: Promise.all dual consume → exactly one winner', async () => {
     const issued = await issueFreshAuthToken('race-alice', 'password', T);
@@ -1210,7 +1221,7 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
     // second caller would find nothing and report `expired`.
     const redis = getRedis()!;
     const issued = await issueSessionFreshAuthToken('race-eve', 'orcid');
-    const getdelSpy = vi.spyOn(redis, 'get').mockImplementation(() => {
+    const getSpy = vi.spyOn(redis, 'get').mockImplementation(() => {
       return Promise.reject(new Error('forced Redis-down for race test'));
     });
     const delSpy = vi.spyOn(redis, 'del').mockResolvedValue(0);
@@ -1221,7 +1232,7 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
       ]);
       expect([a, b].filter((r) => r.valid)).toHaveLength(2);
     } finally {
-      getdelSpy.mockRestore();
+      getSpy.mockRestore();
       delSpy.mockRestore();
     }
   });
@@ -1256,7 +1267,7 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
     expect(_getInFlightConsumesSizeForTests()).toBe(0);
 
     const redis = getRedis();
-    const getdelSpy =
+    const getSpy =
       redis && isRedisAvailable()
         ? vi.spyOn(redis, 'get').mockRejectedValue(new Error('forced Redis-down for cleanup test'))
         : null;
@@ -1266,7 +1277,7 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
       ).rejects.toThrow();
       expect(_getInFlightConsumesSizeForTests()).toBe(0);
     } finally {
-      getdelSpy?.mockRestore();
+      getSpy?.mockRestore();
     }
   });
 
@@ -1280,7 +1291,7 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
     const issued = await issueFreshAuthToken('lock-window', 'password', T);
     const sizesDuringBurn: number[] = [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const delSpy = vi.spyOn(redis, 'getdel').mockImplementation((async () => {
+    const getdelSpy = vi.spyOn(redis, 'getdel').mockImplementation((async () => {
       sizesDuringBurn.push(_getInFlightConsumesSizeForTests());
       return '{}';
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1290,7 +1301,7 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
       expect(result.valid).toBe(true);
       expect(sizesDuringBurn).toEqual([1]);
     } finally {
-      delSpy.mockRestore();
+      getdelSpy.mockRestore();
     }
     expect(_getInFlightConsumesSizeForTests()).toBe(0);
   });
