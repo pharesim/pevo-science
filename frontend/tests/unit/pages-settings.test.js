@@ -1044,6 +1044,7 @@ describe('settingsPage', () => {
       // the assertion targets the helper's own invariant, not the
       // surrounding orchestration.
       await comp._performUpgradeKeyRotation(
+        mockAuthStore.username,
         Array(12).fill('old').join(' '),
         Array(12).fill('new').join(' '),
       );
@@ -1059,6 +1060,7 @@ describe('settingsPage', () => {
 
       const comp = createComponent();
       const result = await comp._performUpgradeKeyRotation(
+        mockAuthStore.username,
         Array(12).fill('old').join(' '),
         Array(12).fill('new').join(' '),
       );

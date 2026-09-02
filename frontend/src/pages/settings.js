@@ -38,7 +38,10 @@ const METADATA_MAX = { name: 200, institution: 200, field: 100 };
 //   'terminal'              — chain rotation landed AND no further retry is
 //                              meaningful (alreadyUpgraded, rateLimited, second
 //                              401, post-broadcast backendTimeout, generic
-//                              partialApplyFailed). Try Again is hidden.
+//                              partialApplyFailed, and either half of the
+//                              session-changed pair, where the tab no longer
+//                              represents the account the retry would act for).
+//                              Try Again is hidden.
 const UPGRADE_ERROR_KEYS = {
   keychainRequired: 'upgrade.keychainRequired',
   generationFailed: 'upgrade.generationFailed',
@@ -499,7 +502,11 @@ export function initSettingsPage() {
     // if the user navigates away mid-flight, the continuation must not call
     // loginFromResponse (and _saveSession + _startAccreditationPolling
     // through it) on the singleton auth store, since the singleton has no
-    // component boundary to absorb the writes.
+    // component boundary to absorb the writes. Unmount is one of two reasons
+    // that continuation must hold off; `_upgradeSubjectDiverged` covers the
+    // other, where the component is alive but the store has moved to a
+    // different account or to none. `_mounted` says nothing about who the
+    // store names, so the two guards sit together at every landing.
     ...createTimerGuard(),
     // Resets `orcidLinking` on bfcache restore (Back from the ORCID link flow).
     ...createOrcidRedirectGuard('orcidLinking'),
@@ -649,7 +656,10 @@ export function initSettingsPage() {
     // `retryUpgradeBackend()` which keeps `newSeedPhrase` and re-signs the
     // proof without re-broadcasting the now-stale chain rotation. The
     // `alreadyUpgraded` and `rateLimited` sub-cases are non-retryable for
-    // semantic reasons (nothing to retry / per-account-hour budget burnt).
+    // semantic reasons (nothing to retry / per-account-hour budget burnt),
+    // and the session-changed pair for a third reason: the retry would run
+    // against a store that has moved to another account, and its own start
+    // guard would decline anyway.
     // Compares discriminator keys, not translated strings, so the result
     // is invariant to mid-error-screen locale switches.
     get canRetryUpgrade() {
@@ -1202,6 +1212,14 @@ export function initSettingsPage() {
       // Pin the account this upgrade is for, before the first await. See the
       // `_upgradeSubject` field for why the pin outlives this frame.
       this._upgradeSubject = this.username;
+      // Pin the credential beside it. The bearer the cleanup POST carries is
+      // what identifies the account server-side, and the store's token can be
+      // replaced across any of the suspensions below: by a login as someone
+      // else, or by a same-subject re-login in another tab, which the subject
+      // guards deliberately do not treat as a change. A local const rather
+      // than a field, because nothing after this frame may reuse it: the
+      // retry leg captures its own at its own start.
+      const upgradeToken = Alpine.store('auth').token;
 
       // ORDERING:
       //   (a) validate
@@ -1234,8 +1252,21 @@ export function initSettingsPage() {
         // BEFORE `_clearSensitiveUpgradeState()` runs below. Reachability
         // invariant: no variable bound inside `_performUpgradeKeyRotation()`
         // escapes to `executeUpgrade()` other than control flow.
-        await this._performUpgradeKeyRotation(oldWords, newSeedPhrase);
+        await this._performUpgradeKeyRotation(this._upgradeSubject, oldWords, newSeedPhrase);
         broadcastLanded = true;
+
+        // First checkpoint. The broadcast is a real chain round trip, and the
+        // dhive import behind it is the flow's first macrotask gap, so this is
+        // the earliest suspension a cross-tab login can land in. The rotation
+        // itself was bound to the pinned account and is already irreversible;
+        // what stops here is everything after it, because the next two steps
+        // spend credentials (a signature made with the new seed, then the
+        // session bearer) on behalf of a tab that no longer represents the
+        // account they are for.
+        if (this._upgradeSubjectDiverged()) {
+          this._endUpgradeAsSessionChanged({ cleanupLanded: false });
+          return;
+        }
 
         // Sign the upgrade proof with the NEW seed-derived active key. The
         // proof binds the JWT-authenticated session to the seed phrase that
@@ -1247,14 +1278,22 @@ export function initSettingsPage() {
         // the derived private key stays local and doesn't escape into
         // executeUpgrade's frame. See `_performUpgradeKeyRotation` for the
         // closure-wipe invariant pattern this mirrors.
-        const proof = await this._signUpgradeProof(newSeedPhrase);
+        const proof = await this._signUpgradeProof(this._upgradeSubject, newSeedPhrase);
+
+        // Second checkpoint, for the gap the signing itself opens. The proof
+        // is bound to the pinned account either way; what this refuses is
+        // sending it under a session the tab has stopped owning.
+        if (this._upgradeSubjectDiverged()) {
+          this._endUpgradeAsSessionChanged({ cleanupLanded: false });
+          return;
+        }
 
         // Notify backend to clean up stored keys. Failure here surfaces as
         // upgradeError. Post-broadcast 503 is retryable via
         // `retryUpgradeBackend()` (chain rotation done, only the backend
         // RPC lookup failed); other post-broadcast errors route to a
         // terminal sub-case.
-        const result = await this._postUpgradeBackend(proof);
+        const result = await this._postUpgradeBackend(proof, upgradeToken);
         // Post-await unmount guard: the backend cleanup can take up to 20s
         // before resolving. Every other adoption site of loginFromResponse
         // gates the helper call on `_mounted`; without the gate here, a
@@ -1315,7 +1354,7 @@ export function initSettingsPage() {
         return;
       }
 
-      await this._completeUpgradeAfterBackend(newSeedPhrase);
+      await this._completeUpgradeAfterBackend(this._upgradeSubject, newSeedPhrase);
     },
 
     // Backend-cleanup retry. Reachable from the 'error' phase whenever
@@ -1374,9 +1413,21 @@ export function initSettingsPage() {
         this._endUpgradeAsSessionChanged({ cleanupLanded: false });
         return;
       }
+      // Pin the credential for this attempt, beside the subject the guard
+      // above just confirmed. Same reason as the executor: the proof await
+      // below is a real gap, and the store's token can be replaced inside it
+      // without the account changing.
+      const upgradeToken = Alpine.store('auth').token;
       try {
-        const proof = await this._signUpgradeProof(newSeedPhrase);
-        const result = await this._postUpgradeBackend(proof);
+        const proof = await this._signUpgradeProof(this._upgradeSubject, newSeedPhrase);
+
+        // The retry's proof await is the same gap the executor checkpoints,
+        // and the POST after it is the same credentialed step.
+        if (this._upgradeSubjectDiverged()) {
+          this._endUpgradeAsSessionChanged({ cleanupLanded: false });
+          return;
+        }
+        const result = await this._postUpgradeBackend(proof, upgradeToken);
         // Post-await unmount guard before loginFromResponse. The backend
         // cleanup can take up to 20s and post-503 retry is exactly when the
         // user is most likely to navigate away. Without the guard, the
@@ -1409,7 +1460,7 @@ export function initSettingsPage() {
         this._handlePostBroadcastError(err, { broadcastLanded: true, logTag: '[custody upgrade retry]' });
         return;
       }
-      await this._completeUpgradeAfterBackend(newSeedPhrase);
+      await this._completeUpgradeAfterBackend(this._upgradeSubject, newSeedPhrase);
     },
 
     // True when the singleton auth store no longer represents the account
@@ -1593,9 +1644,9 @@ export function initSettingsPage() {
     // (XSS surface) and upgradePhase would stick at 'upgrading' (no
     // recovery UI). Failures surface as a single fallback warning on
     // the 'done' screen.
-    async _completeUpgradeAfterBackend(newSeedPhrase) {
+    async _completeUpgradeAfterBackend(upgradeSubject, newSeedPhrase) {
       try {
-        await this._performKeychainImport(newSeedPhrase);
+        await this._performKeychainImport(upgradeSubject, newSeedPhrase);
       } catch (err) {
         console.warn('[custody upgrade] keychain helper threw', err);
         // Skip the user-visible warning on unmount: the warnings array is
@@ -1635,9 +1686,14 @@ export function initSettingsPage() {
     // `buildCustodyUpgradeChallenge`. Signs with the `active` role: the
     // strongest single-key authority that doesn't expose owner rotation
     // capacity.
-    async _signUpgradeProof(newSeedPhrase) {
+    //
+    // The account name is an argument, not a live store read: the backend
+    // rebuilds the challenge from the JWT subject, so a name that drifted
+    // across this helper's own awaits yields a proof that cannot verify, and
+    // the key it derives would be the wrong account's besides.
+    async _signUpgradeProof(upgradeSubject, newSeedPhrase) {
       const dhive = await loadDhive();
-      const newKeys = await deriveHiveKeys(newSeedPhrase, this.username);
+      const newKeys = await deriveHiveKeys(newSeedPhrase, upgradeSubject);
       const privateKey = dhive.PrivateKey.fromString(newKeys.active);
       const derivedPubkey = privateKey.createPublic().toString();
       const signedAt = new Date().toISOString();
@@ -1649,7 +1705,7 @@ export function initSettingsPage() {
       // with backend's signed_at-rejected 401 to confirm clock skew is the
       // cause when a user reports a failed upgrade.
       console.warn(`[custody upgrade] signing proof at signed_at=${signedAt} (client clock; no server-time reference available to validate skew, threshold ${UPGRADE_CLOCK_SKEW_WARN_MS}ms when backend GET /api/time lands)`);
-      const challenge = `${getAppTag()}-custody-upgrade|v1|${this.username}|${signedAt}`;
+      const challenge = `${getAppTag()}-custody-upgrade|v1|${upgradeSubject}|${signedAt}`;
       const msgHash = dhive.cryptoUtils.sha256(challenge);
       const signedProof = privateKey.sign(msgHash).toString();
       // Intentionally returns scalars only. Do NOT return `privateKey`,
@@ -1664,12 +1720,17 @@ export function initSettingsPage() {
     // rest terminal). 20s budget guards against a hung backend after the
     // on-chain rotation; TimeoutError DOMException surfaces via err.name
     // in the caller's catch.
-    async _postUpgradeBackend(proof) {
-      const auth = Alpine.store('auth');
+    //
+    // The bearer is an argument rather than a store read at fetch time. It is
+    // what binds the request to an account server-side, and both callers are
+    // several awaits deep by the time they get here; a live read would send
+    // whatever credential the store holds at that moment, which after a
+    // cross-tab login is another user's.
+    async _postUpgradeBackend(proof, upgradeToken) {
       const res = await fetch('/api/custody/upgrade', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${auth.token}`,
+          'Authorization': `Bearer ${upgradeToken}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(proof),
@@ -1706,14 +1767,20 @@ export function initSettingsPage() {
     // needs data back from here (e.g., a tx id), return a scalar, not the
     // key objects.
     //
-    // Arguments are passed by value (`oldWords` is a string; `newSeedPhrase`
-    // is a string — Alpine reactive fields resolve to primitive strings
-    // before being passed in, so no observer reference leaks through).
-    async _performUpgradeKeyRotation(oldWords, newSeedPhrase) {
+    // Arguments are passed by value (`upgradeSubject`, `oldWords` and
+    // `newSeedPhrase` are all strings — Alpine reactive fields and the
+    // store-backed username getter resolve to primitive strings before being
+    // passed in, so no observer reference leaks through). The account name is
+    // an argument rather than a live `this.username` read for a second
+    // reason: it salts both derivations and names the account the
+    // `account_update` rotates, and this method runs behind the flow's first
+    // dynamic import, so a live read here could name whoever a cross-tab
+    // login left in the store.
+    async _performUpgradeKeyRotation(upgradeSubject, oldWords, newSeedPhrase) {
       // Derive keys from old and new seed phrases
       const dhive = await loadDhive();
-      const oldKeys = await deriveHiveKeys(oldWords, this.username);
-      const newKeys = await deriveHiveKeys(newSeedPhrase, this.username);
+      const oldKeys = await deriveHiveKeys(oldWords, upgradeSubject);
+      const newKeys = await deriveHiveKeys(newSeedPhrase, upgradeSubject);
       const newPubKeys = await deriveHivePublicKeys(newKeys);
 
       // Broadcast account_update signed with old owner key
@@ -1721,7 +1788,7 @@ export function initSettingsPage() {
 
       const ownerKey = dhive.PrivateKey.fromString(oldKeys.owner);
       const op = {
-        account: this.username,
+        account: upgradeSubject,
         owner: { weight_threshold: 1, account_auths: [], key_auths: [[newPubKeys.owner, 1]] },
         active: { weight_threshold: 1, account_auths: [], key_auths: [[newPubKeys.active, 1]] },
         posting: { weight_threshold: 1, account_auths: [], key_auths: [[newPubKeys.posting, 1]] },
@@ -1747,6 +1814,15 @@ export function initSettingsPage() {
     // newPubKeys.owner in `_performUpgradeKeyRotation`); the user's new
     // mnemonic is the only way to re-derive it.
     //
+    // The account to import under is an argument. This loop holds the
+    // widest suspension in the flow — up to 45 seconds per role while a
+    // popup waits on the user, three times — and it names its target once
+    // per iteration, so a live read could file the second and third keys
+    // under an account that logged in from another tab mid-loop. The import
+    // is a local convenience for the account that was just upgraded, so it
+    // stays bound to that account for every role regardless of what the tab's
+    // session does meanwhile.
+    //
     // Closure-wipe shape: this helper re-derives `newKeys` from the seed
     // phrase locally (rather than receiving it from the caller) so its
     // own frame holds the only references to derived material; when the
@@ -1761,7 +1837,7 @@ export function initSettingsPage() {
     // ACCOUNT NAME, not a key) and (b) leaks the raw 64-char hex
     // private-key seed into Keychain's extension logs. `requestImportKey`
     // is the correct API.
-    async _performKeychainImport(newSeedPhrase) {
+    async _performKeychainImport(upgradeSubject, newSeedPhrase) {
       if (!isKeychainInstalled()) {
         // Race: extension was installed at executeUpgrade() entry (proven
         // by the account_update sign in _performUpgradeKeyRotation) but
@@ -1777,7 +1853,7 @@ export function initSettingsPage() {
         }
         return;
       }
-      const newKeys = await deriveHiveKeys(newSeedPhrase, this.username);
+      const newKeys = await deriveHiveKeys(newSeedPhrase, upgradeSubject);
       // Unmount check before the loop: deriveHiveKeys is async (calls
       // PrivateKey.fromLogin per role), so the user may have navigated
       // away during derivation. Returning here means no Keychain popups
@@ -1808,7 +1884,7 @@ export function initSettingsPage() {
           // existing catch surfaces as a warning, and the loop proceeds.
           const importPromise = new Promise((resolve, reject) => {
             window.hive_keychain.requestImportKey(
-              this.username, wif,
+              upgradeSubject, wif,
               (res) => res.success ? resolve(res) : reject(new Error(res.message || 'Keychain import failed'))
             );
           });

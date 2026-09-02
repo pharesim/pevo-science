@@ -576,7 +576,7 @@ describe('settingsPage round-2 hold-block findings', () => {
     it('console.warn includes the signed_at timestamp on every proof sign', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
-      await comp._signUpgradeProof(Array(12).fill('new').join(' '));
+      await comp._signUpgradeProof(mockAuthStore.username, Array(12).fill('new').join(' '));
 
       const skewWarn = warnSpy.mock.calls.find((c) =>
         typeof c[0] === 'string' && c[0].includes('signing proof at signed_at=')

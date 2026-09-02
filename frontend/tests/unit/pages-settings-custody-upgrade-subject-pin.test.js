@@ -13,15 +13,18 @@
 // window, and the retry leg refuses to spend a proof attempt against a
 // store that has moved on.
 //
-// Carve-out clause (a): mirrors the sibling settings suites' fixture shape —
+// Carve-out clause (a): mirrors the sibling settings suites' fixture shape.
 // Alpine stores, dhive, and hive-keys are stubbed because driving a real
 // chain broadcast plus backend cleanup per test is impractical, and the focus
-// here is the frontend subject-adoption payload contract, not cryptographic
-// verification. The risk class (proof/signature correctness) is covered
-// real-path by sec-001-equivalence.test.js and the backend custody tests.
+// here is which account the landing is filed under, not cryptographic
+// verification. Clause (b) does not apply, no auth middleware runs on this
+// path. Clause (c): the bypassed risk class is whether a proof actually binds
+// to the account it claims, and `backend/tests/routes/custody-upgrade.test.ts`
+// covers it real-path, signing genuine proofs and asserting the route rejects
+// a `derived_pubkey` absent from the account's on-chain key set.
 // The intervening cross-tab login is simulated by mutating the store fields
-// and tab-subject marker directly — the net effect of the storage-event
-// restore path, which auth.test.js covers against the real store.
+// and tab-subject marker directly, which is the net effect of the
+// storage-event restore path that auth.test.js covers against the real store.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockLoginFromResponse } from './fixtures/mock-auth.js';
 import {
