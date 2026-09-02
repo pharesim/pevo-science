@@ -38,13 +38,16 @@
 -- here would put every repaired account inside the recovery window for an hour
 -- after deploy. A plain UPDATE leaves it alone (there is no trigger).
 --
--- Idempotent: the back-fill matches no rows on re-apply, and the constraint is
--- dropped and re-added on every apply (the migration-014 idiom, since
--- `ADD CONSTRAINT IF NOT EXISTS` does not exist in PostgreSQL). Re-adding
--- rather than skipping on the name means a database that already carries the
--- constraint under an earlier predicate converges on this one; the
--- re-validation scan is trivial at PEvO's row counts. `deploy.sh migrate`
--- re-applies every file on every run.
+-- Idempotent: the back-fill matches no rows on re-apply, and the DO block
+-- below compares the installed constraint's deparsed definition with the one
+-- wanted here (`ADD CONSTRAINT IF NOT EXISTS` does not exist in PostgreSQL).
+-- A match is a no-op, so the re-validation scan and its ACCESS EXCLUSIVE
+-- lock are paid once, not on every `deploy.sh migrate` (which re-applies
+-- every file on every run). A database that already carries the constraint
+-- under an earlier predicate sees a mismatch and converges. If a future
+-- PostgreSQL major ever deparses the expression differently, the mismatch
+-- degrades to a drop-and-re-add on every apply (the migration-014 idiom),
+-- never to a skipped or wrong constraint.
 --
 -- Deploy note: this is NOT an expand-only migration for a backend that
 -- predates it. The old `/upgrade` handler's UPDATE stamps the epoch without
@@ -62,12 +65,33 @@ UPDATE accounts
   WHERE upgraded_at IS NOT NULL
     AND custody IS DISTINCT FROM 'self';
 
-ALTER TABLE accounts
-  DROP CONSTRAINT IF EXISTS accounts_upgraded_implies_self_custody;
+DO $$
+DECLARE
+  -- The deparsed form of the CHECK below, as `pg_get_constraintdef` renders
+  -- it: parenthesised, with the text cast made explicit.
+  wanted_def CONSTANT TEXT :=
+    'CHECK (((upgraded_at IS NULL) OR (NOT (custody IS DISTINCT FROM ''self''::text))))';
+  existing_def TEXT;
+BEGIN
+  SELECT pg_get_constraintdef(oid)
+    INTO existing_def
+    FROM pg_constraint
+    WHERE conname = 'accounts_upgraded_implies_self_custody'
+      AND conrelid = 'public.accounts'::regclass;
 
-ALTER TABLE accounts
-  ADD CONSTRAINT accounts_upgraded_implies_self_custody
-  CHECK (upgraded_at IS NULL OR custody IS NOT DISTINCT FROM 'self');
+  IF existing_def IS NOT DISTINCT FROM wanted_def THEN
+    RETURN;
+  END IF;
+
+  IF existing_def IS NOT NULL THEN
+    ALTER TABLE accounts
+      DROP CONSTRAINT accounts_upgraded_implies_self_custody;
+  END IF;
+
+  ALTER TABLE accounts
+    ADD CONSTRAINT accounts_upgraded_implies_self_custody
+    CHECK (upgraded_at IS NULL OR custody IS NOT DISTINCT FROM 'self');
+END $$;
 
 COMMENT ON CONSTRAINT accounts_upgraded_implies_self_custody ON accounts IS
   'An upgrade epoch always means self-custody (ARCHITECTURE.md section 6.1 '

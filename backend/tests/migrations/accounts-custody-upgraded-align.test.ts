@@ -46,6 +46,7 @@ import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Pool, PoolClient } from 'pg';
 import { getAppPool } from '../../src/app-db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -80,15 +81,23 @@ async function cleanup() {
   await pool.query('DELETE FROM accounts WHERE email LIKE $1', [`${EMAIL_PREFIX}%`]);
 }
 
-async function constraintDef(): Promise<string | null> {
-  const pool = getAppPool()!;
-  const result = await pool.query<{ def: string }>(
-    `SELECT pg_get_constraintdef(oid) AS def
+/** The installed constraint's OID and deparsed definition, or null when it
+ *  is absent. Takes the query runner so the in-transaction leg can read the
+ *  uncommitted state through its own client; the default is the shared pool. */
+async function installedConstraint(
+  runner: Pick<Pool | PoolClient, 'query'> = getAppPool()!,
+): Promise<{ oid: number; def: string } | null> {
+  const result = await runner.query<{ oid: number; def: string }>(
+    `SELECT oid::int AS oid, pg_get_constraintdef(oid) AS def
      FROM pg_constraint
      WHERE conname = $1 AND conrelid = 'public.accounts'::regclass`,
     [CONSTRAINT],
   );
-  return result.rows[0]?.def ?? null;
+  return result.rows[0] ?? null;
+}
+
+async function constraintDef(): Promise<string | null> {
+  return (await installedConstraint())?.def ?? null;
 }
 
 describe.skipIf(!dbReachable)('migration 017 — accounts_custody_upgraded_align', () => {
@@ -295,26 +304,33 @@ describe.skipIf(!dbReachable)('migration 017 — accounts_custody_upgraded_align
         }
 
         // The constraint is back, and it now holds against the repaired rows.
-        const def = await client.query<{ def: string }>(
-          `SELECT pg_get_constraintdef(oid) AS def
-           FROM pg_constraint
-           WHERE conname = $1 AND conrelid = 'public.accounts'::regclass`,
-          [CONSTRAINT],
-        );
-        expect(def.rows.length).toBe(1);
-        expect(def.rows[0].def).toMatch(/upgraded_at IS NULL/);
-        expect(def.rows[0].def).toMatch(/NOT \(custody IS DISTINCT FROM/);
+        const installed = await installedConstraint(client);
+        expect(installed).not.toBeNull();
+        expect(installed!.def).toMatch(/upgraded_at IS NULL/);
+        expect(installed!.def).toMatch(/NOT \(custody IS DISTINCT FROM/);
 
-        // Re-apply converges: the UPDATE matches nothing and the constraint
-        // is dropped and re-added under the same name. `deploy.sh migrate`
-        // re-runs every file on every run.
+        // Re-apply is a no-op once converged: the UPDATE matches nothing and
+        // the DO block sees its own definition installed, so the constraint
+        // is neither dropped nor re-added (the OID survives). `deploy.sh
+        // migrate` re-runs every file on every run, and this is what keeps
+        // that from paying the re-validation lock each time.
         await expect(client.query(MIGRATION_SQL)).resolves.toBeDefined();
-        const again = await client.query<{ n: number }>(
-          `SELECT COUNT(*)::int AS n FROM pg_constraint
-           WHERE conname = $1 AND conrelid = 'public.accounts'::regclass`,
-          [CONSTRAINT],
+        expect(await installedConstraint(client)).toEqual(installed);
+
+        // A constraint under the same name but a different predicate is
+        // replaced, not kept: that is how a database migrated under an
+        // earlier spelling converges.
+        await client.query(`ALTER TABLE accounts DROP CONSTRAINT ${CONSTRAINT}`);
+        await client.query(
+          `ALTER TABLE accounts ADD CONSTRAINT ${CONSTRAINT}
+           CHECK (upgraded_at IS NULL OR custody = 'self')`,
         );
-        expect(again.rows[0].n).toBe(1);
+        const stale = await installedConstraint(client);
+        expect(stale!.def).not.toMatch(/IS DISTINCT FROM/);
+        await client.query(MIGRATION_SQL);
+        const converged = await installedConstraint(client);
+        expect(converged!.def).toMatch(/NOT \(custody IS DISTINCT FROM/);
+        expect(converged!.oid).not.toBe(stale!.oid);
       } finally {
         // ROLLBACK reverts the DROP CONSTRAINT, the seeds, the back-fill, and
         // the schema_migrations upsert, so every other suite sees the

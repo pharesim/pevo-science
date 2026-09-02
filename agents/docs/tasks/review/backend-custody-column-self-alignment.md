@@ -76,9 +76,13 @@ Landed in `68fc1e91` (implementation) and the round-2 commit that follows it
    null-safe spelling is load-bearing: a CHECK that evaluates to NULL passes,
    so plain `custody = 'self'` would admit an epoch on a NULL-column row,
    which is what the `/link` finalize (starting from a pre-finalize row)
-   would produce if it dropped its column write. The constraint is dropped
-   and re-added on every apply (migration-014 idiom) so a database that
-   already carries it under an earlier predicate converges.
+   would produce if it dropped its column write. The DO block compares the
+   installed constraint's deparsed definition with the wanted one: a match
+   is a no-op (the re-validation lock is paid once, not on every
+   `deploy.sh migrate`), a mismatch or absence drops and re-adds it, so a
+   database that already carries the constraint under an earlier predicate
+   converges. Pinned in the migration suite (OID survives a converged
+   re-apply; a stale predicate under the same name is replaced).
 3. One derivation, `custodyClaimFor` in `src/lib/custody-claim.ts`, used by
    the password login, the ORCID login (its SELECT now carries
    `upgraded_at`), both recovery reissues, and the two settings handlers that
