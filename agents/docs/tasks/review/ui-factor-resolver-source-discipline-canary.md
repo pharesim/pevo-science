@@ -210,3 +210,68 @@ is accepted (documented seam with backend precedent).
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
 re-review signal. Do not edit this hold block or annotate items as fixed; the commit
 diff is the evidence and the architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-09-02, commit 276e4788):
+
+All six held items landed in one commit, `276e4788` (the two canary files
+only). Each item's fix was preceded by a planted probe observed red on the held
+tree, and each fix was mutation-checked afterwards: reverting it turns exactly
+its own probe red and nothing else.
+
+**Item 1.** `sourcesUnder` now returns `{ sources, foreign }`, where `foreign` is
+every non-`.js` file the walk passed over. The walker-floor assertion also
+requires every foreign file's extension to sit in a licensed non-script set
+(`.css` only, for the one stylesheet under `src`), with a message naming the
+walker and the fix. The set is licensed by extension rather than by asserting an
+empty list because `src/styles.css` exists today; a stylesheet cannot carry a
+module, and anything not in the set is a red bar. Planted: a `mkdtemp` fixture
+tree with nested `.js`, `.mjs`, `.ts` and `.css` files (sources and foreign
+both asserted). On the real tree, a planted `.mjs` derivation under `src/lib`
+was observed red.
+
+**Item 2.** `occurrencesOf` tallies per match via a global copy of the pattern
+and marks multi-match lines with their multiplicity in the site list. The
+resolver's `flight` pin moved from 6 to 8 (the status assignment and the
+`assumed` expression each name the property twice on one line); both docblocks
+now say widths count matches, not lines, and the earlier "exact occurrence
+count" claim is true. Planted: a template gate carrying two reads on one line
+and a `Promise.all` line calling the fetch twice, both yielding width 2. On the
+real tree, a same-line second read on the settings gate was observed red.
+
+**Item 3.** On lines above the specifier, `importStatementOpens` runs the
+terminator test before the opener test, and skips comment lines inside the
+clause (a `from` in such a comment was a pre-existing false positive in the
+loud direction). Planted: an object-literal member and a call argument each a
+few lines below a complete single-line import (both count), and a wrapped
+import with a comment line inside its clause (still spared).
+
+**Item 4.** Three probes added to the resolver self-test: a wrapped-parameter
+`const` whose opening line shows neither `=>` nor `function` (resolves to the
+declaration; disabling the paren-count arm turns it red), a balanced
+parenthesized expression (resolves to the real enclosing function; an
+always-true guard turns it red), and a `}` at declaration indentation inside a
+block comment (resolves to the declaration). That last one needed a machinery
+change, not only a probe: the brace walk's existing comment skip tested the
+`*` and `//` prefixes, and a line beginning with either can never begin with
+`}`, so the skip was a no-op for the brace test and no probe could have
+discriminated it. The walk now tracks block-comment regions opened at line
+start, and the probe goes red when that tracking is disabled.
+
+**Item 5.** `isCommentLine` treats a `/*` opener as prose only when nothing but
+further comment follows its close on the same line. Planted both directions in
+a dedicated case (pragma-prefixed reads are live; a double block comment and a
+block comment followed by a `//` remain prose), plus an end-to-end
+pragma-prefixed read through the password-state scan. On the real tree, a
+pragma-prefixed derivation appended to a page module was observed red.
+
+**Item 6.** The method-shorthand pattern's parameter list is no longer a
+capture group.
+
+Verification: canary 14/14 green; full frontend unit suite 81 files, 1802 tests
+green (three unhandled rejections in the edit page's editor mounting are
+pre-existing and persist with the canary directory excluded); pre-commit anchor
+gate clean over the staged diff; `ce-simplify-code` three-reviewer pass returned
+no findings, and two of its reviewers independently re-derived the width of 8
+and the extension census against the tree.
