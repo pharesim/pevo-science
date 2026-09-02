@@ -348,7 +348,7 @@ destructive_pending_migrations() {
       continue
     fi
     hits="$(printf '%s' "$normalized" | grep -ioE \
-      'DROP[[:space:]]+TABLE|DROP[[:space:]]+COLUMN|\bRENAME\b|ALTER[[:space:]]+COLUMN[^;]*TYPE|ADD[[:space:]]+COLUMN[^;]*NOT[[:space:]]+NULL' \
+      'DROP[[:space:]]+TABLE|DROP[[:space:]]+COLUMN|\bRENAME\b|ALTER[[:space:]]+COLUMN[^;]*TYPE|ADD[[:space:]]+COLUMN[^;]*NOT[[:space:]]+NULL|ADD[[:space:]]+CONSTRAINT' \
       || true)"
     [ -n "$hits" ] && found+="$f: $(printf '%s' "$hits" | tr '\n' ' ')"$'\n'
   done <<<"$files"
