@@ -92,10 +92,12 @@ await this._performUpgradeKeyRotation(upgradeSubject, oldWords, newSeedPhrase);
 const proof = await this._signUpgradeProof(upgradeSubject, newSeedPhrase);
 ```
 
-Both `executeUpgrade()` and `retryUpgradeBackend()` now take that local at the top and pass
-it to `_performUpgradeKeyRotation`, `_signUpgradeProof`, `_performKeychainImport`,
-`_completeUpgradeAfterBackend`, the `loginFromResponse` payload, and
-`_upgradeSubjectDiverged(upgradeSubject)`. This is not a new pattern in the file: both
+Both `executeUpgrade()` and `retryUpgradeBackend()` now take that local at the top and pass it
+down: to `_signUpgradeProof`, to `_completeUpgradeAfterBackend` and through it to
+`_performKeychainImport`, into the `loginFromResponse` payload, and to
+`_upgradeSubjectDiverged(upgradeSubject)`. Only the executor also passes it to
+`_performUpgradeKeyRotation`, because the retry leg never rotates: that landed on the first
+attempt and re-broadcasting with the old seed's keys would be rejected by the chain. This is not a new pattern in the file: both
 functions already snapshotted `newSeedPhrase` the same way, with a comment saying why. The
 fix is the existing house pattern applied to one more field that had been left reading live.
 
@@ -211,6 +213,7 @@ during the suspension in question exercises it where the wipe can still do damag
 
 ## Related
 
+- `agents/docs/solutions/conventions/subject-divergence-guard-earns-its-place-only-where-the-flow-acts-unpinned-2026-09-03.md` is this entry read forward, and the two belong together before anyone touches this flow. Three mid-flight divergence checkpoints used to sit in the stretch between the chain rotation and the cleanup POST, and that entry removes them: not because of the frame-local prescribed here on its own, but because the account name and the bearer are BOTH fixed before the first await and the server derives the acting account from that bearer, which together leave a check there nothing to prevent. The rule stated here survives the removal, since the `_upgradeSubjectDiverged` call sites that remain still take the frame-local rather than reading the field back. It is not a licence to re-add a properly-pinned check where those checkpoints were: the surviving sites all guard a store mutation, which is a different job.
 - `agents/docs/solutions/conventions/alpine-persistent-instance-unconditional-ui-flag-reset-2026-05-20.md` covers the opposite lifecycle dimension and already prescribes half of this fix: capture identity at entry and pass the captured local, never `this.*`, to everything after an await. Its scope is the Alpine instance that is never destroyed, and its "When to Apply" excludes pages the router does destroy and recreate, which reads as though the destroy path were the safe one. It is not; this entry is that path's own trap.
 - `agents/docs/solutions/conventions/synchronous-flag-before-await-idempotency-guard-2026-05-16.md` is the closest sibling on the "do it synchronously, before the first await" axis. It establishes the two stacked guards this entry sits between, and its rule to reset the flag in `destroy()` treats teardown as a single atomic event. This entry sharpens that: `destroy()` is a sequence, and its internal order is a correctness surface for any continuation still running.
 - `agents/docs/solutions/conventions/fresh-auth-guard-coverage-must-sweep-the-callee-graph-2026-09-01.md` states the same threading rule for a guard ("pass the guard down as a value; do not let each layer capture its own"). This entry is the identity-value form of it, with a different failure mode: there the captured predicate goes stale, here the re-read field goes null.
