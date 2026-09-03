@@ -446,10 +446,17 @@ rather than route it out. Both doors and both throw sites now share one local
 **Mutation probes (re-run after fix 3, so each kill set is now exactly one).**
 Stale branch removes the keys again -> the resolve-door case. Shared unwind
 loses its staleness guard -> the reject-door case, and only it. Staleness check
-deleted entirely -> nine cases across four suites. Staged teardown skips the key
+deleted entirely -> eight cases across four suites. Staged teardown skips the key
 loop -> the pre-existing redirect-teardown case only. Unwind stops calling
-`clearReturnPath` -> the three no-predicate unwind cases in the settings-orcid
-suite. Predicate gated on presence instead of truth -> the new live-false case.
+`clearReturnPath` -> four cases in the settings-orcid suite: the three
+no-predicate unwind cases plus the live-false case, which supplies a predicate
+but shares the same `clearReturnPath()` call. Predicate gated on presence
+instead of truth -> the new live-false case.
+
+Architect note (2026-09-03): the two counts above were recorded as nine and
+three in the original signal. Both were re-measured empirically during the
+round-4 review, in a scratch copy, and are eight and four. The other four
+probes matched their claims exactly.
 
 **Recorded for the architect, not fixed here:**
 
@@ -470,3 +477,98 @@ suite. Predicate gated on presence instead of truth -> the new live-false case.
    other's marker on the happy path, teardown or no teardown. Closing it needs
    the per-flight ownership token the hold block forbids. Unchanged by this
    work, and strictly narrower than before it.
+
+---
+
+## Architect re-review (2026-09-03) — HELD PENDING FIXES:
+
+Re-reviewed via `/ce-code-review` on `07c07fd1` + `39363364` (frontend paths
+only): eight reviewer personas plus an independent validation batch. No
+different-provider CLI is installed on this host, so the cross-model adversarial
+pass did not run and the lens was carried in-process; its agreement carries no
+promotion bonus.
+
+**The item held on 2026-09-02 is FIXED, in all three parts.** Verified
+independently rather than taken from the signal. The stale branch is a bare
+`return FRESH_AUTH_CANCELLED` with no storage access, and `unwindFlowKeys`
+short-circuits before both removals. The non-stale path is provably identical to
+pre-fix behavior at all four exits: the staleness re-check precedes the
+unparseable-URL and invalid-host exits with no await between them, so those
+always remove, and with no predicate supplied every exit removes exactly what it
+did before. `teardownSubjectState()` now runs the scrub's key loop. Both
+successor cases were confirmed red at base by an independent empirical re-run.
+The approved reject-door widening is correct and its ordering, unwind before
+throw, is right.
+
+The premise the fix rests on was attacked directly and HOLDS on every production
+path: `abandonInFlightAcquisitions` has exactly one production caller, whose body
+bumps the generation and removes `SUBJECT_BOUND_STORAGE_KEYS` with no await
+between, and every caller of `beginOrcidFreshAuthRedirect` threads a real
+predicate. The consent-op asymmetry recorded under "Recorded for the architect"
+item 1 was raised by two reviewers, refuted by a third, and dropped by the
+validator: `mintViaPasswordFactor` re-checks `guard.tornDown()` with no
+intervening await before it returns the assumed-password fallback sentinel, and
+every subject-scrub trigger is macrotask-rooted, so the event loop drains the
+flight's whole microtask chain before any scrub can run. That recorded
+characterization was accurate. No action.
+
+Recorded item 2 (two concurrent same-subject flows clobbering each other's
+marker) was independently re-found by two reviewers, who confirmed it is
+pre-existing and that this work leaves it strictly narrower. Also accurate, and
+not held.
+
+Separately, the architect corrected two mutation-probe kill counts in the
+2026-09-02 signal block above, which independent re-measurement put at eight and
+four rather than nine and three. Recorded there, not an item here.
+
+Three items remain, all one-sentence comment edits in `lib/fresh-auth.js`. Items
+1 and 2 were each confirmed by the independent validator. Suggested order: item
+1 first, since it is the same class of claim this round set out to remove.
+
+### Item 1 — the sibling starter still asserts the caller class this round removed from its twin
+
+`beginSessionAuthOrcidRedirect`'s docblock ends by saying that callers outside an
+acquisition flight pass no predicate and keep the plain redirect. That caller
+class does not exist: `acquireSessionProof` is its only caller and always threads
+`guard.tornDown`. This is the identical claim the round removed from
+`beginOrcidFreshAuthRedirect`'s docblock, left standing in the sibling. Reword
+the trailing clause so it no longer implies a predicate-less production caller.
+
+### Item 2 — the docblock added this round overclaims how a stale flight ends
+
+The rewritten `beginOrcidFreshAuthRedirect` docblock states without
+qualification that a stale flight resolves as `FRESH_AUTH_CANCELLED`. The
+start-rejection path calls `unwindFlowKeys` and rethrows, and this round
+deliberately widened the staleness gating to cover that door, so stale flights
+reach it. Qualify the sentence: a stale flight whose start succeeds resolves the
+sentinel; one whose start rejects still propagates the rejection to its caller.
+
+### Item 3 — state the bump-and-clear contract where a future caller will read it
+
+The ownership rule item 1 of the previous hold introduced is load-bearing on an
+invariant nothing states: a generation bump must be accompanied by the
+`SUBJECT_BOUND_STORAGE_KEYS` removal in the same synchronous body. The scrub
+side is already pinned, by the cross-user case in `auth.test.js` that drives the
+real store and asserts the key removal and the teardown call together on one
+scrub. What is unpinned is a future SECOND caller of
+`abandonInFlightAcquisitions` that bumps without clearing, which would invert the
+stale branch's rule and turn every stale unwind into a key leak. Add a sentence
+to that function's docblock stating the contract and the consequence of breaking
+it. No test and no structural change: a callsite canary and folding the key
+removal into the teardown were both considered and dismissed, the first as
+brittle and the second as muddying the function's cohesion.
+
+### Not held
+
+The non-stale unwind can still strip a concurrent same-tab ORCID flow's keys
+when a live sibling flight of a different mode overwrote them without any
+teardown, since `unwindFlowKeys` short-circuits only on staleness. Pre-existing,
+confirmed by blame, and unchanged by this work. A value-conditional ownership
+guard would close the cross-mode case, though two flows sharing a mode string
+still collide. Not held here, and not filed: it is the same family as the marker
+clobber already recorded, and closing it properly needs the per-flight token the
+previous hold deliberately forbade.
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is
+the re-review signal. Do not edit this hold block; the commit diff is the
+evidence and the architect updates the block at re-review.
