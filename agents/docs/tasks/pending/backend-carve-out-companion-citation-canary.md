@@ -153,3 +153,129 @@ ends its canary section with "Do not describe this canary as existing. It is a
 proposal." That is now false, and the entry's sketch of the citation shape
 should be reconciled with the form settled here. The file is architect-owned, so
 backend has not touched it.
+
+## Architect re-review (2026-09-03) — HELD PENDING FIXES:
+
+All six acceptance criteria are met and independently verified: the wrapped-path
+parse rejoins correctly (8/8 corpus citations), all eight cited companions do
+assert their token in code, the suite is green, and the compound violation in the
+fail-closed header is genuinely resolved. The validation half of the canary is
+sound and is not what this hold is about.
+
+The ratchet half does not hold the property the header docblock and the commit
+message assert. Five independent escapes were reproduced on isolated copies, each
+landing a new free-prose citation with the suite green. Two of the canary's own
+arms are invisible to mutation of themselves. The completion note's scoping claim
+("the in-tree list is the stronger mechanism anyway ... no env var turns it off")
+is true of the whole-tree validation arm and false of the ratchet.
+
+Fix all eight. Items 1 to 5 are one mechanism and should be settled together
+rather than patched one at a time.
+
+1. `DEFERRED_FREE_PROSE` exempts a FILE, not the blocks that were on it at
+   landing, so any of the 102 listed files can gain brand-new free-prose
+   citations forever. Reproduced: a fresh free-prose clause-(c) block naming a
+   nonexistent file, appended to the deferred-listed `routes/settings.test.ts`,
+   leaves the suite green. 102 of 253 test files are listed, so roughly 40
+   percent of the corpus is permanently outside the ratchet rather than being a
+   backlog. Make the constant a path-to-count map pinning each file's
+   unstructured file-naming block count at landing, and fail when a listed file
+   EXCEEDS its pin. The audit loop already computes that number.
+
+2. The ceiling arm is `toBeLessThanOrEqual`, so a removal frees a permanent slot.
+   Reproduced in both halves: de-filing `lib/cache.test.ts`'s citation outright
+   (not converting it) and dropping its entry gives 101 green; parking a new
+   free-prose file in the freed slot returns to 102 green with the ceiling
+   untouched. This falsifies the header's "a file that leaves the list by any
+   route other than conversion goes red rather than draining the ratchet
+   quietly" and the commit message's "deleting a citation is not an exit from
+   the ratchet".
+
+3. The ceiling is a length check, so a same-length membership swap passes:
+   converting one entry, removing it, and adding a different brand-new
+   free-prose file in the same edit keeps the length at 102, green. Fix items 2
+   and 3 together with a frozen, never-edited snapshot of the landing filenames
+   plus a subset assertion, deriving the ceiling from that snapshot's length.
+   That subsumes a bare `toBe` and closes de-filing, the freed slot and the swap
+   in one mechanism. Do NOT land `toBe` alone; it leaves item 3 open.
+   The `DEFERRED_CEILING` docblock also asserts "The exact-membership check below
+   already goes red when an entry is added". No such check exists. Correct that
+   sentence in the same change: a comment claiming a guarantee the code does not
+   provide is the defect class this whole task exists to remove.
+
+4. A block that satisfies its label count short-circuits before `namesAFile` is
+   consulted, so one valid structured citation immunizes any amount of unchecked
+   prose beside it. Reproduced: unlabeled prose naming two real test files added
+   next to the structured citations in
+   `verifyHiveSignature-session-invalidation-failclosed.test.ts` stays green.
+   This re-admits the half-true compound, which the convention entry and this
+   canary's own header both name as the shape that survives review. Strip the
+   text matched by the citation pattern from the block, then fail when the
+   remainder still matches the names-a-test-file pattern, for non-deferred and
+   non-exempt blocks only.
+
+5. A companion claim naming no file is never ratcheted, so a new file whose only
+   clause-(c) line is "Real-path companion: the settings password-reset suites
+   cover the live happy path" passes. That is verbatim the shape AC 6 removed.
+   The header declines this class because such citations are "unresolvable by any
+   parser" and would need "an unbounded phrase list that rots". That reasoning
+   supports not VALIDATING a file-less claim; it does not support not REJECTING
+   one, which is dropping a single guard. Drop the names-a-file guard so a label
+   with fewer structured citations than labels fails regardless, and seed a
+   second deferred list for the existing file-less blocks. Measured cost: of 126
+   labelled blocks in the corpus, 110 name a test file and 16 name none, across
+   14 files. A 16-entry list, not the hundred-plus the header's framing implies.
+
+6. The ratchet's `exempt` gate is vacuous. The allow marker occurs nowhere under
+   `backend/tests` except this canary's own self-excluded constant, and both
+   deleting and inverting the gate leave all five tests green with a planted
+   violation present. Add planted probes driving the ratchet loop directly
+   (synthetic audit-shaped inputs, or an extracted predicate) covering exempt
+   true must skip and exempt false with a mismatch must not skip, mirroring the
+   direct validator calls the other arms already have.
+
+7. The over-generic-token arm is the only validator arm with no direct probe.
+   Setting its branch to a constant false leaves all five tests green. Add one
+   direct validator call with an over-generic real token and assert the
+   "resolves in N files" message.
+
+8. The block-comment stripper is not string-aware and already deletes real code:
+   the whole `REVIEWS_BRANCH_SENTINEL` value in two route tests, a three-line
+   fixture element in `routes/session-proof-invalidation.test.ts`, and 14 lines
+   in `support/enclosing-symbol.ts`. No true citation is red today, so this is a
+   latent false-positive vector, but its direction is the dangerous one: a token
+   inside such a span makes a CORRECT citation fail with the canary's most
+   misleading message, and a guard that falsely accuses is one that gets marked
+   allow or deleted. Anchor the block-comment opener to line start, matching the
+   `isCommentedOut` convention already stated in the support module this file
+   imports from. Do not over-correct: a trailing inline block comment on a code
+   line then stops being stripped, which is consistent with the blind spot the
+   header already accepts, not a new problem.
+
+### Not held, recorded so it is not re-litigated
+
+- The claim that the token arm passes on skip-gated specs was raised and
+  REJECTED at validation. The skip gating is real, three of the four cited
+  companions sit behind a database-reachability skip, but those same companions
+  were already cited in the pre-diff prose headers, the specs run whenever the
+  app pool answers, and the header's KNOWN TRADE paragraph declines
+  execution-proof deliberately. Do not widen scope for it.
+- Residual risks, not fixes: the allow marker is unbounded, unjustified and
+  uncounted, which makes it the lowest-friction response to any red bar this
+  canary produces. The token cap counts raw text including comments, so each new
+  citation of a token inflates the metric that fails it. The label pattern misses
+  a label wrapped between "real-" and "path companion" and multi-adjective
+  labels. The self-citation arm is string equality, so mutual vouching and `..`
+  path spellings satisfy every arm. 14 frontend files carry the same citation
+  shape and are unscanned, since the walk is `.ts`-only and rooted at the backend
+  test tree. A shout-form risk-class token trips the pre-commit anchor gate's
+  slug-prefix arm and needs the literal allow marker on that line.
+- Suppressed below the confidence floor: importing the support module's comment
+  predicate instead of the local one, and dropping the unused exports.
+
+Project standards came back clean. Zone and staging audit, comment-anchor gate,
+em-dash rule and carve-out clauses (a), (b) and (c) all pass.
+
+The `[TODO Architect]` above is acknowledged and deliberately deferred: the
+convention entry gets reconciled at archive, once the ratchet's shape has settled,
+so it is not rewritten twice.
