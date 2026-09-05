@@ -723,3 +723,131 @@ anchors in frontend source or tests.
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
 re-review signal. Do not edit this hold block; the commit diff is the evidence and the
 architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-09-05, commits 462a79b5 + 237f1509):
+
+All six items landed. `462a79b5` carries the six fixes; `237f1509` is the
+follow-up from an adversarial pass over it (six review lenses on scratch
+exports of the commit, each finding attacked by refuters; the session rate
+limit cut most refuters short, so every lens finding was verified by hand
+before acting on it).
+
+Per item, with verification evidence:
+
+1. `_reportedTeardownGeneration`'s docblock states what the compare does:
+   one report per teardown horizon, so a flight parked across two rapid
+   subject changes folds into the newer change's message. The guard
+   docblock's headline now reads "at most once per teardown, and never once
+   per guard" and cross-references it. `cancel()`'s comparison is
+   byte-identical to the previous commit. New test in the session-window
+   suite stages two sequential teardowns with the older flight parked on its
+   mint round-trip (the boundary the production scrub cannot resolve for it;
+   an open prompt is dismissed at the first change) and asserts one message
+   and no cached late issuance. Probe: claiming per flight's own teardown
+   (compare and stamp `generation + 1`) fails exactly this test; removing the
+   comparison fails it plus the two pre-existing once-only pins, as a shared
+   compare must.
+2. `attemptOnce` on both surfaces replays the idle slide only while the guard
+   still reads live; ipfs-upload threads the entry guard into `attemptOnce`
+   from the first attempt and from `retryOnce`; the mismatch arms are not in
+   the diff. The broadcast test seeds a real successor window after the bump
+   and asserts its deadline untouched; the upload suite pins that the slide
+   never runs; and a real-module retry-leg case in the session-window suite
+   (first pre-flight rejects expired, the retry re-acquires, the teardown
+   lands mid-transfer) pins the leg the upload suite's stand-in guard cannot
+   see. Probes: each ungated slide fails exactly its own test; a fresh guard
+   opened inside the upload `attemptOnce`, and a never-torn-down guard handed
+   from `retryOnce`, each fail exactly the real-module case.
+3. The settings guarded-call case is strengthened and an authorship twin
+   added, each asserting exactly one message and that it is the teardown's.
+   Probe: deleting the gate's `guard.cancel()` fails exactly those two. A
+   third settings case pins the report as a claim: a self-narrating teardown
+   (`handleSessionInconsistency`, its disconnect running the scrub) while
+   run() is pending, then the remintable 401, yields one message and it is
+   the inconsistency one; a bare toast in place of `guard.cancel()` fails
+   exactly that case.
+4. `auth.test.js` pins clear-before-abandon through a pass-through spy over
+   the real window clear (`mock.invocationCallOrder`) and pins that both ran
+   inside the scrub's synchronous body. Probe: swapping the two calls fails
+   exactly this test. The scrub says why the order matters, next to the call.
+5. `handleSessionInconsistency` claims only inside the branch that ran the
+   disconnect, with the docblock stating why. No test: the false branch is
+   unreachable in production (the store is registered at boot) and the hold
+   asked for none. Recorded: in the store-absent test-only shape, an earlier
+   unclaimed teardown now reports on its own unwind (inconsistency message
+   plus the cancel) where the unconditional claim silenced it.
+6. The settings header carries clause-a with the concrete cost (the two real
+   fetches, the accounts and instants the cases would need, the
+   window.location observation), clause-b separated out, clause-c's settings
+   citations verified against both specs. The authorship header, touched for
+   item 3, got the same clause-a and a clause-c; its first draft overstated
+   two citations and the follow-up corrects it (below).
+
+### Beyond the hold, from the adversarial pass
+
+- Authorship clause-c: `tests/e2e/non-consent-fresh-auth.spec.js` drives only
+  the /orcid/callback session_auth caching against a stubbed callback (its
+  own closing note records the real-broadcast test as prototyped and
+  removed), and `authorship-consent-actions.spec.js` ends at the Keychain
+  stub over route-mocked paper data. The header now says so, and states that
+  no e2e spec drives this orchestrator end to end on a light account. That is
+  a stated gap under clause-c; whether it warrants a follow-up task is the
+  architect's call. The same overclaim about that spec pre-exists, unchanged,
+  in the headers of lib-fresh-auth-session-window, fresh-auth-401-retry,
+  lib-ipfs-upload and lib-fresh-auth-outcome-dispatch; left alone as outside
+  this hold.
+- The scrub-order comments said "retry legs"; the gated slide runs on first
+  attempts too. Corrected in auth.js and in the test.
+- The order test's comment claimed a yield between the two scrub calls would
+  leave every other assertion green; the sibling synchronous count assertions
+  already catch a yield. Narrowed to the relative order this case alone sees.
+
+### Surfaced, not fixed (root CLAUDE.md "Code Review Findings")
+
+- A departed upload flight's FIRST-attempt username_mismatch disconnects the
+  successor tab-wide. api.js `uploadFileToIpfs` awaits `sha256File(file)`
+  before `authenticatedRequest` reads the JWT, so a cross-tab login landing
+  in that await (a real task-yielding await on a large file) sends the
+  departed subject's proof under the successor's JWT; the backend answers
+  username_mismatch; `uploadFile`'s catch routes it through
+  `handleSessionInconsistency` without consulting the guard, and the
+  disconnect removes the shared session, logging the successor out of every
+  tab under the inconsistency message. Reproduced by a reviewer over the real
+  modules at both commits (pre-existing). The round-2 review cleared the
+  retry-leg twin of this as "AC3 as prescribed", so it is not changed here;
+  the new fact is the reachable first-attempt interleaving. If held: consult
+  the guard ahead of the mismatch arm in both `uploadFile`'s and `retryOnce`'s
+  catch (cancel and throw the silent code when torn down), one test per leg.
+- `consentOpFreshAuthRetryGate` awaits `resolveFactor()` before its first
+  guard check, so a flight torn down during run() issues one status read
+  under the successor's JWT (the scrub cleared the memo) before unwinding;
+  the answer is discarded and any memo write records the successor's true
+  status. Same class as the wasted ORCID start already recorded. A pre-read
+  check is four lines if wanted.
+- `agents/docs/solutions/conventions/guard-report-dedupes-per-event-not-per-holder-2026-09-02.md`
+  (architect zone) still says the mark "only ever suppresses a second report
+  of the *same* event" and shows the unconditional-claim shape of
+  `handleSessionInconsistency`; both are now contradicted by the code.
+- `ui-session-inconsistency-report-idempotency`'s proposal snippet is written
+  against the pre-commit `auth?.disconnect(); claimTeardownReport();` shape;
+  applied literally it would move the claim back outside the branch.
+- The consent-op proof-cache clears (the gate's entry `clearProofCache()`,
+  the orchestrators' post-run clear) stay ungated after a teardown:
+  unreachable, since the cache's only writer is the ORCID callback page load,
+  which no in-flight consent-op flight survives.
+
+### Verification
+
+Full frontend unit suite 1830/1830 (+7 over the parent of `462a79b5`), the
+same three pre-existing edit-page unhandled rejections; production build
+clean; no coordination anchors on any added line (pre-commit gate active
+and passing on both commits). The known 1 ms flake (`the slide never pushes
+past the absolute cap`) showed once and is green on re-run. Ten mutation
+probes in scratch exports, each failing exactly the test named above.
+Simplify pass (three reviewers): two comment rewraps, no code findings. No
+browser or Playwright run, as in previous rounds: the change has no DOM
+surface of its own. No `/ce-compound` entry: the mechanisms extend what the
+existing guard-report entry records, and that entry's needed correction is
+listed above for the architect.
