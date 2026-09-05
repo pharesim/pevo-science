@@ -808,8 +808,9 @@ export async function resolvePasswordFactor() {
 // passwordless account has, and a full-page navigation — callers must have
 // nothing unsaved in flight when this fires (see `ensureSessionWindow`).
 // `isStale` is the acquisition's teardown predicate, threaded through to the
-// redirect helper's pre-navigation re-check; callers outside an acquisition
-// flight pass none and keep the plain redirect.
+// redirect helper's pre-navigation re-check; `acquireSessionProof`, the one
+// caller, always threads its flight's guard, so no production flight reaches
+// the redirect without one.
 export async function beginSessionAuthOrcidRedirect(isStale) {
   return beginOrcidFreshAuthRedirect('session_auth', {}, '/', isStale);
 }
@@ -869,6 +870,13 @@ let _acquireGeneration = 0;
 //     function writes `cacheSessionProof` on resolve) nor hand its proof to
 //     anyone; the generation bump makes such a flight resolve as a clean
 //     cancel instead.
+// Contract for every production caller, present or future: a generation bump
+// must travel with the SUBJECT_BOUND_STORAGE_KEYS removal in the same
+// synchronous body, as `_scrubSubjectBoundState` does.
+// `beginOrcidFreshAuthRedirect`'s stale unwind reads a bumped generation as
+// proof that its own flow keys are already gone and leaves whatever stands in
+// them to the later flow that wrote it, so a caller that bumps without
+// clearing inverts that rule and turns every stale unwind into a key leak.
 export function abandonInFlightAcquisitions() {
   _acquireGeneration += 1;
   _acquireInFlight.permissive = null;
@@ -1147,10 +1155,12 @@ export async function freshAuthWindowReady(opts) {
 // `isStale` (optional) is a teardown predicate re-checked after the start
 // round-trip: the round-trip is an await a subject teardown can land inside,
 // and a navigation issued past it would send the tab to ORCID on behalf of a
-// subject it no longer represents. A stale flight resolves as
-// FRESH_AUTH_CANCELLED — the same silent clean-cancel every other teardown
-// boundary in the acquisition resolves to; when the predicate is a consent-op
-// guard's `tornDown`, the guarded caller owns the report. Every production
+// subject it no longer represents. A stale flight whose start succeeds
+// resolves as FRESH_AUTH_CANCELLED — the same silent clean-cancel every other
+// teardown boundary in the acquisition resolves to; one whose start rejects
+// still propagates the rejection to its caller, with the keys left alone
+// under the rule below. When the predicate is a consent-op guard's
+// `tornDown`, the guarded caller owns the report. Every production
 // caller threads one: the session acquisition through
 // `beginSessionAuthOrcidRedirect`, and both consent-op orchestrators through
 // `beginOrcidUnderGuard`. The page-level ORCID flows (login, signup, recover,
