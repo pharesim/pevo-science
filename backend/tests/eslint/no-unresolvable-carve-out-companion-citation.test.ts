@@ -3,8 +3,8 @@
  * citations the test-mock carve-out requires (root `CLAUDE.md` "Carve-out for
  * deterministic edge-case coverage"). Scans every `.ts` under `backend/tests/`
  * and fails when a citation names a companion that cannot witness the risk
- * class it was cited for, or when a companion claim is written in a form that
- * nothing can check.
+ * class it was cited for, or when a labelled companion claim is written in a
+ * form that nothing can check.
  *
  * Why a standing test and not review: the citation is the ONLY artifact tying a
  * permitted mock to its justification, and it is free prose. When it rots the
@@ -39,9 +39,9 @@
  *      `./`-prefixed or tests-relative spelling fails here with a message that
  *      names the required form, rather than as a confusing missing-file error.
  *   2. The path resolves on disk.
- *   3. The companion is not the citing file itself. A self-citation contains
- *      its own risk-class token by construction, so it would otherwise pass
- *      every other arm while proving nothing.
+ *   3. The companion is not the citing file itself. A mocked test of a surface
+ *      normally spells that surface's tokens in its own code, so a
+ *      self-citation would pass the token arm while proving nothing.
  *   4. The token occurs in the companion's CODE. Comment text is stripped
  *      first, and lines carrying a `vi.mock(` call do not count.
  *   5. The token is not so generic that any file would satisfy it: it may
@@ -61,64 +61,98 @@
  * historical incident red: the false companion's single surviving occurrence of
  * the token it was cited for was the line that mocked it.
  *
- * A block comment is recognised only when its opener STARTS a line, the same
- * rule the support module's `isCommentedOut` applies. An opener inside a string
- * literal is code, and this corpus has such fixtures (a sentinel whose value is
- * the SQL block comment `search.reviews.branch`): a stripper that honoured it
- * would delete code up to the next closer and turn a CORRECT citation red with
- * the most misleading message this file can produce, which is how a guard gets
- * marked allow or deleted. The cost is that a block comment trailing a code
- * line is no longer stripped, the same accepted blind spot as the trailing `//`
- * comment below.
+ * In the companion, a block comment is stripped only when its opener STARTS a
+ * line, the same rule the support module's `isCommentedOut` applies. An opener
+ * inside a string literal is code, and this corpus has such fixtures (a
+ * sentinel whose value is the SQL block comment `search.reviews.branch`): a
+ * stripper that honoured it would delete code up to the next closer and turn a
+ * CORRECT citation red with the most misleading message this file can produce,
+ * which is how a guard gets marked allow or deleted. The cost is that a block
+ * comment trailing a code line is not stripped there, the same accepted blind
+ * spot as the trailing `//` comment below.
  *
- * SCOPE: VALIDATION IS WHOLE-TREE. Any structured citation, anywhere under
- * `backend/tests`, is resolved and checked, in every file, exempt or not.
+ * WHAT COUNTS AS A COMMENT in the citing file. The collector reads comments
+ * the way a reader does, not the way a line prefix does: a block-comment span
+ * from its opener to its closer, wherever the opener sits (at line start or
+ * after code) and whatever its interior lines look like (with a `*` gutter,
+ * without one, or blank); a run of `//` lines; and the trailing comment on a
+ * code line, which is a block of its own. Comment runs separated only by blank
+ * lines are one block, so a `//` note sitting directly under a header cannot
+ * hide beside it. String literals on a code line are blanked before markers
+ * are looked for, so a `/*` or `//` inside a string opens nothing. Every block
+ * is Unicode-normalised (compatibility form, format characters dropped, every
+ * dash to `-`, every space separator to a space), so a look-alike hyphen or an
+ * invisible character cannot spell the label differently from how it renders.
+ * The blind spot is a template literal spanning lines: a marker on one of its
+ * interior lines is read as a comment. What that yields is a block with no
+ * label, which is skipped, so the failure direction is a missed block rather
+ * than a false accusation.
+ *
+ * SCOPE: VALIDATION IS WHOLE-TREE. Any structured citation, in any comment the
+ * collector sees, anywhere under `backend/tests`, is resolved and checked, in
+ * every file, marked allow or not.
  *
  * THE RATCHET. Every comment block carrying the companion label is making a
  * clause-(c) claim, and a claim is checkable only in the structured form. So a
  * block must carry one structured citation per label, and once it does, the
  * prose left over must not name a test file, because one checked citation
  * beside one unchecked filename is the half-true compound again. A block that
- * fails either test is a violation unless it carries the ALLOW_MARKER or is
- * covered by the backlog below. A claim that names no file at all ("the
- * settings suites cover it") is rejected, not validated: nothing can resolve
- * it, which is an argument against checking it and no argument for admitting
- * it. Such a claim either cites a file or carries the marker with its reason.
+ * fails the first test is a violation unless it carries the ALLOW_MARKER or its
+ * shortfall is pinned in the backlog below; a block that fails the second
+ * (`leaky`) is a violation unless it carries the marker, and no backlog covers
+ * it. A LABELLED claim that names no file at all ("the settings suites cover
+ * it") is rejected, not validated: nothing can resolve it, which is an argument
+ * against checking it and no argument for admitting it. Such a claim either
+ * cites a file or carries the marker.
  *
- * THE BACKLOG. The corpus predates the structured form, so the blocks that were
- * already unstructured when this ratchet landed are carried in two per-file
- * count maps: DEFERRED_FREE_PROSE for blocks that name a test file in prose
- * (convert them), and DEFERRED_FILELESS for blocks that name no file (decide:
- * cite a file, or mark the block allow). Each map pins the file's count
- * EXACTLY, and each is bounded by a frozen snapshot of the landing state that
- * is never edited. Together those give the properties a bare file list and a
- * bare ceiling did not:
+ * What the ratchet cannot see is prose without the label. An unlabelled
+ * sentence naming no file beside a structured citation ("the settings suites
+ * cover the happy path too") is invisible, and so is an unlabelled sentence
+ * naming a test file in a block that is neither the labelled one nor adjacent
+ * to it. The label is the only anchor; recall beyond it would need an
+ * unbounded phrase list that rots. The label pattern accepts `real`, `path`
+ * and `companion(s)` joined by dashes or spaces (or nothing), with up to two
+ * qualifying words before the noun and markup around it, after normalisation.
+ * One-off nouns for the same idea (sibling coverage, real-HAF variant, no-mock
+ * companion) are not labels and are not ratcheted.
+ *
+ * THE BACKLOG. The corpus predates the structured form, so the claims that
+ * were already unstructured when this ratchet landed are carried in two
+ * per-file count maps: DEFERRED_FREE_PROSE for blocks whose prose names a test
+ * file (convert them), and DEFERRED_FILELESS for blocks that name no file
+ * (decide: cite a file, or mark the block allow). The count is the file's
+ * label DEFICIT, labels minus structured citations, summed over its blocks in
+ * that class, so a second label line inside an existing block counts as much
+ * as a new block does. Each pin is EXACT against the tree, and each map is
+ * bounded by a frozen snapshot of the landing state that is never edited.
+ * What those give, precisely:
  *
  *   - a file absent from the snapshot can never enter the backlog, so a new
  *     file, or one file swapped for another, writes the structured form;
- *   - a listed file whose count rises above its pin is red, so a new prose
- *     claim in a backlog file is caught even though the file is listed;
- *   - a listed file whose count falls below its pin is red until the pin is
- *     lowered, so a conversion (or a deletion) is a visible edit and never a
- *     slot quietly freed for the next prose claim;
- *   - a pin cannot exceed its landing count and cannot be zero, so the maps
- *     only shrink, and the ceiling on their size is the snapshot itself rather
- *     than a number kept in step by hand.
+ *   - a listed file's deficit cannot exceed its pin, and a pin cannot exceed
+ *     its landing count, so a new claim in a listed file, in a new block or
+ *     inside an existing one, is red unless a claim left in the same edit;
+ *   - a deficit below its pin is red until the pin follows it, so a conversion
+ *     (or a deletion) is a visible edit in the map;
+ *   - the ceiling on the maps' size is the snapshot itself, entry by entry and
+ *     count by count, rather than a number kept in step by hand.
+ *
+ * And what they do NOT give, stated so the header does not outrun the code:
+ * the reconciler is stateless. A pin lowered after a conversion can later be
+ * raised back to its landing count, and an entry removed at zero can be
+ * re-added, as long as the tree agrees; a claim replaced by a different claim
+ * at constant deficit changes nothing here at all. Each of those leaves a diff
+ * on the block or on the map, and reading that diff is a review matter, not a
+ * mechanical one.
  *
  * The frozen snapshot is the root of trust and the one thing this file cannot
- * verify. The entry-count and block-count tripwires on it mean an edit to it
- * needs a second edit in a second spelling. That is friction, not a guarantee,
- * and the docblock on the snapshot says so.
+ * verify. A digest of it is pinned as a literal, so any edit to it needs a
+ * recomputed digest alongside; that is friction, since anyone can recompute
+ * it, and the docblock on the snapshot says so.
  *
- * WHAT IS NOT RATCHETED. Detection keys on the canonical
- * `real-path <adjective>? companion` label. The corpus also carries a long
- * tail of one-off nouns for the same idea (sibling coverage, real-HAF variant,
- * no-mock companion); those are not ratcheted, because catching them needs an
- * unbounded phrase list that rots. Precision over recall is the same trade the
- * pre-commit anchor gate makes when it scopes detection to known slug prefix
- * families. The ALLOW_MARKER is likewise unbounded and uncounted: it is the
- * lowest-friction answer to any red bar this file produces, and it is a review
- * judgement, not a mechanical one, whether a given use of it is honest.
+ * The ALLOW_MARKER is unbounded and uncounted: it is the lowest-friction answer
+ * to any red bar this file produces, and whether a given use of it is honest
+ * is a review judgement. Nothing checks that a reason accompanies it.
  *
  * PICK THE TIGHTEST HONEST TOKEN. The token names the risk class as the
  * companion spells it in code: an error code, a claim name, a column, a route
@@ -155,7 +189,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { sourcesUnder, type ScannedSource } from '../support/enclosing-symbol.js';
 
@@ -170,14 +206,15 @@ const SELF_REL = 'eslint/no-unresolvable-carve-out-companion-citation.test.ts';
  *  structured form: an anti-citation stating that NO real-path companion exists
  *  and why, or a claim whose referent is a behaviour rather than a file.
  *  Mirrors the `anchor-allow` marker in `.githooks/pre-commit`. Unbounded and
- *  uncounted by design; see WHAT IS NOT RATCHETED in the header. */
+ *  uncounted by design, and nothing checks for a reason beside it; see the
+ *  header. */
 const ALLOW_MARKER = 'carve-out-citation-allow';
 
 /** A token resolving in more than this many files under `backend/tests` proves
  *  nothing about the companion. Sized off the corpus: the risk-class tokens
  *  actually worth citing land in single digits, while `verifyHiveSignature` —
  *  the most authoritative-sounding token available, and therefore the most
- *  tempting — is satisfied by well over half the tree. */
+ *  tempting — is satisfied by over half the tree. */
 const TOKEN_FILE_CAP = 40;
 
 /** The one accepted spelling, quoted in every ratchet message. */
@@ -186,20 +223,21 @@ const STRUCTURED_FORM = 'Real-path companion: `backend/tests/<dir>/<name>.test.t
 // --- the landing snapshot: NEVER EDIT ----------------------------------------
 
 /**
- * The state of the corpus on the day the ratchet landed, per file: how many
- * labelled blocks named a test file in prose without the structured form
- * (LANDING_FREE_PROSE), and how many carried the label but named no file at all
+ * The state of the corpus on the day the ratchet landed, per file: the label
+ * deficit (labels minus structured citations) of its blocks whose prose names
+ * a test file (LANDING_FREE_PROSE), and of its blocks that name no file at all
  * (LANDING_FILELESS). These two maps are the root of trust for the backlog
  * below and are NEVER EDITED, in either direction. The live maps must be a
  * subset of them, entry by entry and count by count; that subset rule is what
  * stops a converted file's slot being reused by a new one, a deleted claim
- * freeing room for a fresh prose claim, or one file being swapped for another
- * under an unchanged total.
+ * freeing room for a fresh prose claim in another file, or one file being
+ * swapped for another under an unchanged total.
  *
- * The tripwire test below pins these maps' entry and block totals as literals.
- * That makes an edit here need a second edit elsewhere; it does not make one
- * impossible, and nothing in this file can. Treat a diff that touches these
- * maps as a defect in its own right.
+ * LANDING_DIGEST below is a hash of both maps, pinned as a literal, so an edit
+ * here needs a recomputed digest beside it. That is friction, not a guarantee:
+ * anyone can recompute it, and nothing in this file can tell a recomputed
+ * digest from the original. Treat a diff that touches these maps or the digest
+ * as a defect in its own right.
  */
 const LANDING_FREE_PROSE: Readonly<Record<string, number>> = {
   'backend/tests/consent-ops.test.ts': 1,
@@ -207,31 +245,32 @@ const LANDING_FREE_PROSE: Readonly<Record<string, number>> = {
   'backend/tests/consented-authors-cte-real-postgres.test.ts': 1,
   'backend/tests/digest-window-cursor.test.ts': 1,
   'backend/tests/fetch-notifications-asc-whole-block.test.ts': 1,
-  'backend/tests/hafsql-btrim-charset-real-postgres.test.ts': 1,
+  'backend/tests/hafsql-btrim-charset-real-postgres.test.ts': 2,
   'backend/tests/hafsql.test.ts': 2,
   'backend/tests/ipfs-cleanup-backend-dispatch.test.ts': 1,
-  'backend/tests/jobs/custody-audit-retention-sweep.test.ts': 1,
+  'backend/tests/jobs/custody-audit-retention-sweep.test.ts': 2,
   'backend/tests/lib/accreditation-names-loader-whitespace.test.ts': 1,
   'backend/tests/lib/bridge-worker.test.ts': 1,
   'backend/tests/lib/cache-invalidation.test.ts': 1,
   'backend/tests/lib/cache.test.ts': 1,
   'backend/tests/lib/fresh-auth-consent-op-burn-offline-queue.test.ts': 1,
   'backend/tests/lib/fresh-auth-redis-unavailable-burn.test.ts': 1,
-  'backend/tests/lib/idempotency.test.ts': 1,
+  'backend/tests/lib/idempotency.test.ts': 2,
   'backend/tests/lib/ipfs-image-srf-guard.test.ts': 1,
   'backend/tests/me-pending-authorships-real-postgres.test.ts': 1,
-  'backend/tests/middleware/verifyHiveSignature-authmethod.test.ts': 1,
+  'backend/tests/middleware/verifyHiveSignature-authmethod.test.ts': 2,
   'backend/tests/middleware/verifyHiveSignature-reissuedat-orcid-roundtrip.test.ts': 1,
-  'backend/tests/middleware/verifyHiveSignature-reissuedat-roundtrip.test.ts': 1,
+  'backend/tests/middleware/verifyHiveSignature-reissuedat-roundtrip.test.ts': 2,
   'backend/tests/middleware/verifyHiveSignature-replay-timestamp.test.ts': 1,
   'backend/tests/notification-queries-lateral-guard-canary.test.ts': 1,
   'backend/tests/reputation-consented-credit-cycle-behavioral.test.ts': 1,
-  'backend/tests/routes/accreditation.test.ts': 2,
-  'backend/tests/routes/accreditations-likeguard-mocked.test.ts': 1,
+  'backend/tests/routes/accreditation.test.ts': 3,
+  'backend/tests/routes/accreditations-likeguard-mocked.test.ts': 2,
   'backend/tests/routes/admin-endpoints.test.ts': 1,
-  'backend/tests/routes/admin-fresh-auth-real-path-verifyhivesignature.test.ts': 1,
+  'backend/tests/routes/admin-fresh-auth-real-path-verifyhivesignature.test.ts': 3,
   'backend/tests/routes/admin.test.ts': 1,
   'backend/tests/routes/anonymousReview.test.ts': 1,
+  'backend/tests/routes/app-ssr-discipline-real-path.test.ts': 1,
   'backend/tests/routes/app-ssr-jsonld-script-breakout.test.ts': 1,
   'backend/tests/routes/authorship-approve-signer-gate.test.ts': 1,
   'backend/tests/routes/authorship-revoke-signer-gate.test.ts': 1,
@@ -242,21 +281,21 @@ const LANDING_FREE_PROSE: Readonly<Record<string, number>> = {
   'backend/tests/routes/citations-lateral-guard-canary.test.ts': 1,
   'backend/tests/routes/custody-consent-ops.test.ts': 1,
   'backend/tests/routes/custody-credit-ops.test.ts': 1,
-  'backend/tests/routes/custody-limiter-cpu-amplification.test.ts': 1,
+  'backend/tests/routes/custody-limiter-cpu-amplification.test.ts': 2,
   'backend/tests/routes/custody-session-auth-argon-errors.test.ts': 1,
   'backend/tests/routes/custody-session-auth.test.ts': 1,
   'backend/tests/routes/custody-upgrade.test.ts': 1,
-  'backend/tests/routes/custody.test.ts': 1,
+  'backend/tests/routes/custody.test.ts': 2,
   'backend/tests/routes/display-consented-self-dealing-exclusion.test.ts': 1,
   'backend/tests/routes/haf-outage-translation-canaries.test.ts': 1,
   'backend/tests/routes/ipfs-gateway-hardening.test.ts': 1,
-  'backend/tests/routes/ipfs-pin-durability.test.ts': 1,
+  'backend/tests/routes/ipfs-pin-durability.test.ts': 3,
   'backend/tests/routes/ipfs-upload-real-path-verifyhivesignature.test.ts': 1,
   'backend/tests/routes/ipfs-upload-token.test.ts': 1,
-  'backend/tests/routes/listing-count-window-function-shape.test.ts': 1,
+  'backend/tests/routes/listing-count-window-function-shape.test.ts': 2,
   'backend/tests/routes/me-authorships-pending.test.ts': 1,
-  'backend/tests/routes/notifications-arm-sql-shape.test.ts': 1,
-  'backend/tests/routes/notifications-window-cursor.test.ts': 1,
+  'backend/tests/routes/notifications-arm-sql-shape.test.ts': 2,
+  'backend/tests/routes/notifications-window-cursor.test.ts': 2,
   'backend/tests/routes/orcid.test.ts': 2,
   'backend/tests/routes/papers-canonical-orcid-resolution.test.ts': 1,
   'backend/tests/routes/papers-canonical-root-walker.test.ts': 1,
@@ -266,8 +305,8 @@ const LANDING_FREE_PROSE: Readonly<Record<string, number>> = {
   'backend/tests/routes/papers-cumulative-route-error-isolation-mocked.test.ts': 1,
   'backend/tests/routes/papers-enrichment-parity-gate.test.ts': 1,
   'backend/tests/routes/papers-haf-error-vs-not-found.test.ts': 1,
-  'backend/tests/routes/papers-retract-real-path-verifyhivesignature.test.ts': 1,
-  'backend/tests/routes/papers-retract-url-shape-validator.test.ts': 1,
+  'backend/tests/routes/papers-retract-real-path-verifyhivesignature.test.ts': 3,
+  'backend/tests/routes/papers-retract-url-shape-validator.test.ts': 2,
   'backend/tests/routes/profile-papers-cid-validate.test.ts': 1,
   'backend/tests/routes/profile-papers-empty-cumulative-fallback.test.ts': 1,
   'backend/tests/routes/profile-papers-supersession.test.ts': 1,
@@ -292,18 +331,18 @@ const LANDING_FREE_PROSE: Readonly<Record<string, number>> = {
   'backend/tests/routes/search-partial-degradation.test.ts': 1,
   'backend/tests/routes/search-reviews-parity-gate.test.ts': 1,
   'backend/tests/routes/settings-email-fresh-auth.test.ts': 2,
-  'backend/tests/routes/settings-set-password-argon-error-translation.test.ts': 1,
+  'backend/tests/routes/settings-set-password-argon-error-translation.test.ts': 3,
   'backend/tests/routes/settings-set-password-fresh-auth.test.ts': 1,
   'backend/tests/routes/settings.test.ts': 1,
   'backend/tests/routes/signup-verify-activation-lock-unavailable.test.ts': 1,
   'backend/tests/routes/signup-verify-activation-recovery.test.ts': 1,
   'backend/tests/routes/signup-verify-orcid-binding-guard.test.ts': 1,
-  'backend/tests/routes/signup-verify-postbroadcast-severity.test.ts': 1,
+  'backend/tests/routes/signup-verify-postbroadcast-severity.test.ts': 3,
   'backend/tests/routes/signup-verify-stuck-recovery.test.ts': 1,
   'backend/tests/routes/signup-verify.test.ts': 1,
   'backend/tests/routes/wot-retract-poll.test.ts': 1,
   'backend/tests/routes/wot-vouch-poll.test.ts': 1,
-  'backend/tests/wot-vouch-status-select-real-postgres.test.ts': 1,
+  'backend/tests/wot-vouch-status-select-real-postgres.test.ts': 2,
 };
 
 const LANDING_FILELESS: Readonly<Record<string, number>> = {
@@ -323,23 +362,27 @@ const LANDING_FILELESS: Readonly<Record<string, number>> = {
   'backend/tests/wot-broadcast-timeout.test.ts': 1,
 };
 
+/** sha256 of the two landing maps above, in the order they are declared. */
+const LANDING_DIGEST = 'bac471e2d7237037723bd6bd36baefd553dd11cf524bdc506210fb5b4e52cbf5';
+
 // --- the live backlog: shrinks toward empty ----------------------------------
 
 /**
- * The migration backlog, per file: how many labelled blocks in that file are
- * still unstructured. DEFERRED_FREE_PROSE holds the blocks that name a test
- * file in prose, which convert mechanically to the structured form.
- * DEFERRED_FILELESS holds the blocks that carry the label but name no file at
- * all: anti-citations ("no real-path companion exists because ..."), suite
- * families, behaviourally-named uncovered risk classes. Each of those needs a
- * decision rather than a rewrite: cite the file that witnesses it, or keep the
- * prose and mark the block with the ALLOW_MARKER and its reason.
+ * The migration backlog, per file: the label deficit (labels minus structured
+ * citations) still standing in that file's blocks of each class.
+ * DEFERRED_FREE_PROSE holds the blocks whose prose names a test file, which
+ * convert mechanically to the structured form. DEFERRED_FILELESS holds the
+ * blocks that carry the label but name no file at all: anti-citations ("no
+ * real-path companion exists because ..."), suite families, behaviourally-named
+ * uncovered risk classes. Each of those needs a decision rather than a
+ * rewrite: cite the file that witnesses it, or keep the prose and mark the
+ * block with the ALLOW_MARKER.
  *
  * Both maps are ratchet-exempt and NOT validation-exempt: a structured citation
  * in a listed file is still resolved and checked. The count is EXACT. When a
- * block in a listed file is converted (or deleted), lower that file's pin, and
- * remove the entry when it would reach zero. A pin can never rise, an entry can
- * never be added, and a file outside the landing snapshot can never appear
+ * claim in a listed file is converted (or deleted), lower that file's pin, and
+ * remove the entry when it would reach zero. A pin can never exceed its
+ * landing count, and a file outside the landing snapshot can never appear
  * here; the reconciliation test names the entry and the direction whenever the
  * tree and this map disagree.
  */
@@ -349,31 +392,32 @@ const DEFERRED_FREE_PROSE: Readonly<Record<string, number>> = {
   'backend/tests/consented-authors-cte-real-postgres.test.ts': 1,
   'backend/tests/digest-window-cursor.test.ts': 1,
   'backend/tests/fetch-notifications-asc-whole-block.test.ts': 1,
-  'backend/tests/hafsql-btrim-charset-real-postgres.test.ts': 1,
+  'backend/tests/hafsql-btrim-charset-real-postgres.test.ts': 2,
   'backend/tests/hafsql.test.ts': 2,
   'backend/tests/ipfs-cleanup-backend-dispatch.test.ts': 1,
-  'backend/tests/jobs/custody-audit-retention-sweep.test.ts': 1,
+  'backend/tests/jobs/custody-audit-retention-sweep.test.ts': 2,
   'backend/tests/lib/accreditation-names-loader-whitespace.test.ts': 1,
   'backend/tests/lib/bridge-worker.test.ts': 1,
   'backend/tests/lib/cache-invalidation.test.ts': 1,
   'backend/tests/lib/cache.test.ts': 1,
   'backend/tests/lib/fresh-auth-consent-op-burn-offline-queue.test.ts': 1,
   'backend/tests/lib/fresh-auth-redis-unavailable-burn.test.ts': 1,
-  'backend/tests/lib/idempotency.test.ts': 1,
+  'backend/tests/lib/idempotency.test.ts': 2,
   'backend/tests/lib/ipfs-image-srf-guard.test.ts': 1,
   'backend/tests/me-pending-authorships-real-postgres.test.ts': 1,
-  'backend/tests/middleware/verifyHiveSignature-authmethod.test.ts': 1,
+  'backend/tests/middleware/verifyHiveSignature-authmethod.test.ts': 2,
   'backend/tests/middleware/verifyHiveSignature-reissuedat-orcid-roundtrip.test.ts': 1,
-  'backend/tests/middleware/verifyHiveSignature-reissuedat-roundtrip.test.ts': 1,
+  'backend/tests/middleware/verifyHiveSignature-reissuedat-roundtrip.test.ts': 2,
   'backend/tests/middleware/verifyHiveSignature-replay-timestamp.test.ts': 1,
   'backend/tests/notification-queries-lateral-guard-canary.test.ts': 1,
   'backend/tests/reputation-consented-credit-cycle-behavioral.test.ts': 1,
-  'backend/tests/routes/accreditation.test.ts': 2,
-  'backend/tests/routes/accreditations-likeguard-mocked.test.ts': 1,
+  'backend/tests/routes/accreditation.test.ts': 3,
+  'backend/tests/routes/accreditations-likeguard-mocked.test.ts': 2,
   'backend/tests/routes/admin-endpoints.test.ts': 1,
-  'backend/tests/routes/admin-fresh-auth-real-path-verifyhivesignature.test.ts': 1,
+  'backend/tests/routes/admin-fresh-auth-real-path-verifyhivesignature.test.ts': 3,
   'backend/tests/routes/admin.test.ts': 1,
   'backend/tests/routes/anonymousReview.test.ts': 1,
+  'backend/tests/routes/app-ssr-discipline-real-path.test.ts': 1,
   'backend/tests/routes/app-ssr-jsonld-script-breakout.test.ts': 1,
   'backend/tests/routes/authorship-approve-signer-gate.test.ts': 1,
   'backend/tests/routes/authorship-revoke-signer-gate.test.ts': 1,
@@ -384,21 +428,21 @@ const DEFERRED_FREE_PROSE: Readonly<Record<string, number>> = {
   'backend/tests/routes/citations-lateral-guard-canary.test.ts': 1,
   'backend/tests/routes/custody-consent-ops.test.ts': 1,
   'backend/tests/routes/custody-credit-ops.test.ts': 1,
-  'backend/tests/routes/custody-limiter-cpu-amplification.test.ts': 1,
+  'backend/tests/routes/custody-limiter-cpu-amplification.test.ts': 2,
   'backend/tests/routes/custody-session-auth-argon-errors.test.ts': 1,
   'backend/tests/routes/custody-session-auth.test.ts': 1,
   'backend/tests/routes/custody-upgrade.test.ts': 1,
-  'backend/tests/routes/custody.test.ts': 1,
+  'backend/tests/routes/custody.test.ts': 2,
   'backend/tests/routes/display-consented-self-dealing-exclusion.test.ts': 1,
   'backend/tests/routes/haf-outage-translation-canaries.test.ts': 1,
   'backend/tests/routes/ipfs-gateway-hardening.test.ts': 1,
-  'backend/tests/routes/ipfs-pin-durability.test.ts': 1,
+  'backend/tests/routes/ipfs-pin-durability.test.ts': 3,
   'backend/tests/routes/ipfs-upload-real-path-verifyhivesignature.test.ts': 1,
   'backend/tests/routes/ipfs-upload-token.test.ts': 1,
-  'backend/tests/routes/listing-count-window-function-shape.test.ts': 1,
+  'backend/tests/routes/listing-count-window-function-shape.test.ts': 2,
   'backend/tests/routes/me-authorships-pending.test.ts': 1,
-  'backend/tests/routes/notifications-arm-sql-shape.test.ts': 1,
-  'backend/tests/routes/notifications-window-cursor.test.ts': 1,
+  'backend/tests/routes/notifications-arm-sql-shape.test.ts': 2,
+  'backend/tests/routes/notifications-window-cursor.test.ts': 2,
   'backend/tests/routes/orcid.test.ts': 2,
   'backend/tests/routes/papers-canonical-orcid-resolution.test.ts': 1,
   'backend/tests/routes/papers-canonical-root-walker.test.ts': 1,
@@ -408,8 +452,8 @@ const DEFERRED_FREE_PROSE: Readonly<Record<string, number>> = {
   'backend/tests/routes/papers-cumulative-route-error-isolation-mocked.test.ts': 1,
   'backend/tests/routes/papers-enrichment-parity-gate.test.ts': 1,
   'backend/tests/routes/papers-haf-error-vs-not-found.test.ts': 1,
-  'backend/tests/routes/papers-retract-real-path-verifyhivesignature.test.ts': 1,
-  'backend/tests/routes/papers-retract-url-shape-validator.test.ts': 1,
+  'backend/tests/routes/papers-retract-real-path-verifyhivesignature.test.ts': 3,
+  'backend/tests/routes/papers-retract-url-shape-validator.test.ts': 2,
   'backend/tests/routes/profile-papers-cid-validate.test.ts': 1,
   'backend/tests/routes/profile-papers-empty-cumulative-fallback.test.ts': 1,
   'backend/tests/routes/profile-papers-supersession.test.ts': 1,
@@ -434,18 +478,18 @@ const DEFERRED_FREE_PROSE: Readonly<Record<string, number>> = {
   'backend/tests/routes/search-partial-degradation.test.ts': 1,
   'backend/tests/routes/search-reviews-parity-gate.test.ts': 1,
   'backend/tests/routes/settings-email-fresh-auth.test.ts': 2,
-  'backend/tests/routes/settings-set-password-argon-error-translation.test.ts': 1,
+  'backend/tests/routes/settings-set-password-argon-error-translation.test.ts': 3,
   'backend/tests/routes/settings-set-password-fresh-auth.test.ts': 1,
   'backend/tests/routes/settings.test.ts': 1,
   'backend/tests/routes/signup-verify-activation-lock-unavailable.test.ts': 1,
   'backend/tests/routes/signup-verify-activation-recovery.test.ts': 1,
   'backend/tests/routes/signup-verify-orcid-binding-guard.test.ts': 1,
-  'backend/tests/routes/signup-verify-postbroadcast-severity.test.ts': 1,
+  'backend/tests/routes/signup-verify-postbroadcast-severity.test.ts': 3,
   'backend/tests/routes/signup-verify-stuck-recovery.test.ts': 1,
   'backend/tests/routes/signup-verify.test.ts': 1,
   'backend/tests/routes/wot-retract-poll.test.ts': 1,
   'backend/tests/routes/wot-vouch-poll.test.ts': 1,
-  'backend/tests/wot-vouch-status-select-real-postgres.test.ts': 1,
+  'backend/tests/wot-vouch-status-select-real-postgres.test.ts': 2,
 };
 
 const DEFERRED_FILELESS: Readonly<Record<string, number>> = {
@@ -467,58 +511,155 @@ const DEFERRED_FILELESS: Readonly<Record<string, number>> = {
 
 // --- parsing -----------------------------------------------------------------
 
-const COMMENT_LINE_RE = /^\s*(?:\/\*+|\*+\/|\*|\/\/)/;
-const COMMENT_PREFIX_RE = /^\s*(?:\/\*+|\*+\/|\*|\/\/)[ \t]?/;
+/**
+ * Comment text as a reader sees it: compatibility-normalised, format
+ * characters (soft hyphens, zero-width joiners) dropped, every dash mapped to
+ * `-`, every space separator mapped to a space. Applied to every collected
+ * block before any pattern looks at it, so a look-alike character cannot make
+ * the label or a path read one way and match another.
+ */
+function normalizeCommentText(text: string): string {
+  return text
+    .normalize('NFKC')
+    .replace(/\p{Cf}/gu, '')
+    .replace(/[\p{Pd}\u2212]/gu, '-')
+    .replace(/\p{Zs}/gu, ' ');
+}
 
-/** Fresh objects on every call. Both are `g`-flagged, and a shared instance
- *  carries `lastIndex` between calls, which silently skips matches. */
-const labelPattern = (): RegExp => /real[\s-]path\s+(?:[a-z]+\s+)?companions?/gi;
-const citationPattern = (): RegExp =>
-  /real[\s-]path\s+(?:[a-z]+\s+)?companions?\s*:\s*`([^`]+)`\s*\[([^\n]+?)\]\s*(?=\n|$)/gi;
+/** String literals on one code line, blanked to spaces so a comment marker
+ *  inside one is not read as a comment while every index stays valid. A
+ *  template literal spanning lines is the accepted blind spot (see the header). */
+function blankStrings(code: string): string {
+  return code.replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\\n]|\\.)*`/g, (m) => ' '.repeat(m.length));
+}
 
-/** Does a span of prose name a test file? Decides which backlog an
- *  unstructured block belongs to, and catches a filename left in prose beside
- *  a structured citation. */
-const NAMES_A_TEST_FILE_RE = /[\w.-]+\.test\.ts/;
-
-/** The one accepted spelling of a companion path: repo-relative, under the
- *  backend test tree, a test file. */
-const COMPANION_PATH_RE = /^backend\/tests\/[\w./-]+\.test\.ts$/;
+/** A docblock's `*` gutter, if present, then the whitespace around what is left. */
+function stripGutter(piece: string): string {
+  return piece.replace(/^[ \t]*\*(?!\/)[ \t]?/, '').trim();
+}
 
 export interface CommentBlock {
-  /** 1-based index of the block's opening comment line, for the failure text. */
+  /** 1-based index of the block's opening line, for the failure text. */
   readonly firstLine: number;
-  /** The block with comment prefixes stripped, still newline-separated so a
-   *  citation that wraps can be rejoined inside a captured span. */
+  /** The block's text, prefixes and gutters stripped, normalised, still
+   *  newline-separated so a citation that wraps can be rejoined inside a
+   *  captured span. */
   readonly text: string;
 }
 
 /**
- * Contiguous runs of comment lines, prefixes stripped. Whole-file rather than
- * header-only on purpose: citations live in `//` comments and far below the
- * imports in this corpus, and a header-scoped scan would let any author evade
- * the ratchet by moving the block down the file.
+ * Every comment in the file, as blocks. A block is a block-comment span from
+ * its opener to its closer (every interior line included, gutter or not,
+ * blank or not), or a run of `//` lines, or the trailing comment on a code
+ * line, which stands alone. Comment runs separated only by blank lines are one
+ * block; a code line ends a run. See WHAT COUNTS AS A COMMENT in the header
+ * for why each of those choices is made, and the probes below for each shape.
+ *
+ * Whole-file rather than header-only on purpose: citations live in `//`
+ * comments and far below the imports in this corpus, and a header-scoped scan
+ * would let any author evade the ratchet by moving the block down the file.
  */
 export function commentBlocks(lines: string[]): CommentBlock[] {
   const out: CommentBlock[] = [];
-  let start = -1;
   let buf: string[] = [];
+  let start = -1;
+  let inBlock = false;
   const flush = (): void => {
-    if (buf.length > 0) out.push({ firstLine: start + 1, text: buf.join('\n') });
+    while (buf.length > 0 && buf[buf.length - 1].trim() === '') buf.pop();
+    if (buf.length > 0) out.push({ firstLine: start + 1, text: normalizeCommentText(buf.join('\n')) });
     buf = [];
     start = -1;
   };
+  const push = (i: number, piece: string): void => {
+    if (start === -1) start = i;
+    const stripped = stripGutter(piece);
+    // The opener line of a docblock leaves nothing behind its `/**`; a block
+    // does not begin with that blank.
+    if (buf.length === 0 && stripped.trim() === '') return;
+    buf.push(stripped);
+  };
   lines.forEach((line, i) => {
-    if (COMMENT_LINE_RE.test(line)) {
-      if (buf.length === 0) start = i;
-      buf.push(line.replace(COMMENT_PREFIX_RE, ''));
-    } else {
-      flush();
+    let rest = line;
+    if (inBlock) {
+      const close = rest.indexOf('*/');
+      if (close < 0) {
+        push(i, rest);
+        return;
+      }
+      // The closer line carries text only if something sits before the `*/`.
+      if (rest.slice(0, close).trim() !== '') push(i, rest.slice(0, close));
+      inBlock = false;
+      rest = rest.slice(close + 2);
+      if (rest.trim() === '') return;
     }
+    if (rest.trim() === '') {
+      if (buf.length > 0) buf.push('');
+      return;
+    }
+    // A line that is comment from its first non-blank character continues
+    // the run. A line with code first ends the run, and a trailing comment on
+    // it is a block of its own.
+    const leading = /^\s*\/[/*]/.test(rest);
+    if (!leading) flush();
+    const code = blankStrings(rest);
+    let pos = 0;
+    let opened = false;
+    let found = false;
+    while (pos < rest.length) {
+      const li = code.indexOf('//', pos);
+      const bi = code.indexOf('/*', pos);
+      if (li < 0 && bi < 0) break;
+      found = true;
+      if (li >= 0 && (bi < 0 || li < bi)) {
+        push(i, rest.slice(li + 2));
+        break;
+      }
+      const ei = code.indexOf('*/', bi + 2);
+      if (ei < 0) {
+        push(i, rest.slice(bi + 2));
+        opened = true;
+        break;
+      }
+      push(i, rest.slice(bi + 2, ei));
+      pos = ei + 2;
+    }
+    if (!found) return;
+    if (opened) inBlock = true;
+    else if (!leading) flush();
   });
   flush();
   return out;
 }
+
+/**
+ * The label, as a pattern source shared by the label count and the citation
+ * parser so the two cannot drift: `real`, `path`, up to two qualifying words,
+ * optional markup, `companion(s)`, joined by dashes or spaces or nothing.
+ * Matched case-insensitively on normalised text, so `Real-path companion`,
+ * `real-path SQL companion`, `Realpath companion`, `real-path-companion`,
+ * `Real-path (Postgres) companion` and `@realPathCompanion` all count.
+ */
+const LABEL_SRC = String.raw`real[\s-]*path[\s-]*(?:[\w()/.-]+[\s-]+){0,2}(?:<[a-z]+>|\*{1,2}|_{1,2})?companions?`;
+
+/** Fresh objects on every call. Both are `g`-flagged, and a shared instance
+ *  carries `lastIndex` between calls, which silently skips matches. */
+const labelPattern = (): RegExp => new RegExp(LABEL_SRC, 'giu');
+const citationPattern = (): RegExp =>
+  new RegExp(
+    String.raw`${LABEL_SRC}(?:</[a-z]+>|\*{1,2}|_{1,2})?\s*:\s*\x60([^\x60]+)\x60\s*\[([^\n]+?)\]\s*(?=\n|$)`,
+    'giu',
+  );
+
+/** Does a span of prose name a test file? `name.test.ts`, but also the
+ *  suffix-less `name.test`, a spec, a frontend `.test.js`, and any path into
+ *  a `tests/` tree, since a reader takes each of those for a file. Decides
+ *  which backlog an unstructured block belongs to, and catches a filename left
+ *  in prose beside a structured citation. */
+const NAMES_A_TEST_FILE_RE = /[\w.-]+\.(?:test|spec)(?:\.[cm]?[jt]sx?)?\b|\btests\/[\w./-]+/;
+
+/** The one accepted spelling of a companion path: repo-relative, under the
+ *  backend test tree, a test file. */
+const COMPANION_PATH_RE = /^backend\/tests\/[\w./-]+\.test\.ts$/;
 
 export interface Citation {
   readonly companionPath: string;
@@ -549,10 +690,11 @@ export function labelCount(text: string): number {
   return (text.match(labelPattern()) ?? []).length;
 }
 
-/** Newlines are removed first so a name the docblock wrapped mid-token still
- *  reads as one name. */
+/** Line breaks and the whitespace around them are removed first, so a name
+ *  the docblock wrapped anywhere, even inside its last segment, still reads as
+ *  one name. */
 function namesATestFile(text: string): boolean {
-  return NAMES_A_TEST_FILE_RE.test(text.replace(/\n/g, ''));
+  return NAMES_A_TEST_FILE_RE.test(text.replace(/\s*\n\s*/g, ''));
 }
 
 /** The block with every structured citation cut out. What remains is prose,
@@ -648,8 +790,6 @@ export function citationViolations(
 interface BlockShape {
   readonly labels: number;
   readonly citations: number;
-  /** Any test filename anywhere in the block. */
-  readonly namesAFile: boolean;
   /** A test filename in what is left once the structured citations are cut. */
   readonly remainderNamesAFile: boolean;
   readonly exempt: boolean;
@@ -661,7 +801,6 @@ function blockShape(text: string): BlockShape {
   return {
     labels: labelCount(text),
     citations: citationsIn(text).length,
-    namesAFile: namesATestFile(text),
     remainderNamesAFile: namesATestFile(proseRemainder(text)),
     exempt: text.includes(ALLOW_MARKER),
   };
@@ -675,9 +814,9 @@ function blockShape(text: string): BlockShape {
  *     the prose. The only shape that passes on its own merits.
  *   - `leaky`: fully structured, but the prose beside the citations still
  *     names a test file. The half-true compound; always a violation.
- *   - `free-prose`: fewer citations than labels, and the block names a test
+ *   - `free-prose`: fewer citations than labels, and the prose names a test
  *     file. Convertible, and pinned in DEFERRED_FREE_PROSE for now.
- *   - `fileless`: fewer citations than labels, and no file named at all.
+ *   - `fileless`: fewer citations than labels, and no file named in the prose.
  *     Unresolvable by any parser, hence rejected rather than validated, and
  *     pinned in DEFERRED_FILELESS for now.
  */
@@ -685,14 +824,78 @@ type RatchetClass = 'exempt' | 'structured' | 'leaky' | 'free-prose' | 'fileless
 
 function ratchetClass(b: BlockShape): RatchetClass {
   if (b.exempt) return 'exempt';
-  if (b.citations < b.labels) return b.namesAFile ? 'free-prose' : 'fileless';
+  if (b.citations < b.labels) return b.remainderNamesAFile ? 'free-prose' : 'fileless';
   return b.remainderNamesAFile ? 'leaky' : 'structured';
 }
 
+interface BlockAudit {
+  readonly repoPath: string;
+  readonly block: CommentBlock;
+  readonly citations: Citation[];
+  readonly shape: BlockShape;
+  readonly cls: RatchetClass;
+}
+
+const repoPathOf = (rel: string): string => `backend/tests/${rel}`;
+
+/** Every labelled block in the given sources, classified. The whole-tree scan
+ *  and the synthetic probes go through this one function. */
+function auditSources(from: readonly ScannedSource[]): BlockAudit[] {
+  const out: BlockAudit[] = [];
+  for (const source of from) {
+    for (const block of commentBlocks(source.lines)) {
+      const shape = blockShape(block.text);
+      if (shape.labels === 0) continue;
+      out.push({
+        repoPath: repoPathOf(source.rel),
+        block,
+        citations: citationsIn(block.text),
+        shape,
+        cls: ratchetClass(shape),
+      });
+    }
+  }
+  return out;
+}
+
+/** Per-file label deficit (labels minus structured citations) summed over the
+ *  blocks of one ratchet class; files with none are absent. */
+function deficitByFile(cls: RatchetClass, from: readonly BlockAudit[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const a of from) {
+    if (a.cls !== cls) continue;
+    out.set(a.repoPath, (out.get(a.repoPath) ?? 0) + (a.shape.labels - a.shape.citations));
+  }
+  return out;
+}
+
+function leakyBlocks(from: readonly BlockAudit[]): BlockAudit[] {
+  return from.filter((a) => a.cls === 'leaky');
+}
+
+const at = (a: BlockAudit): string => `${a.repoPath} (comment block opening at line ${a.block.firstLine})`;
+
+/** Every structured citation in every block, whatever its class, validated. */
+function validationViolations(
+  from: readonly BlockAudit[],
+  sources: readonly ScannedSource[],
+  readSource: (repoPath: string) => string | null,
+): string[] {
+  const out: string[] = [];
+  for (const audit of from) {
+    for (const citation of audit.citations) {
+      for (const reason of citationViolations(audit.repoPath, citation, sources, readSource)) {
+        out.push(`${at(audit)} — ${reason}`);
+      }
+    }
+  }
+  return out;
+}
+
 /**
- * Reconcile one backlog class against the tree. `actual` is the per-file count
- * of blocks in that class as scanned (files with none are absent); `live` is
- * the editable pin map; `frozen` is the never-edited landing snapshot. Returns
+ * Reconcile one backlog class against the tree. `actual` is the per-file label
+ * deficit in that class as scanned (files with none are absent); `live` is the
+ * editable pin map; `frozen` is the never-edited landing snapshot. Returns
  * every way the three disagree, each naming the file and the direction.
  */
 function reconcileBacklog(
@@ -739,53 +942,24 @@ function reconcileBacklog(
   return out;
 }
 
+/** sha256 over the maps' sorted entries, in declaration order. */
+function snapshotDigest(...maps: Array<Readonly<Record<string, number>>>): string {
+  const canonical = maps.map((m) => Object.entries(m).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
+}
+
 // --- the scan ----------------------------------------------------------------
 
 const allSources = sourcesUnder(testsRoot);
 const sources = allSources.filter((s) => s.rel !== SELF_REL);
-const repoPathOf = (rel: string): string => `backend/tests/${rel}`;
 const readFromRepo = (repoPath: string): string | null => {
   const abs = path.resolve(repoRoot, repoPath);
   return existsSync(abs) ? readFileSync(abs, 'utf8') : null;
 };
-
-interface BlockAudit {
-  readonly repoPath: string;
-  readonly block: CommentBlock;
-  readonly citations: Citation[];
-  readonly cls: RatchetClass;
-}
-
-const audits: BlockAudit[] = [];
-for (const source of sources) {
-  for (const block of commentBlocks(source.lines)) {
-    const shape = blockShape(block.text);
-    if (shape.labels === 0) continue;
-    audits.push({
-      repoPath: repoPathOf(source.rel),
-      block,
-      citations: citationsIn(block.text),
-      cls: ratchetClass(shape),
-    });
-  }
-}
-
-const at = (a: BlockAudit): string => `${a.repoPath} (comment block opening at line ${a.block.firstLine})`;
-
-/** Per-file count of blocks in one ratchet class; files with none are absent. */
-function countByFile(cls: RatchetClass): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const a of audits) {
-    if (a.cls === cls) out.set(a.repoPath, (out.get(a.repoPath) ?? 0) + 1);
-  }
-  return out;
-}
-
-const sumOf = (m: Readonly<Record<string, number>>): number =>
-  Object.values(m).reduce((acc, n) => acc + n, 0);
+const audits = auditSources(sources);
 
 describe('carve-out clause-(c) companion citations resolve and are witnessed', () => {
-  it('walks a plausible number of test files (guards against a broken walker)', () => {
+  it('walks a plausible number of test files, symlinks included (guards against a broken walker)', () => {
     // Without this, a walker that returned nothing makes every assertion below
     // vacuously true and the canary enforces nothing.
     expect(sources.length).toBeGreaterThan(200);
@@ -802,17 +976,30 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     // Anti-vacuity for the audit set itself: a mangled label pattern would
     // empty it and pass everything.
     expect(audits.length).toBeGreaterThan(100);
+
+    // vitest's file glob follows symlinks, so a symlinked test file or
+    // directory runs as part of the suite; a walker that skipped it would
+    // leave a whole file outside both the ratchet and validation. A dangling
+    // link is skipped rather than thrown on.
+    const tmp = mkdtempSync(path.join(tmpdir(), 'pevo-companion-walker-'));
+    try {
+      mkdirSync(path.join(tmp, 'sub'));
+      writeFileSync(path.join(tmp, 'sub', 'real.test.ts'), 'export {};\n');
+      symlinkSync(path.join(tmp, 'sub', 'real.test.ts'), path.join(tmp, 'linked.test.ts'));
+      symlinkSync(path.join(tmp, 'sub'), path.join(tmp, 'linkdir'));
+      symlinkSync(path.join(tmp, 'nowhere.test.ts'), path.join(tmp, 'dangling.test.ts'));
+      expect(sourcesUnder(tmp).map((s) => s.rel).sort()).toEqual([
+        'linkdir/real.test.ts',
+        'linked.test.ts',
+        'sub/real.test.ts',
+      ]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('every structured citation resolves and its risk-class token is asserted in the companion', () => {
-    const violations: string[] = [];
-    for (const audit of audits) {
-      for (const citation of audit.citations) {
-        for (const reason of citationViolations(audit.repoPath, citation, sources, readFromRepo)) {
-          violations.push(`${at(audit)} — ${reason}`);
-        }
-      }
-    }
+    const violations = validationViolations(audits, sources, readFromRepo);
     expect(
       violations,
       'a clause-(c) companion citation names a companion that cannot witness the ' +
@@ -823,7 +1010,7 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
   });
 
   it('a structured block names no test file in the prose beside its citations', () => {
-    const leaky = audits.filter((a) => a.cls === 'leaky').map(at);
+    const leaky = leakyBlocks(audits).map(at);
     expect(
       leaky,
       'a block whose companion claims are all structured still names a test file ' +
@@ -833,35 +1020,103 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     ).toEqual([]);
   });
 
-  it('every file-naming prose claim is in the backlog at exactly its pin, and the backlog only shrinks', () => {
-    const disagreements = reconcileBacklog(countByFile('free-prose'), DEFERRED_FREE_PROSE, LANDING_FREE_PROSE);
+  it('every file-naming prose claim is in the backlog at exactly its pin, bounded by the landing snapshot', () => {
+    const disagreements = reconcileBacklog(deficitByFile('free-prose', audits), DEFERRED_FREE_PROSE, LANDING_FREE_PROSE);
     expect(
       disagreements,
-      'the tree and DEFERRED_FREE_PROSE disagree. A new file, or a new block in a ' +
+      'the tree and DEFERRED_FREE_PROSE disagree. A new file, or a new claim in a ' +
         `listed file, is written as ${STRUCTURED_FORM} rather than added here; a ` +
-        `converted block lowers its file's pin:\n${disagreements.join('\n')}`,
+        `converted claim lowers its file's pin:\n${disagreements.join('\n')}`,
     ).toEqual([]);
   });
 
-  it('every file-less companion claim is in its backlog at exactly its pin, and that backlog only shrinks', () => {
-    const disagreements = reconcileBacklog(countByFile('fileless'), DEFERRED_FILELESS, LANDING_FILELESS);
+  it('every file-less companion claim is in its backlog at exactly its pin, bounded by the landing snapshot', () => {
+    const disagreements = reconcileBacklog(deficitByFile('fileless', audits), DEFERRED_FILELESS, LANDING_FILELESS);
     expect(
       disagreements,
       'the tree and DEFERRED_FILELESS disagree. A companion claim that names no ' +
         'file is unresolvable by any parser and is not admitted: either cite the ' +
         `file that witnesses it as ${STRUCTURED_FORM}, or keep the prose and mark ` +
-        `the block ${ALLOW_MARKER} with the reason no file can be cited:\n${disagreements.join('\n')}`,
+        `the block ${ALLOW_MARKER}:\n${disagreements.join('\n')}`,
     ).toEqual([]);
   });
 
-  it('the landing snapshot is unchanged (tripwire, not a guarantee)', () => {
-    // A second spelling of the snapshot's size. An edit to the snapshot maps
-    // then needs an edit here too, which is the most this file can do about
+  it('the landing snapshot is unchanged (a digest tripwire, not a guarantee)', () => {
+    // An edit to either snapshot map changes the digest, so it needs a
+    // recomputed literal beside it. That is the most this file can do about
     // its own root of trust; see the snapshot docblock.
-    expect(Object.keys(LANDING_FREE_PROSE).length).toBe(102);
-    expect(sumOf(LANDING_FREE_PROSE)).toBe(108);
+    expect(Object.keys(LANDING_FREE_PROSE).length).toBe(103);
     expect(Object.keys(LANDING_FILELESS).length).toBe(14);
-    expect(sumOf(LANDING_FILELESS)).toBe(16);
+    expect(snapshotDigest(LANDING_FREE_PROSE, LANDING_FILELESS)).toBe(LANDING_DIGEST);
+  });
+
+  it('the collector sees every comment shape a reader does, and nothing that is code', () => {
+    const texts = (lines: string[]): string[] => commentBlocks(lines).map((b) => b.text);
+
+    // A `//` run and a docblock separated by CODE are separate blocks; a
+    // header-only parser would see neither of the `//` ones.
+    expect(texts([
+      '/**', ' * Real-path companion: `backend/tests/a.test.ts` [ALPHA]', ' */',
+      'const x = 1;',
+      '// Real-path companion: `backend/tests/b.test.ts` [BETA]',
+    ])).toEqual([
+      'Real-path companion: `backend/tests/a.test.ts` [ALPHA]',
+      'Real-path companion: `backend/tests/b.test.ts` [BETA]',
+    ]);
+
+    // Separated only by a blank line, they are ONE block, so a note under a
+    // header cannot hide a filename beside the header's citations.
+    expect(texts([
+      '/**', ' * Real-path companion: `backend/tests/a.test.ts` [ALPHA]', ' */',
+      '',
+      '// see also b.test.ts',
+      'import x from "y";',
+    ])).toEqual(['Real-path companion: `backend/tests/a.test.ts` [ALPHA]\n\nsee also b.test.ts']);
+
+    // A trailing comment on a code line is a block of its own. This was the
+    // canonical free-prose claim hung on the `vi.mock(` line it justified.
+    expect(texts(["vi.mock('../../src/app-db.js', () => ({})); // (c) Real-path companion: routes/a.test.ts covers it"]))
+      .toEqual(['(c) Real-path companion: routes/a.test.ts covers it']);
+
+    // A block comment opened at the END of a code line spans lines as one
+    // block, so a structured citation inside it is parsed and validated.
+    expect(texts([
+      "vi.mock('../../src/app-db.js', () => ({})); /* Carve-out clause (c).",
+      '   Real-path companion: `backend/tests/a.test.ts` [ALPHA]',
+      '   drives it. */',
+    ])).toEqual(['Carve-out clause (c).\nReal-path companion: `backend/tests/a.test.ts` [ALPHA]\ndrives it.']);
+
+    // A block comment without a `*` gutter, a docblock with a bare continuation
+    // line, and a docblock with a blank line inside: each is one block, with
+    // every interior line in it.
+    expect(texts(['/*', '  (c) Real-path companion: routes/a.test.ts drives it.', '*/']))
+      .toEqual(['(c) Real-path companion: routes/a.test.ts drives it.']);
+    expect(texts(['/**', ' * Real-path companion: `backend/tests/a.test.ts` [ALPHA]', '     and b.test.ts too', ' */']))
+      .toEqual(['Real-path companion: `backend/tests/a.test.ts` [ALPHA]\nand b.test.ts too']);
+    expect(texts(['/**', ' * Real-path companion: `backend/tests/a.test.ts` [ALPHA]', '', ' * and b.test.ts too', ' */']))
+      .toEqual(['Real-path companion: `backend/tests/a.test.ts` [ALPHA]\n\nand b.test.ts too']);
+
+    // A one-line block comment parses cleanly, closer removed, so the
+    // end-of-line anchor on the token still holds.
+    expect(citationsIn(texts(['/* Real-path companion: `backend/tests/a.test.ts` [ALPHA] */'])[0]).map((c) => c.token))
+      .toEqual(['ALPHA']);
+
+    // Markers inside string literals are code. Both shapes are real fixtures
+    // in this corpus: a sentinel whose VALUE is a SQL block comment, and a
+    // predicate testing for the opener.
+    expect(texts(["const SENTINEL = '/* search.reviews.branch */';", 'const ALPHA = 1;'])).toEqual([]);
+    expect(texts(["if (trimmed.startsWith('/*')) return true;", 'const ALPHA = 1; // tail'])).toEqual(['tail']);
+    expect(texts(["const u = 'https://example.test/x'; // note"])).toEqual(['note']);
+
+    // Normalisation: a look-alike hyphen, a non-breaking space, an invisible
+    // zero-width space, and a fullwidth letter all read as the plain label.
+    const spellings = [
+      'Real\u2011path companion', 'Real\u00A0path companion', 'Re\u200Bal-path companion',
+      'Real\u00ADpath companion', '\uFF32eal-path companion',
+    ];
+    for (const spelt of spellings) {
+      expect(labelCount(texts(['/**', ` * ${spelt}: x`, ' */'])[0]), JSON.stringify(spelt)).toBe(1);
+    }
   });
 
   it('the parser and validators fire on planted-bad citations and spare legitimate ones', () => {
@@ -911,9 +1166,18 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     // line-based label match misses the citation entirely rather than mangling it.
     expect(labelCount(block(' Real-path', ' companion coverage of the middleware'))).toBe(1);
 
-    // An adjective inside the label (`real-path SQL companion`) and the plural.
-    expect(labelCount('Real-path SQL companion: x')).toBe(1);
-    expect(labelCount('Real-path companions: x and y')).toBe(1);
+    // Every spelling of the label a reader would take for the label.
+    for (const spelt of [
+      'Real-path companion: x', 'Real-path companions: x and y', 'Real-path SQL companion: x',
+      'Realpath companion: x', 'the real-path-companion is x', 'Real-path argon2 companion: x',
+      'Real-path (Postgres) companion: x', '@realPathCompanion x', 'Real-path <em>companion</em>: x',
+      'Real-path **companion**: x', 'Real-path HAF-backed SQL companion: x',
+    ]) {
+      expect(labelCount(spelt), spelt).toBe(1);
+    }
+    // And the prose that is not a claim: three words between `path` and
+    // `companion` is past the qualifier slot.
+    expect(labelCount('real-path tests and their companion suites')).toBe(0);
 
     // A token carrying brackets or a slash survives: the closing bracket is
     // anchored at end-of-line, so a non-greedy match backtracks to the last one.
@@ -927,14 +1191,19 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     expect(citationsIn(' (c) Real-path companion: routes/notifications.test.ts exercises the same SQL')).toEqual([]);
     expect(citationsIn(' (c) Real-path companion: the settings suites cover it')).toEqual([]);
 
-    // Block splitting: a `//` run and a docblock are separate blocks, and both
-    // are scanned. A header-only parser would see neither of the `//` ones.
-    const blocks = commentBlocks([
-      '/**', ' * Real-path companion: `backend/tests/a.test.ts` [ALPHA]', ' */',
-      'const x = 1;',
-      '// Real-path companion: `backend/tests/b.test.ts` [BETA]',
-    ]);
-    expect(blocks.map((b) => citationsIn(b.text).map((c) => c.token))).toEqual([['ALPHA'], ['BETA']]);
+    // What counts as naming a test file in prose: the full name, the
+    // suffix-less name, a spec, a frontend `.test.js`, and a name wrapped
+    // inside its last segment; not a bare word that happens to end in `test`.
+    for (const prose of [
+      'pinned by settings.test.ts', 'pinned by settings.test', 'pinned by settings.spec.ts',
+      'pinned by frontend/tests/unit/x.test.js', 'pinned by routes/settings.\n        test.ts',
+      'pinned by `backend/tests/routes/settings-real-pool-admit`',
+    ]) {
+      expect(namesATestFile(prose), prose).toBe(true);
+    }
+    for (const prose of ['the settings suite', 'a contest.ts helper', 'foo.tests', 'testing.ts']) {
+      expect(namesATestFile(prose), prose).toBe(false);
+    }
 
     // Validator: comment-only occurrences do not count, and a `vi.mock(` line
     // does not count. Both are real rot classes, not hypotheticals.
@@ -1028,13 +1297,31 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       ' (c) Real-path companion: `backend/tests/a.test.ts` [ALPHA]',
       '     The happy path is also pinned by settings.test.ts and recover.test.ts.',
     ))).toBe('leaky');
+    // Spelt without the suffix, and wrapped inside the last segment: still leaky.
+    expect(classOf(block(
+      ' (c) Real-path companion: `backend/tests/a.test.ts` [ALPHA]',
+      '     The admitted branch is pinned by `backend/tests/routes/settings-real-pool-admit`.',
+    ))).toBe('leaky');
+    expect(classOf(block(
+      ' (c) Real-path companion: `backend/tests/a.test.ts` [ALPHA]',
+      '     The admit path is pinned for real by routes/settings.',
+      '     test.ts against real Postgres.',
+    ))).toBe('leaky');
 
     // Partial conversion: two claims, one structured, is free-prose, which is
     // what stops a partial conversion from reading as a complete one.
-    expect(classOf(block(
+    const partial = block(
       ' (c) Real-path companion: `backend/tests/a.test.ts` [ALPHA]',
       '     Real-path companion: b.test.ts covers the rest',
-    ))).toBe('free-prose');
+    );
+    expect(classOf(partial)).toBe('free-prose');
+    // A structured citation beside a file-less label routes on the PROSE, not
+    // on the citation's own path, so it lands in the file-less backlog and its
+    // message offers the marker.
+    expect(classOf(block(
+      ' (c) Real-path companion: `backend/tests/a.test.ts` [ALPHA]',
+      '     Real-path companion: the lifecycle suites cover the rest',
+    ))).toBe('fileless');
 
     // Free prose naming a file, and a claim naming no file at all. The second
     // is verbatim the shape a removed violation had, and it is rejected rather
@@ -1042,15 +1329,51 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     expect(classOf(' (c) Real-path companion: routes/notifications.test.ts exercises the same SQL')).toBe('free-prose');
     expect(classOf(' (c) Real-path companion: the settings password-reset suites cover the live happy path')).toBe('fileless');
 
-    // The exempt gate, in both directions. A mismatch with the marker is
-    // skipped; the same mismatch without it is not.
+    // The exempt gate, in both directions and for both failures. A mismatch
+    // with the marker is skipped; the same mismatch without it is not; a leaky
+    // block with the marker is skipped too.
     const prose = ' (c) Real-path companion: the settings suites cover it';
     expect(classOf(`${prose} (${ALLOW_MARKER}: no single file is the referent)`)).toBe('exempt');
     expect(classOf(prose)).toBe('fileless');
-    expect(ratchetClass({ labels: 1, citations: 0, namesAFile: true, remainderNamesAFile: true, exempt: true }))
-      .toBe('exempt');
-    expect(ratchetClass({ labels: 1, citations: 0, namesAFile: true, remainderNamesAFile: true, exempt: false }))
-      .toBe('free-prose');
+    expect(ratchetClass({ labels: 1, citations: 0, remainderNamesAFile: true, exempt: true })).toBe('exempt');
+    expect(ratchetClass({ labels: 1, citations: 0, remainderNamesAFile: true, exempt: false })).toBe('free-prose');
+    expect(ratchetClass({ labels: 1, citations: 1, remainderNamesAFile: true, exempt: true })).toBe('exempt');
+    expect(ratchetClass({ labels: 1, citations: 1, remainderNamesAFile: true, exempt: false })).toBe('leaky');
+
+    // The scan loop itself, on a synthetic source, so the loop and every
+    // consumer of a class (the deficit sums, the leaky list, validation) are
+    // proven live rather than only the predicate. Deficits count LABELS, so
+    // the two-label block below weighs two.
+    const syn: ScannedSource[] = [{
+      rel: 'routes/syn.test.ts',
+      lines: [
+        '/**',
+        ' * (c) Real-path companion: `backend/tests/routes/absent.test.ts` [ALPHA]',
+        ` * ${ALLOW_MARKER}: kept for the validation probe below`,
+        ' */',
+        'const a = 1;',
+        '// Real-path companion: b.test.ts covers it',
+        '// Real-path companion: c.test.ts covers it too',
+        'const b = 2;',
+        '/* Real-path companion: `backend/tests/routes/present.test.ts` [ALPHA]',
+        '   and also y.test.ts */',
+        'const c = 3;',
+        '// Real-path companion: the lifecycle suites cover the rest',
+      ],
+    }];
+    // The leaky block opens on its own line; the file-less one two lines on.
+    const audited = auditSources(syn);
+    expect(audited.map((a) => a.cls)).toEqual(['exempt', 'free-prose', 'leaky', 'fileless']);
+    expect(deficitByFile('free-prose', audited)).toEqual(new Map([['backend/tests/routes/syn.test.ts', 2]]));
+    expect(deficitByFile('fileless', audited)).toEqual(new Map([['backend/tests/routes/syn.test.ts', 1]]));
+    expect(leakyBlocks(audited).map((a) => a.block.firstLine)).toEqual([9]);
+    expect(audited[3].block.firstLine).toBe(12);
+    // Validation ignores the class: the exempt block's citation to a missing
+    // file is still a violation, and the leaky block's correct one is not.
+    const validated = validationViolations(audited, syn, (p) => (p.endsWith('present.test.ts') ? 'expect(ALPHA);' : null));
+    expect(validated).toHaveLength(1);
+    expect(validated[0]).toMatch(/^backend\/tests\/routes\/syn\.test\.ts \(comment block opening at line \d+\) — /);
+    expect(validated[0]).toMatch(/companion backend\/tests\/routes\/absent\.test\.ts does not exist$/);
 
     // Reconciler arms. Two files in the frozen snapshot; every disagreement
     // between the tree, the live map, and the snapshot has its own message.
@@ -1087,5 +1410,11 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     // A zero pin left in place of a removal.
     expect(reconcileBacklog(tree([A, 2]), { [A]: 2, [B]: 0 }, frozen))
       .toEqual([expect.stringContaining(`${B} — pinned at 0; remove the entry`)]);
+
+    // The digest is a function of the entries, not of their order or of
+    // reference identity, and any change to an entry changes it.
+    expect(snapshotDigest({ [A]: 2, [B]: 1 })).toBe(snapshotDigest({ [B]: 1, [A]: 2 }));
+    expect(snapshotDigest({ [A]: 2, [B]: 1 })).not.toBe(snapshotDigest({ [A]: 2, [C]: 1 }));
+    expect(snapshotDigest({ [A]: 2, [B]: 1 })).not.toBe(snapshotDigest({ [A]: 2, [B]: 2 }));
   });
 });

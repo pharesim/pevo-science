@@ -46,7 +46,7 @@
  *    that vouches for itself.
  */
 
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 /** What a declaration line looks like, in the shapes this codebase writes.
@@ -169,17 +169,39 @@ export interface ScannedSource {
  */
 export function sourcesUnder(root: string): ScannedSource[] {
   const out: ScannedSource[] = [];
+  // Symlinks are followed, because vitest's file glob follows them: a linked
+  // test file or directory runs as part of the suite and so is part of the
+  // scan. `statSync` resolves the link; a dangling one is skipped; a link back
+  // to a directory still being walked (an ancestor, by real path) is not
+  // entered, so a cycle cannot recurse forever, while a link to a sibling
+  // directory is walked under both names, as vitest runs it under both.
+  const ancestors = new Set<string>();
   const walk = (dir: string): void => {
+    let real: string;
+    try {
+      real = realpathSync(dir);
+    } catch {
+      return;
+    }
+    if (ancestors.has(real)) return;
+    ancestors.add(real);
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.isFile() && entry.name.endsWith('.ts')) {
+      let target;
+      try {
+        target = statSync(full);
+      } catch {
+        continue;
+      }
+      if (target.isDirectory()) walk(full);
+      else if (target.isFile() && entry.name.endsWith('.ts')) {
         out.push({
           rel: path.relative(root, full).split(path.sep).join('/'),
           lines: readFileSync(full, 'utf8').split('\n'),
         });
       }
     }
+    ancestors.delete(real);
   };
   walk(root);
   return out;
