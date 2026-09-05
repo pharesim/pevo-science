@@ -270,6 +270,11 @@ export function initAuth() {
       // In-flight acquisition promises outlive the caches they feed: abandon
       // them so a late resolution cannot repopulate the slots just cleared,
       // nor hand its outcome to a caller arriving under the next subject.
+      // Ordered AFTER the window clear above, in this one synchronous body,
+      // and the fresh-auth retry legs depend on that: once their guard reads
+      // torn-down they leave the cached window alone, on the reasoning that
+      // this flight's own window is already gone and whatever now sits in the
+      // slot is the successor's. The store's own suite pins the order.
       abandonInFlightAcquisitions();
       // A re-auth prompt can be open when this runs, and nothing else closes
       // it: it would stay on screen and answerable for a subject this tab no

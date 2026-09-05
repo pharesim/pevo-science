@@ -146,12 +146,19 @@ export function passwordPromptMessage() {
 // race. Lib code cannot use `$t`; read the i18n store directly with an English
 // fallback for the not-yet-loaded-bundle case.
 export function handleSessionInconsistency() {
-  Alpine.store('auth')?.disconnect();
-  // The disconnect runs the subject scrub, which abandons every in-flight
-  // acquisition. Claim that teardown before speaking: the message below is the
-  // one the user needs, and a flight parked at its own teardown boundary would
-  // otherwise resume and stack a second, vaguer message on top of it.
-  claimTeardownReport();
+  const auth = Alpine.store('auth');
+  if (auth) {
+    auth.disconnect();
+    // The disconnect runs the subject scrub, which abandons every in-flight
+    // acquisition. Claim that teardown before speaking: the message below is
+    // the one the user needs, and a flight parked at its own teardown boundary
+    // would otherwise resume and stack a second, vaguer message on top of it.
+    // The claim sits inside this branch because it marks the teardown THIS
+    // disconnect caused as narrated; with no store to disconnect there is no
+    // teardown here to claim, and stamping the live generation anyway would
+    // credit whatever teardown is current to a message about something else.
+    claimTeardownReport();
+  }
   toastLocalized('auth', 'sessionInconsistency', 'Session inconsistency detected. Please sign in again.');
 }
 
@@ -295,14 +302,17 @@ export async function mintViaPasswordFactor(
 // indistinguishable to a user who typed a password and watched nothing happen.
 // A user's own dismissal stays silent; only a teardown-driven cancel reports.
 //
-// The report is once per TEARDOWN, not once per guard. One subject change can
+// The report is once per teardown, not once per guard. One subject change can
 // abandon several flights at once — the acquisition slots are keyed on the
 // redirect posture, so a page's own submit gate and the editor's inline-image
 // upload can be parked on the same coalesced factor read — and each holds its
 // own guard. Reporting per guard would stack identical messages describing one
 // event. The claim below is what collapses them, and it is also how a teardown
 // that already narrates itself (`handleSessionInconsistency`) keeps the flights
-// it abandoned from talking over it.
+// it abandoned from talking over it. The claim is keyed to the live
+// generation, so when subject changes come faster than the flights they
+// abandon unwind, one report covers the run of them (see
+// `_reportedTeardownGeneration`).
 export function subjectTeardownGuard() {
   const generation = _acquireGeneration;
   return {
@@ -322,9 +332,15 @@ export function subjectTeardownGuard() {
 }
 
 // The teardown generation whose message has already been delivered. Compared
-// against `_acquireGeneration`, so it only ever suppresses a second report of
-// the SAME teardown: the next scrub bumps the generation past this mark and the
-// first guard to unwind under it speaks again.
+// against the LIVE `_acquireGeneration`, so a claim suppresses every flight
+// that unwinds while that generation is current, whichever teardown abandoned
+// it: one report per teardown horizon, not one per teardown. A flight parked
+// across two rapid subject changes therefore unwinds silently once any party
+// has claimed the newer generation, and the earlier change is folded into that
+// one message rather than narrated on its own. Deliberate: the user has just
+// been told their session changed, and a second message about the change
+// before it would only stack. The next scrub bumps the generation past the
+// mark, and the first guard to unwind under it speaks again.
 let _reportedTeardownGeneration = -1;
 
 // Mark the current teardown as narrated. Called by `cancel()` as it reports,
@@ -1411,17 +1427,6 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
     return broadcastOps(username, operations, broadcastOpts);
   }
 
-  // One consume of the window: broadcast, then replay the idle slide the
-  // backend performed but echoed nothing about. Both the first attempt and the
-  // 401 retry go through here so "consume without sliding" — the bug class that
-  // lets the client fall behind the server and evict a live token — cannot be
-  // reintroduced by editing one branch and not the other.
-  const attemptOnce = async (windowProof) => {
-    const res = await broadcastOps(username, operations, { ...broadcastOpts, freshAuthProof: windowProof });
-    slideSessionWindow();
-    return res;
-  };
-
   // Opened before the first await so it spans both attempts. The acquisition
   // and the broadcast are each a boundary a cross-tab subject change can land
   // in, and every step inside them re-checks the generation for itself — but
@@ -1429,6 +1434,24 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
   // post-date such a teardown and so never notice it. This guard is the only
   // cross-attempt memory of which subject the broadcast belongs to.
   const guard = subjectTeardownGuard();
+
+  // One consume of the window: broadcast, then replay the idle slide the
+  // backend performed but echoed nothing about. Both the first attempt and the
+  // 401 retry go through here so "consume without sliding" — the bug class that
+  // lets the client fall behind the server and evict a live token — cannot be
+  // reintroduced by editing one branch and not the other.
+  //
+  // The slide is gated the way the dead-window clear below is: it belongs to
+  // this flight's own window only. The window slot is a single unkeyed entry
+  // with no subject binding, so once the guard reads torn-down the entry in it
+  // was minted by whoever the tab represents next, and re-anchoring its idle
+  // deadline on the departed subject's response would extend the successor's
+  // window on traffic that was never theirs.
+  const attemptOnce = async (windowProof) => {
+    const res = await broadcastOps(username, operations, { ...broadcastOpts, freshAuthProof: windowProof });
+    if (!guard.tornDown()) slideSessionWindow();
+    return res;
+  };
 
   const proof = await acquireSessionProof(0, { allowRedirect });
   if (acquisitionAborted(proof)) return FRESH_AUTH_REDIRECT_PENDING;

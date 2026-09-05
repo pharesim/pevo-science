@@ -154,9 +154,16 @@ async function windowProof(guard) {
 // performed on the pre-flight but echoed nothing about. Without it the client
 // falls behind the server by the whole upload duration and then evicts a token
 // the server would still honour.
-async function attemptOnce(file, proof) {
+//
+// The slide belongs to this flight's own window only, the mirror image of the
+// gated dead-window clear in `uploadFile`: the slot is a single unkeyed entry,
+// so once the guard reads torn-down the window in it was minted by whoever the
+// tab represents next, and re-anchoring its idle deadline on the departed
+// subject's upload would extend the successor's window on traffic that was
+// never theirs.
+async function attemptOnce(file, proof, guard) {
   const res = await uploadFileToIpfs(file, { freshAuthProof: proof });
-  slideSessionWindow();
+  if (!guard.tornDown()) slideSessionWindow();
   return res;
 }
 
@@ -200,7 +207,7 @@ async function retryOnce(file, guard) {
     // self-custody between the attempts (a logged-out store never gets this
     // far: the api layer refuses unauthenticated uploads before any leg runs).
     if (!proof) return await uploadFileToIpfs(file);
-    return await attemptOnce(file, proof);
+    return await attemptOnce(file, proof, guard);
   } catch (err) {
     if (isUsernameMismatch(err)) throw tornDownSession();
     throw err;
@@ -222,7 +229,7 @@ export async function uploadFile(file) {
   if (!proof) return uploadFileToIpfs(file);
 
   try {
-    return await attemptOnce(file, proof);
+    return await attemptOnce(file, proof, guard);
   } catch (err) {
     // Two failures look alike at the call site and must not be treated alike.
     //

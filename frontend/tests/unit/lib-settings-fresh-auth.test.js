@@ -7,12 +7,24 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // password re-prompt, ORCID redirect, the 401 re-mint+retry, and the 403/wrong-
 // mechanism generic-failure outcome.
 //
-// Mocking justification (project-CLAUDE.md carve-out, clause-a/b): the mocked
-// modules are mint transport + cache, not auth-verification paths; the proof's
-// cryptographic binding is verified server-side (backend integration tests).
+// Mocking justification (project-CLAUDE.md carve-out, clause-a): the mint
+// (`mintSettingsActionProof`, a real fetch() of POST /custody/fresh-auth bound
+// to a settings action) and the status read (`fetchEmailStatus`, a real
+// fetch() of /settings/email) are mocked because what these cases stage is
+// impractical to reproduce per-test against a live backend. A wrong password
+// at the mint, an expired or mismatched proof at the action, an unreachable
+// status endpoint, and a cross-tab subject change landing inside each of
+// those awaits would need differently-provisioned accounts (one with a
+// password, one without, one whose status read fails), a way to close a
+// proof or swap the tab's JWT subject at a chosen instant, and, for the
+// ORCID-start cases, observing window.location without following it.
+// Clause-b: the mocked modules are mint transport + cache, not
+// auth-verification paths; the proof's cryptographic binding is verified
+// server-side (backend integration tests).
 // Clause-c real-path companion: both factors are driven against the real
 // test-mode stack. tests/e2e/settings.spec.js covers the PASSWORD factor (the
-// change-email reauth modal), and tests/e2e/settings-orcid-factor.spec.js
+// change-email reauth modal, minting at the real POST /custody/fresh-auth),
+// and tests/e2e/settings-orcid-factor.spec.js
 // covers the ORCID factor's full start/callback/resume round-trip, including
 // one case that completes on a genuine backend-minted proof.
 const mockMintSettingsActionProof = vi.fn();
@@ -656,11 +668,14 @@ describe('withSettingsFreshAuth', () => {
     expect(reauthRequest).not.toHaveBeenCalled();
   });
 
-  it('a subject change while the guarded call is in flight stops the retry gate re-minting', async () => {
+  it('a subject change while the guarded call is in flight stops the retry gate re-minting and reports it once', async () => {
     // The gate re-prompts and re-mints after a remintable 401. Its guard is
     // the orchestrator's, opened before run(), so a teardown that landed while
     // run() was in flight is still visible — a guard opened inside the gate
-    // would not be.
+    // would not be. And the gate is the only site left that can say so: its
+    // { cancelled } is silent at every call site, so its own report is the
+    // whole message, and without it the user watches the action end unsaid.
+    i18nMessages = { auth: { reauthCancelled: TEARDOWN_CANCEL_SENTINEL } };
     let rejectRun;
     run.mockImplementationOnce(
       () => new Promise((resolve, reject) => { rejectRun = reject; }),
@@ -677,6 +692,9 @@ describe('withSettingsFreshAuth', () => {
     expect(reauthRequest).toHaveBeenCalledTimes(1);
     expect(mockMintSettingsActionProof).toHaveBeenCalledTimes(1);
     expect(run).toHaveBeenCalledTimes(1);
+    // Exactly one message, and it is the teardown's.
+    expect(toastShow).toHaveBeenCalledTimes(1);
+    expect(toastShow).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
   });
 
   it('a subject change while the mint is in flight does not hand the proof to the action', async () => {

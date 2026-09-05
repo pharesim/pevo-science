@@ -321,6 +321,37 @@ describe('broadcastWithFreshAuth — error-recovery paths', () => {
     expect(mockToastStore.show).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
   });
 
+  it('a response landing after a subject change does not slide the successor\'s window', async () => {
+    // The mirror image of the eviction above. The window slot is a single
+    // unkeyed entry with no subject binding, so once the guard reads torn-down
+    // the only window that can be in it was minted by whoever the tab
+    // represents NOW. Replaying the idle slide on the departed subject's
+    // response would re-anchor that window and extend the successor's
+    // deadline on traffic that was never theirs.
+    setWindow('doomed-by-teardown');
+    const successorDeadline = Date.now() + 30_000;
+    mockBroadcastOps.mockImplementationOnce(async () => {
+      abandonInFlightAcquisitions(); // the scrub's generation bump
+      // The successor's window, half its idle period already spent: a slide
+      // would push its deadline out to a full period from now.
+      sessionStorage.setItem(PROOF_KEY, JSON.stringify({
+        token: 'successor-window',
+        expiresAt: new Date(successorDeadline).toISOString(),
+        absoluteExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        idlePeriodMs: 60_000,
+      }));
+      return { tx_id: 'landed-late' };
+    });
+
+    const result = await broadcastWithFreshAuth('alice', [['vote', {}]]);
+
+    // The broadcast itself went through; only the slide is withheld.
+    expect(result).toEqual({ tx_id: 'landed-late' });
+    const survivor = JSON.parse(sessionStorage.getItem(PROOF_KEY));
+    expect(survivor.token).toBe('successor-window');
+    expect(new Date(survivor.expiresAt).getTime()).toBe(successorDeadline);
+  });
+
   it('username_mismatch on the 401 retry tears down too, not just on the first attempt', async () => {
     // The retry leg is a separately deletable branch. Its shape-preserving
     // rethrow matches a mismatch (the signer error carries both status and

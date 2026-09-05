@@ -378,6 +378,24 @@ describe('uploadFile', () => {
     expect(mockClearCachedSessionProof).not.toHaveBeenCalled();
   });
 
+  it('an upload landing after a subject change does not slide the window', async () => {
+    // The other half of the same invariant: a departed subject's flight may
+    // neither evict the successor's window nor extend it. The slot is a single
+    // unkeyed entry, so a slide replayed on this response would re-anchor
+    // whatever the successor has since minted. Pinned as "the slide never
+    // runs" because the cache is mocked here. The upload itself completed,
+    // and its result still reaches the caller.
+    mockUploadFileToIpfs.mockImplementationOnce(async () => {
+      guardTornDown = true;
+      return okUpload('bafy');
+    });
+
+    const res = await uploadFile(file());
+
+    expect(res).toEqual(okUpload('bafy'));
+    expect(mockSlideSessionWindow).not.toHaveBeenCalled();
+  });
+
   it('a teardown cancel during the upload\'s own acquisition throws the silent code, reporting nothing new', async () => {
     // Whatever owed the user a word about this teardown has already said it;
     // the upload layer's job is only to stop the page speaking a second time.

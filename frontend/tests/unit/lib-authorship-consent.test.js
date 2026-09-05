@@ -8,9 +8,30 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // the 401 re-mint+retry, and the freshAuthFailed outcomes. Sibling of
 // lib-settings-fresh-auth.test.js (the same shell, keyed on a paper target).
 //
-// Mocking justification (project-CLAUDE.md carve-out, clause-a/b): the mocked
-// modules are mint transport + cache, not auth-verification paths; the proof's
-// cryptographic binding is verified server-side (backend integration tests).
+// Mocking justification (project-CLAUDE.md carve-out, clause-a): the mint
+// (`mintAuthorshipFreshAuthProof`, a real fetch() of POST /custody/fresh-auth
+// bound to a paper target) and the status read (`fetchEmailStatus`, a real
+// fetch() of /settings/email) are mocked because what these cases stage is
+// impractical to reproduce per-test against a live backend. A wrong password
+// at the mint, an expired or mismatched proof at the broadcast, an unreachable
+// status endpoint, and a cross-tab subject change landing inside each of
+// those awaits would need differently-provisioned accounts (one with a
+// password, one without, one whose status read fails), a way to close a
+// proof or swap the tab's JWT subject at a chosen instant, and, for the
+// ORCID-start cases, observing window.location without following it.
+// Clause-b: the mocked modules are mint transport + cache, not
+// auth-verification paths; the proof's cryptographic binding is verified
+// server-side (backend integration tests).
+// Clause-c real-path companion: the pieces this orchestrator composes are each
+// driven against the real test-mode stack by another spec, and no spec drives
+// the orchestrator itself end to end on a light account.
+// tests/e2e/authorship-consent-actions.spec.js covers the consent broadcast
+// path on self-custody (Keychain), where no proof is minted;
+// tests/e2e/settings.spec.js covers the password factor's real mint at
+// POST /custody/fresh-auth through the reauth modal (on a settings action);
+// tests/e2e/settings-orcid-factor.spec.js covers the ORCID factor's full
+// round-trip; and tests/e2e/non-consent-fresh-auth.spec.js covers a light
+// account attaching a fresh-auth proof to the real custody broadcast.
 const mockMintAuthorshipFreshAuthProof = vi.fn();
 const mockFetchEmailStatus = vi.fn();
 vi.mock('../../src/api.js', () => ({
@@ -515,6 +536,35 @@ describe('withAuthorshipFreshAuth', () => {
     expect(await pending).toEqual({ cancelled: true });
     expect(run).not.toHaveBeenCalled();
     expect(toastShow).toHaveBeenCalledTimes(1);
+  });
+
+  it('a subject change while the guarded call is in flight stops the retry gate re-minting and reports it once', async () => {
+    // The gate re-prompts and re-mints after a remintable 401. Its guard is
+    // the orchestrator's, opened before run(), so a teardown that landed while
+    // the broadcast was in flight is still visible — a guard opened inside the
+    // gate would not be. And the gate is the only site left that can say so:
+    // its { cancelled } is silent at every call site, so its own report is the
+    // whole message, and without it the user watches the op end unsaid.
+    i18nMessages = { auth: { reauthCancelled: TEARDOWN_CANCEL_SENTINEL } };
+    let rejectRun;
+    run.mockImplementationOnce(
+      () => new Promise((resolve, reject) => { rejectRun = reject; }),
+    );
+
+    const pending = withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    await tick(); // the prompt answered, the proof minted, run() is pending
+    teardownSubjectState();
+
+    rejectRun(codedError('FRESH_AUTH_REQUIRED', 'expired'));
+
+    expect(await pending).toEqual({ cancelled: true });
+    // One prompt (the initial mint), never a second for the new subject.
+    expect(reauthRequest).toHaveBeenCalledTimes(1);
+    expect(mockMintAuthorshipFreshAuthProof).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(1);
+    // Exactly one message, and it is the teardown's.
+    expect(toastShow).toHaveBeenCalledTimes(1);
+    expect(toastShow).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
   });
 
   // ─── A subject change while the second attempt is in flight ──────────────

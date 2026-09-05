@@ -1135,6 +1135,41 @@ describe('teardown abandons in-flight acquisitions', () => {
     expect(mockToastStore.show).toHaveBeenCalledTimes(1);
   });
 
+  it('a flight parked across two subject changes folds into the newer change\'s one report', async () => {
+    // The claim is keyed to the live generation, not to the change that
+    // abandoned a given flight: once any party has narrated the newer change,
+    // an older flight unwinding under it stays silent. Two rapid subject
+    // changes therefore cost the user one message, not one per change. A
+    // decision, not an accident: the second message would describe a session
+    // the user has just been told is gone, and it would only stack.
+    const promptResolvers = [];
+    mockReauthModal.request.mockImplementation(
+      () => new Promise((resolve) => { promptResolvers.push(resolve); }),
+    );
+
+    const older = ensureSessionWindow();
+    await tick(); // parked on its prompt
+    teardownSubjectState(); // the first subject change
+
+    const younger = ensureSessionWindow();
+    await tick(); // a fresh flight under the next subject, parked on its own prompt
+    expect(promptResolvers).toHaveLength(2);
+    teardownSubjectState(); // the second subject change abandons both
+
+    // The younger flight resumes first and narrates the change that ended it.
+    promptResolvers[1]('hunter2');
+    expect(await younger).toEqual({ ready: false, cancelled: true });
+    expect(mockToastStore.show).toHaveBeenCalledTimes(1);
+
+    // The older flight was parked across both changes; it unwinds under a
+    // generation already claimed, so the earlier change gets no report of
+    // its own.
+    promptResolvers[0]('hunter2');
+    expect(await older).toEqual({ ready: false, cancelled: true });
+    expect(mockToastStore.show).toHaveBeenCalledTimes(1);
+    expect(mockMintSessionAuthProof).not.toHaveBeenCalled();
+  });
+
   it('a teardown inside the upload\'s own factor read reports exactly once', async () => {
     // The upload pre-flight's acquisition is a cold one on any first upload of
     // a window, and the status read it awaits is a real round-trip whose

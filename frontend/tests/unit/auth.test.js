@@ -35,14 +35,25 @@ vi.mock('../../src/sign-request.js', () => ({
 // Partial mock: the real cache-clearing runs (the scrub assertions below depend
 // on it), with spies over the password-factor memo drop and the in-flight
 // acquisition teardown so both can be asserted without reaching into
-// module-private state.
+// module-private state. The window clear stays real behind a pass-through
+// spy: the sibling cases seed and inspect the real cache (its in-memory
+// mirror included) through the scrub, and the ordering pin below only needs
+// to see the call.
 const mockClearPasswordFactorMemo = vi.fn();
 const mockAbandonInFlightAcquisitions = vi.fn();
-vi.mock('../../src/lib/fresh-auth.js', async (importActual) => ({
-  ...(await importActual()),
-  clearPasswordFactorMemo: (...args) => mockClearPasswordFactorMemo(...args),
-  abandonInFlightAcquisitions: (...args) => mockAbandonInFlightAcquisitions(...args),
-}));
+const mockClearCachedSessionProofSpy = vi.fn();
+vi.mock('../../src/lib/fresh-auth.js', async (importActual) => {
+  const actual = await importActual();
+  return {
+    ...actual,
+    clearCachedSessionProof: (...args) => {
+      mockClearCachedSessionProofSpy(...args);
+      return actual.clearCachedSessionProof(...args);
+    },
+    clearPasswordFactorMemo: (...args) => mockClearPasswordFactorMemo(...args),
+    abandonInFlightAcquisitions: (...args) => mockAbandonInFlightAcquisitions(...args),
+  };
+});
 
 import { initAuth } from '../../src/auth.js';
 // Real implementations from the partially-mocked module: used to seed and
@@ -586,6 +597,30 @@ describe('auth store', () => {
 
       expect(sessionStorageData['pevo_tab_subject']).toBeUndefined();
       expect(mockAbandonInFlightAcquisitions).toHaveBeenCalledTimes(1);
+    });
+
+    it('the scrub clears the window before it abandons in-flight acquisitions', () => {
+      // The fresh-auth retry legs decline to evict or slide the cached window
+      // once their guard reads torn-down, on the strength of this scrub having
+      // already dropped the flight's own window BEFORE it bumped the
+      // generation: past the bump, whatever sits in the slot belongs to the
+      // successor. That reasoning holds only if the clear runs first, and in
+      // the same synchronous body. Reordered, or with a yield between the two,
+      // a torn-down flight would retain a dead window instead of protecting a
+      // live one, with every end-state assertion in this file still green.
+      loginAs('alice');
+      mockClearCachedSessionProofSpy.mockClear();
+      mockAbandonInFlightAcquisitions.mockClear();
+
+      loginAs('bob');
+
+      // Both ran inside the scrub, before the login returned...
+      expect(mockClearCachedSessionProofSpy).toHaveBeenCalledTimes(1);
+      expect(mockAbandonInFlightAcquisitions).toHaveBeenCalledTimes(1);
+      // ...and the clear came first.
+      expect(mockClearCachedSessionProofSpy.mock.invocationCallOrder[0]).toBeLessThan(
+        mockAbandonInFlightAcquisitions.mock.invocationCallOrder[0],
+      );
     });
 
     it('a cross-user login clears the in-memory window mirror, not only the stored copy', () => {
