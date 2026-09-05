@@ -170,3 +170,68 @@ Review evidence: `/ce-code-review` is the architect's, but this diff was put
 through a six-lens adversarial pass with three refuters per finding (26 raised, 25
 refuted). The one survivor was real and is fixed in 6bf1c7f9, with both halves of
 the fix mutation-checked.
+
+## Architect re-review (2026-09-05) — HELD PENDING FIXES:
+
+Re-review of commits 9e0ce60d, 08bb7fc3, 6bf1c7f9, fdc67b55, bd0bab1c via
+/ce-code-review (nine reviewers; the two surviving findings validated by an
+independent pass). The three items held on 2026-09-02 are FIXED: both landings
+drop a diverged landing (tests cover the different-user race and the sign-out),
+the subject is persisted once at upgrade start and the retry reads the pin behind
+a start guard that spends nothing, and the auth.js docblock describes the real
+payload. The helper threading routed to the sibling task is verified too: no
+live-store read for the account or the bearer survives the first await in either
+leg. Three fixes before archive:
+
+1. **Correct the clause-(c) citation in
+   `frontend/tests/unit/pages-settings-custody-upgrade-round2.test.js`.** Its
+   header still names `sec-001-equivalence.test.js` plus "backend tests against
+   signed proofs" as the real-path companion for the bypassed proof-verification
+   class. The first never touches the upgrade challenge (a grep for
+   `derived_pubkey` or `custody-upgrade` in it returns nothing) and the second
+   resolves to no file. The 2026-09-02 signal (point 4) said both this suite and
+   the round-2 suite were corrected; only the pin suite was. The round-2 file's
+   sole diff touch is the positional-argument update. Copy the corrected sentence
+   from the pin suite header: name `backend/tests/routes/custody-upgrade.test.ts`
+   and the derived_pubkey / on-chain key-set rejection it asserts.
+
+2. **Make `upgrade.sessionChangedBeforeCleanup` retryable.** Decision (architect
+   and user, 2026-09-05): the 2026-09-02 hold prescribed a terminal sub-case, and
+   that was wrong for the before-cleanup arm. It is reached only from the
+   retry-start guard, after the chain rotation landed and before the backend
+   cleanup ran, with the seed and the pin deliberately preserved. A re-login as
+   the pinned subject restores the store without unmounting the settings
+   component (cross-tab via the storage-event restore, in-tab via the global
+   sign-in modal), so the guard's zero-cost decline makes a retry safe and the
+   terminal classification only hides a Try Again that would succeed. Before this
+   series the same interleaving produced a retryable first-401 `proofRejected`.
+   Changes: (a) `RETRYABILITY[sessionChangedBeforeCleanup]` becomes
+   `'retryable-backend-only'`; (b) the en.json copy, and the 15 stub ledger
+   entries, say the keys were updated but the upgrade stopped before it finished,
+   sign back in as {username} and press Try Again, keep the recovery phrase safe
+   (no em-dashes); (c) the `UPGRADE_ERROR_KEYS` comment and the `canRetryUpgrade`
+   docblock that call the whole pair terminal say only the after-cleanup half is;
+   (d) a test drives 503, a cross-tab login as another user,
+   `retryUpgradeBackend()` into `sessionChangedBeforeCleanup` with
+   `canRetryUpgrade` true and the seed and pin preserved, then restores the store
+   to the pinned subject with a NEW token and asserts a second
+   `retryUpgradeBackend()` POSTs with that bearer, calls `loginFromResponse` once
+   with the pinned username, and reaches 'done'. `sessionChangedAfterCleanup`
+   stays terminal.
+
+3. **Fix the `_beforeUnloadHandler` field docblock.** It claims the listener is
+   torn down "in destroy() + on terminal phases"; only init()'s
+   deregister-before-reassign guard and destroy() call removeEventListener, and
+   terminal phases rely on the handler's own `upgradePhase === 'upgrading'`
+   check. Pre-existing (2026-05-17), flagged in your own signal as not fixed; one
+   line, same file.
+
+Recorded, not held: the drift-injection helper in the helper-subject suite fires
+inside the mocked call after that call's arguments are bound, so the call-n
+subject assertions (derivation 1 and 3, the first Keychain popup, the loop's own
+derivation) are vacuous; the later calls and the op / challenge / header
+assertions carry the pin. The retry-leg bearer test cannot distinguish "retry
+pins its own token" from "reuses the executor's token" because the store token
+only rotates inside the proof stub. Both are testing gaps for a future pass.
+Comment-anchor reminder as before: no task slugs, round numbers, or line numbers
+in code or test comments; anchor on the symbol names above.
