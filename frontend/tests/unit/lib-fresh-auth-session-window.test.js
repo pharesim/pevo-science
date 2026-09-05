@@ -1142,32 +1142,41 @@ describe('teardown abandons in-flight acquisitions', () => {
     // changes therefore cost the user one message, not one per change. A
     // decision, not an accident: the second message would describe a session
     // the user has just been told is gone, and it would only stack.
-    const promptResolvers = [];
-    mockReauthModal.request.mockImplementation(
-      () => new Promise((resolve) => { promptResolvers.push(resolve); }),
+    //
+    // The older flight is parked on its mint round-trip, the boundary a
+    // subject change cannot resolve for it: an open prompt is dismissed (and
+    // its flight unwound) by the first scrub, but a request in flight resumes
+    // only when its response lands, however many changes have passed by then.
+    let resolveOlderMint;
+    mockMintSessionAuthProof.mockReturnValueOnce(
+      new Promise((resolve) => { resolveOlderMint = resolve; }),
     );
-
     const older = ensureSessionWindow();
-    await tick(); // parked on its prompt
+    await tick(); // the default prompt answered; the mint round-trip is pending
     teardownSubjectState(); // the first subject change
 
+    let dismissYoungerPrompt;
+    mockReauthModal.request.mockImplementationOnce(
+      () => new Promise((resolve) => { dismissYoungerPrompt = resolve; }),
+    );
     const younger = ensureSessionWindow();
-    await tick(); // a fresh flight under the next subject, parked on its own prompt
-    expect(promptResolvers).toHaveLength(2);
+    await tick(); // a fresh flight under the next subject, parked on its prompt
     teardownSubjectState(); // the second subject change abandons both
 
-    // The younger flight resumes first and narrates the change that ended it.
-    promptResolvers[1]('hunter2');
+    // The scrub dismisses the open prompt (resolving it null, as the modal's
+    // cancel does); the younger flight resumes first and narrates the change
+    // that ended it.
+    dismissYoungerPrompt(null);
     expect(await younger).toEqual({ ready: false, cancelled: true });
     expect(mockToastStore.show).toHaveBeenCalledTimes(1);
 
-    // The older flight was parked across both changes; it unwinds under a
-    // generation already claimed, so the earlier change gets no report of
-    // its own.
-    promptResolvers[0]('hunter2');
+    // The older flight's mint lands after both changes: it unwinds under a
+    // generation already claimed, so the earlier change gets no report of its
+    // own, and the late issuance is dropped rather than cached.
+    resolveOlderMint(issuance('late-proof'));
     expect(await older).toEqual({ ready: false, cancelled: true });
     expect(mockToastStore.show).toHaveBeenCalledTimes(1);
-    expect(mockMintSessionAuthProof).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(PROOF_KEY)).toBeNull();
   });
 
   it('a teardown inside the upload\'s own factor read reports exactly once', async () => {
@@ -1203,6 +1212,42 @@ describe('teardown abandons in-flight acquisitions', () => {
     expect(mockReauthModal.request).not.toHaveBeenCalled();
     expect(mockMintSessionAuthProof).not.toHaveBeenCalled();
     expect(mockUploadFileToIpfs).not.toHaveBeenCalled();
+  });
+
+  it('an upload retry landing after a subject change does not slide the successor\'s window', async () => {
+    // The retry leg re-acquires the window and consumes it exactly as the
+    // first attempt does, so it owes the same restraint: a response landing
+    // after a subject change must not re-anchor whatever window the successor
+    // has minted since. Driven over the real upload module and the real
+    // acquisition because the upload suite's own guard is a stand-in that
+    // cannot tell the entry guard from one opened after the transfer.
+    seedWindow('doomed-window', { idleInMs: IDLE_MS });
+    const successorDeadline = Date.now() + 30_000;
+    mockUploadFileToIpfs
+      // The first attempt's pre-flight rejects the window it was handed.
+      .mockRejectedValueOnce({ code: 'FRESH_AUTH_REQUIRED', details: { reason: 'expired' } })
+      // The retry re-acquired (prompt, mint) and is mid-transfer when the
+      // subject changes; the successor opens a window of their own, with half
+      // its idle period spent, before the response lands.
+      .mockImplementationOnce(async () => {
+        teardownSubjectState();
+        sessionStorage.setItem(PROOF_KEY, JSON.stringify({
+          token: 'successor-window',
+          expiresAt: new Date(successorDeadline).toISOString(),
+          absoluteExpiresAt: new Date(Date.now() + ABSOLUTE_MS).toISOString(),
+          idlePeriodMs: 60_000,
+        }));
+        return { status: 'ok', data: { cid: 'bafy-late' } };
+      });
+
+    const res = await uploadFile(new Blob(['x'], { type: 'application/pdf' }));
+
+    // The transfer completed and its result reaches the caller...
+    expect(res.data.cid).toBe('bafy-late');
+    expect(mockReauthModal.request).toHaveBeenCalledTimes(1); // the retry's re-acquisition
+    // ...but the successor's deadline is exactly where they left it.
+    expect(cached().token).toBe('successor-window');
+    expect(new Date(cached().expiresAt).getTime()).toBe(successorDeadline);
   });
 
   it('a stale factor resolution settling late does not evict its successor from the in-flight slot', async () => {

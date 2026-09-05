@@ -22,16 +22,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Clause-b: the mocked modules are mint transport + cache, not
 // auth-verification paths; the proof's cryptographic binding is verified
 // server-side (backend integration tests).
-// Clause-c real-path companion: the pieces this orchestrator composes are each
-// driven against the real test-mode stack by another spec, and no spec drives
-// the orchestrator itself end to end on a light account.
-// tests/e2e/authorship-consent-actions.spec.js covers the consent broadcast
-// path on self-custody (Keychain), where no proof is minted;
-// tests/e2e/settings.spec.js covers the password factor's real mint at
-// POST /custody/fresh-auth through the reauth modal (on a settings action);
-// tests/e2e/settings-orcid-factor.spec.js covers the ORCID factor's full
-// round-trip; and tests/e2e/non-consent-fresh-auth.spec.js covers a light
-// account attaching a fresh-auth proof to the real custody broadcast.
+// Clause-c real-path companion: no e2e spec drives this orchestrator end to
+// end on a light account, and none drives a light-account custody broadcast
+// with a proof attached (tests/e2e/non-consent-fresh-auth.spec.js covers only
+// the /orcid/callback session_auth handler caching an issued window, against
+// a stubbed callback; its closing note records the real-broadcast case as
+// prototyped and removed). The two factors this orchestrator selects between
+// are driven for real on the settings surface: tests/e2e/settings.spec.js
+// mints at the real POST /custody/fresh-auth through the reauth modal, and
+// tests/e2e/settings-orcid-factor.spec.js completes the ORCID factor's full
+// round-trip. tests/e2e/authorship-consent-actions.spec.js covers the four
+// consent and credit ops being built and handed to the Keychain stub on
+// self-custody, against route-mocked paper data, where no proof is minted.
 const mockMintAuthorshipFreshAuthProof = vi.fn();
 const mockFetchEmailStatus = vi.fn();
 vi.mock('../../src/api.js', () => ({

@@ -302,17 +302,17 @@ export async function mintViaPasswordFactor(
 // indistinguishable to a user who typed a password and watched nothing happen.
 // A user's own dismissal stays silent; only a teardown-driven cancel reports.
 //
-// The report is once per teardown, not once per guard. One subject change can
-// abandon several flights at once — the acquisition slots are keyed on the
-// redirect posture, so a page's own submit gate and the editor's inline-image
-// upload can be parked on the same coalesced factor read — and each holds its
-// own guard. Reporting per guard would stack identical messages describing one
-// event. The claim below is what collapses them, and it is also how a teardown
-// that already narrates itself (`handleSessionInconsistency`) keeps the flights
-// it abandoned from talking over it. The claim is keyed to the live
-// generation, so when subject changes come faster than the flights they
-// abandon unwind, one report covers the run of them (see
-// `_reportedTeardownGeneration`).
+// The report is at most once per teardown, and never once per guard. One
+// subject change can abandon several flights at once — the acquisition slots
+// are keyed on the redirect posture, so a page's own submit gate and the
+// editor's inline-image upload can be parked on the same coalesced factor
+// read — and each holds its own guard. Reporting per guard would stack
+// identical messages describing one event. The claim below is what collapses
+// them, and it is also how a teardown that already narrates itself
+// (`handleSessionInconsistency`) keeps the flights it abandoned from talking
+// over it. The claim is keyed to the live generation, so when subject changes
+// come faster than the flights they abandon unwind, one report covers the run
+// of them (see `_reportedTeardownGeneration`).
 export function subjectTeardownGuard() {
   const generation = _acquireGeneration;
   return {

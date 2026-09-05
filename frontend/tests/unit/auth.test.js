@@ -600,14 +600,18 @@ describe('auth store', () => {
     });
 
     it('the scrub clears the window before it abandons in-flight acquisitions', () => {
-      // The fresh-auth retry legs decline to evict or slide the cached window
-      // once their guard reads torn-down, on the strength of this scrub having
-      // already dropped the flight's own window BEFORE it bumped the
-      // generation: past the bump, whatever sits in the slot belongs to the
-      // successor. That reasoning holds only if the clear runs first, and in
-      // the same synchronous body. Reordered, or with a yield between the two,
-      // a torn-down flight would retain a dead window instead of protecting a
-      // live one, with every end-state assertion in this file still green.
+      // The fresh-auth consume and retry legs (the broadcast and upload
+      // surfaces) decline to evict or slide the cached window once their guard
+      // reads torn-down, on the strength of this scrub having already dropped
+      // the flight's own window BEFORE it bumped the generation: past the bump,
+      // whatever sits in the slot belongs to the successor. That reasoning
+      // holds only if the clear runs first, and in the same synchronous body.
+      // Reordered, a torn-down flight would retain a dead window instead of
+      // protecting a live one, and no end-state assertion in this file would
+      // notice: this case is the only one that sees the relative order. (A
+      // yield between the two is already caught by the sibling cases that
+      // count the abandonment synchronously after the login returns; the
+      // counts below hold that line too.)
       loginAs('alice');
       mockClearCachedSessionProofSpy.mockClear();
       mockAbandonInFlightAcquisitions.mockClear();

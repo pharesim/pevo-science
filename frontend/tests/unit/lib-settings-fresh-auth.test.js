@@ -24,9 +24,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Clause-c real-path companion: both factors are driven against the real
 // test-mode stack. tests/e2e/settings.spec.js covers the PASSWORD factor (the
 // change-email reauth modal, minting at the real POST /custody/fresh-auth),
-// and tests/e2e/settings-orcid-factor.spec.js
-// covers the ORCID factor's full start/callback/resume round-trip, including
-// one case that completes on a genuine backend-minted proof.
+// and tests/e2e/settings-orcid-factor.spec.js covers the ORCID factor's full
+// start/callback/resume round-trip, including one case that completes on a
+// genuine backend-minted proof.
 const mockMintSettingsActionProof = vi.fn();
 const mockFetchEmailStatus = vi.fn();
 vi.mock('../../src/api.js', () => ({
@@ -98,6 +98,7 @@ import {
   clearPasswordFactorMemo,
   abandonInFlightAcquisitions,
   dismissOpenReauthPrompt,
+  handleSessionInconsistency,
 } from '../../src/lib/fresh-auth.js';
 import { REAUTH_PROMPT_BUSY } from '../../src/components/reauth-modal.js';
 // The mocked start round-trip (api.js factory above): the ORCID-start cases
@@ -152,6 +153,9 @@ let pendingPromptResolve = null;
 // cannot tell the teardown cancel from the busy refusal or a re-auth failure,
 // and a typo in the key would serve the hardcoded fallback forever.
 const TEARDOWN_CANCEL_SENTINEL = 'LOCALIZED-teardown-cancel-sentinel';
+// The self-narrating teardown's own message, distinct from the cancel above
+// so a count of one can also say WHICH of the two spoke.
+const INCONSISTENCY_SENTINEL = 'LOCALIZED-session-inconsistency-sentinel';
 
 // Mirrors the real `ApiRequestError` shape (api.js): a `code` plus optional
 // `details`, and crucially NO `status` field. The orchestrator's 401-retry gate
@@ -695,6 +699,38 @@ describe('withSettingsFreshAuth', () => {
     // Exactly one message, and it is the teardown's.
     expect(toastShow).toHaveBeenCalledTimes(1);
     expect(toastShow).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
+  });
+
+  it('a teardown that narrates itself is not talked over by the retry gate', async () => {
+    // The gate's report is a claim as much as a message. When the teardown
+    // that abandoned the action has already spoken for itself (a
+    // corrupted-session disconnect on a sibling flight runs the same scrub and
+    // shows its own message), the gate must find the generation claimed and
+    // stay silent; a bare toast in its place would stack the vaguer message
+    // on top of the one the user needs.
+    i18nMessages = {
+      auth: { reauthCancelled: TEARDOWN_CANCEL_SENTINEL, sessionInconsistency: INCONSISTENCY_SENTINEL },
+    };
+    let rejectRun;
+    run.mockImplementationOnce(
+      () => new Promise((resolve, reject) => { rejectRun = reject; }),
+    );
+    // The disconnect runs the subject scrub in production; mirror that here so
+    // the inconsistency report is a real teardown that then claims itself.
+    authDisconnect.mockImplementationOnce(() => teardownSubjectState());
+
+    const pending = withSettingsFreshAuth('delete_account', LIGHT, run);
+    await tick(); // the prompt answered, the proof minted, run() is pending
+    handleSessionInconsistency();
+
+    rejectRun(codedError('FRESH_AUTH_REQUIRED', 'expired'));
+
+    expect(await pending).toEqual({ cancelled: true });
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(reauthRequest).toHaveBeenCalledTimes(1);
+    // Exactly one message, and it is the teardown's own, not the gate's.
+    expect(toastShow).toHaveBeenCalledTimes(1);
+    expect(toastShow).toHaveBeenCalledWith(INCONSISTENCY_SENTINEL, 'error');
   });
 
   it('a subject change while the mint is in flight does not hand the proof to the action', async () => {
