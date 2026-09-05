@@ -572,3 +572,58 @@ previous hold deliberately forbade.
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is
 the re-review signal. Do not edit this hold block; the commit diff is the
 evidence and the architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-09-05, commit cd0a2e06)
+
+All three items landed as docblock-only edits in `lib/fresh-auth.js`; no
+code, test, or structural change. Each item's premise was re-verified
+against the working tree before editing rather than taken from the hold
+block: `acquireSessionProof` is the only caller of
+`beginSessionAuthOrcidRedirect` in src and tests and always passes
+`guard.tornDown`; the start-rejection `catch` runs `unwindFlowKeys` (a
+no-op when stale) and rethrows; `_scrubSubjectBoundState` bumps the
+generation and loops `SUBJECT_BOUND_STORAGE_KEYS` in one synchronous body
+and is the only production caller of `abandonInFlightAcquisitions`.
+
+**Item 1.** The trailing clause now says `acquireSessionProof`, the one
+caller, always threads its flight's guard, so no production flight reaches
+the redirect without one.
+
+**Item 2.** The sentence now distinguishes a stale flight whose start
+succeeds (resolves `FRESH_AUTH_CANCELLED`) from one whose start rejects
+(propagates the rejection to its caller, keys left alone under the
+ownership rule stated in the same docblock).
+
+**Item 3.** `abandonInFlightAcquisitions`'s docblock now states the
+contract (a bump must travel with the `SUBJECT_BOUND_STORAGE_KEYS` removal
+in the same synchronous body, as the scrub does) and the consequence (a
+caller that bumps without clearing inverts the stale unwind's rule and
+turns every stale unwind into a key leak). Scoped to production callers:
+the unit suites bump bare by design and never drive the stale unwind, and
+the sibling docblock in the same file already draws that line.
+
+**Verification.** Adversarial workflow with three lenses (claim truth
+against the code, hold fidelity, conventions plus a sibling sweep for the
+two claim classes this hold retires) and three independent refute votes per
+raised finding: eight findings raised, none survived. Full frontend unit
+suite: 82 files, 1830 tests green (the 3 vitest errors are the documented
+pre-existing `pages-edit` `_mountEditors` rejections). Pre-commit anchor
+gate and zone audit passed at commit. Playwright not run: comment-only
+change.
+
+**Checked and left, for the architect.** The sibling sweep found no
+remaining instance of the item-1 class (a predicate-less production
+caller). The item-2 class still stands unqualified in three sibling spots:
+the two consent-op starter docblocks (`beginSettingsActionOrcidFreshAuth`
+says a stale start "resolves FRESH_AUTH_CANCELLED without navigating" and
+that "reporting stays with the caller's guard", `beginAuthorshipOrcidFreshAuth`
+says a stale start "resolves FRESH_AUTH_CANCELLED instead of navigating")
+and the `consentOpFreshAuthRetryGate` hook-table entry for
+`beginOrcidRedirect`. A stale flight whose start rejects throws through all
+three, and on that path the report is the re-auth failure message, not the
+guard's. Not edited here: the hold enumerated three items, those lines are
+`ui-consent-op-teardown-guard`'s surface (in review/), and the wording is
+defensible on the narrow reading that a rejected start never "resolves".
+Recorded so sibling parity is the architect's call rather than a re-find.
