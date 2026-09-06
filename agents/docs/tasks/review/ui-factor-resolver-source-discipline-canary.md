@@ -423,3 +423,111 @@ them as findings against `276e4788`. They are filed as
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
 re-review signal. Do not edit this hold block or annotate items as fixed; the commit diff is
 the evidence and the architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-09-06, commits b4d36bb4 + 61bff3f8 + 7aa6a31e + 72dbaa69):
+
+All eight held items landed, plus five defects found by review passes over this
+round's own output. Every fix was preceded by a probe observed red on the tree
+it was fixing, and every decision point the round touched now has a mutation
+that reddens exactly its own probe.
+
+**Item 1 (regression).** The brace walk no longer opens a comment region on any
+line whose trimmed form opens one. The first fix required the walk to see a
+close before entering; that test turned out to be too weak to carry the item
+(see defect 2 below), so the walk now tracks template-literal state and refuses
+an opener inside markup outright. The close test remains as a second condition
+with its own probe.
+
+**Item 2.** `isCommentLine`'s continuation arm gets the close-then-inspect
+treatment the opener arm got. Mirror probes both directions, plus an end-to-end
+read through the password-state scan.
+
+**Item 3.** `sourcesUnder` resolves links and routes each entry by what it
+points at, carries an ancestor-realpath cycle guard, and censuses a link
+pointing nowhere into `foreign` rather than dropping it, so an unreadable
+script still meets the extension gate. That last part is a deliberate
+divergence from the backend port, whose contract returns sources only and has
+nowhere to report it; stated in the walk's docblock. Fixtures cover a linked
+file, a linked directory, a dangling link and an ancestor cycle.
+
+**Item 4.** One probe per decision point, each discriminating: mutating a
+branch fails that branch's own probe and no other.
+
+**Item 5.** The skipped-line exception is named in both places the per-match
+claim is made, and planted as a negative beside its two-line counterpart.
+
+**Item 6.** The residual paragraph enumerates three residuals: constant-width
+replacement, the match riding on a skipped line, and the derivation that spells
+neither token.
+
+**Item 7.** Shape A is closed: leaving a region, the code after the close gets
+the same brace test as any other line. Shape B (an opener mid-line) is
+DECLINED, with the reason in the walk's known-limitations paragraph. Telling a
+real mid-line opener from the same characters inside a string, a regex, or CSS
+in markup needs a lexer, which is the dependency this module exists to avoid,
+and the shape resolves outward to module scope, which is never a licensed key,
+so a consuming set-equality assertion still fails closed. Both open boundaries
+are now named with the direction each resolves in.
+
+**Item 8.** "every scan in this suite stands on".
+
+### Five defects in this round's own output, found and fixed here
+
+An adversarial pass (six lenses, each required to execute its evasion, findings
+then put to three independent skeptics) raised 27 candidates; one survived
+refutation and three more were refuted but verified correct by hand. The
+simplify pass then found a fifth. All were surfaced for triage before any fix.
+
+1. **A live factor derivation was invisible to two scan layers.** A leading star
+   is a docblock continuation, a wrapped multiplication and a generator method,
+   and `isCommentLine` called all three prose. Executed: a real second
+   derivation whose discriminator read rode on a `* Number(...)` continuation
+   line, placed inside the in-flight wrapper so it resolved to the licensed
+   `lib/fresh-auth.js#flight` key, left the suite GREEN with the pinned width of
+   8 unmoved. `blockCommentInterior` now computes the region once per file and
+   `occurrencesOf` hands it to the skip predicate. Re-executed against the same
+   payload: width moves 8 to 10, red. Both layers pass the region and each has
+   its own probe, because each has its own skip predicate.
+2. **Item 1's first fix was weaker than it read.** `blockCommentClosesBy` asked
+   whether ANY close follows, and every real module carries a docblock below any
+   given line, so the guard was satisfied in every real file and the phantom
+   region opened anyway. Renamed `aCommentCloseFollows` to say what it does;
+   template-literal state is what actually refuses the shape.
+3. **The census-exhaustiveness sentence added this round was false.** A
+   directory skipped by the cycle guard appears in neither list. Corrected to
+   claim only what holds, with the reason nothing hides there.
+4. **Both skipped-line residuals were justified by a formatter this tree does
+   not run.** `frontend/` has no formatter and no linter, verified. The
+   justification now rests on the shape's own conspicuousness.
+5. **The fix for defect 1 reopened defect 1.** `blockCommentInterior` answers
+   the question the brace walk answers and shipped with none of the hardening
+   the walk had just received. Executed: an opener-shaped token in a page
+   module's markup marked every following line prose, hiding the same class of
+   live derivation. Both guards now sit on both readers, and the opener test has
+   one definition instead of two, which is what let them drift apart inside a
+   single round.
+
+### Verification
+
+Canary 16/16 green. Full frontend unit suite 82 files, 1837 tests green (the
+three unhandled rejections in the edit page's editor mounting are pre-existing
+and unrelated). Whole-tree pins unchanged throughout: the licensed widths still
+read 1/1 for the status fetch and 8/1/2 for the password state, re-derived by
+hand against the tree as well as asserted.
+
+Mutation matrix: 24 mutations over every decision point the round touched, all
+red, each failing at its own probe. Five survived earlier runs of the matrix and
+five probes exist because of them.
+
+Simplify pass findings not taken, with reasons: replacing the close-follows loop
+with `some()` over a slice trades an allocation-free early exit for a per-call
+allocation inside the walk; statting only symlinks rather than every entry saves
+about a millisecond once per run and buys it with an extra branch in the
+function this round was held on for branch coverage, plus a behaviour change for
+a vanished-file race the current shape absorbs.
+
+Probing ran against copies under a scratch directory with a separate vitest
+config, never by mutating the shared tree, because sibling sessions were active
+in this checkout throughout.
