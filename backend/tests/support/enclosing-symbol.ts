@@ -16,9 +16,9 @@
  * Resolution is textual, not a parse. That is a deliberate trade — a canary
  * that needs the TypeScript compiler to run is a canary people delete — and it
  * is why {@link enclosingSymbol} is exercised by planted positives and
- * negatives in its own test file. The rule is: scan upward for the nearest
- * declaration, and reject it if its block demonstrably closed before the target
- * line (a `}` at or left of the declaration's own indentation).
+ * negatives in the canaries that consume it. The rule is: scan upward for the
+ * nearest declaration, and reject it if its block demonstrably closed before
+ * the target line (a `}` at or left of the declaration's own indentation).
  *
  * Known limitation, and where it is safe. A declaration whose block opens and
  * closes on its own line (`const noop = () => {};`) has no closing brace on a
@@ -44,6 +44,15 @@
  *    that no primary-side occurrence resolved to module scope, so an
  *    unresolvable declaration is a red bar naming the line rather than a pair
  *    that vouches for itself.
+ *
+ * Hand-ported sibling. `frontend/tests/unit/eslint/enclosing-symbol.js` carries
+ * a dialect-adjusted copy of this module, sharing the upward declaration scan
+ * and the closing-brace test that rejects a declaration whose block closed at
+ * or left of its own indentation. The two stay separate deliberately: that copy
+ * adds Alpine method-shorthand and template-literal declaration shapes and a
+ * per-key occurrence tally, and this one keeps {@link isCommentedOut}, which
+ * that copy dropped. Nothing mechanical carries a fix to the shared walk
+ * across, so a change to the walk here is a prompt to read the other copy.
  */
 
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
