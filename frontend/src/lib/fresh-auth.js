@@ -1108,10 +1108,12 @@ export async function ensureSessionWindow({
   // proof string or a registered sentinel today — the redirect's null value
   // included — so no live path reaches this branch. It exists for the
   // direction a miss must NOT take: reading an unregistered sentinel as a
-  // ready window hands it to a caller as a proof, which attaches a Symbol to a
-  // broadcast or an upload pre-flight and turns a missing registration into a
-  // rejected request the user cannot act on. Refusing costs one re-auth act
-  // and says so.
+  // ready window hands it to the upload pre-flight as the proof itself, which
+  // attaches a sentinel to the pre-flight request and turns a missing
+  // registration into a rejection the user cannot act on. It is also the
+  // string test `acquisitionAborted` already applies to the raw acquisition
+  // result, so both readings of an outcome now refuse an unnamed one alike.
+  // Refusing costs one re-auth act and says so.
   if (typeof proof !== 'string') return { ready: false, failed: true };
   return { ready: true, proof };
 }

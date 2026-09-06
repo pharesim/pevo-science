@@ -331,10 +331,11 @@ describe('withSettingsFreshAuth', () => {
   //
   // The remintable-401 ladder lives once in `consentOpFreshAuthRetryGate`
   // (fresh-auth.js) and is shared with the authorship orchestrator, so its
-  // arms have a single home. The cases above enter the gate and stop at its
-  // top: they reject on the FIRST `run()` and assert the outcome its entry
-  // check produces. These three drive the gate's own retry side — the second
-  // mint's outcomes and the second `run()`'s — through the public
+  // arms have a single home. Cases above already reach two of them — the
+  // retry's successful `run()`, and a second FRESH_AUTH_REQUIRED out of it —
+  // but three had no spec on either surface: what the retry MINT's own cancel
+  // and its exhaustion resolve to, and what a NON-fresh-auth error from the
+  // retry's `run()` does. These three drive exactly those, through the public
   // orchestrator, which is what puts this surface's bindings (its factor
   // resolution, its bound mint, its `run`) in the picture at all.
 

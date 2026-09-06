@@ -730,9 +730,9 @@ describe('the gate never fails open into silence', () => {
     // Classification is a lookup, so a sentinel nobody registered classifies
     // to nothing — and the quiet direction is the dangerous one: an
     // unclassified result read as a ready window travels on AS the proof, and
-    // the broadcast or the upload pre-flight attaches it to a request the
-    // backend rejects for a reason the user cannot act on. Refusing costs one
-    // re-auth act and says so.
+    // the upload pre-flight attaches it to a request the backend rejects for a
+    // reason the user cannot act on. Refusing costs one re-auth act and says
+    // so.
     mockMintSessionAuthProof.mockImplementation(async () => ({
       ...issuance('window-proof'),
       fresh_auth_proof: Symbol('an outcome nobody registered'),
