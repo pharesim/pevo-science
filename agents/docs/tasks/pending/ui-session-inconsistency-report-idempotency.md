@@ -12,8 +12,10 @@ hold should not absorb.
 ## Why
 
 `handleSessionInconsistency()` in `lib/fresh-auth.js` disconnects the auth store, claims
-the teardown report, and toasts, with nothing gating the sequence. It is called from five
-sites across three modules (the broadcast surface's first-attempt and retry mismatch arms,
+the teardown report, and toasts. The disconnect and the claim now sit inside an
+`if (auth)` branch, so the claim is only stamped when there was a real teardown to claim,
+but nothing gates the sequence against a SECOND caller detecting the same fault. It is
+called from five sites across three modules (the broadcast surface's first-attempt and retry mismatch arms,
 the consent-op retry gate, and the upload surface's mismatch teardown).
 
 Two concurrent flights that each detect the same corrupted session therefore each run the
@@ -41,11 +43,19 @@ disconnecting, so a second caller short-circuits once the first has torn down.
 
 ```js
 const auth = Alpine.store('auth');
-if (auth && !auth.isConnected) return;
-auth?.disconnect();
-claimTeardownReport();
+if (auth) {
+  if (!auth.isConnected) return;
+  auth.disconnect();
+  claimTeardownReport();
+}
 toastLocalized(/* ... */);
 ```
+
+Note the shape: the liveness short-circuit and the claim both belong INSIDE the `if (auth)`
+branch. An earlier draft of this proposal was written against a version of the function
+whose claim ran unconditionally; applied literally on top of the current code it would move
+`claimTeardownReport()` back outside the branch and re-introduce the stamping-with-no-
+teardown defect that branch exists to prevent.
 
 Whichever way it goes, the outcome must be written down where the next reader meets it:
 either the function's docblock states that repeat detections are deliberately silent, or
