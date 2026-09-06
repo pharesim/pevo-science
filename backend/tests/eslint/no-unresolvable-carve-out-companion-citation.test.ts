@@ -40,16 +40,41 @@
  *
  *     Real-path companion for: `backend/tests/routes/some-route-mocked.test.ts`
  *
- * That resolves the path and checks the named suite mentions this file by
- * name, so a one-sided declaration is red on the side that forgot.
+ * That resolves the path and then resolves the LINK, by parsing the named
+ * suite's own comments and requiring a forward citation there naming this
+ * file. A one-sided declaration is red on the side that forgot.
+ *
+ * The reverse form carries no risk-class token, and the citation that answers
+ * it must be a forward one. Those are the two halves of one decision. A
+ * reverse declaration discharges no clause of its own: the file writing it
+ * mocks nothing, so it is a signpost rather than a justification, and what has
+ * to be checkable about a signpost is that it points somewhere. The forward
+ * citation it points at is resolved and token-checked in its own right, so
+ * the risk class is already witnessed once, by the end that owes the
+ * justification; spelling it a second time on the reverse form would raise the
+ * cost of the declaration the convention entry recommends and give the same
+ * fact a second place to rot. Requiring that answer to be FORWARD is what
+ * closes mutual vouching, where two files declare each other companions and no
+ * token is named at either end.
+ *
+ * What that link does NOT establish: that the two files stand in a mocked /
+ * real-path relationship at all. Two files can cite each other honestly in
+ * form while neither mocks anything, and the forward citation's token then
+ * witnesses a risk class in a suite nobody needed a companion for. Whether a
+ * carve-out was owed in the first place is a review judgement, as it is for
+ * every citation here.
  *
  * WHAT IS CHECKED, per structured citation:
  *
- *   1. The path has the repo-relative `backend/tests/**.test.ts` shape and
- *      does not point into `tests/eslint/` or `tests/support/`, whose files
- *      scan sources and run no route. A `./`-prefixed or tests-relative
- *      spelling fails here with a message that names the required form,
- *      rather than as a confusing missing-file error.
+ *   1. The path has the repo-relative `backend/tests/**.test.ts` shape and,
+ *      for a FORWARD citation, does not point into `tests/eslint/` or
+ *      `tests/support/`, whose files scan sources and run no route. (A reverse
+ *      declaration may name one: there the path is the mocked suite being
+ *      served, not the witness.) A `./`-prefixed or tests-relative spelling
+ *      fails here with a message that names the required form, rather than as
+ *      a confusing missing-file error. A forward citation's token must also be
+ *      a single whitespace-free code token, which is what a second citation
+ *      fused onto the same line leaves in the bracket.
  *   2. The path resolves on disk.
  *   3. The companion is not the citing file itself. A mocked test of a surface
  *      normally spells that surface's tokens in its own code, so a
@@ -63,10 +88,54 @@
  *      occur, as a whole word in code so defined, in at most TOKEN_FILE_CAP
  *      files under `backend/tests`.
  *
+ * Arms 4 and 5 are about a risk-class token, which the reverse form does not
+ * carry; in its place it is checked that the named file cites this one back in
+ * the forward form, as above.
+ *
  * WHY THE TOKEN AND NOT THE FILENAME. A check built on finding the cited
  * FILENAME inherits the exact blindness it exists to remove: the filename is
  * present, the assertion is not. Grep what the companion must assert, in the
- * companion.
+ * companion. The rule holds for the reverse form's link too, which is why that
+ * link is resolved by parsing the named file's citations rather than by asking
+ * whether its text contains this file's name: hundreds of ordinary
+ * cross-mentions under `backend/tests` would satisfy the second question.
+ *
+ * WHY THE DETECTORS READ A REJOINED BLOCK AND THE MATCH'S OWN CAPTURES. Twice
+ * a guard here has been defeated not by an attacker but by the corpus's own
+ * authoring style. A claim-shaped span was matched with a line-bounded window,
+ * and these docblocks wrap near 76 columns, so the wrapped spelling of a claim
+ * — the default one for anything longer than a line — was invisible while the
+ * one-line spelling was caught. A citation's prose surround was computed by
+ * sweeping backticked and bracketed spans out of it, and backticking a path is
+ * this convention's house style, so a second filename in a citation's trailer
+ * was erased when written the natural way and kept when written the unusual
+ * way. The rule both fixes follow: a detector reads either a view of the text
+ * that is invariant under the house style (`rejoined`, `glued`) or the spans
+ * the parser already captured, never a re-scan of the surrounding text with a
+ * pattern that assumes one spelling of it.
+ *
+ * Rejoining has a cost of its own, paid for where it is taken. A whole
+ * docblock becomes one line, so prose at the top of a header is suddenly
+ * adjacent to a citation at the bottom, and a bounded window that was safe
+ * within a line is not safe across a block. The claim-shaped scan therefore
+ * runs on the block with its own structured citations cut out (plus each
+ * citation's surround, so a claim inside a trailer is not cut away with it),
+ * and keeps its room between the noun and the colon tight. Without that, the
+ * corpus's own clause-(a) wording standing above a correct clause-(c) citation
+ * is accused, and the message blames the citation.
+ *
+ * Two wrap-shaped gaps are left open on purpose, both where closing one would
+ * open a worse hole in the other direction. A SUFFIX-LESS name broken at its
+ * own dot (`settings.` / `test`) is read only on the spaced view, because the
+ * glued view cannot tell it from a sentence ending `e.g.` above a line
+ * beginning `test-only`, and that abbreviation is the commoner write. And the
+ * claim-shaped span gives the qualifier a bounded run before the noun: a
+ * qualifier longer than that is not claim-shaped here. Any finite bound can be
+ * stepped over, and widening it was measured (the corpus stays green well past
+ * the current bound) and declined, because every character of extra room
+ * accuses more ordinary prose, and this file is deliberately precision-biased
+ * for the same reason the pre-commit anchor gate scopes itself to known slug
+ * prefixes.
  *
  * WHY COMMENTS, MOCK BODIES AND TITLES DO NOT COUNT (arm 4). Risk-class tokens
  * appear constantly in prose, including prose that pins the OPPOSITE of the
@@ -130,14 +199,20 @@
  * cover the happy path too") is invisible, and so is an unlabelled sentence
  * naming a test file in a block that is neither the labelled one nor adjacent
  * to it, and so is a file named without `.test`/`.spec` and without a
- * `tests/<dir>/` path in front of it. The label is the only anchor; recall
- * beyond it would need an unbounded phrase list that rots. The label pattern
- * accepts `real`, `path` and `companion(s)` joined by dashes or spaces (or
- * nothing), up to two qualifying words before the noun (a word, not a stop
- * word, not a path, optionally wrapped in brackets, quotes or emphasis), and
- * emphasis around either word, after normalisation. One-off nouns for the
- * same idea (sibling coverage, real-HAF variant, no-mock companion) are not
- * labels and are not ratcheted.
+ * `tests/<dir>/` path in front of it. Nor does the citation-shaped test reach
+ * across a sentence break: a span whose words run `real ... path. The ...
+ * companion ...:` is two sentences to a reader and is read as two here. That
+ * refusal, the tight room between the noun and the colon, and cutting the
+ * block's own citations out before the scan are what keep it off ordinary
+ * technical prose, which mentions a real code path constantly. The label is
+ * the only
+ * anchor; recall beyond it would need an unbounded phrase list that rots. The
+ * label pattern accepts `real`, `path` and `companion(s)` joined by dashes or
+ * spaces (or nothing), up to two qualifying words before the noun (a word, not
+ * a stop word, not a path, optionally wrapped in brackets, quotes or
+ * emphasis), and emphasis around either word, after normalisation. One-off
+ * nouns for the same idea (sibling coverage, real-HAF variant, no-mock
+ * companion) are not labels and are not ratcheted.
  *
  * THE BACKLOG. The corpus predates the structured form, so the claims that
  * were already unstructured when this ratchet landed are carried in two
@@ -224,6 +299,11 @@ const testsRoot = path.resolve(__dirname, '..', '..', 'tests');
 /** This file's own `rel` under the walk root. It is excluded from the scan;
  *  see SELF-EXCLUSION in the header. */
 const SELF_REL = 'eslint/no-unresolvable-carve-out-companion-citation.test.ts';
+/** The same, repo-relative. No citation may name this file: it is dropped from
+ *  the scan, so its own header's worked examples would otherwise read as live
+ *  citations and answer any reverse declaration that named it. A file excluded
+ *  from validation vouches for nothing. */
+const SELF_REPO_PATH = `backend/tests/${SELF_REL}`;
 
 /** Per-block escape hatch for a legitimate claim that cannot take the
  *  structured form: an anti-citation stating that NO real-path companion exists
@@ -557,9 +637,18 @@ function normalizeCommentText(text: string): string {
 }
 
 /** Words that spell letters from the Latin script together with letters from
- *  any other script. No honest comment in this corpus contains one, and a
- *  Cyrillic `а` inside `Real-path` is how a label hides from a regex while
- *  rendering identically. */
+ *  any other script. A Cyrillic `а` inside `Real-path` is how a label hides
+ *  from a regex while rendering identically.
+ *
+ *  This is a blunt instrument and it over-reaches: NFKC folds the micro sign
+ *  U+00B5 to Greek mu, so the SI spelling of microseconds (`250µs`) is a
+ *  mixed-script word here, as is `Δt`. Neither is a look-alike for anything
+ *  Latin, and the ASCII spelling is the only remedy: the scan runs before the
+ *  ratchet's exempt test, so the ALLOW_MARKER does not cover this verdict, and
+ *  no backlog does either. Left as it is rather than narrowed on the way past,
+ *  because which scripts are confusable is a decision worth taking
+ *  deliberately; a symbol-carrying comment in a timing-sensitive suite is the
+ *  shape that will hit it. */
 function mixedScriptWords(text: string): string[] {
   const out: string[] = [];
   for (const word of text.match(/\p{L}+/gu) ?? []) {
@@ -681,6 +770,19 @@ export function commentBlocks(lines: readonly string[]): CommentBlock[] {
   return groups.map((g) => ({ firstLine: g.firstLine, text: normalizeCommentText(g.pieces.join('\n')) }));
 }
 
+/**
+ * The two views of a block's text every prose detector reads, instead of the
+ * raw block. Docblocks in this corpus wrap near 76 columns, so a claim or a
+ * filename longer than a line is spelt across a wrap and a pattern with a
+ * line-bounded window sees half of one: `rejoined` puts the halves back with
+ * the space the wrap stood for, and `glued` puts them back with nothing, which
+ * is what repairs a name the wrap broke INSIDE its last segment. Wrapping is
+ * the corpus's default spelling rather than an unusual one, so a detector that
+ * reads the raw block is defeated by the house style it is meant to police.
+ */
+const rejoined = (text: string): string => text.replace(/\s*\n\s*/g, ' ');
+const glued = (text: string): string => text.replace(/\s*\n\s*/g, '');
+
 /** Words that may not fill the label's qualifier slot: the label's own words
  *  (so two adjacent labels never fuse into one), and English connectives (so
  *  "the real path and companion fixtures" is prose, not a claim). */
@@ -690,8 +792,16 @@ const STOP_WORDS =
 
 /** One qualifying word: a plain word, optionally wrapped in brackets, quotes
  *  or emphasis, followed by whitespace or a dash. Never a path or a sentence:
- *  `.` and `/` are not word characters, so a filename cannot fill the slot. */
-const QUALIFIER = String.raw`(?:(?!(?:${STOP_WORDS})\b)[(\[\x60'"*_]*[\w-]+[)\]\x60'"*_]*[\s-]+)`;
+ *  `.` and `/` are not word characters, so a filename cannot fill the slot.
+ *
+ *  The stop-word refusal rejects a qualifier that IS a stop word, not one that
+ *  merely begins with one: `\b` falls between the `no` and the hyphen of
+ *  `no-mock`, so under a `\b` the corpus's own commonest qualifier read as the
+ *  stop word `no`, the label did not parse, and `Real-path no-mock companion
+ *  \`some.test.ts\`` was neither a label nor (lacking a colon) a citation-shaped
+ *  claim, so the block was dropped unaudited. Changing one word of it
+ *  (`mock-free`) was caught. */
+const QUALIFIER = String.raw`(?:(?!(?:${STOP_WORDS})(?![\w-]))[(\[\x60'"*_]*[\w-]+[)\]\x60'"*_]*[\s-]+)`;
 
 /**
  * The label, as a pattern source shared by the label count and both citation
@@ -705,10 +815,29 @@ const QUALIFIER = String.raw`(?:(?!(?:${STOP_WORDS})\b)[(\[\x60'"*_]*[\w-]+[)\]\
 const LABEL_SRC =
   String.raw`real[\s-]*path[\s-]*(?:[*_\x60]+[\s-]*)?${QUALIFIER}{0,2}(?:<[a-z]+>|[*_\x60]+)?companions?(?:\(s\))?`;
 
+/** Anything that keeps a phrase going: a comma, a bracket, the dots inside a
+ *  filename. Not a sentence break, which ends the phrase and begins an
+ *  unrelated one, and without which "runs on the real path. The companion
+ *  suites pin it:" reads as a claim. Load-bearing now that the span is matched
+ *  across the wraps of a whole block rather than within one line.
+ *
+ *  A new sentence does not begin with a lower-case letter, and a filename the
+ *  docblock wrapped at its own dot (`custody-consent-ops.` / `test.ts`) rejoins
+ *  as one that appears to: without that exemption the wrap spells a sentence
+ *  break in the middle of a name, the span stops there, and a claim carrying
+ *  the wrapped name goes unseen. */
+const CLAIM_SPAN = String.raw`(?:(?![.;!?]\s(?![a-z]))[^\n])`;
+
 /** What a reader takes for a citation even when the label does not parse: the
- *  words `real`/`path` and `companion` with a colon after, on one line. Every
- *  such span must also be a label, or the block is a violation of its own. */
-const LOOSE_CLAIM_SRC = String.raw`real[\s-]*path[^\n]{0,80}?companions?(?:\(s\))?[^\n]{0,8}?:`;
+ *  words `real`/`path` and `companion` with a colon straight after. Every such
+ *  span must also be a label, or the block is a violation of its own. Matched
+ *  on the rejoined block, because a qualifier odd enough to stop the label
+ *  parsing is exactly the one the docblock wraps. The room after the noun stays
+ *  tight: prose about a real code path and some unrelated companion thing
+ *  ("running on the real path with a mocked companion here:") is common, and
+ *  every extra character of slack there accuses more of it. */
+const LOOSE_CLAIM_SRC =
+  String.raw`real[\s-]*path${CLAIM_SPAN}{0,80}?companions?(?:\(s\))?${CLAIM_SPAN}{0,8}?:`;
 
 /** Fresh objects on every call. All are `g`-flagged, and a shared instance
  *  carries `lastIndex` between calls, which silently skips matches. */
@@ -736,9 +865,10 @@ export interface Citation {
   readonly companionPath: string;
   /** Empty for the reverse form. */
   readonly token: string;
-  /** The citation's own text minus its path and token: the label, its
-   *  qualifiers, and whatever trailed the bracket. A filename in here is prose
-   *  beside the citation, not part of it. */
+  /** The citation's own text minus its path and token, each removed as the
+   *  literal span it was captured as: the label, its qualifiers, and whatever
+   *  trailed the bracket. A filename in here is prose beside the citation, not
+   *  part of it, in whatever spelling — bare, backticked or bracketed. */
   readonly surround: string;
 }
 
@@ -755,20 +885,37 @@ export interface Citation {
  * the validator's whitespace-free rule; the block is red either way.
  */
 export function citationsIn(text: string): Citation[] {
-  const surroundOf = (span: string): string => span.replace(/\x60[^\x60]*\x60/g, ' ').replace(/\[[^\n]*\]/, ' ');
+  /** The citation's own path and token cut out of it as the LITERAL spans the
+   *  match captured, never by sweeping the span for backticked or bracketed
+   *  text. A sweep also erases a second path in the citation's trailer, and
+   *  backticking a path is this convention's house style, so under a sweep the
+   *  evading spelling of a half-true compound is the natural one and the caught
+   *  spelling the unusual one. */
+  const without = (span: string, part: string): string => {
+    const i = span.indexOf(part);
+    return i < 0 ? span : `${span.slice(0, i)} ${span.slice(i + part.length)}`;
+  };
   const forward = [...text.matchAll(forwardPattern())].map((m) => ({
     kind: 'forward' as const,
     companionPath: m[1].replace(/\s+/g, ''),
     token: m[2].trim(),
-    surround: surroundOf(m[0]),
+    surround: without(without(m[0], `\x60${m[1]}\x60`), `[${m[2]}]`),
   }));
   const reverse = [...text.matchAll(reversePattern())].map((m) => ({
     kind: 'reverse' as const,
     companionPath: m[1].replace(/\s+/g, ''),
     token: '',
-    surround: surroundOf(m[0]),
+    surround: without(m[0], `\x60${m[1]}\x60`),
   }));
   return [...forward, ...reverse];
+}
+
+/** Every structured citation in a whole file's comments, wherever they sit.
+ *  This is how the reverse form's link is resolved: by finding the citation
+ *  that points back, not by testing whether the named file's text happens to
+ *  contain the citing file's name. */
+export function citationsInSource(source: string): Citation[] {
+  return commentBlocks(source.split('\n')).flatMap((b) => citationsIn(b.text));
 }
 
 /** How many companion claims the block makes, structured or not. */
@@ -776,23 +923,50 @@ export function labelCount(text: string): number {
   return (text.match(labelPattern()) ?? []).length;
 }
 
-/** Citation-shaped spans that do not parse as the label: the text a reader
- *  takes for a claim, which the ratchet would otherwise skip in silence. */
+/**
+ * Citation-shaped spans that do not parse as the label: the text a reader takes
+ * for a claim, which the ratchet would otherwise skip in silence.
+ *
+ * Read off the rejoined block, so a claim the docblock wrapped is one span here
+ * exactly as it is one claim to the reader, and the label test runs on that same
+ * view so a wrapped LABEL stays a label. But read off the block with its
+ * structured citations CUT OUT, plus each citation's own surround, rather than
+ * off the block whole. Rejoining makes the whole docblock one line, and a
+ * citation's own `companion:` would then terminate a span that began in
+ * unrelated prose far above it: the corpus's standard clause-(a) wording ("any
+ * case where exercising the real path per-test is impractical") sitting over a
+ * perfectly written clause-(c) citation was accused, and the message blamed the
+ * citation. Scanning the surround as well keeps a claim tucked into a citation's
+ * trailing parenthetical visible, since that text is inside the citation's match
+ * and would otherwise be cut away with it.
+ */
 function unparsedClaims(text: string): string[] {
-  const out: string[] = [];
-  for (const m of text.matchAll(looseClaimPattern())) {
-    if (!labelAt().test(text.slice(m.index ?? 0))) out.push(m[0].trim());
-  }
-  return out;
+  const scan = (span: string): string[] => {
+    const one = rejoined(span);
+    const out: string[] = [];
+    for (const m of one.matchAll(looseClaimPattern())) {
+      if (!labelAt().test(one.slice(m.index ?? 0))) out.push(m[0].trim());
+    }
+    return out;
+  };
+  return [...scan(proseRemainder(text)), ...citationsIn(text).flatMap((c) => scan(c.surround))];
 }
 
-/** Text that is not a filename however it is spelt: mail addresses, URLs,
- *  the reserved `example.test` domain, and a `RE.test(...)` method call. */
+/** Text that is not a filename however it is spelt: mail addresses, URL scheme
+ *  and host, the reserved `example.test` domain, and a `RE.test(...)` method
+ *  call. Only the scheme and authority of a URL go, never its path: a `.test`
+ *  HOST is a domain and not a file, but a link whose path ends in a test file
+ *  names that file as surely as the repo-relative spelling does, and blanking
+ *  the whole token let the half-true compound be written as a link. */
 function scrubNonFiles(text: string): string {
   return text
     .replace(/\S+@\S+/g, ' ')
-    .replace(/\b\w+:\/\/\S+/g, ' ')
+    .replace(/\b\w+:\/\/[^/\s]*/g, ' ')
     .replace(/\bexample\.(?:test|spec)\b/g, ' ')
+    // `.env.test` is an env file, and root `CLAUDE.md` gives `frontend/.env.test`
+    // a paragraph of its own, so a header naming it is an ordinary write. The
+    // suffix-less pattern starts happily on the dot and read it as a test file.
+    .replace(/(?<!\w)\.env\.(?:test|spec)(?:\.\w+)?\b/g, ' ')
     .replace(/\.(?:test|spec)\s*\(/g, ' (');
 }
 const NAMED_WITH_EXTENSION_RE = /[\w.-]*[\w.*)\]}-]\.(?:test|spec)\.[cm]?[jt]sx?\b/;
@@ -804,19 +978,19 @@ const TESTS_TREE_PATH_RE = /\btests\/(?!(?:fixtures|support)\/)[\w-]+\/[\w-]+(?:
  * alternation such as `custody-*.test.ts` included), the suffix-less
  * `name.test`, a spec, a frontend `.test.js`, or a `tests/<dir>/<name>` path
  * with no extension, since a reader takes each of those for a file; not a
- * fixture or support module, a mail address, a URL, or a method call. Lines
- * are rejoined with a space first, so a word before `tests/` keeps its
- * boundary, and once more with nothing, so a name the docblock wrapped inside
- * its last segment still reads as one name.
+ * fixture or support module, a mail address, a URL, or a method call. Read off
+ * both rejoined views: the spaced one keeps a word's boundary before `tests/`,
+ * the glued one repairs a name the docblock wrapped inside its last segment.
  */
 function namesATestFile(text: string): boolean {
-  const spaced = scrubNonFiles(text.replace(/\s*\n\s*/g, ' '));
-  const glued = scrubNonFiles(text.replace(/\s*\n\s*/g, ''));
+  const spaced = scrubNonFiles(rejoined(text));
+  const unwrapped = scrubNonFiles(glued(text));
   return (
     NAMED_WITH_EXTENSION_RE.test(spaced) ||
-    NAMED_WITH_EXTENSION_RE.test(glued) ||
+    NAMED_WITH_EXTENSION_RE.test(unwrapped) ||
     NAMED_WITHOUT_EXTENSION_RE.test(spaced) ||
-    TESTS_TREE_PATH_RE.test(spaced)
+    TESTS_TREE_PATH_RE.test(spaced) ||
+    TESTS_TREE_PATH_RE.test(unwrapped)
   );
 }
 
@@ -909,10 +1083,25 @@ export function citationViolations(
   const { companionPath, token } = citation;
   const out: string[] = [];
 
-  if (!COMPANION_PATH_RE.test(companionPath)) {
+  if (!COMPANION_PATH_RE.test(companionPath) || path.posix.normalize(companionPath) !== companionPath) {
+    // The shape test alone admits `//`, `/./` and `/../` segments, because `.`
+    // and `/` are both inside its character class. Every arm below then works
+    // on one of two different notions of the path: the self-citation compare
+    // and the reverse back-link filter are string equality, while reading the
+    // file canonicalises. So `routes//self.test.ts` is not the citing file to
+    // arm 3 and is exactly it to the reader, and `backend/tests/../x.test.ts`
+    // is a witness in a directory this canary never walks, whose own citations
+    // are never audited and whose token scores zero against the reach cap.
     out.push(
       `companion path ${JSON.stringify(companionPath)} is not repo-relative; ` +
         'write it as `backend/tests/<dir>/<name>.test.ts`',
+    );
+    return out;
+  }
+  if (companionPath === SELF_REPO_PATH) {
+    out.push(
+      `companion ${companionPath} is this canary, which is excluded from its own ` +
+        'scan; the worked examples in its header are documentation, not citations',
     );
     return out;
   }
@@ -937,9 +1126,22 @@ export function citationViolations(
     return out;
   }
   if (citation.kind === 'reverse') {
-    const self = path.posix.basename(citingRepoPath);
-    if (!source.includes(self)) {
-      out.push(`${companionPath} is named as the suite this file is the companion for, but it never mentions ${self}; the link must be visible from both ends`);
+    const back = citationsInSource(source).filter((c) => c.companionPath === citingRepoPath);
+    if (back.length === 0) {
+      out.push(
+        `${companionPath} is named as the suite this file is the companion for, but it ` +
+          `carries no companion citation naming ${citingRepoPath}. The link is resolved ` +
+          'by path from both ends; a mention of this file\'s name in its prose or code is ' +
+          'not one, and hundreds of such cross-mentions already exist under backend/tests',
+      );
+      return out;
+    }
+    if (!back.some((c) => c.kind === 'forward')) {
+      out.push(
+        `${companionPath} answers this declaration with the reverse form as well, so ` +
+          'neither end names a risk class and nothing is witnessed. The suite taking the ' +
+          `carve-out writes the forward form: ${STRUCTURED_FORM}`,
+      );
     }
     return out;
   }
@@ -989,7 +1191,11 @@ function blockShape(text: string): BlockShape {
     citations: citations.length,
     unparsed: unparsedClaims(text).length,
     remainderNamesAFile: namesATestFile(proseRemainder(text)) || citations.some((c) => namesATestFile(c.surround)),
-    exempt: text.includes(ALLOW_MARKER),
+    // Read on both views: the marker is long enough to be wrapped, and it
+    // breaks at one of its own hyphens when it is. A marker that fails to
+    // match does not fail open, it fails RED on a block whose author did
+    // everything asked of them.
+    exempt: text.includes(ALLOW_MARKER) || glued(text).includes(ALLOW_MARKER),
   };
 }
 
@@ -1394,6 +1600,7 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     // walk, so they cannot self-trip.
     const block = (...lines: string[]): string => lines.join('\n');
     const tokens = (text: string): string[] => citationsIn(text).map((c) => c.token);
+    const classOfText = (text: string): RatchetClass => ratchetClass(blockShape(text));
 
     // Parser POSITIVES.
     expect(citationsIn(block(' (c) Real-path companion: `backend/tests/routes/custody-upgrade.test.ts` [SESSION_INVALIDATED]')))
@@ -1431,6 +1638,15 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     expect(citationsIn(' Real-path companion for: `backend/tests/routes/a-mocked.test.ts`'))
       .toEqual([{ kind: 'reverse', companionPath: 'backend/tests/routes/a-mocked.test.ts', token: '', surround: expect.any(String) }]);
 
+    // A markup-emphasised label still parses as a CITATION, not just as a
+    // label: the label count and the citation parsers share their pattern but
+    // not what follows it, so the closing-tag spelling needs its own case at
+    // the parser or it silently starts counting as an unstructured claim.
+    expect(tokens(' Real-path <em>companion</em>: `backend/tests/a.test.ts` [ALPHA]')).toEqual(['ALPHA']);
+    expect(tokens(' Real-path **companion**: `backend/tests/a.test.ts` [ALPHA]')).toEqual(['ALPHA']);
+    expect(citationsIn(' Real-path <em>companion</em> for: `backend/tests/routes/a-mocked.test.ts`').map((c) => c.kind))
+      .toEqual(['reverse']);
+
     // The label itself wrapping, which is nastier than a wrapped path because a
     // line-based label match misses the citation entirely rather than mangling it.
     expect(labelCount(block(' Real-path', ' companion coverage of the middleware'))).toBe(1);
@@ -1443,6 +1659,13 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       'Real-path **companion**: x', 'Real-path HAF-backed SQL companion: x', 'Real-path `argon2` companion: x',
       '**Real-path** companion: x', 'Real-path `companion`: x', 'Real-path companion(s): x',
       'Real-path "no-mock" companion: x', 'Real-path [Postgres] companion: x',
+      // A qualifier whose first syllable is a stop word. The word boundary
+      // falls inside `no-mock`, so a `\b`-anchored refusal read it as the stop
+      // word `no` and the label vanished. `no-mock` is this corpus's commonest
+      // qualifier, and a claim carrying it and no colon was neither a label
+      // nor citation-shaped, so its block was dropped unaudited.
+      'Real-path no-mock companion: x', 'Real-path not-mocked companion: x',
+      'Real-path no-mock companion `backend/tests/routes/a.test.ts` pins it',
     ]) {
       expect(labelCount(spelt), spelt).toBe(1);
     }
@@ -1462,6 +1685,78 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       .toHaveLength(1);
     expect(unparsedClaims(' (c) Real-path, no-mock companion: routes/a.test.ts covers it')).toHaveLength(1);
     expect(unparsedClaims(' (c) Real-path SQL companion: `backend/tests/a.test.ts` [A]')).toHaveLength(0);
+    // The same claim WRAPPED, which is how the corpus spells anything longer
+    // than a line, so the wrapped form is the one an author writes by default.
+    // A window that cannot cross the wrap sees no claim at all and the block
+    // is dropped before any class is assigned.
+    expect(unparsedClaims(block(' (c) Real-path, no-mock', '     companion: routes/a.test.ts covers it'))).toHaveLength(1);
+    expect(unparsedClaims(block(' (c) Real-path (also routes/custody-consent-ops.test.ts)', '     companion: `backend/tests/a.test.ts` [A]'))).toHaveLength(1);
+    // A qualifier broken mid-word by the wrap.
+    expect(unparsedClaims(block(' (c) Real-path, no-', '     mock companion: routes/a.test.ts covers it'))).toHaveLength(1);
+    // A filename in the qualifier broken at its OWN dot. Rejoined, the wrap
+    // spells `ops. test.ts`, which reads as a sentence break in the middle of
+    // a name; the claim, and with it the whole block including any structured
+    // citation beside it, went unaudited. A lower-case word after the stop is
+    // what tells the two apart.
+    expect(unparsedClaims(block(' (c) Real-path (also routes/custody-consent-ops.', '     test.ts) companion: `backend/tests/a.test.ts` [ALPHA]'))).toHaveLength(1);
+    expect(unparsedClaims(block(' (c) Real-path (also routes/custody-consent-ops.test.ts)', '     companion: `backend/tests/a.test.ts` [ALPHA]'))).toHaveLength(1);
+    // A wrapped LABEL is still a label, not an unparsed claim: both tests read
+    // the same rejoined view, so widening one does not accuse the other.
+    expect(unparsedClaims(block(' (c) Real-path SQL', '     companion: `backend/tests/a.test.ts` [A]'))).toHaveLength(0);
+    // And prose whose sentence merely ENDS in the word `path` before an
+    // unrelated one begins is not a claim, on one line or across a wrap. This
+    // is what the widened window would otherwise start accusing.
+    for (const prose of [
+      'runs on the real path. The companion suites above pin it: see below',
+      'exercised on the real path; the companion fixtures live here: see below',
+    ]) {
+      expect(unparsedClaims(prose), prose).toHaveLength(0);
+      expect(unparsedClaims(prose.replace('. ', '.\n     ').replace('; ', ';\n     ')), prose).toHaveLength(0);
+    }
+    // Rejoining the block makes it one line, so a citation's own `companion:`
+    // is within reach of any earlier mention of a real path. These are honest
+    // headers a real author writes, and each was accused when the scan ran on
+    // the whole block: the corpus's own clause-(a) wording above a correct
+    // citation, and a correct citation whose PATH contains `real-path` sitting
+    // above a second correct one. The message blamed the citation, which is
+    // the one thing in the block that was right.
+    expect(unparsedClaims(block(
+      ' (a) `getVouchStatus` is covered by the carve-out catch-all ("any case',
+      '     where exercising the real path per-test is impractical"), mocked at',
+      '     the `wot.js` module boundary',
+      ' (c) Real-path companion: `backend/tests/routes/a.test.ts` [ALPHA]',
+    ))).toHaveLength(0);
+    expect(unparsedClaims(block(
+      ' (c) Real-path companion: `backend/tests/routes/papers-retract-real-path-verifyhivesignature.test.ts` [ALPHA]',
+      '     Real-path companion: `backend/tests/routes/settings.test.ts` [BETA]',
+    ))).toHaveLength(0);
+    // But a claim tucked into a citation's own trailing parenthetical is a
+    // claim of its own: it lives inside the citation's match, so cutting the
+    // citation out without also scanning its surround would lose it.
+    expect(unparsedClaims(' Real-path companion: `backend/tests/a.test.ts` [ALPHA] (Real-path, no-mock companion: the settings suites)'))
+      .toHaveLength(1);
+
+    // The prose surround keeps a second filename in the citation's trailer in
+    // EVERY spelling: bare, backticked (this convention's house style for a
+    // path, so the spelling an author reaches for first) and bracketed. A
+    // global sweep for backticked or bracketed spans erased the last two.
+    for (const trailer of [
+      '(see also backend/tests/routes/custody-upgrade.test.ts)',
+      '(see also `backend/tests/routes/custody-upgrade.test.ts`)',
+      '(see also [backend/tests/routes/custody-upgrade.test.ts])',
+    ]) {
+      const cited = citationsIn(` Real-path companion: \x60backend/tests/a.test.ts\x60 [ALPHA] ${trailer}`);
+      expect(cited.map((c) => c.token), trailer).toEqual(['ALPHA']);
+      expect(cited[0].surround, trailer).toContain('custody-upgrade.test.ts');
+      expect(cited[0].surround, trailer).not.toContain('backend/tests/a.test.ts');
+    }
+    // The reverse form's trailer too, whose path is removed the same way.
+    expect(citationsIn(' Real-path companion for: `backend/tests/routes/a-mocked.test.ts` (and `backend/tests/routes/b.test.ts`)')[0].surround)
+      .toContain('b.test.ts');
+    // A token that IS its own trailer's text is removed once, at its own
+    // position, so the citation does not eat the prose beside it.
+    expect(citationsIn(' Real-path companion: `backend/tests/a.test.ts` [ALPHA] (ALPHA again)')[0].surround)
+      .toContain('ALPHA again');
 
     // A token carrying brackets or a slash survives: the closing bracket is
     // anchored at end-of-line, so a non-greedy match backtracks to the last one.
@@ -1473,6 +1768,22 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     expect(citationsIn(' (c) Real-path companion: routes/notifications.test.ts exercises the same SQL')).toEqual([]);
     expect(citationsIn(' (c) Real-path companion: the settings suites cover it')).toEqual([]);
 
+    // Spellings the citation parser declines, each of which FAILS CLOSED: the
+    // label goes unsatisfied, so the block falls to the ratchet as a claim
+    // rather than passing as a checked citation. A trailer that wraps, one
+    // holding a nested parenthesis, a trailing comma joining two claims, and
+    // emphasis closing the line. The direction is what matters here, so it is
+    // pinned rather than left to be rediscovered as a hole.
+    for (const declined of [
+      block(' Real-path companion: `backend/tests/a.test.ts` [ALPHA] (see also', '     backend/tests/routes/settings.test.ts)'),
+      ' Real-path companion: `backend/tests/a.test.ts` [ALPHA] (see also (settings.test.ts))',
+      ' Real-path companion: `backend/tests/a.test.ts` [ALPHA], and settings.test.ts too',
+      ' *Real-path companion: `backend/tests/a.test.ts` [ALPHA]*',
+    ]) {
+      expect(citationsIn(declined), declined).toEqual([]);
+      expect(classOfText(declined), declined).not.toBe('structured');
+    }
+
     // What counts as naming a test file in prose: the full name, the
     // suffix-less name, a spec, a frontend `.test.js`, a name wrapped inside
     // its last segment, a bare `tests/<dir>/<name>` path, and such a path at
@@ -1482,7 +1793,21 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     for (const prose of [
       'pinned by settings.test.ts', 'pinned by settings.test', 'pinned by settings.spec.ts',
       'pinned by frontend/tests/unit/x.test.js', 'pinned by routes/settings.\n        test.ts',
+      // Both rejoined views are load-bearing and neither subsumes the other.
+      // The glued view repairs a name the wrap broke inside its last segment
+      // (`routes/settings.` + `test.ts`); the spaced view keeps the word
+      // boundary after a name the wrap followed with more prose, which gluing
+      // would run together into `.tsand`.
+      'pinned by settings.test.ts\n        and by its sibling suite',
       'pinned by `backend/tests/routes/settings-real-pool-admit`',
+      // A `tests/<dir>/<name>` path the docblock wrapped at its own directory
+      // slash. The spaced view puts the wrap's space back in the middle of the
+      // path, so this arm needs the glued view exactly as the extension arm
+      // does.
+      'pinned for real by tests/routes/\n        settings-real-pool-admit against real Postgres',
+      // A link whose PATH ends in a test file names that file. Blanking the
+      // whole URL token let the half-true compound be written as a link.
+      'pinned by https://github.com/pevo/pevo/blob/main/backend/tests/routes/settings.test.ts',
       'the consent-op branch of the\n        tests/routes/custody-consent-ops suite stamps it',
     ]) {
       expect(namesATestFile(prose), prose).toBe(true);
@@ -1492,7 +1817,13 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       'the `MOCK_VERIFY_SIGNATURE` fixture at `backend/tests/fixtures/mock-auth.ts`',
       'the helper in `backend/tests/support/haf-query.ts`', 'seeded as alice@example.test',
       'hosted at https://gw.example.test/x', 'the reserved `example.test` domain',
+      // A `.test` TLD outside the reserved domain, so the mail and URL arms
+      // are each the only thing standing between it and a false accusation.
+      'seeded as reviewer@u-porto.test', 'hosted at https://gw.pevo.test/x',
       'the gate is `NUMERIC_IAT_RE.test(String(payload.iat))`', 'run `npx vitest run tests/routes`',
+      'the E2E-only secret lives in `frontend/.env.test`, never in the deployment `.env`',
+      'the template is `frontend/.env.test.example`',
+      'hosted at https://gw.pevo.test/ipfs/QmX',
       'e.g.\ntest-only fixtures', 'the first.\ntest.each table',
     ]) {
       expect(namesATestFile(prose), prose).toBe(false);
@@ -1512,7 +1843,15 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     expect(codeOf("vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array([1]))));")).not.toMatch(tokenMatcher('Uint8Array'));
     expect(codeOf("describe('requireFreshAdminAuth - JWT path', () => {\n  it('rejects recordAccreditationCompletion', () => {});\n});"))
       .not.toMatch(tokenMatcher('requireFreshAdminAuth'));
+    // A spec title built as a template, which is how a table-driven suite
+    // names its cases, is a title like any other.
+    expect(codeOf('it(`rejects ${name} for requireFreshAdminAuth`, () => {});')).not.toMatch(tokenMatcher('requireFreshAdminAuth'));
     expect(codeOf("it('x', () => { expect(hafQueryMock).toHaveBeenCalled(); });")).not.toMatch(tokenMatcher('hafQuery'));
+    // The same boundary at the other end: a token that is only the TAIL of a
+    // longer identifier is not spelt by it either, so citing `AuthMethod` is
+    // not discharged by a companion that spells `hiveAuthMethod`.
+    expect(codeOf('expect(res.body.method).toBe(hiveAuthMethod);')).not.toMatch(tokenMatcher('AuthMethod'));
+    expect(codeOf('expect(res.body.method).toBe(hiveAuthMethod);')).toMatch(tokenMatcher('hiveAuthMethod'));
     expect(codeOf("expect(res.body.error.code).toBe('SESSION_INVALIDATED');")).toMatch(tokenMatcher('SESSION_INVALIDATED'));
     expect(codeOf("const row = await realQuery('SELECT sessions_invalidated_at FROM accounts');")).toMatch(tokenMatcher('sessions_invalidated_at'));
 
@@ -1562,20 +1901,91 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       .toEqual([expect.stringContaining('witnesses nothing')]);
     // Path shape: tests-relative and `./`-prefixed forms are rejected before the
     // filesystem is touched, so the message names the required form.
-    for (const bad of ['routes/notifications.test.ts', './backend/tests/routes/a.test.ts', 'backend/src/db.ts']) {
-      expect(citationViolations(citing, forward(bad, 'ALPHA'), synthetic, stub('ALPHA;')))
+    for (const bad of [
+      'routes/notifications.test.ts', './backend/tests/routes/a.test.ts', 'backend/src/db.ts',
+      // Interior segments satisfy the shape pattern textually (`.` and `/` are
+      // both word-ish there) while resolving somewhere else. Each of these is
+      // the CITING file spelt so the self-citation arm cannot see it, and the
+      // last leaves the scanned tree altogether, where nothing is walked,
+      // nothing is ratcheted and the reach cap can never fire.
+      'backend/tests/routes//synthetic.test.ts',
+      'backend/tests/routes/./synthetic.test.ts',
+      'backend/tests/routes/../routes/synthetic.test.ts',
+      'backend/tests/../witness.test.ts',
+    ]) {
+      expect(citationViolations(citing, forward(bad, 'ALPHA'), synthetic, stub('ALPHA;')), bad)
         .toEqual([expect.stringContaining('not repo-relative')]);
     }
-    // The reverse form: the named suite must mention this file by name.
+    // No citation may name this canary: it is dropped from its own scan, so the
+    // worked examples in its header would otherwise answer a reverse
+    // declaration naming it, with no risk-class token anywhere in the link.
+    expect(citationViolations(citing, forward(SELF_REPO_PATH, 'ALPHA'), synthetic, stub('ALPHA;')))
+      .toEqual([expect.stringContaining('is this canary, which is excluded from its own scan')]);
+    // The token-shape arm, which rejects what a second citation fused onto the
+    // line leaves in the bracket, and a token too long to be one. Both halves,
+    // since either alone leaves the other unpinned.
+    for (const shapeless of [
+      'A] Real-path companion: `backend/tests/b.test.ts` [B',
+      'SESSION INVALIDATED',
+      'x'.repeat(81),
+    ]) {
+      expect(citationViolations(citing, forward('backend/tests/routes/present.test.ts', shapeless), synthetic, stub('ALPHA;')), shapeless)
+        .toEqual([expect.stringContaining('must be a single whitespace-free code token')]);
+    }
+
+    // The reverse form: the named suite must CITE this file back, resolved by
+    // path. A file that merely mentions this file's name does not answer the
+    // declaration — that is the filename-presence blindness one level up, and
+    // hundreds of such cross-mentions exist under backend/tests.
     const reverse = (companionPath: string): Citation => ({ kind: 'reverse', companionPath, token: '', surround: '' });
-    expect(citationViolations(citing, reverse('backend/tests/routes/mocked.test.ts'), synthetic, stub('// see synthetic.test.ts for the live path')))
+    const backCite = '/**\n * Real-path companion: `backend/tests/routes/synthetic.test.ts` [ALPHA]\n */\nconst x = 1;';
+    expect(citationViolations(citing, reverse('backend/tests/routes/mocked.test.ts'), synthetic, stub(backCite)))
       .toEqual([]);
+    expect(citationViolations(citing, reverse('backend/tests/routes/mocked.test.ts'), synthetic,
+      stub('// see synthetic.test.ts for the live path\nconst x = 1;')))
+      .toEqual([expect.stringContaining('carries no companion citation naming backend/tests/routes/synthetic.test.ts')]);
     expect(citationViolations(citing, reverse('backend/tests/routes/mocked.test.ts'), synthetic, stub('const x = 1;')))
-      .toEqual([expect.stringContaining('never mentions synthetic.test.ts')]);
+      .toEqual([expect.stringContaining('carries no companion citation naming')]);
+    // A citation back to a DIFFERENT file is not an answer either.
+    expect(citationViolations(citing, reverse('backend/tests/routes/mocked.test.ts'), synthetic,
+      stub('/**\n * Real-path companion: `backend/tests/routes/other.test.ts` [ALPHA]\n */\nconst x = 1;')))
+      .toEqual([expect.stringContaining('carries no companion citation naming')]);
+    // The named file's citations are read as COMMENTS, by the same collector
+    // that reads this one's, rather than off its raw text. The corpus wraps a
+    // path across a docblock's continuation, and raw text carries the ` * `
+    // gutter into the middle of the path, so the answering citation would
+    // resolve to a file that does not exist and an honest declaration would be
+    // accused of pointing nowhere.
+    expect(citationViolations(citing, reverse('backend/tests/routes/mocked.test.ts'), synthetic,
+      stub('/**\n * Real-path companion: \x60backend/tests/routes/\n *   synthetic.test.ts\x60 [ALPHA]\n */\nconst x = 1;')))
+      .toEqual([]);
+    // And a citation-shaped line held in a string fixture is data, not a
+    // declaration: a canary carrying synthetic source text answers for nobody.
+    expect(citationViolations(citing, reverse('backend/tests/routes/mocked.test.ts'), synthetic,
+      stub("const FIXTURE = '/** Real-path companion: \x60backend/tests/routes/synthetic.test.ts\x60 [ALPHA] */';\nconst x = 1;")))
+      .toEqual([expect.stringContaining('carries no companion citation naming')]);
+    // Two reverse declarations pointing at each other name no risk class at
+    // either end, so the pair witnesses nothing however visible the link is.
+    expect(citationViolations(citing, reverse('backend/tests/routes/mocked.test.ts'), synthetic,
+      stub('/**\n * Real-path companion for: `backend/tests/routes/synthetic.test.ts`\n */\nconst x = 1;')))
+      .toEqual([expect.stringContaining('answers this declaration with the reverse form as well')]);
     expect(citationViolations(citing, reverse('backend/tests/routes/mocked.test.ts'), synthetic, () => null))
       .toEqual([expect.stringContaining('does not exist')]);
-    expect(citationViolations(citing, reverse(citing), synthetic, stub('synthetic.test.ts')))
+    expect(citationViolations(citing, reverse(citing), synthetic, stub(backCite)))
       .toEqual([expect.stringContaining('cites itself')]);
+    // The reverse form is how this canary's own worked examples would be
+    // reached: it is excluded from the scan, so nothing it contains is a
+    // citation, and naming it discharges nothing.
+    expect(citationViolations(citing, reverse(SELF_REPO_PATH), synthetic, stub(backCite)))
+      .toEqual([expect.stringContaining('is this canary, which is excluded from its own scan')]);
+    // The forward-only guard on the source-scanning-directory arm. In the
+    // reverse form the named path is the MOCKED suite being served, not the
+    // witness, so a declaration naming one there is legitimate and must not
+    // draw the "witnesses nothing" verdict the forward form draws.
+    expect(citationViolations(citing, reverse('backend/tests/eslint/no-foo.test.ts'), synthetic, stub(backCite)))
+      .toEqual([]);
+    expect(citationViolations(citing, reverse('backend/tests/support/helper.test.ts'), synthetic, stub(backCite)))
+      .toEqual([]);
 
     // Over-generic token, through the real entry point and against the real
     // tree, so the cap stays calibrated to the corpus it guards. The companion
@@ -1622,7 +2032,15 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       '     The admit path is pinned for real by routes/settings.',
       '     test.ts against real Postgres.',
     ))).toBe('leaky');
+    // The trailer, in every spelling a reader would write a path in: bare,
+    // backticked (the house style, so the one an author reaches for) and
+    // bracketed. A sweep for backticked or bracketed spans erased the
+    // backticked and bracketed spellings, re-admitting the half-true compound
+    // in its most natural form while catching the unusual one.
     expect(classOf(' (c) Real-path companion: `backend/tests/a.test.ts` [ALPHA] (see settings.test.ts)')).toBe('leaky');
+    expect(classOf(' (c) Real-path companion: `backend/tests/a.test.ts` [ALPHA] (see `settings.test.ts`)')).toBe('leaky');
+    expect(classOf(' (c) Real-path companion: `backend/tests/a.test.ts` [ALPHA] (see [settings.test.ts])')).toBe('leaky');
+    expect(classOf(' Real-path companion for: `backend/tests/routes/a-mocked.test.ts` (also `settings.test.ts`)')).toBe('leaky');
     expect(classOf(block(
       ' (c) Real-path companion: `backend/tests/a.test.ts` [ALPHA]',
       '     The custody-*.test.ts family pins the same 401 at the route layer.',
@@ -1635,9 +2053,19 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       ' (c) Real-path companion: `backend/tests/a.test.ts` [ALPHA]',
     ))).toBe('structured');
 
-    // A citation-shaped line that does not parse is its own class.
+    // A citation-shaped line that does not parse is its own class, whether it
+    // sits on one line or across a wrap. Wrapped, it used to yield labels=0 and
+    // unparsed=0 and be dropped before any class was assigned, which let a
+    // brand-new free-prose claim land in a file in neither backlog.
     expect(classOf(' (c) Real-path (also routes/custody-consent-ops.test.ts) companion: `backend/tests/a.test.ts` [ALPHA]'))
       .toBe('unparsed');
+    expect(classOf(block(' (c) Real-path, no-mock', '     companion: routes/a.test.ts covers it'))).toBe('unparsed');
+    expect(classOf(block(' (c) Real-path (also routes/custody-consent-ops.test.ts)', '     companion: `backend/tests/a.test.ts` [ALPHA]'))).toBe('unparsed');
+    // And the audit KEEPS it, rather than skipping the block for having no
+    // label and no unparsed claim.
+    expect(auditSources([{ rel: 'routes/wrapped.test.ts', lines: [
+      '/**', ' * (c) Real-path, no-mock', ' *     companion: routes/a.test.ts covers it', ' */', 'const a = 1;',
+    ] }]).audits.map((a) => a.cls)).toEqual(['unparsed']);
 
     // Partial conversion: two claims, one structured, is free-prose, which is
     // what stops a partial conversion from reading as a complete one.
@@ -1667,6 +2095,10 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     const prose = ' (c) Real-path companion: the settings suites cover it';
     expect(classOf(`${prose} (${ALLOW_MARKER}: no single file is the referent)`)).toBe('exempt');
     expect(classOf(prose)).toBe('fileless');
+    // The marker is long enough that a docblock wraps it, and it breaks at one
+    // of its own hyphens. Failing to read it there is a red bar on a block
+    // whose author did exactly what the message asked.
+    expect(classOf(block(`${prose} (carve-out-citation-`, `     allow: no single file is the referent)`))).toBe('exempt');
     const shape = (o: Partial<BlockShape>): BlockShape =>
       ({ labels: 1, citations: 0, unparsed: 0, remainderNamesAFile: true, exempt: false, ...o });
     expect(ratchetClass(shape({ exempt: true }))).toBe('exempt');
@@ -1755,6 +2187,12 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       .toEqual([expect.stringContaining(`${B} — pinned at 0; a pin is a positive integer`)]);
     expect(reconcileBacklog(tree([A, 5]), { [A]: NaN }, frozen))
       .toEqual([expect.stringContaining(`${A} — pinned at NaN; a pin is a positive integer`)]);
+    // NaN alone does not pin the SECOND loop's integer guard: every comparison
+    // against NaN is false, so both arms there are silent either way. A
+    // fractional pin is the value that reaches them, and it must still produce
+    // exactly the one shape complaint rather than a second, arithmetic one.
+    expect(reconcileBacklog(tree([A, 5]), { [A]: 2.5 }, frozen))
+      .toEqual([expect.stringContaining(`${A} — pinned at 2.5; a pin is a positive integer`)]);
     // A prototype entry is not an entry: the file it names has no pin. (A
     // `__proto__` key in an object literal sets the prototype; this builds the
     // same shape without writing that key.)

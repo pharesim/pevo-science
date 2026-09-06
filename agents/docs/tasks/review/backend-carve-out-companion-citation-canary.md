@@ -634,3 +634,269 @@ The `[TODO Architect]` on the solutions entry is confirmed accurate and stays
 deferred to archive, so the entry is reconciled once against a settled shape
 rather than twice. Its stale disclaimer, its citation-shape sketch, and its
 sequencing paragraph are all superseded; the architect owns that edit.
+
+## Backend re-review signal (2026-09-06, commit COMMIT_SHA)
+
+All four items landed. Items 1 and 4 are fixed at the shared cause the hold
+named rather than as two symptoms; item 2 settles the design question the hold
+delegated; item 3's enumeration is reported in full below. The house-style
+audit item 4 mandated then found six more instances of the same class, plus one
+regression the first pass introduced, and those are fixed here too rather than
+carried.
+
+### The shared cause (items 1 and 4)
+
+Both escapes were detection defeated by the corpus's own authoring style, and
+both had one shape: a detector re-scanning surrounding text with a pattern that
+assumes a spelling of it.
+
+  - Item 1: `LOOSE_CLAIM_SRC` bounded its windows with `[^\n]`, and these
+    docblocks wrap near 76 columns. Measured on the tree, not assumed: of 158
+    label occurrences under `backend/tests`, 6 are already spelt across a wrap,
+    so the invisible spelling is one the corpus actually writes.
+  - Item 4: `surround` was built by sweeping every backticked span and one
+    bracketed span out of the match, and backticking a path is this
+    convention's house style, so the erased spelling was the natural one.
+
+The rule both fixes follow, now stated in the header under WHY THE DETECTORS
+READ A REJOINED BLOCK AND THE MATCH'S OWN CAPTURES: a detector reads either a
+view of the text that is invariant under the house style, or the spans the
+parser already captured, never a re-scan with a pattern that assumes one
+spelling. `rejoined` and `glued` are named helpers rather than two inline
+replaces buried in `namesATestFile`; `citationsIn` removes the literal spans
+the match captured, first occurrence only.
+
+### Item 2, and the design question it named
+
+The reverse link is resolved by PATH: `citationsInSource` parses the named
+file's comment blocks and the link holds only when one of its citations names
+the citing file. The substring test is gone. On this tree 396 basename
+cross-mentions already exist under `backend/tests`, so that test was satisfied
+by accident for most files.
+
+**Decision: the reverse form does NOT carry a `[TOKEN]`. Instead the citation
+that answers it must be a FORWARD one.** A reverse declaration discharges no
+clause of its own, because the file writing it mocks nothing. It is a signpost,
+not a justification, and what must be checkable about a signpost is that it
+points somewhere. The forward citation it points at is resolved and
+token-checked in its own right, so the risk class is already witnessed once, at
+the end that owes the justification. A token on the reverse form would spell
+that same fact a second time in a second place, where it can drift, and would
+raise the writing cost of exactly the declaration the solutions entry
+recommends.
+
+Requiring the ANSWER to be forward is what makes that safe, and it is a
+deviation from the hold's "or a reverse citation pointing back": under that
+wording two files declare each other companions with no token at either end,
+which is the filename-presence blindness one level up. The stricter rule costs
+nothing, since the mocked suite owes a clause-(c) citation anyway and requiring
+it to name the declaring file IS the two-sided link the convention asks for. No
+structured reverse citation exists in the corpus today (all 10 "companion for"
+occurrences are free prose in backlog files), so nothing migrates.
+
+### Item 3: the enumeration
+
+Every decision arm was mutated one at a time, set to a constant or deleted, and
+run against `npx vitest run tests/eslint/` on an isolated worktree copy. 69 arms
+were swept and all 69 now go red. The hold named one instance; the sweep found
+four unprobed arms, of which the named one was one; extending the sweep past the
+two functions the hold named found three more; the adversarial pass found two
+further ones.
+
+`citationViolations`, 16 arms: path shape; **path canonicalisation (new)**;
+**the self-canary rejection (new)**; self-citation; the non-runtime-directory
+arm and **the forward-guard on it (was GREEN)**; **the token-shape arm (was
+GREEN, the instance the hold named)** and **each of its two halves (both were
+GREEN)** and its forward-guard; companion-does-not-exist; the reverse
+link-unresolved arm, the mutual-reverse arm and the back-link path equality (all
+new); token-in-code and its in-source message branch; the over-generic reach cap.
+
+`ratchetClass`, all six classes and five branches: exempt; unparsed; the deficit
+split in both directions; the leaky/structured split. All were already probed.
+
+Extended past those two functions, because the class is "a decision nothing
+pins", not "a decision in these two functions": `blockShape`'s five fields;
+`namesATestFile`'s five arms and both rejoined views; `scrubNonFiles`'s five
+arms; `proseRemainder`'s two cuts; `unparsedClaims`' three parts; `citationsIn`'s
+whitespace strip, reverse collection and both literal removals; `AFTER_LABEL`'s
+closing-tag alternative; `QUALIFIER`'s stop-word form; `CLAIM_SPAN`'s two
+refusals; the loose window; `tokenMatcher`'s two boundaries; `codeOf`'s
+mock-call, string-title and template-title spans; `mixedScriptWords`;
+`snapshotDigest`'s canonicalisation; `reconcileBacklog`'s second-loop integer
+guard; the audit's label-free skip; the ALLOW_MARKER's two views.
+
+Six of those were GREEN and are now probed, each with a note on why its
+neighbour covered for it: **`namesATestFile`'s spaced view** (the glued view
+subsumes it on one line, but runs `settings.test.ts` into `.tsand` when a wrap
+follows the name with prose); **`scrubNonFiles`' mail and URL arms** (their only
+negatives were `example.test` addresses, which the reserved-domain arm also
+scrubs); **`citationsInSource`'s block walk** (the first probe written for it
+passed under the mutation too, because the token bracket's end-of-line anchor
+makes a structured citation nearly unspellable inside a string; the probe that
+pins it is a back-citation whose path wraps across a ` * ` gutter, which raw
+text carries into the middle of the path); **`AFTER_LABEL`'s closing-tag
+alternative** (the label count probes the `<em>` spelling, but never reaches the
+citation parsers, the only consumers of `AFTER_LABEL`); and
+**`reconcileBacklog`'s second-loop integer guard** (the existing `NaN` probe
+pins only the first loop, since every comparison against `NaN` is false either
+way; a fractional pin is the value that reaches the second).
+
+### The house-style audit (item 4's second half), and what it found
+
+Every detector was checked against the spellings this corpus actually uses,
+measured rather than guessed: 158 label occurrences, 15 distinct spellings, 6
+wrapped. Five adversarial passes ran in isolated worktrees over the finished
+fix, each with one lens (wrapping, delimiters, the reverse form, the ratchet
+arithmetic, and false accusation). Every claim below was reproduced by hand in
+both directions in a detached worktree before it was acted on, and each is now
+a probe.
+
+**A regression the first pass introduced, caught and fixed before landing.**
+Widening the window after the noun from 8 to 40, as the hold prescribed, and
+reading the whole rejoined block, turns the corpus's own clause-(a) wording
+("any case where exercising the real path per-test is impractical") standing
+above a perfectly written clause-(c) citation into an `unparsed` violation, and
+the message blames the citation. Verified: red with the fix as first written,
+green against the pre-round canary. Two changes: the after-noun window is back
+at 8, and the claim scan runs on the block with its own structured citations
+cut out, plus each citation's surround so a claim in a trailer is not cut away
+with it. Both directions probed.
+
+**Six more instances of the class, all pre-existing, all fixed.**
+
+  1. `namesATestFile` consulted the glued view for one of its patterns only, so
+     a `tests/<dir>/<name>` path in prose broken at its own directory slash was
+     invisible to the leaky arm while the same path on one line was caught.
+  2. `CLAIM_SPAN`'s sentence-break refusal read a filename broken at its own dot
+     (`custody-consent-ops.` / `test.ts`) as a sentence end, so the claim, and
+     with it the whole block including any structured citation beside it, was
+     dropped unaudited. A new sentence does not begin with a lower-case letter,
+     which separates the two.
+  3. `QUALIFIER` refused a qualifier that BEGINS with a stop word rather than
+     one that IS one: the word boundary falls inside `no-mock`, this corpus's
+     commonest qualifier, so `Real-path no-mock companion \`some.test.ts\``
+     parsed as zero labels and, carrying no colon, as no claim either. Changing
+     one word of it (`mock-free`) was caught.
+  4. The ALLOW_MARKER was matched by a raw substring test, so a marker the
+     docblock wrapped at one of its own hyphens failed to exempt. That fails
+     RED, on a block whose author did exactly what the message asked.
+  5. `scrubNonFiles` blanked a whole URL token, so the half-true compound
+     written as a link (a `github.com/.../settings.test.ts` blob URL beside a
+     structured citation) passed as `structured`. Only the scheme and authority
+     are scrubbed now: a `.test` HOST is a domain, a link whose PATH ends in a
+     test file names that file.
+  6. `.env.test` was read as the suffix-less name of a test file, so an honest
+     header naming the E2E env-file split root `CLAUDE.md` documents was classed
+     `leaky`.
+
+**Two more, on the reverse form this round added.** Companion paths were shape
+checked but never canonicalised, and `//`, `/./` and `/../` all satisfy the
+shape pattern because `.` and `/` sit inside its character class. Every arm then
+used one of two different notions of the path: the self-citation compare and my
+new back-link filter are string equality, while reading the file canonicalises.
+So `backend/tests/routes//self.test.ts` was not the citing file to arm 3 and
+was exactly it to the reader, restoring in two characters the hole arm 3 exists
+to close; and `backend/tests/../witness.test.ts` made a witness out of a file
+this canary never walks, whose own citations are never audited and whose token
+scores zero against the reach cap. Separately, this canary is dropped from its
+own scan, so the worked examples in its header answered any reverse declaration
+that named it. Both closed; a path that is not already canonical is rejected
+with the existing message, and no citation may name this file.
+
+The path-canonicalisation half was recorded as a residual in the 2026-09-03
+hold ("the self-citation arm is string equality, so mutual vouching and `..`
+path spellings satisfy every arm") rather than as a fix. It is closed here, not
+re-litigated: the reverse form's new path-equality link inherits the same
+weakness, so leaving it would have meant shipping a fresh instance of a known
+one. Say so if that reads as scope this round should not have taken.
+
+### Deviations from the prescription
+
+1. The window after the noun is NOT widened. The hold asked for it; widening it
+   accuses ordinary technical prose, reproduced above on verbatim corpus
+   wording. The rejoin alone closes the escape the hold reported, and every
+   wrapped spelling of a claim ending in `companion:` is caught with the tight
+   window, because the wrap collapses to one space.
+2. A reverse citation must be answered by a FORWARD one, not by "a forward
+   citation back or a reverse citation pointing back". Reasoning above.
+3. The audit fixed seven further instances of the item-1/item-4 class rather
+   than only reporting them, on the reading that "fix the shared cause and audit
+   for other house-style spellings that defeat a pattern" asks for the class to
+   be closed. Each is listed above; say if any should have been a separate task.
+
+### Found and NOT fixed, for triage rather than silence
+
+  - **NFKC folds the micro sign to Greek mu**, so `250µs`, the SI spelling of
+    microseconds, is a mixed-script violation, as is `Δt`. Neither is a
+    look-alike for anything Latin. The mixed-script scan runs before the
+    ratchet's exempt test, so the ALLOW_MARKER does not cover this verdict and
+    no backlog does either: the ASCII spelling is the only remedy. Pre-existing
+    and untouched by this round. The header's claim that "no honest comment in
+    this corpus contains one" was false and is corrected in place to state the
+    trap; narrowing which scripts count as confusable is a decision worth
+    taking deliberately rather than on the way past.
+  - **A reverse declaration in a file that itself mocks** satisfies that file's
+    clause-(c) label, so two mocked suites can discharge each other with one
+    real token between them and no real path run at either end. Stated in the
+    header as what the link does not establish. The obvious mechanical fix, "a
+    reverse citation in a file containing any mocking call does not satisfy a
+    label", is too blunt: `vi.fn` and `vi.spyOn` are in `MOCK_CALL_RE` and in
+    nearly every suite.
+  - **`real path with a mocked companion here:`** and shapes like it are read as
+    citation-shaped and accused. Confirmed pre-existing by running the same
+    prose against the pre-round canary.
+
+### Residuals now stated in the header
+
+The reverse link does not establish that the two files stand in a mocked /
+real-path relationship. A suffix-less name broken at its own dot is read only on
+the spaced view, because the glued view cannot tell it from `e.g.` above
+`test-only`, and the abbreviation is the commoner write. The claim-shaped span
+gives the qualifier a bounded run; a longer one is not claim-shaped here, and
+widening the bound was measured (the corpus stays green well past it) and
+declined, because every extra character accuses more prose. Everything
+previously recorded stands unchanged.
+
+### Verification
+
+`npm run typecheck` passes. `tests/eslint/` plus the two converted middleware
+exemplars plus every companion they cite: 12 files, 125 tests, green. Those
+suites need the Docker-IP env overrides from root `CLAUDE.md`; without them the
+app-pool ones 503 against `localhost:5432` and the cited `[hiveAuthMethod]`
+companion fails, which is the environment and not the code. `npm run lint` not
+run: it lints `src/` only and no `src/` file changed.
+
+The corpus classification is untouched: no line of `LANDING_FREE_PROSE`,
+`LANDING_FILELESS`, `DEFERRED_FREE_PROSE`, `DEFERRED_FILELESS` or
+`LANDING_DIGEST` is in the diff, and the two reconcile tests plus the digest
+tripwire pin all of it exactly. So none of the widened or narrowed detectors
+produced a new `unparsed`, `leaky` or backlog disagreement anywhere in 253
+files.
+
+Escape probes, each run in a detached worktree with the control green before
+and after, and each observed in both directions:
+
+  - item 1, the wrapped qualifier: green before, red after; the one-line
+    spelling red in both, so the gap closed rather than moved;
+  - item 2, a reverse citation planted in `routes/bridge.test.ts` naming the
+    unrelated `routes/search.test.ts`, which mentions `bridge.test.ts` in a
+    comment: green before, red after;
+  - item 4, a backticked trailer: green before, red after, beside the bare
+    trailer that was red in both;
+  - item 3, the token-shape arm set to a constant: 8 files and 109 tests green
+    before, red after;
+  - and one per audit finding: the slash-wrapped prose path, the dot-wrapped
+    qualifier filename, the wrapped ALLOW_MARKER (green, as it must be), the
+    `//` self-citation alias, the traversal out of the tree, this canary named
+    as a companion, the stop-word-prefixed qualifier with no colon, and the
+    second filename spelled as a URL.
+
+### [TODO Architect]
+
+`agents/docs/solutions/conventions/carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02.md`
+still ends its canary section with "Do not describe this canary as existing. It
+is a proposal." That is now false. Its citation-shape sketch also predates the
+reverse form, the qualifier rules and this round's decision that a reverse
+declaration is answered by a forward citation, and its "diff gate first"
+sequencing paragraph is superseded by the in-tree ratchet. The file is
+architect-owned, so backend has not touched it.
