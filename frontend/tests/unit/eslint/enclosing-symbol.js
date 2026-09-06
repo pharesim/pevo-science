@@ -68,8 +68,8 @@
  *    resolves INWARD, which is the direction a licensed key can absorb, and
  *    is therefore the weaker of the two. What keeps it small is that the
  *    shape has to put a whole comment and a block-closing brace on one
- *    physical line, which no formatter this tree runs will produce and no
- *    reviewer reads past.
+ *    physical line, which is conspicuous enough on its own that no
+ *    reviewer reads past it.
  *
  * The ordinary single-boundary form of that second shape, a close sharing
  * its line with the real closing brace, IS handled: the walk reads the code
@@ -155,15 +155,46 @@ function indentOf(line) {
   return line.length - line.trimStart().length;
 }
 
-/** Whether a block comment opened at `openIndex` closes on or before
- *  `lineIndex`. The brace walk enters a comment region only when this holds,
- *  so an opener it cannot see close falls through to the ordinary brace test
- *  instead of swallowing the rest of the declaration. */
-function blockCommentClosesBy(lines, openIndex, lineIndex) {
+/** Whether ANY comment close appears between `openIndex` and `lineIndex`.
+ *
+ *  Deliberately NOT named "does this opener close". Comments do not nest, so
+ *  the first close below a REAL opener is that opener's own, but a close
+ *  belonging to some later comment satisfies this test too, and every real
+ *  module carries a docblock somewhere below any given line. It is therefore
+ *  a weak guard on its own: it rules out a file with no block comment at all
+ *  after the opener, and nothing more. What refuses the shape that actually
+ *  occurs, an opener that is markup inside a template literal, is the
+ *  template test beside it in the walk. */
+function aCommentCloseFollows(lines, openIndex, lineIndex) {
   for (let k = openIndex + 1; k <= lineIndex; k++) {
     if (lines[k].includes('*/')) return true;
   }
   return false;
+}
+
+/** For each line, whether a block comment opened on an EARLIER line is still
+ *  open when this line begins.
+ *
+ *  A leading `*` is a docblock continuation and a wrapped multiplication, and
+ *  the two are textually identical. {@link isCommentLine} cannot tell them
+ *  apart from one line, and treating every such line as prose skips live
+ *  code: a forbidden-shape scan then misses the violation it exists to
+ *  report. The context is what decides, so it is computed once per file here
+ *  and handed to the skip predicate. Openers are recognized at line start
+ *  only, which is the same boundary the rest of this module draws. */
+export function blockCommentInterior(lines) {
+  const interior = new Array(lines.length).fill(false);
+  let open = false;
+  for (let i = 0; i < lines.length; i++) {
+    interior[i] = open;
+    const trimmed = lines[i].trim();
+    if (open) {
+      if (trimmed.includes('*/')) open = false;
+    } else if (trimmed.startsWith('/*') && trimmed.indexOf('*/', 2) === -1) {
+      open = true;
+    }
+  }
+  return interior;
 }
 
 function declarationOn(line) {
@@ -233,8 +264,11 @@ export function enclosingSymbol(lines, lineIndex) {
     // docblock's comment-boundary paragraph names what that leaves open.
     let closedBefore = false;
     let inBlockComment = false;
+    let ticks = (lines[i].match(/`/g) ?? []).length;
     for (let j = i + 1; j <= lineIndex; j++) {
       const line = lines[j];
+      const inTemplate = ticks % 2 === 1;
+      ticks += (line.match(/`/g) ?? []).length;
       let code = line;
       if (inBlockComment) {
         const close = line.indexOf('*/');
@@ -246,7 +280,8 @@ export function enclosingSymbol(lines, lineIndex) {
       if (
         trimmed.startsWith('/*') &&
         trimmed.indexOf('*/', 2) === -1 &&
-        blockCommentClosesBy(lines, j, lineIndex)
+        !inTemplate &&
+        aCommentCloseFollows(lines, j, lineIndex)
       ) {
         inBlockComment = true;
         continue;
@@ -280,8 +315,11 @@ export function enclosingSymbol(lines, lineIndex) {
  * consuming canary therefore pins what the walk may pass over (a stylesheet,
  * by extension) and fails on anything else. Links are followed and routed by
  * what they point at, and one pointing nowhere is reported in `foreign`
- * rather than dropped, so between the two lists the walk accounts for every
- * entry it saw and the census can be trusted as an exhaustive one.
+ * rather than dropped, so between the two lists every FILE the walk saw is
+ * accounted for. The one entry appearing in neither list is a directory link
+ * back to an ancestor, which the cycle guard declines to re-enter; no module
+ * hides there, because the real directory it names is walked under its own
+ * non-cyclic path.
  */
 export function sourcesUnder(root) {
   const sources = [];
@@ -334,17 +372,26 @@ export function sourcesUnder(root) {
   return { sources, foreign: foreign.sort() };
 }
 
-/** A line that is entirely comment BY SHAPE: a `//` line, the `*`
- *  continuation inside a docblock, or a block comment opened at line start
- *  that runs to the end of the line (or past it). A block comment that
- *  closes on its own line with code after it is live code behind a comment
- *  prefix, not prose, and is NOT skipped: a coverage pragma in front of a
- *  factor read must not hide the read. Only further comment may follow the
- *  close for the line to stay prose.
+/** A line that is entirely comment: a `//` line, a block comment opened at
+ *  line start that runs to the end of the line (or past it), or the `*`
+ *  continuation inside a docblock. A block comment that closes on its own
+ *  line with code after it is live code behind a comment prefix, not prose,
+ *  and is NOT skipped: a coverage pragma in front of a factor read must not
+ *  hide the read. Only further comment may follow the close for the line to
+ *  stay prose.
+ *
+ *  Shape alone decides every case but one. A leading `*` with no close on the
+ *  line is a docblock continuation and a wrapped multiplication and a
+ *  generator method, all three identical to this predicate, so that case
+ *  takes `insideRegion` from {@link blockCommentInterior} and is prose only
+ *  when a region really is open. Passing nothing leaves the old shape-only
+ *  reading, which suits a caller with no file in hand; a SCAN must pass it,
+ *  because reading live code as prose there is the violation going
+ *  unreported.
  *
  *  On a scan for a FORBIDDEN shape the match IS the violation, so every line
- *  skipped is a violation not reported: filter as little as possible, and
- *  this shape-only test is that minimum. A line commented out by a block
+ *  skipped is a violation not reported: filter as little as possible. A line
+ *  commented out by a block
  *  toggle that prefixed only the first line is NOT recognized and still
  *  counts, which for a forbidden scan is the loud direction (a red bar
  *  telling the author to delete dead code) rather than the silent one. A
@@ -352,7 +399,7 @@ export function sourcesUnder(root) {
  *  satisfying-side filter, because there an over-match out of a comment
  *  silently satisfies a demand; such a scan needs a commented-out walk of its
  *  own, re-derived, not inherited. */
-export function isCommentLine(line) {
+export function isCommentLine(line, insideRegion) {
   const trimmed = line.trim();
   if (trimmed.startsWith('//')) return true;
   // Both block-comment arms close before they are believed. A comment CLOSE
@@ -365,9 +412,18 @@ export function isCommentLine(line) {
   const opensBlock = trimmed.startsWith('/*');
   if (!opensBlock && !trimmed.startsWith('*')) return false;
   const close = trimmed.indexOf('*/', opensBlock ? 2 : 0);
-  if (close === -1) return true;
+  if (close === -1) {
+    // An opener with nothing after it is prose on its own evidence. A
+    // leading star is not: `* Number(cached?.hasPassword === false)` is a
+    // wrapped multiplication and `*factorHints() {` is a generator method,
+    // both shape-identical to a docblock continuation. Only the region says
+    // which, so a caller that knows passes it. `undefined` keeps the older
+    // shape-only reading for callers with no file context.
+    return opensBlock || insideRegion !== false;
+  }
   const rest = trimmed.slice(close + 2).trim();
-  return rest === '' || isCommentLine(rest);
+  // Anything after a close is outside the region by construction.
+  return rest === '' || isCommentLine(rest, false);
 }
 
 /**
@@ -388,7 +444,8 @@ export function isCommentLine(line) {
  * `skipLine` does not drop: the skip runs first and removes the whole line,
  * so a match riding on a skipped line is invisible to the count. Making the
  * skip per-match would widen shared machinery for a shape no consumer needs
- * and a formatter removes, so the case is named here instead. The other
+ * and that is conspicuous on its own line, so the case is named here
+ * instead. The other
  * residual a width pin cannot see is a constant-width REPLACEMENT, an
  * offending rewrite of the licensed lines themselves; that edit touches
  * licensed lines directly and is left to review of the diff.
@@ -397,7 +454,9 @@ export function isCommentLine(line) {
  * that necessarily matches the pattern it defines, say. It receives the
  * line's index and the whole file, so a predicate can also decide from
  * surrounding lines (an import specifier whose alias sits on the next line
- * needs that).
+ * needs that), and a fourth argument saying whether the line sits inside an
+ * open block comment, computed once per file by {@link blockCommentInterior}
+ * because a leading star cannot be read from one line alone.
  */
 export function occurrencesOf(files, pattern, skipLine) {
   // A global copy of the pattern makes `String#match` return every hit on
@@ -410,10 +469,11 @@ export function occurrencesOf(files, pattern, skipLine) {
   const tally = new Map();
   const sites = [];
   for (const { rel, lines } of files) {
+    const interior = blockCommentInterior(lines);
     lines.forEach((line, i) => {
       const matches = line.match(everyMatch)?.length ?? 0;
       if (matches === 0) return;
-      if (skipLine?.(line, i, lines)) return;
+      if (skipLine?.(line, i, lines, interior[i])) return;
       const symbol = enclosingSymbol(lines, i);
       const key = `${rel}#${symbol}`;
       tally.set(key, (tally.get(key) ?? 0) + matches);

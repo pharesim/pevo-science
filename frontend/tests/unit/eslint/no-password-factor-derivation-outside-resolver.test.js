@@ -105,9 +105,11 @@
  *  2. A MATCH RIDING ON A SKIPPED LINE. Each scan's skip predicate drops the
  *     whole line before the tally runs, so a live reference sharing one
  *     physical line with an import specifier it spares is counted nowhere.
- *     Reaching it takes a shape a formatter undoes, and making the skip
- *     per-match would widen machinery every future canary inherits for a
- *     case none of them has, so it is named rather than closed.
+ *     Reaching it takes an import statement and a live reference on one
+ *     physical line, conspicuous enough on its own that no reviewer reads
+ *     past it. Making the skip per-match would widen machinery every future
+ *     canary inherits for a case none of them has, so it is named rather
+ *     than closed.
  *  3. A NAME THAT IS NEVER SPELLED. Both scans are token matches, so a
  *     derivation that assembles the fetch's name from string fragments and
  *     reads the discriminator through a computed key writes neither token
@@ -122,6 +124,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   MODULE_SCOPE,
+  blockCommentInterior,
   enclosingSymbol,
   isCommentLine,
   occurrencesOf,
@@ -188,13 +191,20 @@ const importStatementOpens = (lines, lineIndex) => {
   return false;
 };
 
+/** The comment skip the scans hand to `occurrencesOf`. Prose is decided by
+ *  shape plus the block-comment region, because a leading `*` is a docblock
+ *  continuation and a wrapped multiplication and only the region separates
+ *  them. `occurrencesOf` computes the region once per file and passes it as
+ *  the fourth argument. */
+const skipCommentLine = (line, lineIndex, lines, insideRegion) => isCommentLine(line, insideRegion);
+
 /** The shapes that name the status fetch without holding a usable second
  *  answer: its definition, whole-line comments, and an unaliased specifier
  *  of a genuine import statement. Everything else that writes the name
  *  counts. */
-const skipStatusFetchLine = (line, lineIndex, lines) =>
+const skipStatusFetchLine = (line, lineIndex, lines, insideRegion) =>
   STATUS_FETCH_DEFINITION_RE.test(line) ||
-  isCommentLine(line) ||
+  isCommentLine(line, insideRegion) ||
   (STATUS_FETCH_IMPORT_SPECIFIER_RE.test(line) &&
     importStatementOpens(lines, lineIndex) &&
     !STATUS_FETCH_ALIAS_RE.test(joinedStatement(lines, lineIndex)));
@@ -384,7 +394,7 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
   });
 
   it('only the resolver, the settings template, and the set-password patch touch hasPassword, at pinned widths', () => {
-    const { counts, sites } = occurrencesOf(sources, HAS_PASSWORD_RE, isCommentLine);
+    const { counts, sites } = occurrencesOf(sources, HAS_PASSWORD_RE, skipCommentLine);
     expect(
       counts,
       `${CONSUME_THE_RESOLVER}\nA factor decision can avoid calling the status fetch when ` +
@@ -394,7 +404,7 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
   });
 
   it('no module re-exports the api module wholesale', () => {
-    const { sites } = occurrencesOf(sources, API_EXPORT_STAR_RE, isCommentLine);
+    const { sites } = occurrencesOf(sources, API_EXPORT_STAR_RE, skipCommentLine);
     expect(
       sites,
       `${CONSUME_THE_RESOLVER}\nA star re-export rebinds fetchEmailStatus under a new module ` +
@@ -562,6 +572,23 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
       'pages/settings.js#loadEmailStatus',
     ]);
 
+    // A leading star does not make the line prose here either. This layer
+    // has its own skip predicate, so it needs its own probe: covering the
+    // password-state layer alone leaves this one able to drop the region.
+    const starLineNamingTheFetch = {
+      rel: 'pages/anything.js',
+      lines: [
+        'async function pick(cached) {',
+        '  const fresh = Number(cached == null)',
+        '    * Number((await fetchEmailStatus())?.data?.hasPassword === false);',
+        '  return fresh;',
+        '}',
+      ],
+    };
+    expect(occurrencesOf([starLineNamingTheFetch], STATUS_FETCH_IDENT_RE, skipStatusFetchLine).keys).toEqual([
+      'pages/anything.js#pick',
+    ]);
+
     // A commented-out call contributes nothing: it must not satisfy the
     // licensed set, and it must not read as a violation either.
     const commentedOut = {
@@ -649,10 +676,10 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
         '`;',
       ],
     };
-    expect(occurrencesOf([gateOnly], HAS_PASSWORD_RE, isCommentLine).counts).toEqual({
+    expect(occurrencesOf([gateOnly], HAS_PASSWORD_RE, skipCommentLine).counts).toEqual({
       'pages/settings.js#template': 1,
     });
-    expect(occurrencesOf([gatePlusInlineDecision], HAS_PASSWORD_RE, isCommentLine).counts).toEqual({
+    expect(occurrencesOf([gatePlusInlineDecision], HAS_PASSWORD_RE, skipCommentLine).counts).toEqual({
       'pages/settings.js#template': 2,
     });
 
@@ -671,7 +698,7 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
         '`;',
       ],
     };
-    expect(occurrencesOf([gateWithSameLineSecondRead], HAS_PASSWORD_RE, isCommentLine).counts).toEqual({
+    expect(occurrencesOf([gateWithSameLineSecondRead], HAS_PASSWORD_RE, skipCommentLine).counts).toEqual({
       'pages/settings.js#template': 2,
     });
     const twoFetchesOneLine = {
@@ -690,8 +717,9 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
     // whole line before the tally runs, so a match riding on a skipped line
     // is invisible. An import and a live reference on ONE physical line
     // yield nothing; split across two lines the reference is a red bar.
-    // Reaching it needs a shape a formatter removes, which is why the
-    // response is to name it rather than to make the skip per-match.
+    // Reaching it needs an import and a live reference on one physical
+    // line, which is conspicuous on its own, so the response is to name it
+    // rather than to make the skip per-match.
     const riderOnSkippedLine = {
       rel: 'pages/anything.js',
       lines: ["import { fetchEmailStatus } from '../api.js'; const f = fetchEmailStatus;"],
@@ -707,7 +735,7 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
   });
 
   it('the password-state scan sees reads a factor decision cannot avoid writing', () => {
-    const passwordStateKeys = (file) => occurrencesOf([file], HAS_PASSWORD_RE, isCommentLine).keys;
+    const passwordStateKeys = (file) => occurrencesOf([file], HAS_PASSWORD_RE, skipCommentLine).keys;
     // Property read, destructuring, and bracket access all write the name.
     expect(
       passwordStateKeys({
@@ -752,6 +780,28 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
         lines: ['// hasPassword drives the factor choice', 'function pick() {}'],
       }),
     ).toEqual([]);
+    // A wrapped multiplication whose operator leads the continuation line.
+    // This is live code, the discriminator is on it, and the scan that exists
+    // to catch a second-hand status read must see it.
+    expect(
+      passwordStateKeys({
+        rel: 'pages/anything.js',
+        lines: [
+          'function pick(status, cached) {',
+          '  const orcidOnly = Number(cached != null)',
+          '    * Number(cached?.hasPassword === false);',
+          '  return orcidOnly;',
+          '}',
+        ],
+      }),
+    ).toEqual(['pages/anything.js#pick']);
+    // The same shape inside a docblock stays prose.
+    expect(
+      passwordStateKeys({
+        rel: 'pages/anything.js',
+        lines: ['/**', ' * hasPassword drives the factor choice', ' */', 'function pick() {}'],
+      }),
+    ).toEqual([]);
   });
 
   it('the comment predicate skips whole-line prose only, never live code behind an inline block comment', () => {
@@ -782,6 +832,22 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
     expect(isCommentLine('  */ /* two */')).toBe(true);
     expect(isCommentLine('const usesPassword = status.hasPassword; // trailing prose')).toBe(false);
     expect(isCommentLine('')).toBe(false);
+    // A leading star is a docblock continuation AND a wrapped multiplication,
+    // and one line cannot tell them apart. Outside an open comment region the
+    // line is live code, so the predicate needs the region to answer. Passed
+    // explicitly here; the scans compute it per file.
+    expect(isCommentLine('  * (status.hasPassword === false ? 1 : 0)', false)).toBe(false);
+    expect(isCommentLine('  * Number(cached?.hasPassword === false);', false)).toBe(false);
+    expect(isCommentLine('*factorHints() { yield this.emailStatus.hasPassword; }', false)).toBe(false);
+    // Inside one, the same shape is the docblock continuation it looks like.
+    expect(isCommentLine('  * hasPassword is read once, in the resolver', true)).toBe(true);
+    expect(isCommentLine('  * (status.hasPassword === false ? 1 : 0)', true)).toBe(true);
+    // With no region known, the shape reading stands, which is what the
+    // import-clause walk relies on.
+    expect(isCommentLine('  * hasPassword is read once, in the resolver')).toBe(true);
+    // A close ends the region wherever it sits, so what follows is live even
+    // when it is itself star-shaped.
+    expect(isCommentLine('*/ * Number(status.hasPassword === false);', true)).toBe(false);
   });
 
   it('the enclosing-symbol resolver names component methods, template literals, and locals, not files', () => {
@@ -954,5 +1020,80 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
       'const usesPassword = status.hasPassword;',
     ];
     expect(enclosingSymbol(closingBraceAfterCommentClose, 5)).toBe(MODULE_SCOPE);
+
+    // OPENER inside a template literal, with a real comment close elsewhere
+    // in the file. A later close cannot vouch for an opener that is markup:
+    // every page module carries a docblock, so a test that only asks whether
+    // SOME close follows is satisfied in every real file and the phantom
+    // region opens anyway. Template state is what refuses it.
+    const strayInMarkupWithLaterDocblock = [
+      'function renderPanel(status) {',
+      '  return `',
+      '    <div class="factor-panel">',
+      '    /* spacing note, never closed',
+      '    </div>',
+      '  `;',
+      '}',
+      '',
+      '/**',
+      ' * An ordinary docblock, further down the same module.',
+      ' */',
+      'const usesPassword = status.hasPassword;',
+    ];
+    expect(enclosingSymbol(strayInMarkupWithLaterDocblock, 11)).toBe(MODULE_SCOPE);
+
+    // OPENER outside any template, with no close anywhere below it. Template
+    // state has nothing to say here, so whether a close follows at all is the
+    // branch that decides, and an opener nothing ever closes is not a region.
+    const strayOpenerNoClose = [
+      'function pick(status) {',
+      '  const marker = legacyMarkers[0];',
+      '  /* the note that was never closed',
+      '  return status.hasPassword;',
+      '}',
+      '',
+      'const usesPassword = status.hasPassword;',
+    ];
+    expect(enclosingSymbol(strayOpenerNoClose, 6)).toBe(MODULE_SCOPE);
+
+    // Template state describes where a line BEGINS, not where it ends. The
+    // only line the two readings disagree on is one that both opens a comment
+    // and carries an odd number of backticks, which is an ordinary docblock
+    // in this codebase: prose here quotes identifiers in backticks constantly.
+    // Such a line begins outside the literal, so its opener is a real comment
+    // and the brace it encloses is prose.
+    const backtickInsideCommentOpener = [
+      'function pick(status) {',
+      '/* a note mentioning `hasPassword` once, unbalanced `',
+      '}',
+      '*/',
+      '  return status.hasPassword;',
+      '}',
+    ];
+    expect(enclosingSymbol(backtickInsideCommentOpener, 4)).toBe('pick');
   });
+  it('the region pass marks docblock interiors and nothing else', () => {
+    // What lets the star arm tell a continuation from an operator. The flag
+    // is about the line's CONTEXT, not its shape: index 2 and index 6 are
+    // textually identical and only one of them is prose.
+    const lines = [
+      'const base = 1;',            // 0
+      '/**',                        // 1
+      ' * a docblock continuation', // 2
+      ' */',                        // 3
+      'const weight = base',        // 4
+      '  * scale',                  // 5
+      '  * a docblock continuation',// 6  same text as index 2, live here
+      ';',                          // 7
+    ];
+    expect(blockCommentInterior(lines)).toEqual([
+      false, false, true, true, false, false, false, false,
+    ]);
+    // The opener's own line is not interior; the close's line is, because a
+    // region is still open when that line begins.
+    expect(blockCommentInterior(['/*', 'x', '*/', 'y'])).toEqual([false, true, true, false]);
+    // A self-contained block comment opens no region.
+    expect(blockCommentInterior(['/* one */', 'const x = 1;'])).toEqual([false, false]);
+  });
+
 });
