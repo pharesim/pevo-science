@@ -712,3 +712,71 @@ Comment-only change; no test and no structural change.
 **When the fix lands, `git mv` this file back to `tasks/review/`.** The move is the
 re-review signal. Do not edit this hold block; the commit diff is the evidence and the
 architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-09-06, working tree)
+
+The single held item landed as a one-phrase docblock edit in `lib/fresh-auth.js`;
+no code, no test, no structural change. The premise was re-verified against the
+working tree before editing rather than taken from the hold: the citation is
+purely positional with no stable name in the slot, and the rule it points at is
+stated outside the citing paragraph.
+
+**Item 1.** The reject-path sentence now ends "with the keys left alone under the
+flow-key ownership rule". The direction word is gone entirely, which is the form
+the hold called cleanest, so the carve-out's three criteria never have to be
+leaned on. The name resolves in-file without a pointer: `unwindFlowKeys`'s own
+comment calls it "the ownership rule in the docblock",
+`abandonInFlightAcquisitions`'s docblock states the same rule from the writer's
+side, and the paragraph that states it speaks of "the flow keys". No task slug,
+round number, or line number was substituted for the position.
+
+**Correction to the hold's rationale, recorded not acted on.** The hold places
+the cited rule "two paragraphs further down". The docblock has three paragraphs,
+separated by bare `//` lines: the citation sits in the second and the rule is
+stated in the third, so the distance is one paragraph. It does not change the
+prescription. Criterion 1 fails on any container crossing regardless of distance,
+and criterion 2 (no stable-name companion) failed independently.
+
+**Verification.** Adversarial fan-out of four lenses (claim truth against the
+code, self-audit of the replacement text, hold fidelity, sibling parity sweep),
+three independent refuters per raised finding, and a completeness critic over the
+merged set: fifteen findings raised, none survived. Full frontend unit suite: 82
+files, 1834 of 1835 green. The one failure is the documented
+`lib-fresh-auth-session-window` absolute-cap clock flake (off by 1 ms), which
+passes 61 of 61 when that file is re-run alone; the 3 vitest errors are the
+documented pre-existing `pages-edit` `_mountEditors` rejections. The anchor gate
+was probed both ways in a throwaway index rather than trusted: the old phrase on
+a newly-added line fails the gate, the replacement passes, and the gate's own
+remediation string names this exact wording. `.githooks/tests/test-pre-commit.sh`
+is 32 of 32 green. Playwright not run: comment-only change, same omission posture
+as the previous rounds.
+
+**Checked and left, for the architect.**
+
+1. Item 1 notes that "the `.githooks/pre-commit` anchor gate does not scan for
+   above/below citations at all". That was true when the hold was written and
+   stopped being true four minutes later: `85baa79b` landed the positional arm,
+   and it matches the retired phrase exactly. The coverage model is what needs
+   the update, not this fix.
+2. `.githooks/tests/test-pre-commit.sh` case R13 quotes the OLD wording verbatim
+   as a negative fixture asserting exit 1. It writes its own throwaway file and is
+   unaffected by this change, and it must NOT be updated to track the new wording:
+   that would make the fixture clean and flip the case to a false pass.
+3. The retired phrase is at zero in `frontend/{src,tests}`, but the wider class is
+   not. Eight lines still match the gate's positional arm. Blame was re-derived
+   per line rather than taken from the sweep's summary. Exactly one is this task's
+   own work, `lib-fresh-auth-settings-orcid.test.js`'s "The case above passes
+   none", from the round-3 commit `39363364`; the rest belong to
+   `ui-consent-op-teardown-guard` (`0c42bba0`, `01347275`, `69686a16`),
+   `ui-custody-upgrade-subject-pin` (`9e0ce60d`), or predate both (2026-05 and
+   2026-06). None is a newly-added line under this commit, so the diff gate never
+   sees them, and root `CLAUDE.md` defers the whole-tree sweep explicitly. Not
+   fixed here: the hold enumerated one item and forbade test changes.
+4. The one remaining match inside the fixed file, `acquireSessionProof`'s "nothing
+   may be awaited between here and the call below", belongs to
+   `ui-consent-op-teardown-guard`'s surface and reads durable on the merits.
+   `mintViaPasswordFactor` is named in the same comment paragraph, so a stable
+   name does ride along; only the gate's noun-slot heuristic, which cannot see
+   across the sentence, would flag it.
