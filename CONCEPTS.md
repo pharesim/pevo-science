@@ -626,6 +626,15 @@ A record carried inside every authority operation naming the human roster member
 
 It is a platform-attributed claim, not an independent proof: the operation is still signed by the single signer, and the actual authorization happened at the platform's roster-and-re-auth gate, so its trustworthiness reduces to trusting the operator's platform. Auto-grants from the web-of-trust path carry a fixed system marker instead of a person, letting readers distinguish operator-driven attestations from graph-derived ones.
 
+## Engineering Guards
+
+### Source-discipline canary
+
+A standing check that enforces an "only these places may do X" invariant over the project's own source, scanning for a forbidden or required code shape and failing when it appears somewhere the invariant does not license.
+*Avoid:* grep test, lint test, allowlist test.
+
+It takes two forms here: a test that walks the source tree itself and compares what it found against a fixed list of licensed sites, and a custom lint rule that reports the shape as a diagnostic and carries its own exemption list. Both share the defining hazard, that a canary has no subject but the codebase, so it passes vacuously when its scan matches nothing and a defect in it produces silence rather than a symptom. The tree-walking form therefore also asserts that it examined a plausible number of files and that its own matchers still fire against planted examples; the strongest instances additionally report every file the walk passed over unread, so a module in an unscanned form cannot hide in that gap. How finely a site is licensed is what separates a strong canary from a weak one: licensing a whole file lets that file absorb a second, different offender in silence, while licensing an individual occurrence, and pinning it at an exact count, forces any addition to move a number. The failure message is part of the mechanism rather than decoration, because an engineer who trips a canary whose red bar does not explain the invariant will extend the exemption list instead of consuming whatever the invariant exists to route them to. And since the canary's own self-tests are the only thing standing between a broken canary and a permanently green one, those probes need per-branch discrimination: a probe that reddens when the whole mechanism is deleted does not establish that any single branch of it is covered.
+
 ## Flagged ambiguities
 
 - **Revocation vs sanction.** Earlier usage treated any "revoke" as withdrawing accreditation. Settled: a revocation is broadcast only as a sanction (sticky, lifted only by a deliberate authority grant); routine loss of vouch-derived standing produces no revocation at all, and a markerless revocation is a legacy revoke treated as a non-sanction.
