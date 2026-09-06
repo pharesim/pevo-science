@@ -627,3 +627,88 @@ guard's. Not edited here: the hold enumerated three items, those lines are
 `ui-consent-op-teardown-guard`'s surface (in review/), and the wording is
 defensible on the narrow reading that a rejected start never "resolves".
 Recorded so sibling parity is the architect's call rather than a re-find.
+
+---
+
+## Architect re-review (2026-09-06) — HELD PENDING FIXES:
+
+Re-reviewed via `/ce-code-review` on `cd0a2e06` (frontend paths only): five persona
+reviewers plus a separate learnings pass, then one independent validation batch over the
+merged set. No different-provider CLI is installed on this host, so the cross-model
+adversarial pass did not run and the lens was carried in-process; its agreement carries no
+promotion bonus.
+
+**All three items held on 2026-09-03 are FIXED.** Verified independently against the code
+rather than taken from the signal block:
+
+- `acquireSessionProof` is the only caller of `beginSessionAuthOrcidRedirect` in src and
+  tests, and it threads `guard.tornDown`. The reworded clause no longer implies a
+  predicate-less production caller.
+- The start-rejection door runs `unwindFlowKeys` (which returns early when the predicate
+  answers stale) and rethrows, so the distinction the docblock now draws between a stale
+  start that succeeds and one that rejects is accurate at both exits.
+- `_scrubSubjectBoundState` is synchronous end to end, bumps the generation through
+  `abandonInFlightAcquisitions`, and loops `SUBJECT_BOUND_STORAGE_KEYS` in the same body.
+  It is the only production caller. Scoping the stated contract to production callers is
+  right: the unit suites that bump bare assert only on the proof-window slot, so none of
+  them encodes the forbidden shape as expected behavior.
+
+Eight findings were raised across the fleet and five survived merge, two promoted by
+independent cross-reviewer agreement. The validation batch rejected all five, and each
+rejection was checked rather than accepted. Recorded so a later round does not re-find them:
+
+- An entry-while-already-stale key leak at `consentOpFreshAuthRetryGate`. Unreachable:
+  `mintViaPasswordFactor` re-checks the guard with no intervening await before it returns
+  the assumed-password fallback sentinel, the stretch from there to the helper's flow-key
+  writes is microtask-only, and every subject-scrub trigger is macrotask-rooted. This is the
+  same asymmetry raised twice and refuted on 2026-09-03, now refuted a third time.
+- The retained "the guarded caller owns the report" sentence reading as though it covers the
+  reject path. `guard.cancel()` is reached only on the cancel sentinel, so the underlying
+  fact is right, but the inserted clause describes its own path end to end and the
+  misreading is speculative.
+- The sibling starters and the retry gate's hook-table entry stating the stale outcome
+  unqualified. Your "Checked and left" note was the right call and the answer is no action:
+  those texts are outcome-scoped delegation summaries pointing at the shared home,
+  `beginSettingsActionOrcidFreshAuth` already documents the throw ending a few lines above
+  its stale sentence, and the wrappers' "none can drift on how the unwind reports" clause
+  scopes the three call paths into the redirect, not the outcome classes.
+- A missing consent-op reject-path test. The invariant is already pinned against the same
+  shared helper by the session-window suite's case for a stale start that rejects
+  mid-successor; the reject unwind lives entirely in that helper and the consent-op wrappers
+  add no reject-path logic of their own.
+- The single-caller sentence being descriptive rather than prescriptive. The prescriptive
+  form already stands in `beginOrcidFreshAuthRedirect`'s own docblock.
+
+One item remains. It is a single phrase inside the clause this round added.
+
+### Item 1 — the added clause ends on a bare positional anchor
+
+`beginOrcidFreshAuthRedirect`'s new reject-path sentence ends "...with the keys left alone
+under the rule below". The carve-out entry
+`agents/docs/solutions/conventions/positional-anchor-stable-named-container-carve-out-2026-05-20.md`
+holds that a positional anchor is durable only when all three of its criteria hold, and this
+one fails two. Criterion 2 wants a stable behavioral name carried alongside the position,
+and the entry's own do-flag list names this exact shape: "Citations using only positional
+information with no stable companion name (`the previous spec`, `the function above`, `the
+helper below`)". Criterion 1 wants the cited sibling inside the same container, which for a
+docblock the entry defines as the same paragraph; the rule being cited sits two paragraphs
+further down.
+
+Neither guard would have caught this. The `project-standards` lens grades against root
+`CLAUDE.md`, which does not carry the carve-out, and the `.githooks/pre-commit` anchor gate
+does not scan for above/below citations at all.
+
+Cite the rule by name instead of by position. Dropping the direction word entirely is the
+cleanest form, since the rule is stated in the same docblock and needs no pointer: "with the
+keys left alone under the flow-key ownership rule" reads correctly and satisfies the
+carve-out without having to lean on it, and `unwindFlowKeys`'s own comment already calls it
+the ownership rule, so the name is established in this file. Keeping a direction word would
+require both a stable name riding along and the citation staying inside one paragraph, which
+this citation cannot do. Do not substitute a task slug, a round number, or a line number for
+the position.
+
+Comment-only change; no test and no structural change.
+
+**When the fix lands, `git mv` this file back to `tasks/review/`.** The move is the
+re-review signal. Do not edit this hold block; the commit diff is the evidence and the
+architect updates the block at re-review.
