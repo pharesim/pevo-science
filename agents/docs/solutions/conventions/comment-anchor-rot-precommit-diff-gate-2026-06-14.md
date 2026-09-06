@@ -12,6 +12,7 @@ related_components:
 applies_when:
   - "Extending, tuning, or debugging the .githooks/pre-commit comment-anchor gate"
   - "Designing any commit/CI gate that must distinguish rot slug tokens from legit hyphenated-uppercase tokens in source"
+  - "Deciding which criteria of a prose convention a regex can enforce and which must stay with human review"
   - "Deciding diff-gate vs whole-tree-clean for a convention that the existing tree already violates pervasively"
   - "Reconciling the pre-commit gate with the backend/src no-stale-comment-anchors.test.ts vitest canary"
   - "A contributor hits the gate on a legitimate fixture line and needs the escape hatch"
@@ -24,6 +25,8 @@ tags:
   - false-positive
   - slug-prefix
   - githooks
+  - positional-anchor
+  - machine-checkable-criteria
 ---
 
 # Mechanizing the comment-anchor convention: a prefix-scoped pre-commit DIFF gate
@@ -31,9 +34,9 @@ tags:
 ## Context
 
 The root `CLAUDE.md` "Comment anchors" convention (no task-slug citations, round/hold
-ordinals, `Option X.N` labels, source line-number cites, or `tasks-archive`/`see task`
-redirects in production/test source) was enforced only by manual review-time grep plus a
-narrow standing vitest canary. The recurring failure, documented in
+ordinals, `Option X.N` labels, source line-number cites, `tasks-archive`/`see task`
+redirects, or bare positional anchors in production/test source) was enforced only by
+manual review-time grep plus a narrow standing vitest canary. The recurring failure, documented in
 [[sweep-acceptance-grep-under-enumerates-slug-prefix-families-2026-06-08]], is that a sweep
 greps one slug-prefix family (`BACKEND-` only) and reports false-clean while rot under other
 prefixes (`BE-`, `SEC-`, `JFR-`, `UI-`) survives. The architect task to mechanize this had
@@ -50,7 +53,7 @@ anchors, and the wider slug families are uncovered everywhere.
 ## Guidance
 
 Add a `.githooks/pre-commit` gate that fails on **newly-added** rot under
-`frontend/{src,tests}` and `backend/{src,tests}`, built on three decisions that resolve the
+`frontend/{src,tests}` and `backend/{src,tests}`, built on four decisions that resolve the
 hard parts:
 
 **1. Scope detection to known task-slug PREFIX families, never a generic `[A-Z]+-[A-Z]`.**
@@ -78,13 +81,31 @@ stays the whole-tree-clean guarantee for that one tree; the hook extends *new-ro
 overlapping on `backend/src` for defense in depth (the hook catches a new anchor at commit
 time, before the canary would catch it at test time).
 
+**4. Gate a prose rule only on the criteria a regex can actually decide, and say which
+those are.** The positional-anchor arm, added after a newly-added docblock line ended on
+`the rule below`, is the case that makes this concrete. The governing carve-out declares
+`above`/`below` durable only when all three of its criteria hold, and a regex can check
+exactly one of them: criterion 2, whether a stable behavioral name rides along. The
+mechanization is adjacency. The arm fires only when the article sits **directly** against a
+structural noun, so `the canary above` and `the helper below` match while
+``the 42601 canary above`` and ``the `unwindFlowKeys` helper above`` do not, because in the
+durable form the stable name occupies that slot. Criterion 1 (same container) and criterion
+3 stay with review, and the hook header says so rather than implying full coverage. The
+noun list is deliberately slot-words only (`rule`, `helper`, `case`, `guard`, `loop`, ...),
+never words that can name a thing, because a noun that can carry identity would make the
+adjacency test meaningless. What this buys is the same property decision 1 buys: a blanket
+`above|below` grep would flag the durable form and **re-open a dismissal review had already
+made three times**, which is how a gate earns a reputation for noise and gets disabled.
+
 Escape hatches (never `--no-verify`, which is forbidden for agents without authorization):
 a per-line `anchor-allow` marker exempts a single legitimate line (a regex self-test fixture
 — including the canary's own `LINE_CITE_RE.test(...)` lines — or an intentional stack-trace
 assertion), and `PEVO_ANCHOR_GATE=off git commit ...` skips a whole commit. The `.githooks`
 precedent is [[commit-zone-audit-hook-2026-04-30]]; activation is the same one-time
 `git config core.hooksPath .githooks`, and the gate ships with a mirrored
-`.githooks/tests/test-pre-commit.sh` (26 cases).
+`.githooks/tests/test-pre-commit.sh` (32 cases; every arm carries both a planted positive
+and a false-positive neighbour, and the positional arm's neighbours are the named forms the
+carve-out protects).
 
 ## Why This Matters
 
@@ -95,17 +116,29 @@ separate a "bad" token family from "good" siblings that share a surface shape, s
 bad family's *distinctive prefix* is far more robust than enumerating an allowlist of every good
 token, because the allowlist is unbounded and drifts while the prefix set is small and stable.
 A noisy gate is a deleted gate; designing for near-zero false positives is what keeps it enabled.
+The positional arm generalizes that lesson to prose rules: a convention with several criteria
+usually has exactly one a regex can decide, and the honest move is to mechanize that one, name
+it in the header, and leave the rest to review. Gating the whole rule would mean re-flagging
+the forms the convention deliberately protects, which is the same noise failure by another
+route.
 
 ## When to Apply
 
 - Extending the gate to a new slug family: add it to the prefix set in `anchor_violation()`,
   add a planted-positive and an FP-neighbor case to `test-pre-commit.sh`, and re-run the
   tree residue sweep to confirm zero new false positives before committing.
-- Two classes are intentionally **not** gated and must stay that way unless re-justified: the
+- Three classes are intentionally **not** gated and must stay that way unless re-justified: the
   terminal `~<n>` tilde line-approximation (its FP tuning against `~50ms` / `~28,800` /
-  `~3.5 days` is intricate and lives in the canary's `LINE_CITE_RE`), and bare `SEC-<n>`
+  `~3.5 days` is intricate and lives in the canary's `LINE_CITE_RE`), bare `SEC-<n>`
   security-requirement / E2E coverage-matrix header IDs (`E2E-AUTH-N`, `READ-N`, ...), which
-  are legitimate stable references.
+  are legitimate stable references, and the `the previous <noun>` / `the next <noun>`
+  positional variant, which is the same rot class but collides with ordinary algorithm prose
+  (`the next step`, `the previous value`) and so needs tuning the above/below form does not.
+- Adding a **semantic** arm (one that encodes a judgment, as the positional arm encodes one
+  of three carve-out criteria): state in the hook header which part of the rule the arm
+  decides and which part stays with review, and give the arm a false-positive neighbour case
+  drawn from the form the convention explicitly protects. An arm that silently claims more
+  coverage than it has is worse than no arm, because reviewers stop looking.
 - Promoting to a whole-tree-clean gate: only after the `backend/tests` + `frontend/**` sweeps
   land; until then the diff shape is mandatory.
 
@@ -138,6 +171,9 @@ Durable-store references are the convention's allowed class, so a `solutions/` o
   follows (a second commit-time staged-diff audit alongside the zone audit).
 - [[task-slug-citations-in-comments-go-stale-on-archive-2026-05-15]] — why slug citations are
   forbidden in source in the first place.
+- [[positional-anchor-stable-named-container-carve-out-2026-05-20]] — the three criteria the
+  positional arm partially mechanizes. Read it before touching that arm: it is the authority
+  on which citations are durable, and the arm deliberately implements only its criterion 2.
 - [[docblock-anchor-stable-symbols-not-line-numbers-2026-05-15]] — the line-number-anchor rot
   class the line-cite arm screens for.
 - [[carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02]] — a second candidate for
