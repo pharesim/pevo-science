@@ -235,3 +235,86 @@ pins its own token" from "reuses the executor's token" because the store token
 only rotates inside the proof stub. Both are testing gaps for a future pass.
 Comment-anchor reminder as before: no task slugs, round numbers, or line numbers
 in code or test comments; anchor on the symbol names above.
+
+## UI re-review signal (2026-09-06, commit bea00bd3):
+
+All three hold items landed in one commit; the diff is the evidence.
+
+1. The round-2 suite's carve-out header now names
+   `backend/tests/routes/custody-upgrade.test.ts` and the `derived_pubkey` /
+   on-chain key-set rejection it asserts, and states the bypass (stubbed signer,
+   clause (b) not applicable) the way the pin suite's header does. The two
+   unresolvable citations are gone.
+2. `RETRYABILITY[sessionChangedBeforeCleanup]` is `retryable-backend-only`. The
+   en.json copy and the fifteen re-stubs say the keys were updated, the upgrade
+   stopped before it finished, sign in again as {username} and press Try Again,
+   keep the phrase safe. The ledger carries an `Updated` block. The
+   `UPGRADE_ERROR_KEYS` comment, the `canRetryUpgrade` docblock, the
+   `handleRetry` and `retryUpgradeBackend` docblocks, the start-guard comment,
+   the `_endUpgradeAsSessionChanged` docblock and the template's Try Again
+   comment all say only the after-cleanup half is terminal. The prescribed test
+   is in the pin suite.
+3. The `_beforeUnloadHandler` field docblock now says what the code does: torn
+   down in `destroy()`, with `init()` deregistering a previous instance before
+   reassigning, and a no-op outside `upgrading` by its own phase check.
+
+Five things to weigh rather than assume:
+
+1. **The recovery the new copy prescribes has an in-tab path that defeats it,
+   and it is the most prominent one on that screen.** The before-cleanup
+   recovery is this component's own Try Again, so it survives only a re-login
+   that keeps the component mounted. The global header's sign-in modal does,
+   and another tab's login does. The settings body's own signed-out button
+   calls `navigate('/login')`, which unmounts the component, and `destroy()`
+   wipes the seed and the pin; the login page then lands on `/papers`. Reaching
+   that state needs a sign-out first, so it is the user who signed the
+   intervening user out and then used the button in front of them rather than
+   the one in the header. Pre-existing, untouched here, and outside the hold's
+   items, so it is not fixed: making that button open the modal is a change to
+   the signed-out settings view for every user and is yours to call. The
+   `_endUpgradeAsSessionChanged` docblock now names the condition and names
+   that button as not satisfying it. The user is not stranded either way, since
+   the phrase is written down and a fresh wizard run with the rotated phrase
+   completes the cleanup, but nothing in the UI says so.
+2. **A Keychain re-login as the pinned subject hides the retry entirely.**
+   Signature-authenticated sessions mint `custody: 'self'`, so `isLight` is
+   false, the whole upgrade section including the error copy and Try Again is
+   torn down, and the self-custody panel renders while the backend still holds
+   the old keys with `upgraded_at` null. A later password re-login brings the
+   section back and the retry succeeds. Pre-existing custody-claim behaviour,
+   not introduced here, and the new copy does not name a sign-in method.
+3. **An architect-zone file now contradicts the code.** The solutions entry
+   `subject-divergence-guard-earns-its-place-only-where-the-flow-acts-unpinned-2026-09-03.md`
+   states in present tense that this key's RETRYABILITY entry is terminal, that
+   Try Again is hidden, and that the copy routes the user to support. All three
+   are false as of this commit. The UI agent cannot edit that path without
+   `[skip-zone-audit]`, so it is left for you.
+4. **Corrections beyond the literal items, in the docblocks the items touched.**
+   Two sentences generalising over the terminal set were false and are fixed:
+   the terminal copy describes an out-of-band recovery rather than uniformly a
+   support contact (four of the five terminal keys never said support), and the
+   retry's defensive branch no longer claims every terminal sub-case wipes the
+   seed, which `backendTimeout` has never done. The settings suite's branch
+   enumeration was keyed on a `backendUnavailable` string comparison the code
+   stopped making; it now reads the RETRYABILITY value and names all three
+   backend-only keys.
+5. **The recorded bearer gap is closed by the new test.** Your note said the
+   retry-leg bearer test could not distinguish a retry pinning its own token
+   from one reusing the executor's. Here the executor runs under one token, the
+   declined retry under the intervening user's, and the second retry under a
+   third; the assertion on the POST's Authorization header fails unless the
+   retry reads the store at its own start. The drift-helper gap in the
+   helper-subject suite is untouched.
+
+Verification: 82 files, 1831 tests green. Four mutation probes against this
+commit, each restored after: reverting the RETRYABILITY value, wiping the seed
+on a declined decline, re-capturing the retry subject from the live store, and
+dropping the pinned username from the retry's landing payload. Every one is
+killed by the changed tests.
+
+Review evidence: a seven-lens adversarial pass with three refuters per finding.
+The session hit its model rate limit partway through, killing fifteen of
+forty-four agents including every refuter for the correctness and adversarial
+lenses and the completeness critic, so those lenses' findings were adjudicated
+against the code by hand rather than by vote. Points 1 and 2 above are the
+substantive result of that adjudication.
