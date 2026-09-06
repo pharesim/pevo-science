@@ -543,6 +543,22 @@ The act of spending a consent-op proof, performed before the action it authorize
 
 Distinct from consuming a proof, which is the broader act of presenting one and having it validated: consuming a consent-op proof burns it, while consuming a session proof slides its window instead. A burn is final the moment it happens, and that finality must not depend on the platform succeeding in erasing its stored copy of the proof. The platform holds a canonical copy plus a short-lived local backup, so that a storage outage cannot tell a user the proof they just minted expired, and either copy may be the one that arbitrates a given burn. The guarantee therefore has to be a durable record that the proof was spent, kept until removal of the stored copy is confirmed. Treating that removal as the guarantee is the recurring mistake: any single removal is an instruction that may not execute, and a spent proof whose stored copy outlives the record authorizes a second critical action.
 
+### Acquire-before-commit
+
+The client-side ordering rule that a session proof must be in hand BEFORE starting work whose loss would cost the user, never acquired partway through it.
+*Avoid:* pre-flight gate, acquire-first.
+
+The rule exists because one of the auth factors acquires by full-page navigation, which destroys whatever the page was holding: a selected file, a completed upload, a half-entered submit sequence. Acquiring at the moment the work needs a proof would therefore throw that work away for exactly the accounts that have no other factor, which is what would otherwise put inline upload out of reach for a passwordless account. Acquiring first is also what makes it unnecessary to persist in-progress work as a draft. A gate applying this rule asks only whether the work may start, and it must not itself reject: it sits ahead of the caller's own error handling, so an error escaping it leaves the interface stuck with nothing said. Because a window that is open but nearly closed would strand a sequence halfway, such a gate treats a window closing sooner than its own margin as already spent and re-authenticates deliberately instead.
+
+### Remintable Rejection
+
+A fresh-auth rejection whose stated reason says the proof was absent, expired, or malformed, meaning the correct client response is to discard the cached proof, acquire a new one, and retry once, in contrast to a terminal rejection where retrying would only repeat the same failure.
+*Avoid:* retryable rejection, re-auth retry.
+
+The distinction is a contract between the two sides: the rejecting side names the reason, and the client decides from that name alone whether a retry can succeed. A mismatch between the proof's subject and the acting user is terminal rather than remintable, because it means the session is corrupt and a fresh proof would be rejected the same way. Whether a remintable rejection actually retries also depends on the factor: an account whose only factor navigates would need a second full-page round-trip to retry, close to the proof's own expiry, so that case surfaces a terminal failure rather than risking a redirect loop, and the user restarts deliberately.
+
+Discarding the cached proof is part of the response, not an optimization. Any local check added ahead of the request that refuses the same values the rejecting side would have refused also removes this handler from the path, and with it the discard, which turns a condition that healed itself on the next attempt into one that repeats until the cached entry expires on its own.
+
 ### Critical Action
 
 Any operation that broadcasts on-chain, mutates an auth factor, or otherwise transfers or uses account control, and therefore requires a fresh-auth proof rather than just a session token.
