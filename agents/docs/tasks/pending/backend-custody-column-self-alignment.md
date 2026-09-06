@@ -505,7 +505,7 @@ a source line-number anchor of the kind the repo's comment-anchor convention
 forbids. The `.githooks/pre-commit` gate does not cover `agents/docs/`, so
 nothing catches it mechanically.
 
-## Architect re-review (2026-09-06) — HELD PENDING FIXES:
+## Architect re-review (2026-09-06, round 3) — HELD PENDING FIXES:
 
 Reviewed via `/ce-code-review` over `65ab1c74` only (the round-2 commits were
 reviewed in their own pass). Ten reviewers plus a validation batch. All five
@@ -832,3 +832,128 @@ worktree at untouched HEAD `a358bb16` failed ELEVEN tests across four files, and
 `signup-verify-orcid-binding-guard` alone fails three there against one in this
 tree. These are the known shared-fixture and limiter collisions; every file
 passes in isolation.
+
+## Architect re-review (2026-09-06, round 4) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` over `f0effeb1` only (the round-3 commits were
+reviewed in their own pass). Nine reviewers plus a seven-finding validation
+batch. No cross-model pass: no different-family CLI is installed on this host,
+so the in-process adversarial reviewer took that lens.
+
+**The round-3 item-1 behaviour change is clean and stays.** Five reviewers
+attacked it independently and none broke it. The upgraded-account exclusion
+holds, and two reviewers showed the alternative routes to a post-upgrade
+`updated_at` bump are structurally closed rather than merely absent: a
+`/confirm` finalize on an epoch-carrying row is refused by the
+`accounts_upgraded_implies_self_custody` CHECK, and the `/link` finalize is
+unreachable for a row that already carries a username because the duplicate
+check returns 409 first. The four-quadrant claims reproduce against real
+Postgres exactly as the signal reported them, including which mutation reds
+which quadrant. The migration's back-fill ordering claim holds, and the CHECK's
+deparsed definition was verified live against the running database. One
+correction in your favour: the `NOW()` equality is stronger than the comment
+claims, because `transaction_timestamp()` is frozen per transaction, so both
+stamps match inside an explicit transaction too, not only under autocommit.
+
+Three items below. All are comment or probe work; none touches the predicate,
+the finalize, or the migration.
+
+1. **`orcid.ts` never got the scoping fix its sibling did.** Round-3 item 2 was
+   about a sentence stating a false universal. You correctly widened the fix to
+   both files, then hardened only one of them. `custody-claim.ts` says the
+   handler reads no `accounts` row and names the row `verifyHiveSignature` reads
+   for `sessions_invalidated_at`. The `orcid.ts` copy still says `POST
+   /api/auth/session` "copies a claim forward without reading a row", full stop,
+   and that route runs `verifyHiveSignature`, which selects
+   `sessions_invalidated_at` on the JWT path. Your own signal block records
+   catching this exact handler-versus-route conflation in the first draft and
+   scoping it; the scoping did not reach the second file.
+   Requirement: scope the `orcid.ts` clause to the handler and name the
+   middleware's read, matching the wording you already wrote in
+   `custody-claim.ts`. The conclusion it supports (reaches no signing path) is
+   correct and independently verified; only the "without reading a row" clause
+   is false.
+
+2. **A negative-control comment counts to its target instead of naming it.** In
+   the derivation canary, "The third of these is the shape that shows the
+   exclusion earning its keep" lands on a SQL-fragment control that carries no
+   `.custody` read at all. The shape the sentence describes is the
+   `logger.info({ custody: claim }, row.custody)` control. Two defects: the
+   pointer is wrong today, and an ordinal into a list is the positional-anchor
+   rot the convention forbids, introduced by the same commit that removed six
+   other instances. The `.githooks/pre-commit` positional arm does not catch it
+   because "these" is not in its structural-noun list, so reading is the only
+   check here.
+   Requirement: name the control instead of counting to it. Do not substitute a
+   different positional form, and do not add an ordinal anywhere else in the
+   probe blocks this commit touched.
+
+3. **`STATEMENT_SCAN_CAP` is unpinned at every value it could hold.** You
+   flagged the cap as a deviation from the literal order and asked for an
+   architect call. The call is: keep it. The runaway you measured is real, and
+   the 48-line reach in `routes/profile.ts` is the kind of thing that produces a
+   false positive nobody can explain later. But the constant currently has no
+   observable effect: replaying the tree scan over every file in `backend/src`
+   yields zero offender sites at every cap from 4 to unbounded, and the deepest
+   planted probe needs a walk of only 6, so the cap can be set to any value at
+   or above 6, or deleted outright, with the whole file still green. Both the
+   documented cost and the documented benefit are prose-only. That is the same
+   shape round-3 item 6 held on: a budget whose behaviour nothing pinned.
+   Requirement: plant the boundary in both directions. Eleven interleaved
+   comment lines in the split-derivation shape asserted CAUGHT, twelve asserted
+   MISSED. While you are there, extract the literal `12` that
+   `STATEMENT_SCAN_CAP` and `mintPayload`'s loop bound now duplicate, so the
+   docblock's claim that they are the same runaway bound is enforced rather than
+   maintained by hand.
+
+Raised and rejected, no action needed from you:
+
+- A finding that `COLUMN_COPY_RE`'s docblock presents its residual list as
+  complete was dropped at validation. The two shapes it cited do miss
+  (`const custody: CustodyClaim = row.custody` and
+  `(row as AccountRow | null)?.custody`, both executed rather than reasoned
+  about), but the docblock states the governing character rule that predicts
+  them and closes by saying the spellings are illustrative and the rule, not the
+  list, is what bounds the residual. The paragraph is accurate as written. The
+  two misses are recorded as a known residual; neither occurs in `backend/src`,
+  and closing them was measured to cost nothing and to admit no comma, so it
+  stays available if the guard is ever tightened.
+- The restatement of the epoch-ordering invariant across nine-plus sites was
+  raised again as a drift risk. Not actioned, and the round-3 deferral is now
+  closed rather than rolled forward: the sites are not verbatim duplicates, each
+  explains the invariant from its own writer's side, and trimming audited prose
+  in these particular files is the highest-risk edit available on a task whose
+  last three rounds all found false statements in exactly that prose. The
+  canonical statement goes in the architecture doc instead. Do not consolidate.
+- The trade-off paragraph's justification is weaker than the true one: a
+  posting-key holder can already mint an equivalent self-custody session at
+  `POST /api/auth/session`, whose signature path applies no revocation check, so
+  admitting the revoked row grants no session they could not already obtain, and
+  the residual the widening genuinely adds is the accreditation broadcast and
+  reputation seed this branch fires. Left alone deliberately: the paragraph is
+  not false, and rewriting it would reopen a passage three rounds have settled.
+- A sub-second dead-token window is newly reachable through quadrant (h): a
+  reset-then-retry inside one integer second returns 200 with a token that 401s
+  on first use. The middleware already documents this class as an accepted
+  self-healing residual and the cure is identical, so it is noted, not filed.
+
+Architect-side, already done or deferred:
+
+- **[TODO Architect]** The two deferred § 6.1 / § 6.7 doc items carry forward to
+  archive, and their round-3 blocking reason is now spent: they were held
+  because item 1 was about to replace the discriminator, and it has. At archive
+  they must record that the `/link` lookup conjoins an epoch ordering with the
+  recency guard, that the invariant depends on the upgrade never bumping
+  `updated_at`, and that `(custody = 'self', upgraded_at IS NULL)` is
+  CHECK-permitted, produced by no writer, and treated as refused. Doc-only: no
+  symmetric CHECK, and no defensive `OR` in the lookup, which would re-admit a
+  shape the state machine does not define. § 6.7 also carries the canonical
+  statement of the epoch-ordering invariant that closes the consolidation
+  question above.
+- **[TODO Architect]** `api-contracts/auth.md` still does not describe the
+  `/link` username-keyed stuck-recovery branch. Also deferred to archive.
+- The dependency on `accounts.updated_at` having exactly two writers is real,
+  currently true, and mechanically unguarded. Filed as its own task
+  (`backend-accounts-updated-at-writer-canary`) rather than held here, since a
+  new tree-wide guard is separate work from this diff. Nothing for you to do on
+  this task.
