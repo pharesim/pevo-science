@@ -351,3 +351,110 @@ still classifies ready; `windowProof`'s unknown-outcome fall-through is now dead
 since every non-ready outcome carries a registered key; and the vocabulary key list and
 the upload code table are pinned as sets rather than ordered lists, which is unobservable
 while no outcome carries two members.
+
+---
+
+## UI re-review signal (2026-09-07, commits 98b4a8f6 + 8ffe72a6)
+
+All three round-2 hold items landed in `98b4a8f6`; `8ffe72a6` is comments-only
+and corrects three false statements that commit's own prose introduced (below).
+Verified by a six-lens adversarial fan-out (behavior-preservation,
+hold-compliance, comment-accuracy, conventions, mutation-probing, adversarial)
+with three independent refuting skeptics per finding: 15 raised, 8 refuted, 7
+survivors, all of which were comment-accuracy defects in my new text and all of
+which I re-verified against the code myself before acting. Every probing lens
+worked in a private scratch copy with `node_modules` symlinked; this checkout
+was never mutated by a reviewer.
+
+**Item 1 (P2, the fail-closed guard evicts).** `ensureSessionWindow`'s
+`typeof proof !== 'string'` branch now calls `clearCachedSessionProof()` before
+returning `{ ready: false, failed: true }` — the exported clear the sibling 401
+paths call, which drops the storage entry and the in-memory mirror together.
+Behavior-preservation enumerated every value `acquireSessionProof` can resolve
+and found no path where the clear evicts a live window: the cache leg IS the
+offender, the mint leg has already overwritten (or dropped) the slot one
+statement earlier, and every teardown boundary returns a registered sentinel
+that is caught above the guard. The deliberate "a miss under `minRemainingMs`
+does NOT clear a live window" behavior in `readSessionWindow` is untouched and
+its spec still passes. Pinned by a new spec that seeds a numeric token, asserts
+the refusal, asserts the slot is empty, and asserts the next attempt is an
+ordinary acquisition.
+
+**Item 2 (P2, the pin covers the class, not one member).** The unregistered
+spec is now an `it.each` over a mint response with no `fresh_auth_proof`, a
+numeric proof, and an unregistered Symbol. `it.each` gives each row the full
+`beforeEach`, so the hold's per-iteration re-stub is satisfied structurally.
+The architect's measured survivor is dead: narrowing the guard to
+`typeof proof === 'symbol'` now reddens three specs. `null` cannot appear as an
+unregistered value because `FRESH_AUTH_REDIRECT_PENDING` is registered.
+
+**Item 3 (P3, the docblock names the real mechanism).** Rewritten, then
+rewritten again after the review (see the corrections below).
+
+**Mutation probes**, run against private copies:
+
+| mutation | specs killed |
+| --- | --- |
+| drop `clearCachedSessionProof()` from the guard | the eviction spec, alone (1 of 64) |
+| narrow to `typeof proof === 'symbol'` (the measured survivor) | the no-proof-field row, the numeric row, the eviction spec (3) |
+| delete the guard | all four (4) |
+| weaken to `proof === undefined` | the numeric row, the Symbol row, the eviction spec (3) |
+
+**Corrections in `8ffe72a6`, and one of them is in the hold text too.** The
+review found three false claims in `98b4a8f6`'s comments; each was confirmed
+against the code before being corrected.
+
+1. The docblock said the mint leg "resolves a proof string or a registered
+   sentinel" and attributed every non-string arrival to the untyped cache read.
+   The mint callback returns the response's `fresh_auth_proof` verbatim (only
+   `beginPasswordMintReport` type-tests it, and only to veto the memo write),
+   and two of the three table rows added in the same commit drive exactly that
+   leg with no seeded window. Round 1's overstatement had been narrowed by one
+   leg rather than fixed. Both legs are now named as unchecked.
+2. Both new blocks put the lockout at "until the absolute cap elapsed".
+   `anchoredSpan` clamps the idle span into [450s, 900s] and the absolute into
+   [3600s, 7200s], so `readSessionWindow`'s `Math.min(idleTs, absoluteTs)`
+   always selects idle, and neither `slideSessionWindow()` call site is
+   reachable without a successful consume, so it never advances. The real bound
+   is the idle deadline for an entry this module wrote, and no bound at all for
+   a tampered one whose deadlines are attacker-written. "No user action able to
+   break out" was overstated too: `SESSION_PROOF_KEY` is in
+   `SUBJECT_BOUND_STORAGE_KEYS`, so signing out scrubs it, and a fresh tab
+   starts empty. **This phrasing came verbatim from hold item 1's own
+   rationale**, so the hold text carries the same inaccuracy; flagging rather
+   than silently diverging from it.
+3. The table's inner comment kept a single wire mechanism after the table grew
+   to three rows. A falsy result never travels on as a proof: `uploadFile`'s
+   `if (!proof)` takes the unproofed branch, the one self-custody uses, and
+   `uploadFileToIpfs` refuses a light account there before a request is built.
+   Same false-mechanism class as the claim corrected last round, which is why
+   the replacement text was audited against the code a second time before it
+   landed.
+
+**Verification.** Full frontend unit suite 82 files / 1842 tests green at both
+commits (the three `pages-edit` unhandled errors are the documented
+pre-existing ones); `npm run build` clean; the file is green across repeated
+sequential and shuffled runs. No behavioral test was rewritten and no existing
+spec's assertions changed: `98b4a8f6` replaces one `it` with an `it.each` over
+the same body and adds one spec, and `8ffe72a6` touches nothing but comments.
+
+**Residuals surfaced for triage, deliberately not fixed here.**
+
+1. (medium) `acquisitionAborted` reads the same untyped cache and refuses
+   without evicting, so the broadcast surface still dead-ends on a poisoned
+   slot until a windowed gate clears it or the idle deadline arrives. The
+   dropped finding from the last round covered the *messaging* asymmetry
+   between the two readers and ruled it pre-existing and intended; the
+   *eviction* half is a different gap and is genuinely pre-existing, since that
+   reader has always applied its string test and never cleared. Named here so
+   the completeness question is on the record rather than implied by item 1's
+   scope.
+2. (low, design call for the architect) The type check arguably belongs in
+   `readSessionWindow`, next to the falsy-token and non-finite-deadline drops
+   it already performs — one edit would close both readers and match the
+   module's existing corrupt-entry pattern. Not taken, because it changes the
+   broadcast path from a silent abort to a re-auth, which is behavior beyond
+   what the hold prescribed and adjacent to the finding the architect dropped.
+3. (low) Nothing validates the mint response at the boundary:
+   `cacheSessionProof` writes whatever token it is handed. The guard is a
+   downstream backstop for a defect whose natural home is the write.
