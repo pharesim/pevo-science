@@ -1172,8 +1172,8 @@ export async function freshAuthWindowReady(opts) {
 // resolves as FRESH_AUTH_CANCELLED — the same silent clean-cancel every other
 // teardown boundary in the acquisition resolves to; one whose start rejects
 // still propagates the rejection to its caller, with the keys left alone
-// under the rule below. When the predicate is a consent-op guard's
-// `tornDown`, the guarded caller owns the report. Every production
+// under the flow-key ownership rule. When the predicate is a consent-op
+// guard's `tornDown`, the guarded caller owns the report. Every production
 // caller threads one: the session acquisition through
 // `beginSessionAuthOrcidRedirect`, and both consent-op orchestrators through
 // `beginOrcidUnderGuard`. The page-level ORCID flows (login, signup, recover,
