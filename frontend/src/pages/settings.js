@@ -30,18 +30,24 @@ const METADATA_MAX = { name: 200, institution: 200, field: 100 };
 //   'retryable-backend-only' — chain rotation landed; only re-run the backend
 //                              cleanup POST via `retryUpgradeBackend()`. Keeps
 //                              `newSeedPhrase` in state so the re-derive
-//                              succeeds. (`upgrade.backendUnavailable` post-503
-//                              and `upgrade.proofRejected` first-401.)
+//                              succeeds. (`upgrade.backendUnavailable` post-503,
+//                              `upgrade.proofRejected` first-401, and
+//                              `upgrade.sessionChangedBeforeCleanup`, where the
+//                              retry's own start guard declined to spend
+//                              anything, so a re-login as the pinned subject
+//                              that keeps this component mounted is all the
+//                              next attempt needs.)
 //   'retryable-reset'       — pre-broadcast failure; safe to reset the wizard
 //                              to 'idle' and re-broadcast. `handleRetry`
 //                              dispatches to `resetUpgrade()`.
 //   'terminal'              — chain rotation landed AND no further retry is
 //                              meaningful (alreadyUpgraded, rateLimited, second
 //                              401, post-broadcast backendTimeout, generic
-//                              partialApplyFailed, and either half of the
-//                              session-changed pair, where the tab no longer
-//                              represents the account the retry would act for).
-//                              Try Again is hidden.
+//                              partialApplyFailed, and the after-cleanup half
+//                              of the session-changed pair, where the upgrade
+//                              is complete and only the local Keychain import
+//                              is left, for a session this tab no longer
+//                              holds). Try Again is hidden.
 const UPGRADE_ERROR_KEYS = {
   keychainRequired: 'upgrade.keychainRequired',
   generationFailed: 'upgrade.generationFailed',
@@ -53,16 +59,18 @@ const UPGRADE_ERROR_KEYS = {
   alreadyUpgraded: 'upgrade.alreadyUpgraded',
   rateLimited: 'upgrade.rateLimited',
   // The two halves of "this tab stopped representing the account the upgrade
-  // started for". Both are terminal and both are reached only after the chain
-  // rotation landed; they differ in whether the backend cleanup also landed,
-  // which is the only thing left for the user to act on. The after-cleanup
-  // half means the upgrade is complete and only the local Keychain import is
-  // missing; the before-cleanup half means the cleanup never ran, so its copy
-  // has to route the user to support rather than promise a finished upgrade.
-  // Splitting them is what keeps each message true: one string for both would
-  // have to lie in one of the two cases. Neither name is a prefix of the
-  // other, so the per-key grep over the translation-stub ledger still names
-  // one key at a time.
+  // started for". Both are reached only after the chain rotation landed; they
+  // differ in whether the backend cleanup also landed, which decides what is
+  // left for the user to do. The after-cleanup half is terminal: the upgrade
+  // is complete, the seed is spent, and only the local Keychain import is
+  // missing. The before-cleanup half is retryable: it is reached only from
+  // the retry's start guard, which declines before spending anything and
+  // keeps the seed and the pin, so once the user signs back in as the
+  // pinned subject the same Try Again runs the cleanup. Splitting them
+  // is what keeps each message true: one string for both would have to lie
+  // in one of the two cases. Neither name is a prefix of the other, so the
+  // per-key grep over the translation-stub ledger still names one key at a
+  // time.
   sessionChangedAfterCleanup: 'upgrade.sessionChangedAfterCleanup',
   sessionChangedBeforeCleanup: 'upgrade.sessionChangedBeforeCleanup',
 };
@@ -78,7 +86,7 @@ const RETRYABILITY = {
   [UPGRADE_ERROR_KEYS.alreadyUpgraded]: 'terminal',
   [UPGRADE_ERROR_KEYS.rateLimited]: 'terminal',
   [UPGRADE_ERROR_KEYS.sessionChangedAfterCleanup]: 'terminal',
-  [UPGRADE_ERROR_KEYS.sessionChangedBeforeCleanup]: 'terminal',
+  [UPGRADE_ERROR_KEYS.sessionChangedBeforeCleanup]: 'retryable-backend-only',
 };
 
 // Clock-skew tolerance before warning advisory fires. Backend's freshness
@@ -139,13 +147,17 @@ const template = `
                        mnemonic and re-broadcasts account_update with the
                        OLD seed-derived keys, which the chain rejects (the
                        prior attempt's rotation already landed). The copy
-                       on those sub-cases routes the user to support; no
-                       in-app retry is meaningful. The 503/backendUnavailable
+                       on those sub-cases describes an out-of-band recovery
+                       (sign in again, wait out the hour, or contact
+                       support); no in-app retry is meaningful. The 503/backendUnavailable
                        sub-case IS retryable but only against the backend
                        cleanup call — handleRetry() dispatches to
                        retryUpgradeBackend() in that case, preserving the
                        already-rotated chain state and re-signing a fresh
-                       proof. -->
+                       proof. The same holds for a retry that its start guard
+                       declined because the browser was no longer signed in
+                       as the upgrade's account: nothing was spent, so Try
+                       Again stays for after the user signs back in. -->
                   <button x-show="canRetryUpgrade" @click="handleRetry()" class="text-pevo-teal hover:underline text-sm" x-text="$t('common.tryAgain')"></button>
                 </div>
 
@@ -636,8 +648,10 @@ export function initSettingsPage() {
     _upgradeSubject: null,
 
     // beforeunload listener installed in init() and torn down in destroy()
-    // + on terminal phases. Held as a bound reference so addEventListener
-    // and removeEventListener target the same function.
+    // (init() also deregisters a previous instance before reassigning). It
+    // stays registered across every upgrade phase; outside 'upgrading' the
+    // handler's own phase check makes it a no-op. Held as a bound reference
+    // so addEventListener and removeEventListener target the same function.
     _beforeUnloadHandler: null,
 
     get confirmCorrect() {
@@ -651,17 +665,21 @@ export function initSettingsPage() {
     // on those paths the on-chain account_update has already landed, so a
     // fresh attempt would sign account_update with the OLD seed-derived
     // keys and the chain would reject it (auth mismatch). The error-copy
-    // on those sub-cases directs the user to support; the in-app retry
-    // path is structurally unavailable. The `upgrade.backendUnavailable`
+    // on those sub-cases describes an out-of-band recovery (sign in again,
+    // wait out the hour, or contact support); the in-app retry path is
+    // structurally unavailable. The `upgrade.backendUnavailable`
     // sub-case (post-broadcast 503) IS retryable but only against the
     // backend cleanup call — `handleRetry()` dispatches to
     // `retryUpgradeBackend()` which keeps `newSeedPhrase` and re-signs the
     // proof without re-broadcasting the now-stale chain rotation. The
     // `alreadyUpgraded` and `rateLimited` sub-cases are non-retryable for
     // semantic reasons (nothing to retry / per-account-hour budget burnt),
-    // and the session-changed pair for a third reason: the retry would run
-    // against a store that has moved to another account, and its own start
-    // guard would decline anyway.
+    // and `sessionChangedAfterCleanup` for a third: the upgrade is complete
+    // and the seed is spent, so there is nothing left for a retry to do.
+    // Its before-cleanup sibling is retryable, because it is reached only
+    // from `retryUpgradeBackend`'s start guard, which spent nothing and
+    // kept the seed: after the user signs back in as the pinned subject,
+    // the same Try Again runs the cleanup.
     // Compares discriminator keys, not translated strings, so the result
     // is invariant to mid-error-screen locale switches.
     get canRetryUpgrade() {
@@ -675,8 +693,9 @@ export function initSettingsPage() {
     },
 
     // Dispatch retry to the right action based on the error sub-case. The
-    // `retryable-backend-only` sub-cases (post-broadcast 503 + first-401 proof
-    // rejection) preserve the chain-rotated state and retry only the backend
+    // `retryable-backend-only` sub-cases (post-broadcast 503, first-401 proof
+    // rejection, and a retry the start guard declined for a diverged store)
+    // preserve the chain-rotated state and retry only the backend
     // cleanup call; the `retryable-reset` sub-cases are pre-broadcast failures
     // that reset the wizard to idle so a fresh attempt regenerates the new
     // mnemonic and re-broadcasts cleanly. Dispatch reads RETRYABILITY (the
@@ -1367,9 +1386,10 @@ export function initSettingsPage() {
 
     // Backend-cleanup retry. Reachable from the 'error' phase whenever
     // `RETRYABILITY[upgradeErrorKey] === 'retryable-backend-only'` — that's
-    // post-broadcast 503 (`upgrade.backendUnavailable`) and the first-401
-    // proof rejection (`upgrade.proofRejected`). Keeps
-    // `newSeedPhrase` from the failed attempt, re-derives a fresh proof
+    // post-broadcast 503 (`upgrade.backendUnavailable`), the first-401
+    // proof rejection (`upgrade.proofRejected`), and a previous retry that
+    // the start guard below declined (`upgrade.sessionChangedBeforeCleanup`).
+    // Keeps `newSeedPhrase` from the failed attempt, re-derives a fresh proof
     // (new `signed_at` + new signature), and re-POSTs only the backend
     // cleanup call. The chain rotation already landed in `executeUpgrade`
     // and is NOT re-attempted — re-broadcasting account_update with stale
@@ -1392,8 +1412,11 @@ export function initSettingsPage() {
       this.upgradeErrorKey = null;
       const newSeedPhrase = this.newSeedPhrase;
       if (!newSeedPhrase) {
-        // Defensive: `newSeedPhrase` is cleared on every terminal
-        // sub-case, so reaching here means the state machine drifted.
+        // Defensive: every sub-case that can reach this handler either
+        // kept the seed or is not retryable at all, so reaching here
+        // means the state machine drifted. (Not every terminal sub-case
+        // wipes: backendTimeout preserves the seed precisely because the
+        // user may still need it.)
         // Route to partialApplyFailed (terminal) rather than offering
         // another retry that would re-derive from an empty string. Flip
         // phase back to 'error' since the gate above moved it to 'upgrading'.
@@ -1419,7 +1442,11 @@ export function initSettingsPage() {
       // against the proof-retry budget whose exhaustion is what wipes the
       // seed. Nothing here wipes it either: the backend cleanup has not run,
       // so the mnemonic is still the only key to an account whose on-chain
-      // authorities already rotated.
+      // authorities already rotated. Because nothing was spent, the
+      // sub-case this declines into is itself retryable: once the store
+      // names the pinned subject again, the next Try Again passes this
+      // guard and runs the cleanup, with the same outcome ladder as any
+      // other backend-only retry.
       const upgradeSubject = this._upgradeSubject;
       if (this._upgradeSubjectDiverged(upgradeSubject)) {
         this._endUpgradeAsSessionChanged({ cleanupLanded: false, upgradeSubject });
@@ -1498,23 +1525,30 @@ export function initSettingsPage() {
       return !auth.isConnected || auth.username !== upgradeSubject;
     },
 
-    // Terminal route for a diverged subject. Every caller reaches it after
-    // the chain rotation landed, so a fresh wizard run is structurally
+    // Error route for a diverged subject. Every caller reaches it after the
+    // chain rotation landed, so a fresh wizard run is structurally
     // unavailable (it would re-broadcast account_update signed with the old
-    // seed's keys and the chain would reject it) and both sub-cases are
-    // terminal. `cleanupLanded` picks between them, and with it the fate of
-    // the mnemonic: once the backend cleanup succeeded the phrase is written
-    // down and spent, so it is wiped like every other completed path, but
-    // before that it is the user's only key to an account whose authorities
-    // already rotated, and a guard that declines to act must not destroy it
-    // (the backendTimeout sub-case preserves it for the same reason).
+    // seed's keys and the chain would reject it). `cleanupLanded` picks the
+    // sub-case, and with it both the fate of the mnemonic and whether Try
+    // Again stays: once the backend cleanup succeeded the phrase is written
+    // down and spent, so it is wiped like every other completed path and the
+    // sub-case is terminal; before that it is the user's only key to an
+    // account whose authorities already rotated, so a guard that declines to
+    // act must not destroy it (the backendTimeout sub-case preserves it for
+    // the same reason), and the sub-case stays retryable because the decline
+    // cost nothing that a re-login as the pinned subject cannot restore.
     //
     // The error copy is rendered by the settings page, which is itself bound
     // to the live store: after a sign-out, or a login as a self-custody
     // user, the surrounding sections stop rendering and the message is not
-    // seen. That is the accepted cost of leaving the store alone; the
-    // recovery it describes (sign in as the pinned subject with the new
-    // phrase) does not depend on having read it here.
+    // seen. That is the accepted cost of leaving the store alone. What the
+    // unseen copy costs differs by half. The after-cleanup recovery (sign
+    // in as the pinned subject with the new phrase, then import to
+    // Keychain) does not depend on having read it here. The before-cleanup
+    // recovery is this component's own Try Again, so it depends on the
+    // re-login keeping this component mounted: the global header's sign-in
+    // modal and another tab's login both do, while the signed-out body's
+    // own button navigates away and takes the retry's inputs with it.
     _endUpgradeAsSessionChanged({ cleanupLanded, upgradeSubject }) {
       // Mirrors _handlePostBroadcastError's entry guard: most callers reach
       // this after at least one await (the retry's start guard is the one

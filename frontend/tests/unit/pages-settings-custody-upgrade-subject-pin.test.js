@@ -11,7 +11,10 @@
 // left to its current owner and the flow ends in a terminal sub-case. An
 // ordinary same-subject upgrade still lands and keeps its live fresh-auth
 // window, and the retry leg refuses to spend a proof attempt against a
-// store that has moved on.
+// store that has moved on. That refusal is not the end of the flow: the
+// cleanup has not run and the seed and pin survive, so the sub-case it
+// lands in keeps Try Again available, and a re-login as the pinned subject
+// lets the next attempt finish.
 //
 // Carve-out clause (a): mirrors the sibling settings suites' fixture shape.
 // Alpine stores, dhive, and hive-keys are stubbed because driving a real
@@ -417,7 +420,11 @@ describe('custody-upgrade re-login subject pin', () => {
     expect(comp.upgradePhase).toBe('error');
     expect(comp.upgradeErrorKey).toBe('upgrade.sessionChangedBeforeCleanup');
     expect(comp.upgradeError).toBe('upgrade.sessionChangedBeforeCleanup({"username":"alice"})');
-    expect(comp.canRetryUpgrade).toBe(false);
+    // Declining is not failing: nothing was spent and the retry's inputs are
+    // intact, so Try Again stays available for once the store names alice
+    // again. The pin survives with the seed, for the same reason.
+    expect(comp.canRetryUpgrade).toBe(true);
+    expect(comp._upgradeSubject).toBe('alice');
   });
 
   it('retryUpgradeBackend: an ordinary retry pins the upgrade-start subject and keeps the live window', async () => {
@@ -444,5 +451,70 @@ describe('custody-upgrade re-login subject pin', () => {
     // is unchanged.
     expect(sessionStorage.getItem(SESSION_PROOF_KEY)).toBe('alice-live-proof');
     expect(sessionStorage.getItem(TAB_SUBJECT_KEY)).toBe('alice');
+  });
+
+  it('retryUpgradeBackend: a declined retry stays retryable, and a re-login as the pinned subject lets the next one finish', async () => {
+    const comp = createComponent();
+    sessionStorage.setItem(TAB_SUBJECT_KEY, 'alice');
+
+    await driveToBackendUnavailable(comp);
+    expect(comp.upgradePhase).toBe('error');
+    const preservedSeed = comp.newSeedPhrase;
+    expect(preservedSeed).not.toBe('');
+
+    // Another user logs in from a second tab while the error screen idles,
+    // and alice presses Try Again before noticing.
+    simulateCrossTabLoginAs('brenda', 'brenda-jwt');
+    const declinedFetch = vi.fn(() => { throw new Error('a declined retry must not POST'); });
+    vi.stubGlobal('fetch', declinedFetch);
+
+    await comp.retryUpgradeBackend();
+
+    // The start guard declined without spending anything, and the sub-case
+    // it lands in is retryable: the chain rotation is done, the backend
+    // cleanup never ran, and both halves of what a retry needs are still
+    // here. The only thing missing is a store that names alice again.
+    expect(declinedFetch).not.toHaveBeenCalled();
+    expect(comp.upgradePhase).toBe('error');
+    expect(comp.upgradeErrorKey).toBe('upgrade.sessionChangedBeforeCleanup');
+    expect(comp.canRetryUpgrade).toBe(true);
+    expect(comp.newSeedPhrase).toBe(preservedSeed);
+    expect(comp._upgradeSubject).toBe('alice');
+    expect(comp._proofRetryAttempts).toBe(0);
+
+    // Alice signs back in, through the global sign-in modal or a storage
+    // event from another tab. Either way the settings component never
+    // unmounts, and the store names her again under a NEW session token
+    // with her own tab state.
+    mockAuthStore.username = 'alice';
+    mockAuthStore.token = 'alice-relogin-jwt';
+    mockAuthStore.custody = 'light';
+    mockAuthStore.isAccredited = true;
+    mockAuthStore.accreditation = { orcid: '0000-0001' };
+    sessionStorage.setItem(TAB_SUBJECT_KEY, 'alice');
+    sessionStorage.setItem(SESSION_PROOF_KEY, 'alice-relogin-proof');
+
+    const retryFetch = vi.fn(async () => okUpgradeResponse('alice-upgraded-jwt'));
+    vi.stubGlobal('fetch', retryFetch);
+
+    await comp.retryUpgradeBackend();
+
+    // The second attempt runs on the re-login's credential, not the one the
+    // upgrade started under, and lands for the pinned subject.
+    expect(retryFetch).toHaveBeenCalledTimes(1);
+    expect(retryFetch.mock.calls[0][1].headers.Authorization).toBe('Bearer alice-relogin-jwt');
+    expect(mockAuthStore.loginFromResponse).toHaveBeenCalledTimes(1);
+    expect(mockAuthStore.loginFromResponse.mock.calls[0][0].username).toBe('alice');
+    expect(comp.upgradePhase).toBe('done');
+    expect(mockAuthStore.username).toBe('alice');
+    expect(mockAuthStore.token).toBe('alice-upgraded-jwt');
+    expect(mockAuthStore.custody).toBe('self');
+    // Same-subject landing: the re-login's own fresh-auth window survives.
+    expect(sessionStorage.getItem(SESSION_PROOF_KEY)).toBe('alice-relogin-proof');
+    expect(sessionStorage.getItem(TAB_SUBJECT_KEY)).toBe('alice');
+    // Spent at last: the completed flow keeps neither the seed nor the pin.
+    expect(comp.newSeedPhrase).toBe('');
+    expect(comp._upgradeSubject).toBe(null);
+    expect(mockRequestImportKey).toHaveBeenCalled();
   });
 });

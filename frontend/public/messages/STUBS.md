@@ -3866,3 +3866,28 @@ pt: upgrade.sessionChangedBeforeCleanup
 sv: upgrade.sessionChangedBeforeCleanup
 tr: upgrade.sessionChangedBeforeCleanup
 zh: upgrade.sessionChangedBeforeCleanup
+
+### Updated 2026-09-06 (ui-custody-upgrade-subject-pin)
+
+English value of `upgrade.sessionChangedBeforeCleanup` was revised in place: the
+sub-case is retryable now, so the copy tells the user to sign back in as the
+named account and press Try Again instead of contacting support. The inline
+"Try Again" names an on-screen button, so it must read exactly as that locale
+renders `common.tryAgain`. Translators who started on the earlier `Added`
+entry should retranslate.
+
+ar: upgrade.sessionChangedBeforeCleanup
+cs: upgrade.sessionChangedBeforeCleanup
+da: upgrade.sessionChangedBeforeCleanup
+de: upgrade.sessionChangedBeforeCleanup
+es: upgrade.sessionChangedBeforeCleanup
+fa: upgrade.sessionChangedBeforeCleanup
+fr: upgrade.sessionChangedBeforeCleanup
+he: upgrade.sessionChangedBeforeCleanup
+it: upgrade.sessionChangedBeforeCleanup
+nl: upgrade.sessionChangedBeforeCleanup
+pl: upgrade.sessionChangedBeforeCleanup
+pt: upgrade.sessionChangedBeforeCleanup
+sv: upgrade.sessionChangedBeforeCleanup
+tr: upgrade.sessionChangedBeforeCleanup
+zh: upgrade.sessionChangedBeforeCleanup

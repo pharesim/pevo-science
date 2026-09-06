@@ -2519,11 +2519,14 @@ describe('settingsPage', () => {
   // Branches enumerated (search the named symbols in
   // frontend/src/pages/settings.js):
   //   handleRetry()
-  //     H1. upgradeErrorKey === 'upgrade.backendUnavailable' → retryUpgradeBackend()
+  //     H1. RETRYABILITY[upgradeErrorKey] === 'retryable-backend-only'
+  //         → retryUpgradeBackend(). Three keys carry that value:
+  //         backendUnavailable, proofRejected, sessionChangedBeforeCleanup.
   //     H2. else → resetUpgrade() (phase → 'idle', state wiped)
   //   retryUpgradeBackend()
   //     R1. guard: upgradePhase !== 'error' → early return (no-op)
-  //     R2. guard: upgradeErrorKey !== 'upgrade.backendUnavailable' → early return
+  //     R2. guard: RETRYABILITY[upgradeErrorKey] !== 'retryable-backend-only'
+  //         → early return
   //     R3. defensive: !newSeedPhrase → wipe + partialApplyFailed (terminal)
   //     R4. happy path: 2xx → loginFromResponse + _completeUpgradeAfterBackend → 'done'
   //     R5. post-await unmount guard: !_mounted after _postUpgradeBackend → early return
@@ -2608,7 +2611,7 @@ describe('settingsPage', () => {
       expect(comp.newSeedPhrase).not.toBe('');
     });
 
-    // H2: dispatcher resets the wizard on every non-503 retryable
+    // H2: dispatcher resets the wizard on every retryable-reset
     // sub-case. The pre-broadcast `upgrade.failed` key is the canonical
     // example (Keychain denial, chain rejection, invalid old seed) —
     // canRetryUpgrade returns true and Try Again is shown; clicking it

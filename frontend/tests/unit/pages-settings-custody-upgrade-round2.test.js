@@ -12,11 +12,16 @@
 //
 // Carve-out clause (a): the upstream pages-settings.test.js fixture already
 // stubs hive-keys, dhive, and Alpine stores; this file reuses the same shape
-// per the carve-out for deterministic edge-case coverage. The risk class
-// (cryptographic verification correctness) is covered by the real-path
-// sec-001-equivalence.test.js + backend tests against signed proofs; this
-// file's focus is the FE error-routing + state-machine behaviour around the
-// upgrade error contracts (retry budget, terminality, helper dispatch).
+// per the carve-out for deterministic edge-case coverage. Cryptographic
+// verification is bypassed: the stubbed signer returns a fixed signature, so
+// nothing here proves a proof verifies. Clause (b) does not apply, no auth
+// middleware runs on this path. Clause (c): the bypassed risk class is
+// whether a proof actually binds to the account it claims, and
+// `backend/tests/routes/custody-upgrade.test.ts` covers it real-path,
+// signing genuine proofs and asserting the route rejects a `derived_pubkey`
+// absent from the account's on-chain key set. This file's focus is the FE
+// error-routing + state-machine behaviour around the upgrade error
+// contracts (retry budget, terminality, helper dispatch).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockLoginFromResponse } from './fixtures/mock-auth.js';
 
