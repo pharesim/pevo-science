@@ -68,7 +68,7 @@
  *    than inheriting it from this docblock.
  */
 
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 /** Label used when a match sits at module scope with no enclosing declaration. */
@@ -129,6 +129,17 @@ function indentOf(line) {
   return line.length - line.trimStart().length;
 }
 
+/** Whether a block comment opened at `openIndex` closes on or before
+ *  `lineIndex`. The brace walk enters a comment region only when this holds,
+ *  so an opener it cannot see close falls through to the ordinary brace test
+ *  instead of swallowing the rest of the declaration. */
+function blockCommentClosesBy(lines, openIndex, lineIndex) {
+  for (let k = openIndex + 1; k <= lineIndex; k++) {
+    if (lines[k].includes('*/')) return true;
+  }
+  return false;
+}
+
 function declarationOn(line) {
   for (const { re, label, guard, template } of DECLARATION_PATTERNS) {
     const m = line.match(re);
@@ -180,16 +191,38 @@ export function enclosingSymbol(lines, lineIndex) {
     // begin with `}`, so the only comment shape that needs handling is the
     // interior of a block comment opened at line start, tracked as a
     // running open/closed state.
+    //
+    // The state is entered only for a region the walk can SEE close. An
+    // unterminated opener at line start is markup more often than it is a
+    // comment, because this tree writes a page of markup per module inside a
+    // template literal, and a phantom region opened there never closes and
+    // swallows the brace that ends the declaration. Resolving wider that way
+    // is not a safe direction: the wrong symbol can be one the consumer has
+    // already licensed, where a pinned width absorbs the addition, rather
+    // than a new member that fails closed.
+    //
+    // Leaving the region, the code after the first close on that line is
+    // live and gets the same brace test as any other line, at the line's own
+    // indentation. A line carrying more than one comment boundary is read to
+    // its first close only, which resolves wider and is the fail-closed
+    // direction.
     let closedBefore = false;
     let inBlockComment = false;
     for (let j = i + 1; j <= lineIndex; j++) {
       const line = lines[j];
-      const trimmed = line.trim();
+      let code = line;
       if (inBlockComment) {
-        if (trimmed.includes('*/')) inBlockComment = false;
-        continue;
+        const close = line.indexOf('*/');
+        if (close === -1) continue;
+        inBlockComment = false;
+        code = line.slice(close + 2);
       }
-      if (trimmed.startsWith('/*') && trimmed.indexOf('*/', 2) === -1) {
+      const trimmed = code.trim();
+      if (
+        trimmed.startsWith('/*') &&
+        trimmed.indexOf('*/', 2) === -1 &&
+        blockCommentClosesBy(lines, j, lineIndex)
+      ) {
         inBlockComment = true;
         continue;
       }
@@ -225,21 +258,49 @@ export function enclosingSymbol(lines, lineIndex) {
 export function sourcesUnder(root) {
   const sources = [];
   const foreign = [];
+  // Links are followed, because the bundler follows them: a linked module or
+  // directory joins the bundle and is therefore part of the scan. A link's
+  // own dirent reports neither file nor directory, so routing on it alone
+  // drops the entry from BOTH returned lists and the walk neither reads it
+  // nor admits it passed over it. `statSync` resolves the link and the entry
+  // is routed by what it points AT instead. A link back to a directory still
+  // being walked (an ancestor, by real path) is not entered, so a cycle
+  // cannot recurse forever, while a link to a sibling directory is walked
+  // under both names, as the bundler resolves it under both.
+  //
+  // A link pointing nowhere is censused rather than dropped. It is still
+  // script-shaped by name, and a consumer's extension gate over `foreign` is
+  // what turns an unreadable `.js` into a red bar. That is the one deliberate
+  // divergence from the backend port, whose contract returns sources only and
+  // so has nowhere to report it.
+  const ancestors = new Set();
   const walk = (dir) => {
+    let real;
+    try {
+      real = realpathSync(dir);
+    } catch {
+      return;
+    }
+    if (ancestors.has(real)) return;
+    ancestors.add(real);
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-        continue;
-      }
-      if (!entry.isFile()) continue;
       const rel = path.relative(root, full).split(path.sep).join('/');
-      if (entry.name.endsWith('.js')) {
+      let target = null;
+      try {
+        target = statSync(full);
+      } catch {
+        target = null;
+      }
+      if (target?.isDirectory()) {
+        walk(full);
+      } else if (target?.isFile() && entry.name.endsWith('.js')) {
         sources.push({ rel, lines: readFileSync(full, 'utf8').split('\n') });
       } else {
         foreign.push(rel);
       }
     }
+    ancestors.delete(real);
   };
   walk(root);
   return { sources, foreign: foreign.sort() };
@@ -265,9 +326,17 @@ export function sourcesUnder(root) {
  *  own, re-derived, not inherited. */
 export function isCommentLine(line) {
   const trimmed = line.trim();
-  if (trimmed.startsWith('*') || trimmed.startsWith('//')) return true;
-  if (!trimmed.startsWith('/*')) return false;
-  const close = trimmed.indexOf('*/', 2);
+  if (trimmed.startsWith('//')) return true;
+  // Both block-comment arms close before they are believed. A comment CLOSE
+  // begins with the same star a docblock continuation does, so an arm that
+  // answers on that star alone claims a line whose comment has already ended
+  // and skips the live code behind it. An opener is searched past its own
+  // two characters, so an opener that begins with a star is not read as
+  // self-closing; a continuation is searched from the start, which is where
+  // its own close sits.
+  const opensBlock = trimmed.startsWith('/*');
+  if (!opensBlock && !trimmed.startsWith('*')) return false;
+  const close = trimmed.indexOf('*/', opensBlock ? 2 : 0);
   if (close === -1) return true;
   const rest = trimmed.slice(close + 2).trim();
   return rest === '' || isCommentLine(rest);

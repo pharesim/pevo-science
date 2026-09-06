@@ -95,7 +95,7 @@
  * markup gives a reviewer a second reason to reject it.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -288,11 +288,12 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
     expect(unscanned, `${UNSCANNED_EXTENSION}\nunscanned files under src:\n${unscanned.join('\n')}`).toEqual([]);
   });
 
-  it('the walker reads every .js file recursively and reports every other file it passed over', () => {
-    // The walk is the floor every scan above stands on. A walker that
-    // skipped a subdirectory, or silently dropped a module in an extension
-    // it does not read, would pass every scan vacuously for that file. The
-    // fixture is a throwaway tree so the probe owns exactly what it walks.
+  it('the walker reads every .js file recursively, follows links, and reports every other file it passed over', () => {
+    // The walk is the floor every scan in this suite stands on. A walker that
+    // skipped a subdirectory, silently dropped a module in an extension it
+    // does not read, or dropped one reached through a link, would pass every
+    // scan vacuously for that file. The fixture is a throwaway tree so the
+    // probe owns exactly what it walks.
     const root = mkdtempSync(path.join(os.tmpdir(), 'pevo-factor-canary-walk-'));
     try {
       mkdirSync(path.join(root, 'lib', 'deep'), { recursive: true });
@@ -301,12 +302,42 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
       writeFileSync(path.join(root, 'lib', 'deep', 'sidecar.mjs'), 'export const usesPassword = status.hasPassword;\n');
       writeFileSync(path.join(root, 'lib', 'typed.ts'), '');
       writeFileSync(path.join(root, 'styles.css'), '');
+      // A link is a road into the bundle like any other: the bundler resolves
+      // it, so the walk has to route it by what it POINTS AT rather than drop
+      // it for being neither a file nor a directory in its own right.
+      symlinkSync(path.join(root, 'lib', 'deep', 'factor.js'), path.join(root, 'linked-module.js'));
+      symlinkSync(path.join(root, 'styles.css'), path.join(root, 'linked-styles.css'));
+      symlinkSync(path.join(root, 'lib', 'deep'), path.join(root, 'linked-dir'));
+      // A link pointing nowhere is script-shaped and unreadable, so it is
+      // censused rather than dropped: a `.js` one fails the extension gate.
+      symlinkSync(path.join(root, 'lib', 'deep', 'absent.js'), path.join(root, 'dangling.js'));
+      // A link back to an ancestor must not recurse forever.
+      symlinkSync(root, path.join(root, 'lib', 'deep', 'loop'));
+
       const { sources, foreign } = sourcesUnder(root);
-      expect(sources.map((s) => s.rel).sort()).toEqual(['api.js', 'lib/deep/factor.js']);
+      expect(sources.map((s) => s.rel).sort()).toEqual([
+        'api.js',
+        'lib/deep/factor.js',
+        'linked-dir/factor.js',
+        'linked-module.js',
+      ]);
       expect(sources.find((s) => s.rel === 'lib/deep/factor.js').lines[0]).toBe(
         'const factor = status.hasPassword;',
       );
-      expect(foreign).toEqual(['lib/deep/sidecar.mjs', 'lib/typed.ts', 'styles.css']);
+      expect(sources.find((s) => s.rel === 'linked-module.js').lines[0]).toBe(
+        'const factor = status.hasPassword;',
+      );
+      expect(foreign).toEqual([
+        'dangling.js',
+        'lib/deep/sidecar.mjs',
+        'lib/typed.ts',
+        'linked-dir/sidecar.mjs',
+        'linked-styles.css',
+        'styles.css',
+      ]);
+      // The cycle guard stopped at the ancestor rather than descending
+      // through the link, so nothing is reported from underneath it.
+      expect([...sources.map((s) => s.rel), ...foreign].filter((rel) => rel.includes('loop'))).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -633,6 +664,25 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
     expect(occurrencesOf([twoFetchesOneLine], STATUS_FETCH_IDENT_RE, skipStatusFetchLine).counts).toEqual({
       'lib/fresh-auth.js#flight': 2,
     });
+
+    // The residual the per-match tally cannot reach: `skipLine` drops the
+    // whole line before the tally runs, so a match riding on a skipped line
+    // is invisible. An import and a live reference on ONE physical line
+    // yield nothing; split across two lines the reference is a red bar.
+    // Reaching it needs a shape a formatter removes, which is why the
+    // response is to name it rather than to make the skip per-match.
+    const riderOnSkippedLine = {
+      rel: 'pages/anything.js',
+      lines: ["import { fetchEmailStatus } from '../api.js'; const f = fetchEmailStatus;"],
+    };
+    expect(occurrencesOf([riderOnSkippedLine], STATUS_FETCH_IDENT_RE, skipStatusFetchLine).keys).toEqual([]);
+    const riderOnItsOwnLine = {
+      rel: 'pages/anything.js',
+      lines: ["import { fetchEmailStatus } from '../api.js';", 'const f = fetchEmailStatus;'],
+    };
+    expect(occurrencesOf([riderOnItsOwnLine], STATUS_FETCH_IDENT_RE, skipStatusFetchLine).keys).toEqual([
+      `pages/anything.js#${MODULE_SCOPE}`,
+    ]);
   });
 
   it('the password-state scan sees reads a factor decision cannot avoid writing', () => {
@@ -664,6 +714,16 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
         lines: ['function pick(status) {', '  /* v8 ignore next */ return status.hasPassword === true;', '}'],
       }),
     ).toEqual(['pages/anything.js#pick']);
+    // The same live read behind a comment CLOSE rather than an opener. The
+    // password-state scan is the layer that exists because a factor decision
+    // can receive the status object second-hand, so a read it skips is a
+    // decision nothing else catches.
+    expect(
+      passwordStateKeys({
+        rel: 'pages/anything.js',
+        lines: ['function pick(status) {', '  /* legacy note', '  */ return status.hasPassword === true;', '}'],
+      }),
+    ).toEqual(['pages/anything.js#pick']);
     // Prose is spared.
     expect(
       passwordStateKeys({
@@ -687,6 +747,18 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
     expect(isCommentLine('/* v8 ignore next */ const usesPassword = status.hasPassword;')).toBe(false);
     expect(isCommentLine('  /* istanbul ignore next */ hasPassword = data.hasPassword;')).toBe(false);
     expect(isCommentLine('/* one */ /* two */ return status.hasPassword;')).toBe(false);
+    // The CLOSING side of the same rule. `*/` begins with `*`, so the
+    // docblock-continuation arm claims the line before the block arm ever
+    // sees it, and a read riding behind the close is skipped silently. Both
+    // arms have to close then inspect what is left.
+    expect(isCommentLine('*/ return status.hasPassword === true;')).toBe(false);
+    expect(isCommentLine('  */ hasPassword = data.hasPassword;')).toBe(false);
+    expect(isCommentLine(' * trailing prose */ const usesPassword = status.hasPassword;')).toBe(false);
+    // A bare close, and a close followed by nothing but further comment, stay
+    // prose in both arms.
+    expect(isCommentLine('*/')).toBe(true);
+    expect(isCommentLine('  */ // and trailing prose')).toBe(true);
+    expect(isCommentLine('  */ /* two */')).toBe(true);
     expect(isCommentLine('const usesPassword = status.hasPassword; // trailing prose')).toBe(false);
     expect(isCommentLine('')).toBe(false);
   });
@@ -761,6 +833,21 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
       '}',
     ];
     expect(enclosingSymbol(parenExpression, 2)).toBe('outer');
+    // The guard's two fast-path arms, each reached only when the parens
+    // balance on the opening line: every other probe here wraps its
+    // parameter list, so the paren count answers first and neither arm runs.
+    const balancedFunctionKeyword = [
+      'const handler = function (status) {',
+      '  return status.hasPassword;',
+      '};',
+    ];
+    expect(enclosingSymbol(balancedFunctionKeyword, 1)).toBe('handler');
+    const balancedArrow = [
+      'const handler = async (status) => {',
+      '  return status.hasPassword;',
+      '};',
+    ];
+    expect(enclosingSymbol(balancedArrow, 1)).toBe('handler');
     // A closing brace inside a block comment between the declaration and
     // the target (a commented-out block left at the declaration's own
     // indentation) is prose, not the end of the block.
@@ -774,5 +861,77 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
       '    },',
     ];
     expect(enclosingSymbol(bracedComment, 5)).toBe('pick');
+  });
+  it('the brace walk enters a comment region only where one demonstrably exists, and reads the code after its close', () => {
+    // Four decision points, one probe each. Deleting the region tracking
+    // wholesale is already red at the `bracedComment` fixture in the
+    // resolver case, but that composite says only that the mechanism is
+    // load-bearing as a whole. Each branch here flips a real resolution on
+    // its own.
+
+    // OPENER, unterminated: a `/*` the walk cannot see close is not a
+    // comment. Markup inside a template literal writes that shape, and a
+    // phantom region opened there never closes, swallowing the declaration's
+    // real brace and widening every following module-scope line into the
+    // declaration. That is worse than an ordinary wrong answer, because the
+    // wrong symbol can be a key the consumer already licensed, which its
+    // width pin then absorbs.
+    const strayCommentInMarkup = [
+      'function renderPanel(status) {',
+      '  return `',
+      '    <div class="factor-panel">',
+      '    /* spacing note, never closed',
+      '    </div>',
+      '  `;',
+      '}',
+      '',
+      'const usesPassword = status.hasPassword;',
+    ];
+    expect(enclosingSymbol(strayCommentInMarkup, 8)).toBe(MODULE_SCOPE);
+
+    // OPENER, self-contained: a `/* ... */` line closes on itself and opens
+    // no region. The trailing docblock is what lets a phantom region find a
+    // close, so the self-contained guard is the only branch deciding this.
+    const selfContainedBlockComment = [
+      'function pick(status) {',
+      '  /* the legacy branch lived here */',
+      '  return status.hasPassword;',
+      '}',
+      '',
+      '/*',
+      ' * A later docblock, so a phantom region could find a close.',
+      ' */',
+      'const usesPassword = status.hasPassword;',
+    ];
+    expect(enclosingSymbol(selfContainedBlockComment, 8)).toBe(MODULE_SCOPE);
+
+    // EXIT, mid-line: a region ends at its close wherever that sits, not
+    // only at end of line. A test anchored to the line's end keeps the
+    // region open and swallows the declaration's own closing brace.
+    const regionClosedMidLine = [
+      'function pick(status) {',
+      '  /*',
+      '  the legacy branch lived here',
+      '  */ const legacy = null;',
+      '  return status.hasPassword;',
+      '}',
+      '',
+      'const usesPassword = status.hasPassword;',
+    ];
+    expect(enclosingSymbol(regionClosedMidLine, 7)).toBe(MODULE_SCOPE);
+
+    // EXIT, code after the close: what follows `*/` on that line is live, so
+    // a closing brace sitting there ends the block. Skipping the whole exit
+    // line instead resolves a following module-scope line into the
+    // declaration.
+    const closingBraceAfterCommentClose = [
+      'function pick(status) {',
+      '  /*',
+      '  the legacy branch lived here',
+      '*/ }',
+      '',
+      'const usesPassword = status.hasPassword;',
+    ];
+    expect(enclosingSymbol(closingBraceAfterCommentClose, 5)).toBe(MODULE_SCOPE);
   });
 });
