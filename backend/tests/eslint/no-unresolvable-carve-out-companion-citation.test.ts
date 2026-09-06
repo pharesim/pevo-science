@@ -584,7 +584,11 @@ interface Parsed {
  * leading and trailing ranges at its edges finds them all, and nothing inside
  * a string, template or regular-expression literal is ever reported. JSDoc
  * subtrees are skipped: their child tokens sit INSIDE the comment, and asking
- * for trivia there would read prose as code.
+ * for trivia there would read prose as code. A node is a leaf once its JSDoc
+ * children are set aside, which is what reaches a comment closing the file:
+ * the end-of-file token's only child is the JSDoc it carries, so skipping the
+ * subtree without asking the token itself would lose the block, and a claim
+ * appended below the last statement would be invisible.
  */
 function parse(text: string): Parsed {
   const sf = ts.createSourceFile('scanned.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -592,9 +596,11 @@ function parse(text: string): Parsed {
   const add = (ranges: readonly ts.CommentRange[] | undefined): void => {
     for (const r of ranges ?? []) if (!byPos.has(r.pos)) byPos.set(r.pos, r);
   };
+  const isJSDoc = (n: ts.Node): boolean =>
+    n.kind >= ts.SyntaxKind.FirstJSDocNode && n.kind <= ts.SyntaxKind.LastJSDocNode;
   const walk = (node: ts.Node): void => {
-    if (node.kind >= ts.SyntaxKind.FirstJSDocNode && node.kind <= ts.SyntaxKind.LastJSDocNode) return;
-    const children = node.getChildren(sf);
+    if (isJSDoc(node)) return;
+    const children = node.getChildren(sf).filter((c) => !isJSDoc(c));
     if (children.length === 0) {
       add(ts.getLeadingCommentRanges(text, node.getFullStart()));
       add(ts.getTrailingCommentRanges(text, node.getEnd()));
@@ -1268,6 +1274,14 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
 
   it('the collector reads comments as the language does', () => {
     const texts = (lines: string[]): string[] => commentBlocks(lines).map((b) => b.text);
+
+    // A block closing the file, below the last statement, is collected: the
+    // end-of-file token carries it as its own JSDoc child, so a walk that
+    // skipped every JSDoc subtree without asking that token would lose it and
+    // a claim appended to any file would be invisible.
+    expect(texts(['const a = 1;', '', '/**', ' * (c) Real-path companion: nothing-here.test.ts covers it.', ' */']))
+      .toEqual(['(c) Real-path companion: nothing-here.test.ts covers it.']);
+    expect(texts(['const a = 1;', '// a trailing note'])).toEqual(['a trailing note']);
 
     // A `//` run and a docblock separated by CODE are separate blocks; a
     // header-only parser would see neither of the `//` ones.
