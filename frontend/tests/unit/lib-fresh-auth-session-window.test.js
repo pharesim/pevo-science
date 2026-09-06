@@ -726,6 +726,27 @@ describe('the gate never fails open into silence', () => {
     expect(mockToastStore.show).toHaveBeenCalledWith(expect.any(String), 'error');
   });
 
+  it('an acquisition outcome the vocabulary does not name refuses the work', async () => {
+    // Classification is a lookup, so a sentinel nobody registered classifies
+    // to nothing — and the quiet direction is the dangerous one: an
+    // unclassified result read as a ready window travels on AS the proof, and
+    // the broadcast or the upload pre-flight attaches it to a request the
+    // backend rejects for a reason the user cannot act on. Refusing costs one
+    // re-auth act and says so.
+    mockMintSessionAuthProof.mockImplementation(async () => ({
+      ...issuance('window-proof'),
+      fresh_auth_proof: Symbol('an outcome nobody registered'),
+    }));
+
+    expect(await ensureSessionWindow()).toEqual({ ready: false, failed: true });
+
+    // And the refusal reaches the user, rather than ending as the silence this
+    // block is named for.
+    mockToastStore.show.mockClear();
+    expect(await freshAuthWindowReady()).toBe(false);
+    expect(mockToastStore.show).toHaveBeenCalledWith(expect.any(String), 'error');
+  });
+
   it('a window survives a failed sessionStorage write', async () => {
     // A swallowed write leaves the gate reporting a window nothing recorded:
     // one publish then pays for three acquisitions, and a passwordless

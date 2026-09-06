@@ -6,6 +6,7 @@ import {
   handleSessionInconsistency,
   isUsernameMismatch,
   subjectTeardownGuard,
+  windowOutcomeKey,
   REMINTABLE_REASONS,
 } from './fresh-auth.js';
 
@@ -134,7 +135,10 @@ const uploadError = (code) => new UploadSessionError(code, UPLOAD_ERROR_TEXT[cod
 async function windowProof(guard) {
   const outcome = await ensureSessionWindow({ minRemainingMs: 0, allowRedirect: false });
   if (outcome.ready) return outcome.proof;
-  const outcomeKey = Object.keys(UPLOAD_CODE_BY_WINDOW_OUTCOME).find((key) => outcome[key]);
+  // Classified by the vocabulary's own scan, never a local re-implementation:
+  // a second copy of the same find() drifts from the canonical one (it already
+  // had) and can then disagree with it about which member an outcome carries.
+  const outcomeKey = windowOutcomeKey(outcome);
   // A cancelled outcome that coincides with a subject teardown is the
   // teardown's own unwind, not the user stopping: whatever spoke for that
   // teardown has already spoken by now (and where the cancel was the user's
@@ -146,7 +150,9 @@ async function windowProof(guard) {
   if (outcomeKey === 'cancelled' && guard.tornDown()) {
     throw uploadError(UPLOAD_SUBJECT_CHANGED);
   }
-  const code = outcomeKey ? UPLOAD_CODE_BY_WINDOW_OUTCOME[outcomeKey] : UPLOAD_CANCELLED;
+  // A null key indexes to undefined, so the fall-through for an outcome
+  // outside the vocabulary stays the cancel it has always been.
+  const code = UPLOAD_CODE_BY_WINDOW_OUTCOME[outcomeKey] ?? UPLOAD_CANCELLED;
   throw uploadError(code);
 }
 

@@ -327,6 +327,70 @@ describe('withSettingsFreshAuth', () => {
     await expect(withSettingsFreshAuth('change_email', LIGHT, run)).rejects.toMatchObject({ code: 'DUPLICATE' });
   });
 
+  // ─── The shared retry gate's ladder, driven at its consumption site ──
+  //
+  // The remintable-401 ladder lives once in `consentOpFreshAuthRetryGate`
+  // (fresh-auth.js) and is shared with the authorship orchestrator, so its
+  // arms have a single home. The cases above enter the gate and stop at its
+  // top: they reject on the FIRST `run()` and assert the outcome its entry
+  // check produces. These three drive the gate's own retry side — the second
+  // mint's outcomes and the second `run()`'s — through the public
+  // orchestrator, which is what puts this surface's bindings (its factor
+  // resolution, its bound mint, its `run`) in the picture at all.
+
+  it('a dismissed re-prompt on the retry unwinds as { cancelled }, not a re-auth failure', async () => {
+    // Closing the SECOND prompt is the user stopping, exactly as closing the
+    // first is. Reporting "re-authentication failed" for a prompt they
+    // dismissed on purpose blames the account for a choice, and the busy
+    // refusal's toast is what distinguishes a real refusal from this silence.
+    run.mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'));
+    reauthRequest.mockResolvedValueOnce('right').mockResolvedValueOnce(null);
+
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
+
+    expect(out).toEqual({ cancelled: true });
+    expect(reauthRequest).toHaveBeenCalledTimes(2);
+    // No second attempt: the retry had no proof to make one with.
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(toastShow).not.toHaveBeenCalled();
+  });
+
+  it('an exhausted re-prompt on the retry surfaces freshAuthFailed', async () => {
+    // Two wrong passwords AFTER the action already 401d: the re-auth could not
+    // be completed. That is the generic re-auth failure, not the action's own
+    // error and not a silent stop.
+    run.mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'));
+    mockMintSettingsActionProof
+      .mockResolvedValueOnce('proof-1')
+      .mockRejectedValueOnce(codedError('UNAUTHORIZED'))
+      .mockRejectedValueOnce(codedError('UNAUTHORIZED'));
+    reauthRequest
+      .mockResolvedValueOnce('right')
+      .mockResolvedValueOnce('wrong1')
+      .mockResolvedValueOnce('wrong2');
+
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
+
+    expect(out).toEqual({ freshAuthFailed: true });
+    expect(reauthRequest).toHaveBeenCalledTimes(3);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('a non-fresh-auth error on the RETRY action propagates, exactly as on the first', async () => {
+    // The gate re-mints and calls the action again; a DUPLICATE surfacing on
+    // that second call is the action's own error and belongs to the caller's
+    // per-action handling. Mapping it to freshAuthFailed would tell the user
+    // to re-authenticate for a request whose re-auth worked.
+    run
+      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'))
+      .mockRejectedValueOnce(codedError('DUPLICATE'));
+
+    await expect(withSettingsFreshAuth('change_email', LIGHT, run)).rejects.toMatchObject({
+      code: 'DUPLICATE',
+    });
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
   // ─── Second password-mint failure maps to freshAuthFailed, never escapes ──
 
   it('a second wrong password surfaces freshAuthFailed (no escape to the action error)', async () => {

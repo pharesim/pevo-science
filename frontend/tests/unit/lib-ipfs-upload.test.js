@@ -42,7 +42,14 @@ const mockHandleSessionInconsistency = vi.fn();
 // real body toasts, which is out of this suite's boundary).
 let guardTornDown = false;
 const mockGuardCancel = vi.fn();
-vi.mock('../../src/lib/fresh-auth.js', () => ({
+vi.mock('../../src/lib/fresh-auth.js', async (importOriginal) => ({
+  // The outcome-key scan is pulled REAL rather than mirrored here. It is the
+  // vocabulary's single registration-point scan, and a hand-written copy in
+  // this factory would be exactly the second implementation whose drift from
+  // the canonical one the pre-flight stopped carrying — the copy would agree
+  // with the real scan only until the vocabulary next changes, and the suite
+  // would keep passing while production classified an outcome differently.
+  windowOutcomeKey: (await importOriginal()).windowOutcomeKey,
   ensureSessionWindow: (...a) => mockEnsureSessionWindow(...a),
   clearCachedSessionProof: (...a) => mockClearCachedSessionProof(...a),
   slideSessionWindow: (...a) => mockSlideSessionWindow(...a),

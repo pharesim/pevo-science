@@ -1089,7 +1089,9 @@ export function showWindowOutcomeToast(outcomeKey) {
 //
 // The non-ready outcome keys come from `WINDOW_OUTCOME_BY_SENTINEL` above: a
 // new way for an acquisition to end is registered there, never by adding a
-// branch here.
+// branch here. An acquisition result the vocabulary does not name is refused
+// rather than trusted, so a forgotten registration costs a re-auth act, never
+// a sentinel delivered downstream as if it were a proof.
 //
 // Throws on transport / config errors, so callers that have nothing to unwind
 // go through `freshAuthWindowReady` instead, which cannot reject.
@@ -1102,6 +1104,15 @@ export async function ensureSessionWindow({
   const proof = await acquireSessionProof(minRemainingMs, { allowRedirect });
   const outcomeKey = acquisitionOutcomeKey(proof);
   if (outcomeKey) return { ready: false, [outcomeKey]: true };
+  // Fail closed on anything outside the vocabulary. Acquisition resolves a
+  // proof string or a registered sentinel today — the redirect's null value
+  // included — so no live path reaches this branch. It exists for the
+  // direction a miss must NOT take: reading an unregistered sentinel as a
+  // ready window hands it to a caller as a proof, which attaches a Symbol to a
+  // broadcast or an upload pre-flight and turns a missing registration into a
+  // rejected request the user cannot act on. Refusing costs one re-auth act
+  // and says so.
+  if (typeof proof !== 'string') return { ready: false, failed: true };
   return { ready: true, proof };
 }
 
