@@ -61,7 +61,7 @@ cancel: () => {
   return FRESH_AUTH_CANCELLED;
 },
 
-// After: the first guard to unwind under this teardown speaks; the rest are silent.
+// After: the first flight to unwind under this generation speaks; the rest are silent.
 cancel: () => {
   if (_reportedTeardownGeneration !== _acquireGeneration) {
     claimTeardownReport();
@@ -71,7 +71,11 @@ cancel: () => {
 },
 ```
 
-`_reportedTeardownGeneration` starts below every real generation so nothing is pre-suppressed, and `claimTeardownReport()` stamps it with the current counter. The mark only ever suppresses a second report of the *same* event: the next scrub bumps the counter past the mark and the first guard to unwind under it speaks again. The return value is unchanged either way, so no caller grows a branch.
+`_reportedTeardownGeneration` starts below every real generation so nothing is pre-suppressed, and `claimTeardownReport()` stamps it with the current counter.
+
+The comparison is against the **live** counter, not against the generation the unwinding flight captured. So the mark suppresses every flight that unwinds while that generation is current, whichever teardown abandoned it. The unit is the teardown *horizon*, not the individual teardown: a flight parked across two rapid subject changes unwinds silently once any party has claimed the newer generation, and the earlier change is folded into that one message rather than narrated on its own. That is deliberate and is the behaviour to preserve, not a rounding error in the dedup — the user has just been told their session changed, and a second message about the change before it would only stack. Past the horizon the next scrub bumps the counter beyond the mark and the first flight to unwind under it speaks again. The return value is unchanged either way, so no caller grows a branch.
+
+The distinction matters when you reason about a flight that can outlive more than one event. An open prompt is dismissed by the first scrub, so it cannot span two; a request already in flight resumes only when its response lands, however many changes have passed by then, and that is the flight the horizon rule governs.
 
 **Any path that narrates itself must claim the same identity before it speaks.** Otherwise the flights it abandoned are still unclaimed and will report on top of it.
 
@@ -83,15 +87,20 @@ export function handleSessionInconsistency() {
   toastLocalized('auth', 'sessionInconsistency', 'Session inconsistency detected. Please sign in again.');
 }
 
-// After: claim the teardown, then speak.
+// After: claim the teardown, then speak - but only when there was one to claim.
 export function handleSessionInconsistency() {
-  Alpine.store('auth')?.disconnect();
-  claimTeardownReport();
+  const auth = Alpine.store('auth');
+  if (auth) {
+    auth.disconnect();
+    claimTeardownReport();
+  }
   toastLocalized('auth', 'sessionInconsistency', 'Session inconsistency detected. Please sign in again.');
 }
 ```
 
-The ordering is load-bearing in both directions. The claim must come **after** the call that moves the counter, or it stamps the pre-teardown generation and suppresses nothing; and **before** the message, so the abandoned flights that resume later find the event already narrated. `disconnect()` is synchronous, so those three statements are one uninterruptible block and the flights cannot interleave into the middle of it.
+The ordering is load-bearing in both directions. The claim must come **after** the call that moves the counter, or it stamps the pre-teardown generation and suppresses nothing; and **before** the message, so the abandoned flights that resume later find the event already narrated. `disconnect()` is synchronous, so the disconnect and the claim are one uninterruptible block and the flights cannot interleave between them.
+
+The claim also belongs **inside** the branch that actually disconnected. With no store there is no scrub, so no teardown happened on this path at all; stamping the live counter anyway would credit whatever teardown is current to a message about something else, and silence a flight that still owed the user a word. The message stays outside the branch, because the user is told either way. The general rule: claim the identity of a teardown you caused, never the identity of whatever teardown happens to be current.
 
 **Before adding the report, name the one site that owes the message on each path.** Do not assume some layer downstream speaks. Walk the path outward and write down, per layer, what it shows: a real message, a documented silence, or a pass-through. If every entry is "documented silence", the missing report is at the innermost site that still knows *why* the operation ended, and that is where it belongs. In the acquisition that is exactly two boundaries: the post-factor-read check, and the stale return from the ORCID-start closure.
 
@@ -155,6 +164,7 @@ Every row after the first is a decision that is right. The table is what makes t
 - `one teardown across two cross-posture flights still reports exactly once` parks a suppressed and a permissive acquisition on a single coalesced factor read, tears down, resolves the read, and asserts the toast store was called exactly once while both flights unwound.
 - `a mismatch teardown is not talked over by the flights it abandoned` parks a page gate on its factor read, drives a `username_mismatch` through the broadcast surface so `handleSessionInconsistency` runs, and asserts exactly one message and that it is the mismatch copy, not the generic cancel copy.
 - `a teardown inside the upload's own factor read reports exactly once` is the zero-message case's pin: it asserts the describe-key is null *and* that the count is one, so the assertion fails in both directions.
+- `a flight parked across two subject changes folds into the newer change's one report` pins the horizon rule above. It parks an older flight on its mint round-trip, drives two sequential subject changes, and asserts one message total plus no late issuance cached. It is what distinguishes the live-counter comparison from a per-flight one: swapping in the flight's own captured generation reddens exactly this case.
 
 Counting is the point. `toHaveBeenCalled()` passes under the duplication defect; `toHaveBeenCalledTimes(1)` fails under both defects, and pairing it with an assertion on *which* message fired is what kills the "talked over" mutant, whose count is also one before the claim is added but whose text is wrong.
 
