@@ -3869,22 +3869,25 @@ zh: upgrade.sessionChangedBeforeCleanup
 
 ### Updated 2026-09-06 (ui-custody-upgrade-subject-pin)
 
-English value of `upgrade.sessionChangedBeforeCleanup` was revised in place: the
-sub-case is retryable now, so the copy tells the user to sign back in as the
-named account and press Try Again instead of contacting support. The inline
-"Try Again" names an on-screen button, so it must read exactly as that locale
-renders `common.tryAgain`. Translators who started on the earlier `Added`
-entry should retranslate.
+English value of `upgrade.sessionChangedBeforeCleanup` was revised in place,
+twice under this heading. The sub-case is retryable now, so contacting support
+is no longer the message's primary instruction: it tells the user to sign back
+in as the named account and press Try Again. The inline "Try Again" names an
+on-screen button, so it must read exactly as that locale renders
+`common.tryAgain`. Translators who started on the earlier `Added` entry should
+retranslate.
 
-Revised a second time under this same heading, so anyone who already started
-from the first revision above should retranslate as well. Two things are new.
-The retry is now scoped to the tab and the page the message is read on ("in
-this tab, without leaving this page"), because that Try Again is the settings
-page's own button and navigating away destroys the state it needs. And a
-fallback sentence was added for the reader who has already navigated away: it
-tells them to contact support with their account name. Keep the fallback as a
-separate sentence; it is the only instruction that still holds once the in-tab
-retry is gone, and dropping or merging it silently strands that reader.
+The second revision is why anyone who already began from the first one should
+retranslate as well. Two things are new in it. The retry is now scoped to the
+tab and the page the message is read on ("in this tab, without leaving this
+page"), because that Try Again is the settings page's own button and navigating
+away destroys the state it needs. And a fallback sentence was added for the
+reader who has already navigated away: it tells them to contact support with
+their account name. So support is back in the string, no longer as the whole
+instruction but as the route for a reader the retry can no longer reach. Keep
+the fallback as its own sentence: it is the only route out that still holds
+once the in-tab retry is gone, and dropping or merging it silently strands that
+reader.
 
 ar: upgrade.sessionChangedBeforeCleanup
 cs: upgrade.sessionChangedBeforeCleanup

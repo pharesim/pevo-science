@@ -2509,10 +2509,12 @@ describe('settingsPage', () => {
     });
   });
 
-  // Unit coverage for the post-broadcast 503-retry path.
-  // `retryUpgradeBackend()` is reachable only from the error screen with
-  // `upgradeErrorKey === 'upgrade.backendUnavailable'`; it re-signs a fresh
-  // proof and re-POSTs the backend cleanup call without re-broadcasting the
+  // Unit coverage for the post-broadcast backend-retry path.
+  // `retryUpgradeBackend()` is reachable only from the error screen, and only
+  // for a sub-case RETRYABILITY annotates 'retryable-backend-only':
+  // `upgrade.backendUnavailable`, `upgrade.proofRejected`, and
+  // `upgrade.sessionChangedBeforeCleanup`. It re-signs a fresh proof and
+  // re-POSTs the backend cleanup call without re-broadcasting the
   // (already-landed) chain rotation. `handleRetry()` is the dispatcher
   // that the Try Again button binds to.
   //
@@ -2663,10 +2665,11 @@ describe('settingsPage', () => {
     });
 
     // R2: discriminator guard. The guard reads the RETRYABILITY value, not
-    // one key: reaching retryUpgradeBackend from a sub-case that is not
+    // one key: reaching retryUpgradeBackend for a sub-case that is not
     // annotated 'retryable-backend-only' (e.g. someone wired the dispatcher
-    // wrong, or the field was stale) must short-circuit, because retrying a
-    // terminal sub-case would re-broadcast against an already-rotated chain.
+    // wrong, or the field was stale) must short-circuit. Why a given sub-case
+    // is terminal is decided once at RETRYABILITY and is not re-derived here;
+    // this guard only refuses to act against that decision.
     // The other two 'retryable-backend-only' keys are not backendUnavailable
     // and deliberately do NOT short-circuit here, so the class the guard
     // rejects is the annotation's, not that one key's.

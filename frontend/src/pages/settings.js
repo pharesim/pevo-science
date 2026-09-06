@@ -684,7 +684,7 @@ export function initSettingsPage() {
     // is invariant to mid-error-screen locale switches.
     get canRetryUpgrade() {
       // Consume the RETRYABILITY annotation rather than a hand-curated
-      // NON_RETRYABLE list. Unknown keys (including null on the initial-load
+      // non-retryable list. Unknown keys (including null on the initial-load
       // path) fall through to `true` to match the prior default; every
       // assigned key appears in RETRYABILITY at module top so a typo lands
       // as "undefined RETRYABILITY entry" rather than a silent classification
@@ -1551,8 +1551,8 @@ export function initSettingsPage() {
     // own button navigates away and takes the retry's inputs with it.
     // That is why the before-cleanup copy scopes its retry instruction to
     // this tab and this page and then carries an out-of-band fallback: the
-    // one route the message can send a reader who has already left, and the
-    // only instruction in it that survives an unmount.
+    // Try Again the rest of the message is about goes with the page, so a
+    // reader who has already left needs somewhere else to be sent.
     _endUpgradeAsSessionChanged({ cleanupLanded, upgradeSubject }) {
       // Mirrors _handlePostBroadcastError's entry guard: most callers reach
       // this after at least one await (the retry's start guard is the one

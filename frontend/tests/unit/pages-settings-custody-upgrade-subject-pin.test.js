@@ -16,6 +16,12 @@
 // lands in keeps Try Again available, and a re-login as the pinned subject
 // lets the next attempt finish.
 //
+// A second describe block at the end covers the copy those two sub-cases
+// render. It belongs here because the retryable half's whole recovery is the
+// button this suite proves stays available, and because none of the tests
+// above could notice that copy changing. It uses no fixture from this file:
+// it reads the shipped en.json, so the carve-out below does not apply to it.
+//
 // Carve-out clause (a): mirrors the sibling settings suites' fixture shape.
 // Alpine stores, dhive, and hive-keys are stubbed because driving a real
 // chain broadcast plus backend cleanup per test is impractical, and the focus
