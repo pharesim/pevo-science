@@ -29,7 +29,11 @@
  * unscanned while its `.js` importer writes neither the fetch's name nor the
  * discriminator. The non-script assets the walk may pass over (the
  * stylesheet) are licensed by extension, so the first foreign script file
- * is a red bar rather than a silent hole.
+ * is a red bar rather than a silent hole. A link is a road into the bundle
+ * like any other, so the walk resolves it and routes it by what it points
+ * at; one pointing nowhere is still script-shaped by name and is censused
+ * rather than dropped, which puts it in front of the same extension gate. A
+ * link back to an ancestor is not entered.
  *
  * GRANULARITY. Occurrence assertions are over `file#symbol` pairs resolved by
  * `enclosingSymbol`, never over files: a file already on an allowed list
@@ -55,7 +59,9 @@
  * change to a licensed site is a two-sided edit (the code and the pinned
  * width). Widths count MATCHES, not lines: the resolver's own status
  * assignment names the property on both sides of its `=`, and a second read
- * added beside a licensed one on the same line must move the count too.
+ * added beside a licensed one on the same line must move the count too. That
+ * holds on every line the scan's skip predicate does not drop; a match
+ * sharing a physical line with a skipped one is named in the residuals.
  *
  * DETECTION. The occurrence scan matches the NAME `fetchEmailStatus`, not a
  * call shape: a call-shaped pattern is defeated by one line, since
@@ -85,14 +91,29 @@
  *     rebinding shape that writes neither the function's name nor the
  *     property's.
  *
- * Residual, pinned in prose rather than silently absorbed: the width pin
- * catches every ADDED occurrence under a licensed key, but a constant-width
- * REPLACEMENT does not move a count. Rewriting a licensed line itself into a
- * factor decision (the settings section gate turned into a factor branch, or
- * the resolver's own status read reshaped without changing how many lines
- * write the name) stays green. That shape edits the licensed lines directly,
- * which is the edit a review diff cannot miss, and factor logic inline in
- * markup gives a reviewer a second reason to reject it.
+ * Residuals, pinned in prose rather than silently absorbed. Three, and each
+ * one is left to review of the diff for its own reason.
+ *
+ *  1. CONSTANT-WIDTH REPLACEMENT. The width pin catches every ADDED
+ *     occurrence under a licensed key, but a replacement does not move a
+ *     count. Rewriting a licensed line itself into a factor decision (the
+ *     settings section gate turned into a factor branch, or the resolver's
+ *     own status read reshaped without changing how many lines write the
+ *     name) stays green. That shape edits the licensed lines directly, which
+ *     is the edit a review diff cannot miss, and factor logic inline in
+ *     markup gives a reviewer a second reason to reject it.
+ *  2. A MATCH RIDING ON A SKIPPED LINE. Each scan's skip predicate drops the
+ *     whole line before the tally runs, so a live reference sharing one
+ *     physical line with an import specifier it spares is counted nowhere.
+ *     Reaching it takes a shape a formatter undoes, and making the skip
+ *     per-match would widen machinery every future canary inherits for a
+ *     case none of them has, so it is named rather than closed.
+ *  3. A NAME THAT IS NEVER SPELLED. Both scans are token matches, so a
+ *     derivation that assembles the fetch's name from string fragments and
+ *     reads the discriminator through a computed key writes neither token
+ *     and is invisible to all four layers. No textual guard closes this and
+ *     none should be attempted: the defence is that such a module is
+ *     conspicuous in review precisely because it went to the trouble.
  */
 import { describe, it, expect } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';

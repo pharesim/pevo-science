@@ -48,9 +48,35 @@
  * below it can resolve to that declaration instead of the real enclosing
  * scope. A method shorthand whose parameter list wraps onto the next line is
  * not recognized and resolves further up. A shape the patterns do not
- * recognize at all resolves to {@link MODULE_SCOPE}. The consequence in every
- * case is a WRONG symbol, and how that fails depends on the assertion
- * consuming it:
+ * recognize at all resolves to {@link MODULE_SCOPE}.
+ *
+ * Two comment boundaries are deliberately left open, both because closing
+ * them needs a mid-line opener test, and telling a real opener from the same
+ * two characters inside a string literal, a regex, or a CSS rule in template
+ * markup is a lexer's job. A lexer is the dependency this module exists to
+ * avoid, so both are named here instead:
+ *
+ *  - A block comment OPENED mid-line is not tracked, so a brace inside it
+ *    reads as live and can close the declaration early. This one resolves
+ *    OUTWARD, toward an enclosing function or module scope. Module scope is
+ *    never a licensed key in the canaries built on this module, so the wrong
+ *    answer is a new member and the consuming set-equality assertion still
+ *    fails closed.
+ *  - A line carrying more than one comment boundary is read only to its
+ *    first close, so a brace sitting after a LATER boundary on that same
+ *    line is missed and the declaration reads as still open. This one
+ *    resolves INWARD, which is the direction a licensed key can absorb, and
+ *    is therefore the weaker of the two. What keeps it small is that the
+ *    shape has to put a whole comment and a block-closing brace on one
+ *    physical line, which no formatter this tree runs will produce and no
+ *    reviewer reads past.
+ *
+ * The ordinary single-boundary form of that second shape, a close sharing
+ * its line with the real closing brace, IS handled: the walk reads the code
+ * after the close.
+ *
+ * The consequence in every case is a WRONG symbol, and how that fails depends
+ * on the assertion consuming it:
  *
  *  - SET-EQUALITY assertions (occurrence keys, or keys with their per-key
  *    counts, compared to an exact allowed set or map) fail closed: a wrong
@@ -203,9 +229,8 @@ export function enclosingSymbol(lines, lineIndex) {
     //
     // Leaving the region, the code after the first close on that line is
     // live and gets the same brace test as any other line, at the line's own
-    // indentation. A line carrying more than one comment boundary is read to
-    // its first close only, which resolves wider and is the fail-closed
-    // direction.
+    // indentation. Only the FIRST close on a line is read; the file
+    // docblock's comment-boundary paragraph names what that leaves open.
     let closedBefore = false;
     let inBlockComment = false;
     for (let j = i + 1; j <= lineIndex; j++) {
@@ -253,7 +278,10 @@ export function enclosingSymbol(lines, lineIndex) {
  * authored in one of them would join the bundle with no scan having seen it,
  * and its `.js` importer need not write any name the scans look for. A
  * consuming canary therefore pins what the walk may pass over (a stylesheet,
- * by extension) and fails on anything else.
+ * by extension) and fails on anything else. Links are followed and routed by
+ * what they point at, and one pointing nowhere is reported in `foreign`
+ * rather than dropped, so between the two lists the walk accounts for every
+ * entry it saw and the census can be trusted as an exhaustive one.
  */
 export function sourcesUnder(root) {
   const sources = [];
@@ -356,9 +384,14 @@ export function isCommentLine(line) {
  * mismatch. Matches are counted per MATCH rather than per line for the same
  * reason one level further down: a second read placed beside a licensed one
  * on the same line adds no line, and a per-line tally would leave the pin
- * satisfied. The residual a width pin cannot see is a constant-width
- * REPLACEMENT, an offending rewrite of the licensed lines themselves; that
- * edit touches licensed lines directly and is left to review of the diff.
+ * satisfied. That per-match tally covers same-line addition only on lines
+ * `skipLine` does not drop: the skip runs first and removes the whole line,
+ * so a match riding on a skipped line is invisible to the count. Making the
+ * skip per-match would widen shared machinery for a shape no consumer needs
+ * and a formatter removes, so the case is named here instead. The other
+ * residual a width pin cannot see is a constant-width REPLACEMENT, an
+ * offending rewrite of the licensed lines themselves; that edit touches
+ * licensed lines directly and is left to review of the diff.
  *
  * `skipLine` drops a matched line before it is counted, for a definition site
  * that necessarily matches the pattern it defines, say. It receives the
