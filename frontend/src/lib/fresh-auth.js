@@ -1104,17 +1104,30 @@ export async function ensureSessionWindow({
   const proof = await acquireSessionProof(minRemainingMs, { allowRedirect });
   const outcomeKey = acquisitionOutcomeKey(proof);
   if (outcomeKey) return { ready: false, [outcomeKey]: true };
-  // Fail closed on anything outside the vocabulary. Acquisition resolves a
-  // proof string or a registered sentinel today — the redirect's null value
-  // included — so no live path reaches this branch. It exists for the
-  // direction a miss must NOT take: reading an unregistered sentinel as a
-  // ready window hands it to the upload pre-flight as the proof itself, which
-  // attaches a sentinel to the pre-flight request and turns a missing
-  // registration into a rejection the user cannot act on. It is also the
-  // string test `acquisitionAborted` already applies to the raw acquisition
-  // result, so both readings of an outcome now refuse an unnamed one alike.
-  // Refusing costs one re-auth act and says so.
-  if (typeof proof !== 'string') return { ready: false, failed: true };
+  // Fail closed on anything outside the vocabulary, and evict whatever
+  // produced it. The mint and the sentinel legs resolve a proof string or a
+  // registered sentinel, but the cache read that runs ahead of both is not
+  // type-checked: `readSessionWindow` drops an entry whose token is FALSY and
+  // passes anything else through. So a truthy non-string sitting in the window
+  // slot arrives here as a proof, and refusing it without clearing the slot
+  // would re-read and re-refuse that same entry on every later attempt, with
+  // no user action able to break out until the absolute cap elapsed. The clear
+  // is what keeps a refusal the cost of one re-auth act.
+  //
+  // The direction this guard exists to close is the quiet one. Read as a ready
+  // window instead, an unregistered result travels on AS the proof: it is
+  // truthy, so the upload pre-flight's own missing-proof check waves it
+  // through, and `JSON.stringify` then omits a Symbol-valued field entirely,
+  // so the request leaves carrying no proof at all and comes back rejected for
+  // a reason the user cannot act on. This is also the string test
+  // `acquisitionAborted` applies to the raw acquisition result, so both
+  // readings of an outcome refuse an unnamed one alike. They still differ on
+  // whether the refusal speaks, which the toast dispatch decides and this
+  // guard does not.
+  if (typeof proof !== 'string') {
+    clearCachedSessionProof();
+    return { ready: false, failed: true };
+  }
   return { ready: true, proof };
 }
 

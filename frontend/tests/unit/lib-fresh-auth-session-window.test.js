@@ -740,16 +740,26 @@ describe('the gate never fails open into silence', () => {
     expect(mockToastStore.show).toHaveBeenCalledWith(expect.any(String), 'error');
   });
 
-  it('an acquisition outcome the vocabulary does not name refuses the work', async () => {
-    // Classification is a lookup, so a sentinel nobody registered classifies
-    // to nothing — and the quiet direction is the dangerous one: an
-    // unclassified result read as a ready window travels on AS the proof, and
-    // the upload pre-flight attaches it to a request the backend rejects for a
-    // reason the user cannot act on. Refusing costs one re-auth act and says
-    // so.
+  // The guard names the whole non-string class, so the pin drives the class
+  // rather than one member of it. A Symbol is the LEAST reachable member: a
+  // Symbol-valued field does not survive `JSON.stringify`, so it never reaches
+  // the window slot and never reaches the wire either. A mint response simply
+  // missing `fresh_auth_proof` is what a backend contract slip actually
+  // produces, and a guard narrowed to symbols would read exactly that as a
+  // ready window with no proof behind it.
+  it.each([
+    { label: 'a mint response with no proof field', value: undefined },
+    { label: 'a numeric proof', value: 4242 },
+    { label: 'a sentinel nobody registered', value: Symbol('an outcome nobody registered') },
+  ])('an acquisition result the vocabulary does not name refuses the work: $label', async ({ value }) => {
+    // Classification is a lookup, so a result nobody registered classifies to
+    // nothing — and the quiet direction is the dangerous one: an unclassified
+    // result read as a ready window travels on AS the proof, and the upload
+    // pre-flight sends a request the backend rejects for a reason the user
+    // cannot act on. Refusing costs one re-auth act and says so.
     mockMintSessionAuthProof.mockImplementation(async () => ({
       ...issuance('window-proof'),
-      fresh_auth_proof: Symbol('an outcome nobody registered'),
+      fresh_auth_proof: value,
     }));
 
     expect(await ensureSessionWindow()).toEqual({ ready: false, failed: true });
@@ -759,6 +769,25 @@ describe('the gate never fails open into silence', () => {
     mockToastStore.show.mockClear();
     expect(await freshAuthWindowReady()).toBe(false);
     expect(mockToastStore.show).toHaveBeenCalledWith(expect.any(String), 'error');
+  });
+
+  it('the refusal evicts the entry that caused it', async () => {
+    // The cached-token read is the one leg into the guard that is not
+    // type-checked (`readSessionWindow` drops a FALSY token and passes
+    // anything else), so a truthy non-string in the window slot is what
+    // actually reaches it. Refusing without clearing that slot re-reads and
+    // re-refuses the same entry on every later attempt: every windowed action
+    // is dead until the absolute cap elapses, with nothing the user can do to
+    // break out. Before the guard existed the value went to the network, drew
+    // a remintable rejection, and the upload retry's clear healed it.
+    seedWindow(4242, { idleInMs: IDLE_MS });
+
+    expect(await ensureSessionWindow()).toEqual({ ready: false, failed: true });
+    expect(cached()).toBeNull();
+
+    // And the next attempt is an ordinary acquisition rather than a second
+    // refusal of the same poisoned entry.
+    expect(await ensureSessionWindow()).toEqual({ ready: true, proof: 'window-proof' });
   });
 
   it('a window survives a failed sessionStorage write', async () => {
