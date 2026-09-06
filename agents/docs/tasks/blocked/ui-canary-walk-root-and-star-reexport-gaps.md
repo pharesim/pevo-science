@@ -77,3 +77,32 @@ Sequence this after `ui-factor-resolver-source-discipline-canary`'s round-3 hold
 lands. That round changes `sourcesUnder`, the brace walk, and `isCommentLine` in
 the shared machinery this canary stands on, and item 1 here may touch the walk
 again.
+
+---
+
+## [BLOCKED by ui] (2026-09-06)
+
+Blocked on the sibling ui task `ui-factor-resolver-source-discipline-canary`,
+whose round-3 hold (`3c1471cb`) is open in `tasks/pending/`. This is the
+sequencing dependency this file's own Notes section already names, recorded here
+rather than left as an inline note so the block is visible to a startup listing.
+
+Both tasks edit the same two files, and two of the round-3 items land directly on
+the surfaces this task widens:
+
+- Round-3 item 3 rewrites `sourcesUnder` to route symlinks by real type into
+  `sources` / `foreign` / the walk. Scope item 1 here decides whether the entry
+  document becomes a fifth assertion or a widened walk root, and a widened root
+  has to keep the same extension census honest. Building that on the pre-item-3
+  walk means rebuilding it after.
+- Round-3 items 5 and 6 rewrite the residual paragraph of the file docblock (the
+  skipped-line exception, and computed / built-string access). Acceptance
+  criterion 3 here restates what the canary covers and does not, in the same
+  paragraph.
+
+Round-3 item 2 also reworks `isCommentLine`, which both of this task's scopes
+read through.
+
+Unblocks when `ui-factor-resolver-source-discipline-canary` reaches
+`tasks/review/` with the round-3 fixes landed. The ui agent moves this file back
+to `tasks/pending/` at that point.
