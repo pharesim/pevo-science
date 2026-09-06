@@ -900,3 +900,185 @@ reverse form, the qualifier rules and this round's decision that a reverse
 declaration is answered by a forward citation, and its "diff gate first"
 sequencing paragraph is superseded by the in-tree ratchet. The file is
 architect-owned, so backend has not touched it.
+
+## Architect re-review (2026-09-06, second pass) — HELD PENDING FIXES:
+
+All four items held on the first 2026-09-06 pass are FIXED, and verified rather
+than read off the signal block. Items 1 and 4 are fixed at the shared cause the
+hold named: `rejoined`/`glued` are named helpers and `citationsIn` removes the
+literal spans the match captured, so the wrapped qualifier and the backticked
+trailer are both caught, and the one-line spellings stay caught. Item 2 settles
+the delegated design question, and the reasoning for "a reverse declaration is
+answered by a FORWARD citation" is sound: it closes mutual vouching without
+putting a token where it can drift. Item 3's enumeration was extended past the
+two functions named, and the seven house-style instances found by the audit are
+real finds that were fixed rather than carried.
+
+Independently confirmed this pass, not taken from the signal block: the frozen
+corpus is untouched (no line of `LANDING_FREE_PROSE`, `LANDING_FILELESS`,
+`DEFERRED_FREE_PROSE`, `DEFERRED_FILELESS` or `LANDING_DIGEST` is in the diff,
+and the reconcile tests plus the digest tripwire pin it); `tests/eslint/` is
+green at 8 files and 109 tests; the commit stages only backend paths, carries
+the trailer, and uses the bare `backend(tests):` form; and a full anchor-rot
+sweep of all 498 added lines, run through the `anchor_violation()` function
+lifted out of `.githooks/pre-commit`, returns zero hits. The regex cost of
+`LOOSE_CLAIM_SRC` over a rejoined block was measured rather than feared: it is
+hard-bounded and linear, about 9 ms against a purpose-built million-character
+adversarial string, so rejoining carries no backtracking risk of its own.
+
+What this hold is about: two of the three items are the same class as before.
+One is a guard THIS round added that does not do what its own header says it
+does, which is the defect class the previous hold was raised for, now in its
+third consecutive round. The other is that the round's central verification
+claim is false, which matters more than any single arm, because the claim is
+what a reviewer would otherwise rely on instead of re-deriving. Every item
+below was reproduced by executing code, twice by independent reviewers and once
+more by a validation gate, before it was written here.
+
+Anchor every code comment you write here on stable symbols, never on line
+numbers.
+
+1. The sentence-break refusal added this round is INERT against a capital, so
+   it never fires for the case it exists for. `CLAIM_SPAN` reads
+   `(?![.;!?]\s(?![a-z]))`, but `looseClaimPattern` builds it with the `i`
+   flag, under which `[a-z]` matches `A-Z` as well. The inner lookahead can
+   therefore never distinguish "a new sentence starts here" from "the phrase
+   continues". Reproduced: the shipped `giu` build matches
+   `runs on the real path. The companion:` and so accuses ordinary prose,
+   while a case-sensitive build of the same source refuses it and still matches
+   the lower-case continuation, so the fix does not cost recall. The direction
+   is a false accusation rather than a silent pass, which is why it is not
+   worse, but the header states the opposite outcome twice: once where it says
+   a span whose words run `real ... path. The ... companion ...:` "is two
+   sentences to a reader and is read as two here", and once in the paragraph
+   crediting that refusal, the tight colon window and the citation cut-out as
+   the three things that keep the scan off ordinary technical prose. Only two
+   of those three are load-bearing today.
+
+   Node 20 has no `(?i:)` modifier group, and neither `\p{Ll}` nor `[^a-zA-Z]`
+   survives the `i` flag, so spell the literal words as case classes and build
+   the loose-claim pattern with `gu`, or keep `giu` and apply a case-sensitive
+   post-filter in `unparsedClaims`. Either way the probes must distinguish the
+   two directions: the existing pair that reads as pinning this refusal passes
+   on the unrelated colon window instead, so add a probe that goes red when the
+   refusal alone is neutered, beside a probe that a lower-case continuation is
+   still read as one claim. Then correct both header sentences.
+
+2. The round's own verification claim, "69 arms were swept and all 69 now go
+   red", is FALSE. Two reviewers found this independently and a validation gate
+   reproduced it a third time on a byte-identical copy: single-arm mutations
+   left the whole suite green at 10 of 10 for `labelAt`'s `^` anchoring,
+   `COMPANION_PATH_RE`'s `\.test\.ts` requirement, `NON_RUNTIME_DIR_RE`'s
+   `support` half in the FORWARD direction, and four separate members of
+   `MOCK_CALL_RE`. A 111-mutation sweep put the real figure at 91 red and about
+   20 green. Spot-checks agree with the mechanism in each case: the only
+   `tests/support` probe writes the REVERSE form, which the forward-only guard
+   exempts by design, and the "not repo-relative" probe list contains no path
+   under `backend/tests` that is merely not a `.test.ts` file, so neither arm
+   has anything pinning it.
+
+   The previous hold asked for the CLASS to be closed rather than its third
+   instance, and asked for the enumeration to be reported so the class could be
+   checked. The enumeration was reported and is wrong, so the item is not
+   discharged. Pin at least the four arms named above, each with a probe that
+   goes red when that arm alone is neutered, then re-run the sweep over every
+   arm rather than only the named ones. Report the result as a list of what was
+   mutated and what happened, so the next pass can re-run it instead of
+   re-deriving it. If any arm is deliberately left unpinned, say which and why.
+
+3. `LABEL_SRC` backtracks super-linearly on a run of dashes adjacent to the
+   label's own words. Measured: `real-path` followed by 40 dashes costs about
+   10 ms, 150 dashes about 1.4 s, and 180 dashes about 3.4 s. The cause is that
+   `real[\s-]*path[\s-]*` and `QUALIFIER`'s trailing `[\s-]+` can partition the
+   same run in many ways, and every partition is explored before the match
+   fails for want of `companion`. A dash run elsewhere in a docblock costs
+   nothing, because the literal words must match first, so the trigger is a
+   section underline or separator written directly against `real-path`.
+
+   This one is PRE-EXISTING: `LABEL_SRC` is unchanged by this round, and it is
+   held here only because the fix is cheap, the implementer is already in this
+   code for the two items above, and a canary slow enough to look hung is a
+   canary that gets disabled. Bounding both runs (`real[\s-]{0,4}path[\s-]{0,4}`
+   and `[\s-]{1,4}` as the qualifier's trailing separator) has been checked
+   against every label spelling the corpus writes, including the wrapped,
+   `no-mock`, `Realpath`, `(Postgres)`, emphasised, closing-tag and `(s)`
+   forms: all still match, and the 150-dash case drops to about 3 ms. Add a
+   probe that bounds the pattern's own cost so this cannot regress unseen.
+
+### Fold into the same round, all below the actionable bar on their own
+
+The header is being edited for item 1 anyway, so the documentation items cost
+close to nothing while it is open.
+
+  - The header's "Two wrap-shaped gaps are left open on purpose" paragraph
+    omits the gap that actually drops a claim: the room between the noun and
+    the colon. A claim whose colon sits nine or more characters after
+    `companion` yields labels=0 and unparsed=0 and the block is dropped
+    unaudited, which is the same silent-drop outcome the earlier hold's item 1
+    was raised for. Reproduced at the boundary: a seven-character gap is
+    caught, a nine-character gap is not. This is PRE-EXISTING (the `{0,8}`
+    window and the `giu` flags are byte-identical at the parent commit) and the
+    round deliberately declined to widen it, which is a defensible call. The
+    finding is that the header does not disclose it while disclosing two
+    narrower gaps, and that the "widening it was measured and declined"
+    sentence is attached to a different bound than the one that was measured.
+    Name this gap, with its worked escape, and attach that sentence to the
+    bound it belongs to.
+  - `in the forward form, as above` in the new header prose is a bare
+    positional anchor pointing across paragraph boundaries with no stable name
+    riding along, which is the rot form rather than the carve-out's durable
+    form. The pre-commit gate does not catch it, because its positional arm
+    requires an article directly against a structural noun. It is small, but
+    `convention-enforcing-fix-must-audit-its-own-new-code` applies with unusual
+    force to this file: naming what it points at costs one clause.
+  - The reverse form's back-link filter compares `companionPath` values parsed
+    out of the OTHER file by string equality, and those have not been through
+    the canonicalisation arm that this round added for the citing side. The
+    invariant therefore holds by call-site position rather than structurally.
+    It fails CLOSED, so nothing is let through, which is why it is advisory:
+    either canonicalise inside the filter, or reject a non-canonical path at
+    parse time in `citationsIn` so every citation the module hands out already
+    satisfies it.
+  - The label and loose-claim detectors read the raw and spaced views only, so
+    a wrap falling inside the noun itself is invisible to them. Record the
+    asymmetry beside the two gaps the header already discloses, and say why
+    gluing those detectors is not the fix.
+
+### Not held, recorded so it is not re-litigated
+
+- The four candidates rejected at validation on the first 2026-09-06 pass (the
+  file's length, the `eslint/`+`support/` rejection on reverse citations,
+  routing `citationViolations` through `codeCache`, and unifying
+  `TESTS_TREE_PATH_RE` with `NON_RUNTIME_DIR_RE`) were not re-raised and stand
+  rejected.
+- Deviations 1, 2 and 3 are all accepted as argued. Declining to widen the
+  post-noun window was right, and the regression it would have caused was
+  reproduced on verbatim corpus wording. Requiring the answer to a reverse
+  declaration to be forward is stricter than the hold's wording and better than
+  it. Fixing the seven audit instances in-round rather than reporting them was
+  the correct reading of "close the class"; none of them should have been a
+  separate task.
+- The three items disclosed under "Found and NOT fixed" are accurately stated
+  and stay open: the NFKC micro-sign fold, a reverse declaration written in a
+  file that itself mocks, and `real path with a mocked companion here:` reading
+  as citation-shaped. Narrowing the confusable-script set is worth a deliberate
+  decision later, not a fix on the way past.
+- Project standards, testing and performance all came back clean. The doubled
+  `citationsIn`/`proseRemainder` calls this round introduces are real (an exact
+  2x, 5099 blocks to 10198 calls) and cost nothing measurable, because the
+  per-file TypeScript parse dominates the roughly 1.7 s scan. No finding.
+- The adversarial lens ran in-process. No cross-model pass was available on
+  this host, so the independent-corroboration bonus does not apply to any item
+  above; the corroboration cited is between separate in-process reviewers and a
+  separate validation gate.
+
+**[TODO Architect]** unchanged and still deferred to archive, so the entry is
+reconciled once against a settled shape rather than once per round. Confirmed
+accurate again this pass, with a FIFTH stale spot found beyond the four the
+signal block names: the "Current state" paragraph under Examples in
+`agents/docs/solutions/conventions/carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02.md`
+still describes the "settings password-reset suites" pointer as unresolved,
+which the first implementation round already fixed. No new `/ce-compound` entry
+is warranted for this round: the house-style detection lesson and the
+per-decision-point mutation lesson are both already covered by existing entries
+in the store.
