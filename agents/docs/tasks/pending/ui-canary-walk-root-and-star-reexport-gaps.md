@@ -1,0 +1,79 @@
+# Close the password-factor canary's two pre-existing coverage gaps
+
+**Owner:** ui
+**Created:** 2026-09-06
+
+Routed out of the round-3 architect review of
+`ui-factor-resolver-source-discipline-canary`. Both gaps were raised as findings
+against that round's commit and both were rejected by validation as pre-existing
+and unaffected by it: the walk root and the star-re-export call are identical at
+the round's base commit. They are real properties of the canary, so they are
+filed here rather than dismissed, and deliberately kept out of that task's hold
+block so its round-3 scope stays what that round introduced.
+
+Neither is urgent. Neither is a live hole today. Both are surfaces the canary
+claims to cover more completely than it does.
+
+## Why
+
+### 1. The walk root excludes the entry document
+
+The canary scans `frontend/src`. `frontend/index.html` sits one directory above
+that root, is Vite's entry document, carries the global re-auth modal, and holds
+around 155 Alpine expression attributes. The canary already treats markup as a
+live factor surface. That is the whole reason `pages/settings.js#template` is a
+licensed key rather than a pattern exclusion, and why the template literal's
+interior resolves to its declaring const instead of module scope.
+
+So the canary's position is that markup can carry a factor decision, but it only
+enforces that for markup inside a `.js` template literal. Markup in the entry
+document is unscanned and uncensused. The modal that the single-resolver
+invariant exists to protect lives there.
+
+`index.html` carries no `hasPassword`, `fetchEmailStatus`, or `emailStatus`
+reference today, verified at filing time. The gap is that nothing would notice
+when it does.
+
+### 2. The star re-export ban matches per line
+
+The wholesale re-export ban runs through `occurrencesOf`, which matches per line.
+Its sibling import-site layer matches against joined file text. So a re-export
+written across a line wrap is not seen by the ban, while the same statement on
+one line is. Confirmed by execution against the whole tree: the wrapped form
+leaves the suite green, the single-line form is a red bar.
+
+This is defence in depth rather than a hole. The occurrence layer still catches
+the eventual call site under the re-exported name, which is why it is the smaller
+of the two. But the ban exists precisely because a star re-export writes neither
+the function's name nor the discriminator, and a line break should not be the
+thing that decides whether it is caught.
+
+## Scope
+
+1. Extend the canary to the entry document. Read `frontend/index.html` and assert
+   it holds neither the status-fetch identifier nor the password-state
+   discriminator. Decide and record whether this becomes a fifth assertion beside
+   the four layers or a widening of the walk root, and say which in the WALK
+   paragraph of the file docblock. A widened root has to keep the extension
+   census honest, since `index.html` would then be a foreign file the walk passes
+   over on purpose.
+2. Make the star-re-export ban line-break proof. Filter sources by testing the
+   pattern against joined file text, as the import-site layer already does. The
+   existing regex spans newlines through its own `\s*`, so no pattern change is
+   needed. Add a line-broken case to the matcher's self-test, which currently
+   feeds it single-line strings only.
+
+## Acceptance criteria
+
+1. A factor read planted in `frontend/index.html` fails the suite.
+2. A star re-export of the api module split across a line wrap fails the suite,
+   and the matcher's self-test carries that shape as a planted positive.
+3. The file docblock states which surfaces the canary covers and which it does
+   not, so the next reader does not have to re-derive the walk's boundary.
+
+## Notes
+
+Sequence this after `ui-factor-resolver-source-discipline-canary`'s round-3 hold
+lands. That round changes `sourcesUnder`, the brace walk, and `isCommentLine` in
+the shared machinery this canary stands on, and item 1 here may touch the walk
+again.
