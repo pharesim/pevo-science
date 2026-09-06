@@ -162,7 +162,9 @@ admitted a NULL column with an epoch; tightened as described in item 2.
 - `api-contracts/orcid.md`, `mode='login'` response: `custody` is now the
   same derived claim the password login mints, so an upgraded (state D)
   account receives `'self'`; the example shows `'light'` with no statement
-  about state D. `api-contracts/custody.md` POST /upgrade prose may mention
+  about state D. A state-G row reaches the identical response and also
+  resolves to `'self'`, so the doc update covers both states, not just D.
+  `api-contracts/custody.md` POST /upgrade prose may mention
   the row is marked self-custody. `settings.md` already matches.
 - Note for § 6.3's stuck-recovery text: with the column now `'self'` after
   upgrade, a row that upgrades inside its own `/confirm` recovery hour
@@ -502,3 +504,142 @@ outside what the hold items ask for, so nothing was changed:
 a source line-number anchor of the kind the repo's comment-anchor convention
 forbids. The `.githooks/pre-commit` gate does not cover `agents/docs/`, so
 nothing catches it mechanically.
+
+## Architect re-review (2026-09-06) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` over `65ab1c74` only (the round-2 commits were
+reviewed in their own pass). Ten reviewers plus a validation batch. All five
+round-2 items are substantively addressed and the review found no defect in the
+shipped derivation logic, the migration, or the security posture: security,
+testing and data-migration each returned clean, testing ran the changed suites
+against real Postgres/Redis (10/10 stuck-recovery, 7/7 canary), and both the
+adversarial reviewer and the validator executed the canary against synthetic
+sources in scratch copies rather than reading it. The measured claims in the
+signal block held up under independent re-checking, including the whole-tree
+zero-false-positive result and the corrected mutation attribution.
+
+Six items below. Item 1 is a behaviour change; the rest are corrections to
+prose or to one loop bound.
+
+1. **The new `/link` term also refuses a genuinely stuck row.** The predicate
+   excludes any row whose revocation postdates its recency marker, and a
+   password reset is such a revocation: `POST /api/auth/reset` selects by reset
+   token alone, with no `custody` / `verify_token` / `upgraded_at` / `username`
+   gate, and stamps `sessions_invalidated_at = NOW()` without touching
+   `updated_at`. A user whose `/link` finalize landed and whose accreditation
+   broadcast failed, who then resets their password inside the hour, loses the
+   only self-service path they have: `/resume-signup` needs a `confirmed:`
+   verify_token that a finalized row no longer carries, so what remains is
+   operator reconciliation. Three reviewers found this independently and a
+   fourth corroborated it. It is a narrower instance of the strand the bare
+   `IS NULL` form was rejected for, and "resets their password while locked
+   out" is close to the first thing a confused user tries.
+   Requirement: close it by discriminating on the epoch the finalize itself
+   writes. Change the `/link` finalize's `upgraded_at = $2` to
+   `upgraded_at = NOW()` (the `const now = new Date()` above it feeds only that
+   parameter and becomes dead), then replace the revocation term with
+   `AND upgraded_at <= updated_at`. An upgrade stamps its epoch a whole HTTP
+   round trip plus a fresh-auth re-proof after the `/confirm` finalize that set
+   `updated_at`, so the upgraded row is still refused; a `/link` finalize writes
+   both stamps from one clock in one statement, so a stuck row is admitted
+   whatever its revocation history. Note this also retires a cross-clock
+   comparison that two reviewers filed as a residual risk: today the predicate
+   compares a Node `Date` against a Postgres `NOW()` and is safe only because a
+   round trip separates them, whereas both sides of the new comparison are
+   `NOW()`. Do NOT ship the bare `upgraded_at <= updated_at` without the
+   finalize change: that is the two-clock comparison your own round-2 probe
+   measured flipping sign at 0.5-2 ms, and it would refuse stuck rows
+   non-deterministically. Re-pin specs (e)/(f)/(g) against the new predicate and
+   add the missing quadrant: a stuck `/link` row revoked AFTER its finalize,
+   asserted to still resume. That spec is what separates the shipped rule from
+   the one being replaced.
+
+2. **`custody-claim.ts`'s new enumeration is universal and incomplete.** It says
+   every route that acts on a light claim re-reads `upgraded_at` and names four.
+   `POST /api/auth/session` is a fifth consumer: `verifyHiveSignature` sets
+   `req.hiveCustody` from the token and that handler re-mints the claim into a
+   fresh 24h JWT with a new `iat`, reading `sessions_invalidated_at` and never
+   `upgraded_at`. Not exploitable, and the reviewers who raised it agree: the
+   four acting routes re-read, and the keys such a claim would unlock were
+   nulled in the statement that stamped the epoch. The defect is that a sentence
+   written to satisfy round-2 item 5 states a universal that is false, in the
+   file where three rounds have gone into making claims exact. Name the
+   claim-carrying site and say why it grants nothing.
+
+3. **Five bare positional anchors added by this commit.** The convention makes
+   an `above`/`below` citation durable only when a stable name rides along in
+   the same container, and the `.githooks/pre-commit` positional arm misses all
+   five because its noun list has no "finalize", "scan", "join", "negative" or
+   "probe". In `routes/signup-verify.ts`, "The finalize below" points about 53
+   lines forward in a file with two finalizes, in a sentence that names its
+   `/confirm` sibling explicitly. In the canary test, "the scan below", "The
+   join below", "the planted negatives below" and "the planted probes below"
+   each cross a container boundary, the furthest by roughly 150 lines. Every
+   target already has a name in the file: the `/link` finalize, `statementFrom`,
+   `inlineDerivations`, and the `it()` block titled "a derivation wrapped,
+   optional-chained, bracketed, or destructured is still refused". Note item 1
+   rewrites the first of these paragraphs anyway.
+
+4. **`COLUMN_COPY_RE`'s docblock presents its residual list as complete and it
+   is not.** The paragraph explains the run is bounded by property-separator
+   punctuation and names a multi-member inline cast as the accepted residual.
+   Executed against the shipped pattern, `const custody = helper(row).custody;`
+   matches while `custody: someHelper(row, options).custody,`,
+   `const custody = pickAccount(rows, username).custody;` and
+   `(row as Record<string, string>).custody` do not: any comma nested inside
+   call arguments or generic type arguments stops the run. Name that class.
+   Do NOT widen the pattern to buy it. The comma exclusion is what stops the
+   scan pairing one object's `custody:` key with a neighbour's `.custody`, and
+   you already closed two real false positives on this scan this round.
+
+5. **A superseded docblock was left stacked above its replacement.**
+   `seedStaleSelfCustodyAccount` now carries two consecutive blocks; only the
+   second is the JSDoc. The surviving first one says the fixture seeds a row
+   outside the recovery window that the lookup "must reject", which is false for
+   the majority of its current call sites: specs (f) and (g) call it with
+   `staleInterval: '0 seconds'` precisely to seed rows that must be admitted.
+   Delete it; the block below already documents the default and all three
+   orderings.
+
+6. **`statementFrom`'s comment skip spends the line cap.** The loop is bounded
+   by `j <= lineIndex + 4` and `continue`s past a comment line without joining
+   it, but `j` is the cap variable, so prose between two halves of an expression
+   costs budget. Executed: a wrapped ternary with four comment lines inside it
+   returns only the opening line and escapes `EPOCH_TERNARY_RE`, while the same
+   shape without comments matches. The docblock's "neither breaks the join nor
+   contributes text to it" is half true and reads as fully true. Count joined
+   lines rather than scanned lines, and plant the comment-interleaved shape so
+   the fix is pinned. Fixing this is smaller than the caveat documenting it
+   would be.
+
+Raised and rejected, no action needed from you:
+
+- A finding that `statementFrom` is a third line-wrap joiner that should be
+  hoisted into `tests/support/enclosing-symbol.ts` was dropped at validation.
+  That module exports no join helper, `valueTextAfterKey` is not a joiner (it
+  slices after a key and returns the next non-blank line, with no accumulation
+  or stop rules), and the frontend's `joinedStatement` sits in a tree that
+  cannot import a backend helper and terminates differently. Three local
+  joiners with three termination rules is the established pattern here, not a
+  bypassed abstraction. The learnings pass reached the same verdict
+  independently.
+- The six-way restatement of the revocation-ordering invariant was raised as a
+  drift risk. Not actioned: item 1 rewrites most of those sites anyway, so a
+  consolidation pass now would collide with it. Revisit at re-review if it
+  still reads badly.
+
+Architect-side, already done or deferred:
+
+- § 6.1's state-F "Reached by" cell no longer cites `auth.ts:460-490`; it names
+  the signup handler's `verifiedOrcid` branch. Fixed at `ff4ea5b9`.
+- The `orcid.md` `[TODO Architect]` bullet above now names state G alongside
+  state D, since both reach that response and both resolve to `'self'`.
+- **[TODO Architect]** § 6.1/§ 6.7 must record that the `/link` Option C lookup
+  conjoins a timestamp ordering with the recency guard, and that the invariant
+  depends on the upgrade never bumping `updated_at`. Deliberately deferred to
+  archive rather than written now: item 1 replaces the discriminator, so writing
+  it today would document a predicate with a one-round shelf life.
+- **[TODO Architect]** `api-contracts/auth.md` does not describe the `/link`
+  username-keyed stuck-recovery branch at all, though it bypasses the signup
+  session-binding check and its predicate is now four terms. Deferred to archive
+  for the same reason as the item above.
