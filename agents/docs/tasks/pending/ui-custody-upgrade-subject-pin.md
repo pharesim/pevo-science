@@ -318,3 +318,97 @@ forty-four agents including every refuter for the correctness and adversarial
 lenses and the completeness critic, so those lenses' findings were adjudicated
 against the code by hand rather than by vote. Points 1 and 2 above are the
 substantive result of that adjudication.
+
+## Architect re-review (2026-09-06) — HELD PENDING FIXES:
+
+Re-review of commit bea00bd3 via /ce-code-review (eight reviewers, six merged findings put
+through an independent validation batch; three validated, three dropped). All three items held
+on 2026-09-05 are FIXED. The round-2 suite's carve-out header now names
+`backend/tests/routes/custody-upgrade.test.ts`, which exists and asserts the derived_pubkey /
+on-chain key-set rejection. `RETRYABILITY[sessionChangedBeforeCleanup]` is
+`retryable-backend-only`, the copy and the fifteen re-stubs match, and every docblock that
+generalised over the terminal set now names only the after-cleanup half. The
+`_beforeUnloadHandler` docblock describes the real registration sites. The reclassification's
+premise was verified independently: `_endUpgradeAsSessionChanged({ cleanupLanded: false })` has
+exactly one caller, the retry start guard, which runs before `_signUpgradeProof`, before
+`_postUpgradeBackend`, before any `_proofRetryAttempts` increment, and
+`_clearSensitiveUpgradeState` runs only under `if (cleanupLanded)`. Nothing is spent. Your point 5
+is confirmed too: the three-token bearer test does distinguish a retry that reads the store at its
+own start. Three fixes before archive:
+
+1. **Restore an out-of-band fallback to the before-cleanup copy.** Your own point 1 named this and
+   left the call to me; four reviewers on this pass reached it independently (reliability,
+   julik-frontend-races, adversarial, security), and the validator confirmed it. Decision
+   (architect and user, 2026-09-06): fix it in the copy, not in the signed-out settings view.
+   Rerouting that button through the global modal would change the signed-out settings page for
+   every visitor to fix one flow, and widening the navigation guard defends the seed but still
+   leaves the instruction conditional on which sign-in affordance the user picks. The copy is the
+   only surface that stays true whichever way the user gets back.
+
+   The failure this closes: the before-cleanup recovery is this component's own Try Again, so it
+   survives only a re-login that keeps the component mounted. `signInModal` is mounted outside the
+   page tree and its success path closes without navigating, so the header route and a cross-tab
+   login both hold. The signed-out settings body's own button calls `navigate('/login')`, which
+   unmounts the page; `destroy()` then runs `_clearSensitiveUpgradeState()` and takes
+   `newSeedPhrase` and `_upgradeSubject` with it. Neither `_navigationGuard` nor
+   `_beforeUnloadHandler` fires, because both gate on `upgradePhase === 'upgrading'`. The commit
+   removed the sentence that used to survive that, so the one instruction the user is given can
+   destroy the state it depends on.
+
+   Change `upgrade.sessionChangedBeforeCleanup` in `en.json` and the fifteen stub locales to scope
+   the retry to this tab and page and to carry a fallback for a user who has already left it. The
+   shape (wording is yours, no em-dashes): keys were updated, this browser is no longer signed in
+   as {username}, the upgrade stopped before it could finish; sign in again as {username} in this
+   tab without leaving the page, then press Try Again; if you have already left the page, contact
+   support with your account name; keep the recovery phrase safe and do not share it. Revise the
+   existing `### Updated 2026-09-06` block in `STUBS.md` rather than opening a third heading for
+   the same key, and say in it that the fallback sentence is new so translators who already
+   started on the previous revision retranslate. Test: assert the rendered key carries both the
+   in-tab retry instruction and the fallback, so a future copy edit cannot drop the fallback
+   silently.
+
+2. **Rename the stale test title.** `pages-settings.test.js`'s
+   `'handleRetry: resets wizard to idle on non-backendUnavailable retryable sub-case'` kept its
+   name while this commit corrected the comment directly above it from "every non-503 retryable"
+   to "every retryable-reset". Two of the three `retryable-backend-only` keys are
+   non-backendUnavailable and do not reset, so the title now names the counterexamples rather than
+   the class the body exercises. Rename it to match the corrected comment's vocabulary.
+
+3. **Rename the phantom symbol in three comments.** `settings.js`'s `_handlePostBroadcastError`
+   region and two comments in `pages-settings.test.js` name
+   `NON_RETRYABLE_UPGRADE_ERROR_KEYS`. No such constant exists; the map is `RETRYABILITY`. This is
+   pre-existing (it survived the hand-curated-list-to-annotation refactor) but both files are in
+   this task's scope and a dead symbol name is what the comment-anchor conventions exist to
+   prevent. Grep the name and rename every hit.
+
+Filed separately as `ui-upgrade-401-proof-budget-auth-failure-split`, NOT held here: the
+post-broadcast 401 branch treats every 401 as a proof rejection, so two auth-layer 401s exhaust
+the proof-retry budget and wipe the seed for an account whose authorities already rotated and
+whose cleanup never ran. Pre-existing, and its full fix needs a backend error-code change, so it
+does not belong in this task.
+
+Dismissed at triage, recorded so they are not re-raised: a claim that the new `### Updated`
+STUBS.md heading double-lists the key and breaks a per-key grep invariant (the file's own format
+section says "Do not merge new entries into an existing sweep's list. A fresh header per sweep",
+which is exactly what the proposed fix would violate, and `### Updated 2026-05-17` already
+double-lists `upgrade.backendTimeout` the same way); a claim that the copy should interpolate
+`common.tryAgain` rather than spell "Try Again" (en.json's `common.tryAgain` is that exact string,
+the stub locales are wholly English by design, and naming on-screen labels in copy has precedent
+in the same file); and a claim that Try Again should be hidden while the store is diverged (the
+click spends and wipes nothing, and the copy tells the user to sign back in first, so showing it
+is defensible).
+
+Recorded, not held: your points 2 and 3 stand. A Keychain re-login as the pinned subject mints
+`custody: 'self'` and collapses the `isLight` subtree with the backend still holding the old keys;
+that is pre-existing custody-claim behaviour and the new copy names no sign-in method. The
+solutions entry that contradicts the code is mine to fix and is being corrected in architect zone
+this pass. Testing gaps for a future pass, none of them held: no test drives `handleRetry` for the
+new key (the dispatcher reads the same map, so the gap is narrow); no test drives two consecutive
+declines under sustained divergence; no test drives the `!auth.isConnected` half of
+`_upgradeSubjectDiverged`, which is the half that reaches the destructive navigation in item 1;
+`sessionChangedAfterCleanup` is still absent from the round-2 terminal-set loop; and the
+drift-injection helper gap recorded on 2026-09-05 is untouched.
+
+Comment-anchor reminder as before: no task slugs, round numbers, or line numbers in code or test
+comments; anchor on `handleRetry`, `retryUpgradeBackend`, `_endUpgradeAsSessionChanged`,
+`RETRYABILITY`, and the sub-case key names.
