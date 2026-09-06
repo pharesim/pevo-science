@@ -725,12 +725,18 @@ describe.skipIf(!dbReachable)('/link stuck-recovery bypass is unreachable via a 
     // (now NULL) but the accreditation broadcast failed, leaving custody='self'
     // with the username set. This is exactly the row the stuck-recovery
     // fallback is designed to recover — but ONLY for a fresh signature.
+    //
+    // `upgraded_at` is stamped from the same `NOW()` as `updated_at` because
+    // that is what the /link finalize does, and the stuck lookup admits a row
+    // on that ordering. Omitting it seeds a pairing no writer produces, which
+    // the lookup refuses on its own, and the row would then stop being the one
+    // this spec says it is testing the JWT path against.
     const pool = getAppPool()!;
     await pool.query(
       `INSERT INTO accounts (email, password_hash, full_name, institution, field,
-                             username, custody, verify_token, expires_at)
+                             username, custody, verify_token, upgraded_at, updated_at, expires_at)
        VALUES ($1, NULL, 'JWT Replay', 'MIT', 'physics',
-               $2, 'self', NULL, NOW() + INTERVAL '24 hours')`,
+               $2, 'self', NULL, NOW(), NOW(), NOW() + INTERVAL '24 hours')`,
       [email, jwtUser],
     );
 

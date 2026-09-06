@@ -47,11 +47,12 @@
 -- (migration 016), and that lookup matches `custody = 'self'` rows. Bumping it
 -- here would put every repaired account inside the recovery window for an hour
 -- after deploy. A plain UPDATE leaves it alone (there is no trigger). Recency
--- is not the only term that lookup applies: it also requires a row's last
--- session revocation to predate its recency marker, which is what keeps an
--- upgraded account out of a window measured from its own signup finalize. The
--- back-fill writes neither column, so a repaired row keeps whichever answer it
--- already had.
+-- is not the only term that lookup applies: it also requires a row's upgrade
+-- epoch to be at or before its recency marker, which is what keeps an upgraded
+-- account out of a window measured from its own signup finalize. The back-fill
+-- writes neither column, so a repaired row keeps the ordering it already had,
+-- and a row repaired here keeps the old route's ordering (epoch after marker)
+-- and stays excluded exactly as before.
 --
 -- Idempotent: the back-fill matches no rows on re-apply, and the DO block
 -- below compares the installed constraint's deparsed definition with the one

@@ -671,6 +671,26 @@ describe.skipIf(!dbReachable)('/link broadcast-rejection on ORCID-only (email=NU
     } finally {
       errorSpy.mockRestore();
     }
+
+    // The finalize landed before the broadcast failed, so the row it left is
+    // readable here. Both stamps come from `NOW()`, which is
+    // `transaction_timestamp()`, so they are byte-identical. The /link
+    // stuck-recovery lookup admits a row on `upgraded_at <= updated_at`, so a
+    // finalize taking its epoch from a Node clock instead would leave that
+    // ordering to a comparison between two clocks, holding only because the
+    // UPDATE runs in autocommit and the transaction therefore starts after the
+    // Node timestamp. Open a transaction before that timestamp and the
+    // comparison inverts, every genuinely stuck row becomes permanently
+    // unrecoverable, and no other spec goes red.
+    const pool = getAppPool()!;
+    const { rows: finalized } = await pool.query<{ custody: string | null; upgraded_at: Date | null; updated_at: Date }>(
+      'SELECT custody, upgraded_at, updated_at FROM accounts WHERE username = $1',
+      [username],
+    );
+    expect(finalized).toHaveLength(1);
+    expect(finalized[0].custody).toBe('self');
+    expect(finalized[0].upgraded_at).not.toBeNull();
+    expect(finalized[0].upgraded_at!.getTime()).toBe(finalized[0].updated_at.getTime());
   });
 });
 

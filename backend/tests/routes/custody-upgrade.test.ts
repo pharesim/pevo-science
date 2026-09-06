@@ -299,7 +299,7 @@ describe.skipIf(!dbReachable)(
       expect(rows[0].upgraded_at).not.toBeNull();
       // `updated_at` is the signup-finalize recency marker, and the upgrade
       // must not touch it: the /link stuck-recovery lookup reads the ordering
-      // between it and the revocation epoch stamped here to tell an upgraded
+      // between it and the upgrade epoch stamped here to tell an upgraded
       // account apart from a mid-crash link. Bumping it would make the two
       // simultaneous and collapse that distinction.
       expect(rows[0].updated_at.getTime()).toBe(before[0].updated_at.getTime());

@@ -735,8 +735,10 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
   // same state. This handler derives in the same tick as its SELECT; the
   // password login awaits `argon2.verify` in between and can therefore mint
   // from a pre-upgrade snapshot. Neither claim is re-checked after minting,
-  // and neither needs to be: every route that acts on a light claim re-reads
-  // `upgraded_at` and refuses a row that carries one. The row matched here is
+  // and neither needs to be: every route that ACTS on a light claim re-reads
+  // `upgraded_at` and refuses a row that carries one. `POST /api/auth/session`
+  // copies a claim forward without reading a row, but it only re-mints a
+  // session and reaches no signing path. The row matched here is
   // finalized, which includes the state-G row whose `custody` column is NULL
   // because it never went through light signup; the helper resolves that one
   // to `'self'`. The state-C passwordless shape (password_hash NULL) is

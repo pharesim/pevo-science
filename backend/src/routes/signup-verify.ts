@@ -414,7 +414,8 @@ const SIGNUP_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000;
 // Recency alone does not identify a mid-crash row on the /link side, because
 // the custody upgrade leaves `updated_at` alone and so inherits whatever is
 // left of the recovery window its own /confirm finalize opened. That lookup
-// conjoins a second row property; see the comment at its query.
+// conjoins the ordering of the row's two epochs (`upgraded_at <= updated_at`);
+// see the comment at its query for why that ordering separates the two.
 const STUCK_RECOVERY_WINDOW = '1 hour';
 
 // Username format: 3-16 chars, lowercase a-z, 0-9, dots/hyphens not at start/end
@@ -1114,31 +1115,47 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
       // justifies skipping the binding; JWT callers fall through to the no-row
       // 400 reject.
       //
-      // The session-revocation term is what keeps an UPGRADED account out of
-      // this lookup. `POST /api/custody/upgrade` writes `custody = 'self'` and
+      // The epoch-ordering term is what keeps an UPGRADED account out of this
+      // lookup. `POST /api/custody/upgrade` writes `custody = 'self'` and
       // deliberately leaves `updated_at` alone, so for the rest of that
       // account's own `/confirm` recovery window its row satisfies every other
       // term here while being nothing like a stuck link: its finalize landed
-      // and its accreditation is done. The discriminator is ORDER. The
-      // finalize below stamps `updated_at` and the upgrade epoch in one
-      // statement and revokes nothing, while an upgrade necessarily runs after
-      // the `/confirm` finalize that set `updated_at` and stamps
-      // `sessions_invalidated_at` as it goes — so an upgraded row always
-      // carries a revocation NEWER than its recency marker, and a
-      // finalize-then-stuck row carries none at all. A password reset taken
-      // before the finalize leaves an OLDER one and still recovers, which
-      // matters because the reset handlers gate on nothing about account state
-      // and can run at any point in a row's life. What refuses is a revocation
-      // stamped AFTER the finalize: the one case where minting a session
-      // through the binding bypass would contradict a revocation the account
-      // has already asked for.
+      // and its accreditation is done. The discriminator is ORDER, and the two
+      // epochs are written far enough apart to carry it. The `/link` finalize
+      // stamps `upgraded_at` and `updated_at` from `NOW()` in one statement,
+      // and `NOW()` is `transaction_timestamp()`, so both reads return the same
+      // instant and a finalized row carries them EQUAL. An upgrade stamps its
+      // epoch a whole HTTP round trip and a fresh-auth re-proof after the
+      // `/confirm` finalize that set `updated_at`, and never bumps it, so an
+      // upgraded row carries an epoch strictly NEWER than its recency marker.
+      // Those two finalizes are the only writers of `accounts.updated_at` and
+      // the table carries no trigger, so nothing later reorders the pair.
+      //
+      // A revocation-presence term was written first and rejected: `POST
+      // /api/auth/reset` selects by reset token alone and gates on nothing
+      // about account state, so a password reset at ANY point in a row's life
+      // would permanently refuse that row's recovery, and a finalized row
+      // carries no `confirmed:` verify_token for `/resume-signup` to pick up
+      // instead. What the epoch ordering costs by comparison is the row whose
+      // owner resets a password AFTER the finalize: it recovers, and the
+      // session it mints outlives the revocation that reset asked for. That
+      // trade is deliberate. This branch demands live posting-key control,
+      // which is a strictly stronger proof than the bearer credential a reset
+      // revokes.
+      //
+      // A row with no `upgraded_at` fails the comparison (a NULL is not TRUE)
+      // and is refused. No writer produces `custody = 'self'` without an epoch
+      // and ARCHITECTURE.md § 6.1 does not enumerate that pairing, but the
+      // `accounts_upgraded_implies_self_custody` CHECK is one-directional and
+      // permits it, so refusing an undefined shape here is chosen rather than
+      // incidental.
       const stuckLookup = await pool.query<LinkRow>(
         `SELECT id, email, password_hash, full_name, institution, field, orcid, signup_binding_hash
          FROM accounts
          WHERE username = $1
            AND verify_token IS NULL
            AND custody = 'self'
-           AND (sessions_invalidated_at IS NULL OR sessions_invalidated_at < updated_at)
+           AND upgraded_at <= updated_at
            AND updated_at > NOW() - INTERVAL '${STUCK_RECOVERY_WINDOW}'`,
         [hiveUsername],
       );
@@ -1172,13 +1189,21 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
       // and the binding hash (it has served its purpose). Single atomic UPDATE
       // on a short-lived pooled connection; the activation lock prevents a
       // concurrent same-token writer.
-      const now = new Date();
+      //
+      // Both stamps come from `NOW()`, which is `transaction_timestamp()`, so
+      // they land byte-identical. That equality is what the stuck-recovery
+      // lookup's epoch ordering reads. Taking the epoch from a Node clock
+      // instead makes the ordering a comparison between two clocks that holds
+      // only because this UPDATE runs in autocommit, so the transaction starts
+      // after the Node timestamp is taken. Open a transaction before that
+      // timestamp and `NOW()` precedes it, the comparison inverts, and every
+      // genuinely stuck row becomes permanently unrecoverable.
       await pool.query(
         `UPDATE accounts
-         SET username = $1, custody = 'self', verify_token = NULL, upgraded_at = $2,
+         SET username = $1, custody = 'self', verify_token = NULL, upgraded_at = NOW(),
              signup_binding_hash = NULL, updated_at = NOW()
-         WHERE id = $3`,
-        [hiveUsername, now, account.id],
+         WHERE id = $2`,
+        [hiveUsername, account.id],
       );
     }
 

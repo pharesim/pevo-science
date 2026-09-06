@@ -1523,10 +1523,10 @@ router.post('/upgrade', verifyHiveSignature, validateUpgradeBodyShape, upgradeLi
     // alone is necessary but not sufficient, because the window is measured
     // from the `/confirm` finalize and an upgrade landing inside it inherits
     // the remainder. What excludes the row there is the ordering between the
-    // two timestamps this statement writes and does not write: the revocation
-    // epoch below is stamped after the finalize that set `updated_at`, and the
-    // `/link` lookup admits only rows whose last revocation predates their
-    // recency marker.
+    // two timestamps this statement writes and does not write: the
+    // `upgraded_at = NOW()` stamped here lands a whole request after the
+    // finalize that set `updated_at`, and the `/link` lookup admits only rows
+    // whose upgrade epoch is at or before their recency marker.
     const invalidatedAt = new Date();
     await pool.query(
       `UPDATE accounts

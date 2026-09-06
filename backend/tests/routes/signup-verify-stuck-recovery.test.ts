@@ -18,15 +18,22 @@
  *   (e) An account upgraded to self-custody inside its own /confirm recovery
  *       window → /link recovery NOT admitted. Recency alone cannot tell that
  *       row from a stuck link; the ordering between its recency marker and its
- *       last session revocation can.
+ *       upgrade epoch can. Deleting the ordering term turns this green→red.
  *   (f) A genuinely-stuck /link row → recovery admitted (200 + self-custody
  *       JWT). The admitted side of (e), so a predicate that refused every row
  *       cannot pass for a fix.
  *   (g) A stuck /link row carrying a session revocation from BEFORE its
  *       finalize (a password reset earlier in the row's life) → still
- *       admitted. The reset handlers gate on nothing about account state, so
- *       refusing on the mere presence of a revocation would strand a real
- *       user with a finalized, permanently unaccredited account.
+ *       admitted. Guards the revocation-PRESENCE predicate that was written
+ *       first and rejected: the reset handlers gate on nothing about account
+ *       state, so refusing on the mere presence of a revocation would strand a
+ *       real user with a finalized, permanently unaccredited account.
+ *   (h) A stuck /link row revoked AFTER its finalize → still admitted. Guards
+ *       the revocation-ORDERING predicate that replaced it and was rejected in
+ *       turn: a user who resets their password while locked out is the likeliest
+ *       shape of all, and that form refused exactly them. This is the quadrant
+ *       the shipped `upgraded_at <= updated_at` term admits and both earlier
+ *       candidates refused.
  *
  * **Carve-out clause-(a)/(c) justification.** Mocks
  * `broadcastJsonWithTimeout`, `seedAccreditationBonus`, `getAccreditedSet`, and
@@ -238,30 +245,27 @@ async function seedStaleFinalizedAccount(opts: {
 }
 
 /**
- * Seed a fully-finalized SELF-custody row stamped STALE (default 2h ago), i.e.
- * OUTSIDE the STUCK_RECOVERY_WINDOW. This is the steady-state row a long-since
- * completed /link leaves: `custody='self'`, `verify_token` NULL, `upgraded_at`
- * set, no server-held keys (self-custody users hold their own). The /link
- * stuck-recovery lookup's `AND updated_at > NOW() - INTERVAL '1 hour'` guard
- * must reject it, so a real-signed /link retry against such a row cannot mint a
- * fresh session (the steady-state recovery bypass the recency guard closes).
- */
-/**
  * A finalized self-custody row, as the /link finalize UPDATE leaves it:
  * username set, custody 'self', verify_token cleared, and the upgrade epoch and
- * `updated_at` both stamped by that one statement.
+ * `updated_at` both stamped by that one statement. Both stamps come from one
+ * `NOW()` in the INSERT, which is how the real finalize writes them, so the
+ * default row satisfies the lookup's `upgraded_at <= updated_at` term.
  *
  * `staleInterval` ages both timestamps together, which is how the recency guard
- * is exercised; `'0 seconds'` gives the just-finalized shape.
+ * is exercised; `'0 seconds'` gives the just-finalized shape, and the default
+ * 2h puts the row outside STUCK_RECOVERY_WINDOW so the recency guard alone
+ * refuses it.
+ *
+ * `upgradedAt` overrides the epoch alone, because the one shape that must NOT
+ * recover — a light account upgraded inside its own /confirm recovery window —
+ * is exactly the row whose upgrade epoch is newer than its `updated_at` rather
+ * than written beside it.
  *
  * `sessionsInvalidatedAt` is a raw SQL expression for the session-revocation
- * epoch, so a caller can seed the three orderings the /link stuck lookup
- * distinguishes: never revoked (the default), revoked before the finalize (a
- * password reset earlier in the row's life, still recoverable), and revoked
- * after it. `upgradedAt` is likewise an override, because the one shape that
- * must NOT recover — a light account upgraded inside its own /confirm recovery
- * window — is exactly the row whose upgrade epoch is newer than its
- * `updated_at` rather than written beside it.
+ * epoch. The shipped lookup does not read that column at all; the option exists
+ * so the specs can pin that it does not, against the two predicates that did
+ * read it and were rejected (refusing on a revocation's mere presence, and
+ * refusing on a revocation newer than the recency marker).
  */
 async function seedStaleSelfCustodyAccount(opts: {
   username: string;
@@ -658,16 +662,18 @@ describe.skipIf(!dbReachable)('signup-verify /link stale-finalized self-custody 
 });
 
 // The /link stuck lookup admits a row on three properties, not two: the
-// recency marker, and the ordering between that marker and the row's last
-// session revocation. The three specs below cover the row shapes that ordering
-// separates. The signature is real in each (carve-out clause (b) — only the
-// chain `getAccounts` posting-key lookup is stubbed, supplying the public key
-// the real recovery is checked against), so a 400 is the lookup refusing and
-// never an auth failure.
-describe.skipIf(!dbReachable)('signup-verify /link recovery and the session-revocation ordering', () => {
+// recency marker, and the ordering between that marker and the row's upgrade
+// epoch. Specs (e) through (h) in this block cover the row shapes that ordering
+// separates, and each of (e), (g) and (h) is red under a different rejected
+// candidate predicate. The signature is real in each (carve-out clause (b) —
+// only the chain `getAccounts` posting-key lookup is stubbed, supplying the
+// public key the real recovery is checked against), so a 400 is the lookup
+// refusing and never an auth failure.
+describe.skipIf(!dbReachable)('signup-verify /link recovery and the upgrade-epoch ordering', () => {
   const upgraded = `lnkupg${SUFFIX}`;
   const stuck = `lnkstk${SUFFIX}`;
   const reset = `lnkrst${SUFFIX}`;
+  const revoked = `lnkrev${SUFFIX}`;
 
   const keyFor = (username: string) => {
     const postingPrivate = PrivateKey.fromSeed(`${username}-p`);
@@ -698,6 +704,7 @@ describe.skipIf(!dbReachable)('signup-verify /link recovery and the session-revo
     await cleanupByUsername(upgraded);
     await cleanupByUsername(stuck);
     await cleanupByUsername(reset);
+    await cleanupByUsername(revoked);
   });
 
   it('(e) an account upgraded inside its own recovery window is refused (400, no JWT, no broadcast)', async (ctx) => {
@@ -705,8 +712,10 @@ describe.skipIf(!dbReachable)('signup-verify /link recovery and the session-revo
     // The row POST /api/custody/upgrade leaves behind on a light account whose
     // /confirm finalize landed 10 minutes ago: the upgrade stamps its epoch and
     // revokes sessions now, and leaves `updated_at` at the finalize. Every other
-    // term of the lookup is satisfied, so the revocation-ordering term is the
-    // only thing refusing. Drop it and this flips to a recovered 200 + JWT.
+    // term of the lookup is satisfied, so the epoch-ordering term is the only
+    // thing refusing. Drop it and this flips to a recovered 200 + JWT. The
+    // revocation is seeded because the real upgrade writes one, and it pins that
+    // the refusal does not depend on it.
     await seedStaleSelfCustodyAccount({
       username: upgraded,
       email: `lnkupg_${RUN_ID}@example.com`,
@@ -726,9 +735,9 @@ describe.skipIf(!dbReachable)('signup-verify /link recovery and the session-revo
 
   it('(f) a genuinely-stuck /link row still resumes (200 + self-custody JWT)', async (ctx) => {
     if (!dbReachable) return ctx.skip(true, 'pg unreachable');
-    // The admitted side. Without it the exclusion above is satisfied by a
-    // predicate that refuses every row, and the /link stuck path had only
-    // rejection coverage.
+    // The admitted side. Without it the upgraded-inside-window exclusion is
+    // satisfied by a predicate that refuses every row, and the /link stuck path
+    // had only rejection coverage.
     await seedStaleSelfCustodyAccount({
       username: stuck,
       email: `lnkstk_${RUN_ID}@example.com`,
@@ -751,8 +760,8 @@ describe.skipIf(!dbReachable)('signup-verify /link recovery and the session-revo
     // an abandoned signup resumed weeks later. Refusing every row that ever
     // carried one would strand this user with a finalized, permanently
     // unaccredited account: /resume-signup needs a `confirmed:` verify_token,
-    // which a finalized row does not have. The ordering is what separates it
-    // from the upgraded row above.
+    // which a finalized row does not have. This spec is what reds if the lookup
+    // regresses to `sessions_invalidated_at IS NULL`.
     await seedStaleSelfCustodyAccount({
       username: reset,
       email: `lnkrst_${RUN_ID}@example.com`,
@@ -762,6 +771,33 @@ describe.skipIf(!dbReachable)('signup-verify /link recovery and the session-revo
     const { postingPrivate, postingPublic } = keyFor(reset);
 
     const res = await attemptLink(reset, postingPrivate, postingPublic);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data?.custody).toBe('self');
+    expect(res.body.data?.token).toBeTruthy();
+  });
+
+  it('(h) a stuck /link row revoked AFTER its finalize still resumes', async (ctx) => {
+    if (!dbReachable) return ctx.skip(true, 'pg unreachable');
+    // The quadrant that separates the shipped rule from the one it replaced.
+    // A revocation-ordering predicate refused any row whose last revocation
+    // postdated its recency marker, and `POST /api/auth/reset` stamps exactly
+    // that: it selects by reset token alone, touches `updated_at` never, and
+    // gates on no account state. So the user whose finalize landed, whose
+    // accreditation broadcast failed, and who then reset their password while
+    // locked out was refused the only self-service path they had. The epoch
+    // ordering admits them because a /link finalize writes both stamps from one
+    // statement, whatever the row's revocation history. Restore the revocation
+    // term and this reds; the seeded ordering here is the one that form refused.
+    await seedStaleSelfCustodyAccount({
+      username: revoked,
+      email: `lnkrev_${RUN_ID}@example.com`,
+      staleInterval: '10 minutes',
+      sessionsInvalidatedAt: 'NOW()',
+    });
+    const { postingPrivate, postingPublic } = keyFor(revoked);
+
+    const res = await attemptLink(revoked, postingPrivate, postingPublic);
 
     expect(res.status).toBe(200);
     expect(res.body.data?.custody).toBe('self');

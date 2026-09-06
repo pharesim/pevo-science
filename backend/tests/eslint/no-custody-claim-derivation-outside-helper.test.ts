@@ -49,9 +49,11 @@
  *      them needs taint analysis, not a textual scan. At a site that MINTS,
  *      the claim-source classification refuses them anyway: the claim binds
  *      from a variable at a symbol that is not a helper caller. The residual
- *      is a reader that mints nothing. The statement join has two stated
- *      bounds of its own: it stops at a blank line, and it reaches at most a
- *      few lines past the one it starts on.
+ *      is a reader that mints nothing. The statement join has stated bounds of
+ *      its own: it stops at a blank line, and it carries two caps, one on the
+ *      lines it joins and one on the lines it walks, so prose inside a
+ *      statement costs nothing while prose between two statements cannot
+ *      bridge them.
  *
  *      The over-match to expect first is a multi-line call whose arguments
  *      mention `upgraded_at` and whose later lines contain a conditional
@@ -100,8 +102,8 @@ const ALLOWED_HELPER_CALL_SITES = [
 /** A conditional on the epoch column that yields a custody literal:
  *  `x.upgraded_at ? 'self' : ...`, with or without a null comparison in
  *  between. The old inline shape at every mint. Bounded by the statement
- *  terminator rather than the line ending, because the scan below runs it
- *  against a joined statement: a formatter that breaks after the condition
+ *  terminator rather than the line ending, because `statementOccurrences` runs
+ *  it against a joined statement: a formatter that breaks after the condition
  *  writes the same derivation across three lines. */
 const EPOCH_TERNARY_RE = /\bupgraded_at\b[^;]*\?\s*['"`](?:self|light)['"`]/;
 
@@ -114,18 +116,46 @@ const EPOCH_TERNARY_RE = /\bupgraded_at\b[^;]*\?\s*['"`](?:self|light)['"`]/;
  *
  *  The column READ is matched through whatever a caller writes between the
  *  destination and the property: an optional chain, a non-null assertion, a
- *  cast (to a named type or a one-member inline one), an index, or a line
- *  break the accessor was wrapped on. Those are what a nullable row annotation
+ *  cast (to a named type, or to an inline one whose members clear the
+ *  character rule stated further down), an index, or a line break the accessor
+ *  was wrapped on. Those are what a nullable row annotation
  *  and an indexed result produce with nobody intending an evasion, and a
  *  dotted same-line pattern sees none of them.
  *
- *  What bounds the run is the punctuation that separates one property from the
- *  next: commas, colons, semicolons and quotes are excluded, so the pattern
- *  cannot pair one object's `custody:` key with a neighbouring property's
- *  `.custody` access. That same exclusion is why a cast whose inline type
- *  lists more than one member (`as { custody: string; email: string }`) is not
- *  matched — a residual accepted rather than bought at the price of a scan
- *  that reads across property boundaries. */
+ *  What bounds the run is a WHITELIST, not a list of property separators:
+ *  between the destination and the property only word characters, whitespace
+ *  and `$ ? ! . [ ] { } < > ( )` may appear. Every other character ends the
+ *  run, and a comma is only the most familiar of them — a quote, a colon, a
+ *  semicolon, a backtick, an `=` (so any arrow or comparison) and every
+ *  arithmetic operator stop it just as completely, wherever in the span they
+ *  sit rather than only inside an argument list.
+ *
+ *  That is what keeps the scan from pairing one object's `custody:` key with a
+ *  neighbouring property's `.custody` access. Allow commas alone and
+ *  `logger.info({ custody: claim }, row.custody)` reports itself; the two
+ *  planted negatives that pin this boundary need a comma, a colon AND a quote
+ *  admitted together before either fires, so they are not on their own what
+ *  demonstrates the exclusion earns its keep.
+ *
+ *  What the whitelist costs is a column read whose expression carries an
+ *  excluded character between the LAST `custody:` or `custody =` in the text
+ *  and the read itself. It is not every read carrying such a character,
+ *  because the run restarts at each destination: a later `custody:` closer to
+ *  the read can still reach it. Shapes that miss:
+ *  `const custody = helper(row, options).custody;`,
+ *  `const custody = helper('x').custody;`,
+ *  `const custody = pick<A, B>(rows).custody;`,
+ *  `const custody = (row as Record<string, string>).custody;`,
+ *  `const custody = rows[i + 1].custody;`,
+ *  `const custody = rows.map((r) => r)[0].custody;`.
+ *
+ *  An inline cast is one instance of that class, and it is bounded by POSITION
+ *  rather than by member count: the run can anchor on the cast's own `custody:`
+ *  key, so a cast of any arity matches when `custody` is its LAST member and
+ *  misses when any member follows it. `as { a: string; b: string; custody:
+ *  string }` matches; `as { custody: string; email: string }` does not. Those
+ *  spellings are illustrative; the character rule and the restart, not the
+ *  list, are what bound the residual. */
 const COLUMN_COPY_RE =
   /\bcustody\s*[:=]\s*[\w$?!.[\]{}<>()\s]*?(?:\??\.\s*custody\b|\[\s*['"`]custody['"`]\s*\])/;
 
@@ -189,20 +219,47 @@ function classifyMint(lines: string[], lineIndex: number): ClaimSource {
 }
 
 /** A line that OPENS A BLOCK rather than continuing an expression: a condition,
- *  a loop header, a catch clause. The join below stops at one. A gate that
- *  reads the epoch to refuse (`if (account.upgraded_at) {`) and the first
+ *  a loop header, a catch clause. `statementFrom` stops its join at one. A gate
+ *  that reads the epoch to refuse (`if (account.upgraded_at) {`) and the first
  *  statement of its body are two statements, not one; joining them reports
  *  every such gate whose body happens to contain a `?` — a nullish default in
  *  a log payload is enough — as an inline derivation. Those gates are the
- *  shape the planted negatives below license, and they are the most common
+ *  shape the refusal-gate controls license, and they are the most common
  *  `upgraded_at` spelling in the tree. */
 const BLOCK_OPENER_RE = /\)\s*\{\s*$/;
 
+/** How far the join reaches, in two independent budgets. `JOIN` counts the
+ *  lines actually joined, so stepping over prose costs nothing. `SCAN` bounds
+ *  the walk itself, which a joined count no longer does: a line sitting
+ *  directly above a long docblock would otherwise reach the code on the far
+ *  side of it and report two unrelated statements as one. The scan number is
+ *  the one `mintPayload` already uses against the same runaway. */
+const STATEMENT_JOIN_CAP = 4;
+const STATEMENT_SCAN_CAP = 12;
+
 /** The STATEMENT a line opens: the line itself, joined with the lines below it
  *  until one carries a terminator or opens a block, a blank line ends the run,
- *  or a small cap is reached. Comment lines inside the run are stepped over,
- *  not joined, so prose between two halves of an expression neither breaks the
- *  join nor contributes text to it.
+ *  or one of the two caps is reached. Comment lines inside the run are stepped
+ *  over, not joined, so prose between two halves of an expression neither
+ *  breaks the join nor contributes text to it, and it spends no budget either:
+ *  the cap that ends the run counts the lines JOINED, not the lines walked.
+ *
+ *  Counting the walk instead was the bug this replaced, and it was not confined
+ *  to one call. Four lines of prose between a ternary's condition and its
+ *  branches exhausted the cap before a single line of the expression was
+ *  reached, so a derivation whose two halves straddled the prose went
+ *  unreported by every scan rather than merely at the line it started on.
+ *
+ *  `STATEMENT_SCAN_CAP` is not free and is not what the join budget replaced.
+ *  It buys back a bound the joined count gave up: without it a line sitting
+ *  above a long comment run reaches the code beyond it, and this tree holds
+ *  runs long enough for that to join two unrelated statements. What it costs
+ *  is the far tail of the same shape the join budget fixed. A derivation split
+ *  by twelve or more consecutive comment lines still escapes; the old cap
+ *  escaped at four. Neither bound changes a single reported site across the
+ *  current tree, so the choice is between two residuals rather than between a
+ *  cost and none.
+ *
  *
  *  The shape scans run against this instead of the raw line because a
  *  derivation split over a line break is the same derivation: a ternary
@@ -217,10 +274,16 @@ const BLOCK_OPENER_RE = /\)\s*\{\s*$/;
 function statementFrom(lines: string[], lineIndex: number): string {
   let joined = lines[lineIndex];
   if (joined.includes(';') || BLOCK_OPENER_RE.test(joined)) return joined;
-  for (let j = lineIndex + 1; j < lines.length && j <= lineIndex + 4; j++) {
+  let taken = 0;
+  for (
+    let j = lineIndex + 1;
+    j < lines.length && j <= lineIndex + STATEMENT_SCAN_CAP && taken < STATEMENT_JOIN_CAP;
+    j++
+  ) {
     if (lines[j].trim() === '') break;
     if (isCommentLine(lines[j])) continue;
     joined += '\n' + lines[j];
+    taken++;
     if (lines[j].includes(';') || BLOCK_OPENER_RE.test(lines[j])) break;
   }
   return joined;
@@ -249,9 +312,9 @@ function statementOccurrences(
   return { keys: [...keys].sort(), sites };
 }
 
-/** The shape refusal, factored so the planted probes below run the same scan
- *  the whole tree does. The helper's own module is the one place the shapes are
- *  licensed. */
+/** The shape refusal, factored so the wrapped-derivation probes run the same
+ *  scan the whole tree does. The helper's own module is the one place the
+ *  shapes are licensed. */
 function inlineDerivations(files: ScannedSource[]): {
   ternaries: { keys: string[]; sites: string[] };
   copies: { keys: string[]; sites: string[] };
@@ -372,10 +435,28 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
     expect(COLUMN_COPY_RE.test("custody: result.rows[0]?.['custody'],")).toBe(true);
     expect(COLUMN_COPY_RE.test('const custody = row.custody_source;')).toBe(false);
     // The accessor run must not cross a property boundary and pair one
-    // object's key with the next one's column read.
+    // object's key with the next one's column read. The third of these is the
+    // shape that shows the exclusion earning its keep: it is a single argument
+    // list, so only the comma separates the key from the read.
     expect(COLUMN_COPY_RE.test("custody: 'self',\n  hasPassword: row.custody !== null,")).toBe(false);
     expect(COLUMN_COPY_RE.test('custody: custodyClaimFor(row),\n  pending: row.pending_email,')).toBe(false);
     expect(COLUMN_COPY_RE.test("custody = $1,\n  upgraded_at = $2,")).toBe(false);
+    expect(COLUMN_COPY_RE.test('logger.info({ custody: claim }, row.custody);')).toBe(false);
+
+    // The residual the whitelist buys that exclusion with: any character
+    // outside the accessor alphabet ends the run, not commas alone, and
+    // wherever it sits rather than only inside an argument list.
+    expect(COLUMN_COPY_RE.test("const custody = helper('x').custody;")).toBe(false);
+    expect(COLUMN_COPY_RE.test('const custody = rows[i + 1].custody;')).toBe(false);
+    expect(COLUMN_COPY_RE.test('const custody = rows.map((r) => r)[0].custody;')).toBe(false);
+    expect(COLUMN_COPY_RE.test('const custody = helper(row).custody;')).toBe(true);
+    // An inline cast is bounded by POSITION, not member count: the run anchors
+    // on the cast's own key, so any arity matches when `custody` is last.
+    expect(COLUMN_COPY_RE.test('const custody = (row as { a: string; b: string; custody: string }).custody;')).toBe(true);
+    expect(COLUMN_COPY_RE.test('const custody = (row as { a: string; custody: string; b: string }).custody;')).toBe(false);
+    // The run restarts at each destination, so an excluded character earlier in
+    // the line does not immunise a read that a nearer `custody:` can reach.
+    expect(COLUMN_COPY_RE.test('foo(a, b); custody: row.custody')).toBe(true);
 
     expect(COLUMN_DESTRUCTURE_RE.test('const { custody } = rows[0];')).toBe(true);
     expect(COLUMN_DESTRUCTURE_RE.test('const { custody, upgraded_at } = account;')).toBe(true);
@@ -438,6 +519,25 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
         '  });',
         '});',
       ]),
+    ).not.toEqual([]);
+
+    // The same wrapped derivation with prose between its halves. The join's cap
+    // counts joined lines, so a note beside the branch it explains cannot spend
+    // the budget the expression needs. Counting walked lines instead hid this
+    // shape from every scan, not just from the line it starts on, because
+    // neither half carries the whole pattern on its own.
+    expect(
+      offenders(
+        reader(
+          '  const custody = account.upgraded_at',
+          '    // the epoch is the source of truth; a row seeded before the',
+          '    // back-fill can still carry a stale column value, so branch on',
+          '    // the epoch and never on the column, and keep the note beside',
+          '    // the branch it explains rather than above the statement.',
+          "      ? 'self'",
+          "      : 'light';",
+        ),
+      ),
     ).not.toEqual([]);
 
     // Controls. The licensed shape, and a refusal gate that reads the epoch to

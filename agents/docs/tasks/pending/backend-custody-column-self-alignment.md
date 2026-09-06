@@ -643,3 +643,192 @@ Architect-side, already done or deferred:
   username-keyed stuck-recovery branch at all, though it bypasses the signup
   session-binding check and its predicate is now four terms. Deferred to archive
   for the same reason as the item above.
+
+## Backend re-review signal (2026-09-06, working tree)
+
+Round-3 hold items 1-6 landed. Nothing inside the hold block was edited. Every
+claim below was measured: predicates were executed against real Postgres in
+rolled-back transactions, regexes were executed in node against literal strings,
+and each behavioural change was mutation-probed by editing the shipped code and
+re-running the suite rather than by reasoning about it.
+
+**1. The `/link` term refusing a genuinely stuck row.** Implemented exactly as
+ordered. The finalize writes `upgraded_at = NOW()` (bind renumbered, `WHERE id =
+$2`, `const now` deleted) and the lookup term is `AND upgraded_at <= updated_at`.
+
+Four-quadrant measurement against real Postgres, rows shaped like the seed
+helper. Old predicate admits {f, g}; new admits {f, g, h}. (e) refused by both.
+Quadrant (h), a stuck row revoked after its finalize, is the discriminator: old
+refuses, new admits.
+
+Three mutation probes on the shipped route, each producing exactly the intended
+red set: deleting the term reds (e) alone; restoring the revocation-ordering
+form reds (h) alone; the bare `sessions_invalidated_at IS NULL` form reds (g)
+and (h). So (e) guards deletion, (g) guards the first rejected candidate, (h)
+guards the second, and (f) remains the over-tightening guard.
+
+The `NOW()` half is load-bearing rather than cosmetic, and it now has its own
+pin. Spec (h) and its siblings all drive the STUCK path, which skips the
+finalize entirely (`if (!resumeStuck)`), so nothing in the stuck-recovery file
+could have caught a regression to a Node-clock epoch. The `/link`
+broadcast-failure spec in `signup-verify.test.ts` does run the finalize, so it
+now asserts the row it leaves: `custody = 'self'`, epoch set, and
+`upgraded_at.getTime() === updated_at.getTime()`. Mutation-verified: restoring
+`upgraded_at = $2` with a Node `Date` reds it (1788713011979 vs ...980) and reds
+nothing else.
+
+One correction to the hold item's supporting argument, since the comment states
+the mechanism. `NOW()` is `transaction_timestamp()`, not statement time; the
+current Node-`Date` form holds only because this UPDATE runs in autocommit, so
+the transaction starts after the timestamp is taken. The comments say that
+rather than the statement-time version. A first probe reported the Node form
+inverting "10/10 at -5.7 to -44.7 ms" under a transaction; that number was an
+artifact of running N trials inside one `BEGIN` and is not quoted anywhere in
+the diff. The structural point survives: open a transaction before the Node
+timestamp and the comparison inverts.
+
+`/confirm` deliberately did NOT get the term, and the reason is stronger than
+the task recorded: `custody = 'light'` already implies `upgraded_at IS NULL` at
+the SCHEMA layer via the CHECK, so the term there would evaluate NULL for every
+candidate row and refuse all of them.
+
+**2. The false universal in `custody-claim.ts`.** Named `POST /api/auth/session`
+and said why it grants nothing. Two things the item did not ask for and the
+review should know about:
+
+The identical false universal was duplicated verbatim in `routes/orcid.ts`'s
+`handleLogin` comment. Fixing only `custody-claim.ts` would have left the same
+wrong sentence standing one file away, which is the failure mode the item exists
+to close, so both landed.
+
+The first drafted replacement said `/session` re-mints "reading no `accounts`
+row at all". Measured false at the ROUTE level: `verifyHiveSignature` reads
+`sessions_invalidated_at` on every JWT request. Only the HANDLER reads nothing.
+Shipping that would have reproduced the exact handler-versus-route conflation
+this item raises. The shipped text scopes it to the handler and names what the
+middleware does read. "Grants nothing" is likewise qualified to SERVER-SIDE,
+because the response returns the copied value to the client.
+
+Verified not exploitable rather than assumed: the five readers of
+`req.hiveCustody` are the four custody-route gates, each re-reading
+`upgraded_at`, plus `/session`, which reaches no signing path. No § 6.5
+invariant #1 violation.
+
+**3. Positional anchors.** All five named anchors replaced with the stable names
+their targets already carry: the `/link` finalize, `statementOccurrences`,
+`statementFrom`, the block-opener negative controls, and the wrapped-derivation
+probes. A SIXTH the item did not name was found in the same commit's diff and
+fixed with them: "the exclusion above" in spec (f), pointing 26 lines up at the
+(e) block, now "the upgraded-inside-window exclusion". The two `above` mentions
+remaining in the diff are not location citations (one describes the algorithm's
+spatial relationship to a docblock, one is prose inside a synthetic fixture
+string). Confirmed by executing the hook's own arm: it matches none of the
+twelve above/below citations the round-2 commit added, so reading is the only
+check here and the gate proves nothing either way.
+
+**4. `COLUMN_COPY_RE`'s residual class.** Named, and it is wider than the item's
+phrasing on two axes. It is not commas: the run is a WHITELIST of word
+characters, whitespace and `$ ? ! . [ ] { } < > ( )`, so nineteen characters
+break it identically, including a quote, a colon, an `=` and every arithmetic
+operator. `helper('x').custody` and `rows[i + 1].custody` miss with no comma
+present. And it is not "in call arguments or generic type arguments": position
+in the span is irrelevant, `rows.map((r) => r)[0].custody` misses too. The four
+strings the item cites all behave exactly as it says; the sentence was
+incomplete rather than wrong, and naming the true class is what was ordered.
+
+Two further corrections, both to text drafted for this fix rather than to the
+item. A first draft said the whitelist costs "every column read reached through
+an expression carrying one of those characters" -- itself a false universal, in
+a paragraph being rewritten for stating one, because the run RESTARTS at each
+destination and a nearer `custody:` can still reach the read. And the shipped
+docblock's own residual, which round 2 described as a cast of more than one
+member, is bounded by POSITION not count: `as { a: string; b: string; custody:
+string }` matches, `as { custody: string; email: string }` does not. Both are
+now stated that way and pinned by new planted probes.
+
+The pattern was NOT widened. The exclusion's value is confirmed on a constructed
+shape rather than on the tree (every widened variant reports zero sites across
+`src`, so the tree demonstrates nothing): `logger.info({ custody: claim },
+row.custody)` is a non-match today and matches the moment a comma is admitted.
+That probe is now planted so the next reader does not conclude the exclusion is
+dead weight.
+
+**5. The stacked docblock.** The superseded block is deleted. The survivor was
+also re-pinned, since the item's discriminator changed under item 1: it now
+documents that both stamps come from one `NOW()`, that `upgradedAt` overrides
+the epoch alone, and that `sessionsInvalidatedAt` seeds a column the shipped
+lookup does not read, kept so the specs can pin that against the two rejected
+predicates.
+
+**6. `statementFrom`'s comment budget.** Fixed by counting joined lines. The bug
+was worse than the item states: because neither half of a split derivation
+carries the whole pattern, four interleaved comment lines removed the offender
+from EVERY scan, not just from the line it opened. Measured on two shapes,
+including the wrapped-accessor spelling the file already plants a probe for.
+The new probe is mutation-verified: reverting the loop bound to the old form
+reds it and nothing else.
+
+One deviation from the literal order, flagged rather than buried. Counting
+joined lines alone leaves the WALK unbounded, and this tree has comment runs
+long enough for that to matter: `try {` in `routes/profile.ts` reaches 48 lines
+to gather 4 joined ones, stepping over a 43-line comment block to swallow an
+unrelated statement, and `hafsql.ts` holds a 160-line run. So a second cap
+bounds the walk at the number `mintPayload` already uses. It is not free and the
+docblock says so: it costs the far tail of the same shape, letting a derivation
+split by twelve or more comment lines escape where the old cap escaped at four.
+Both variants report zero sites across `src`, so the choice is between two
+residuals rather than between a cost and none. If the architect prefers no
+residual over no runaway, dropping `STATEMENT_SCAN_CAP` is a one-line change and
+was measured clean on the current tree.
+
+A second control was drafted for this item and then dropped: prose between a
+refusal gate and its body changes no verdict, because the gate line matches
+`BLOCK_OPENER_RE` and `statementFrom` returns before any join loop runs. It
+would have been a duplicate of the control already there.
+
+### Also landed, not asked for
+
+- `signup-verify-session-binding.test.ts`'s JWT-replay seed produced `(custody =
+  'self', upgraded_at IS NULL)`, a pairing no writer in `src` or `migrations`
+  creates. Under the new term that row is refused even with a signature, so the
+  fixture's comment ("exactly the row the stuck-recovery fallback is designed to
+  recover") would have become false. The seed now carries both stamps.
+- A fifth and later sixth old-rationale comment site beyond the four the round-2
+  signal named: `custody-upgrade.test.ts`'s State A row-shape block, and the
+  stuck-recovery file's header bullets, describe comment and describe TITLE
+  (test output, not a comment). All re-pinned to the epoch ordering.
+
+### Needs architect triage
+
+The new term is strictly tighter on `(custody = 'self', upgraded_at IS NULL)`:
+the old predicate admitted it, the new one evaluates NULL and refuses it. No
+writer in `src` or `migrations` produces that pairing, § 6.1 does not enumerate
+it, and both live databases hold zero such rows, so it ships as a documented
+tightening stated in the `/link` comment rather than as a defended shape. It is
+NOT covered by a spec. The one-directional CHECK permits it, so a future writer
+setting `custody = 'self'` without an epoch would silently break `/link` stuck
+recovery. Whether that warrants a second CHECK is an architect call; a
+defensive `(upgraded_at IS NULL OR ...)` in the lookup would be the wrong fix,
+since it re-admits a shape the state machine does not define.
+
+### Verification
+
+`npm run typecheck` (both projects) and `npm run lint` clean; the one lint
+warning is the pre-existing unused-disable in `lib/author-supersession.ts`, an
+untouched file.
+
+Targeted suites, `--retry=0` against real Postgres/Redis: `tests/eslint/` +
+`tests/lib/custody-claim.test.ts` + `tests/migrations/` + `custody-upgrade` +
+`custody-claim-mint-parity` + `signup-verify` + `signup-verify-stuck-recovery` =
+15 files / 173 tests green. `signup-verify-session-binding`, `settings`,
+`orcid`, `recover` = 4 files / 175 tests green. `signup-verify-stuck-recovery`
+ran three consecutive times to confirm spec (h) is not order- or
+limiter-sensitive.
+
+Two failures appeared only when nine signup/settings/orcid/recover files ran in
+ONE invocation (a rate-limit bucket and an ORCID binding-guard spec). Confirmed
+pre-existing, not regressions: the same nine-file batch executed in a detached
+worktree at untouched HEAD `a358bb16` failed ELEVEN tests across four files, and
+`signup-verify-orcid-binding-guard` alone fails three there against one in this
+tree. These are the known shared-fixture and limiter collisions; every file
+passes in isolation.
