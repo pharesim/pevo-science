@@ -1094,6 +1094,75 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
     expect(blockCommentInterior(['/*', 'x', '*/', 'y'])).toEqual([false, true, true, false]);
     // A self-contained block comment opens no region.
     expect(blockCommentInterior(['/* one */', 'const x = 1;'])).toEqual([false, false]);
+
+    // The region pass answers the same question the brace walk does and needs
+    // the same two guards, or it reopens the hole it was added to close. A
+    // page module writes markup in a template literal, a token shaped like an
+    // opener sits in that markup, and every later line reads as prose: the
+    // live derivation below is then invisible to the scans that consume this.
+    const markupOpenerThenLiveRead = [
+      'const template = `',
+      '  <div>',
+      '  /* spacing note, never closed',
+      '  </div>',
+      '`;',
+      '',
+      'export function pick(status, cached) {',
+      '  const orcidOnly = Number(cached != null)',
+      '    * Number(cached?.hasPassword === false);',
+      '  return orcidOnly;',
+      '}',
+    ];
+    expect(blockCommentInterior(markupOpenerThenLiveRead)).toEqual(
+      new Array(markupOpenerThenLiveRead.length).fill(false),
+    );
+    // An opener nothing ever closes is not a region either, template or not.
+    expect(blockCommentInterior(['/* never closed', 'const x = status.hasPassword;'])).toEqual([
+      false,
+      false,
+    ]);
+
+    // Each guard on its own. The fixture above has no close anywhere, so the
+    // close test alone refuses it and the template test is never the reason.
+    // Here a docblock further down supplies a close, which every real module
+    // does, so template state is the only thing left to refuse the opener.
+    const markupOpenerWithLaterDocblock = [
+      'const template = `',
+      '  <div>',
+      '  /* spacing note, never closed',
+      '  </div>',
+      '`;',
+      '',
+      '/**',
+      ' * An ordinary docblock further down the module.',
+      ' */',
+      'export function pick(status) {',
+      '  const orcidOnly = Number(status != null)',
+      '    * Number(status?.hasPassword === false);',
+      '  return orcidOnly;',
+      '}',
+    ];
+    expect(blockCommentInterior(markupOpenerWithLaterDocblock)).toEqual([
+      false, false, false, false, false, false, false, true, true, false, false, false, false, false,
+    ]);
+
+    // And template state describes where a line BEGINS here too: an opener
+    // line quoting identifiers in backticks an odd number of times is still
+    // an opener, because it begins outside the literal.
+    const openerWithOddBackticks = [
+      'const x = 1;',
+      '/* a note mentioning `hasPassword` once, and one stray `',
+      ' * still prose',
+      ' */',
+      'const y = 2;',
+    ];
+    expect(blockCommentInterior(openerWithOddBackticks)).toEqual([false, false, true, true, false]);
+
+    // End to end: the derivation the phantom region would have hidden.
+    expect(
+      occurrencesOf([{ rel: 'pages/thing.js', lines: markupOpenerThenLiveRead }], HAS_PASSWORD_RE, skipCommentLine)
+        .keys,
+    ).toEqual(['pages/thing.js#pick']);
   });
 
 });

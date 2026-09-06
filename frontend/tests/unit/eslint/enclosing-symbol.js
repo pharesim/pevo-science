@@ -155,6 +155,19 @@ function indentOf(line) {
   return line.length - line.trimStart().length;
 }
 
+/** How many times `re` matches in `line`. `re` must carry the global flag. */
+function countOf(line, re) {
+  return (line.match(re) ?? []).length;
+}
+
+/** Whether a TRIMMED line opens a block comment it does not close on itself.
+ *  One definition, because both readers of it (the brace walk and the region
+ *  pass) drew the same distinction and drifted apart when only one of them
+ *  was hardened. */
+function opensUnterminatedBlock(trimmed) {
+  return trimmed.startsWith('/*') && trimmed.indexOf('*/', 2) === -1;
+}
+
 /** Whether ANY comment close appears between `openIndex` and `lineIndex`.
  *
  *  Deliberately NOT named "does this opener close". Comments do not nest, so
@@ -181,16 +194,28 @@ function aCommentCloseFollows(lines, openIndex, lineIndex) {
  *  code: a forbidden-shape scan then misses the violation it exists to
  *  report. The context is what decides, so it is computed once per file here
  *  and handed to the skip predicate. Openers are recognized at line start
- *  only, which is the same boundary the rest of this module draws. */
+ *  only, which is the same boundary the rest of this module draws.
+ *
+ *  This asks the question {@link enclosingSymbol}'s brace walk asks, so it
+ *  carries the walk's two guards for the same reasons: an opener inside a
+ *  template literal is markup, and an opener nothing ever closes is not a
+ *  region. Without them a stray opener in a page module's markup marks every
+ *  following line as prose, and a scan consuming this stops seeing live code
+ *  from there to the end of the file. On a forbidden-shape scan that is a
+ *  silent miss, which is the direction that must never be wrong. */
 export function blockCommentInterior(lines) {
   const interior = new Array(lines.length).fill(false);
+  const last = lines.length - 1;
   let open = false;
+  let ticks = 0;
   for (let i = 0; i < lines.length; i++) {
     interior[i] = open;
     const trimmed = lines[i].trim();
+    const inTemplate = ticks % 2 === 1;
+    ticks += countOf(lines[i], /`/g);
     if (open) {
       if (trimmed.includes('*/')) open = false;
-    } else if (trimmed.startsWith('/*') && trimmed.indexOf('*/', 2) === -1) {
+    } else if (opensUnterminatedBlock(trimmed) && !inTemplate && aCommentCloseFollows(lines, i, last)) {
       open = true;
     }
   }
@@ -264,11 +289,11 @@ export function enclosingSymbol(lines, lineIndex) {
     // docblock's comment-boundary paragraph names what that leaves open.
     let closedBefore = false;
     let inBlockComment = false;
-    let ticks = (lines[i].match(/`/g) ?? []).length;
+    let ticks = countOf(lines[i], /`/g);
     for (let j = i + 1; j <= lineIndex; j++) {
       const line = lines[j];
       const inTemplate = ticks % 2 === 1;
-      ticks += (line.match(/`/g) ?? []).length;
+      ticks += countOf(line, /`/g);
       let code = line;
       if (inBlockComment) {
         const close = line.indexOf('*/');
@@ -278,8 +303,7 @@ export function enclosingSymbol(lines, lineIndex) {
       }
       const trimmed = code.trim();
       if (
-        trimmed.startsWith('/*') &&
-        trimmed.indexOf('*/', 2) === -1 &&
+        opensUnterminatedBlock(trimmed) &&
         !inTemplate &&
         aCommentCloseFollows(lines, j, lineIndex)
       ) {
@@ -352,11 +376,12 @@ export function sourcesUnder(root) {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       const rel = path.relative(root, full).split(path.sep).join('/');
-      let target = null;
+      let target;
       try {
         target = statSync(full);
       } catch {
-        target = null;
+        // Unreadable: a broken link, or a permission the walk does not have.
+        // Routed to `foreign`, where a consumer's extension gate can see it.
       }
       if (target?.isDirectory()) {
         walk(full);
