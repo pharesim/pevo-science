@@ -635,7 +635,7 @@ deferred to archive, so the entry is reconciled once against a settled shape
 rather than twice. Its stale disclaimer, its citation-shape sketch, and its
 sequencing paragraph are all superseded; the architect owns that edit.
 
-## Backend re-review signal (2026-09-06, commit COMMIT_SHA)
+## Backend re-review signal (2026-09-06, commit f00435d3)
 
 All four items landed. Items 1 and 4 are fixed at the shared cause the hold
 named rather than as two symptoms; item 2 settles the design question the hold
