@@ -235,6 +235,8 @@ run_case "T11b architect stages CONCEPTS.md → accept"      0 "architect(concep
 run_case "T11c backend stages CONCEPTS.md → reject"        1 "backend: stray glossary"   "CONCEPTS.md"
 run_case "T12 architect stages backend CLAUDE.md → accept" 0 "architect: per-agent"  "agents/backend/CLAUDE.md"
 run_case "T13 architect stages .githooks → accept"         0 "architect: hook"       ".githooks/commit-msg"
+run_case "T13b architect stages ce config → accept"        0 "architect: ce cfg"     ".compound-engineering/config.yaml"
+run_case "T13c ui stages ce config → reject"               1 "ui: ce cfg"            ".compound-engineering/config.yaml"
 run_case "T14 architect mv own task → accept"              0 "architect: archive"    "agents/docs/tasks/review/architect-foo.md"
 run_case "T15 Merge prefix → skip"                         0 "Merge pull request #123" "anywhere/whatever.txt"
 run_case "T16 capitalized Architect: → skip (unrecognized)" 0 "Architect: bad case"  "anywhere/x.txt"

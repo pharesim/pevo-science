@@ -1,0 +1,12 @@
+# Compound Engineering -- repo config (tracked; shared by everyone in the repo).
+# Per-developer overrides belong in config.local.yaml, which is gitignored.
+
+# Where the ce-* skills read and write their artifacts. PEvO keeps all agent
+# coordination material under agents/docs/, so the skills' default of `docs`
+# would send learnings, plans, and brainstorms to a second tree nobody reads.
+# Pointing docs_root here makes /ce-compound, /ce-compound-refresh, /ce-plan,
+# and /ce-brainstorm resolve to the store root CLAUDE.md already documents,
+# and it brings agents/docs/solutions/ under ce-code-review's protected-artifact
+# rule (which keys on the resolved artifact root, so an unset value leaves that
+# tree unprotected against deletion findings).
+docs_root: agents/docs

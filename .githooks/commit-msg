@@ -147,6 +147,7 @@ allowed_for_agent() {
       [[ "$path" == ".env.example" ]]                       && return 0
       [[ "$path" == "deploy.sh" ]]                          && return 0
       [[ "$path" =~ ^\.githooks/ ]]                         && return 0
+      [[ "$path" =~ ^\.compound-engineering/ ]]            && return 0  # ce-* skill config (docs_root); local overrides are gitignored
       ;;
     backend)
       [[ "$path" =~ ^backend/ ]] && return 0
