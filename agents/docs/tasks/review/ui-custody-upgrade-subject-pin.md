@@ -412,3 +412,75 @@ drift-injection helper gap recorded on 2026-09-05 is untouched.
 Comment-anchor reminder as before: no task slugs, round numbers, or line numbers in code or test
 comments; anchor on `handleRetry`, `retryUpgradeBackend`, `_endUpgradeAsSessionChanged`,
 `RETRYABILITY`, and the sub-case key names.
+
+## UI re-review signal (2026-09-06, commits 1ac83dc6, b89313d0):
+
+The three hold items landed in 1ac83dc6; b89313d0 fixes four defects an
+adversarial pass found in that commit's own prose. The diffs are the evidence.
+
+1. `upgrade.sessionChangedBeforeCleanup` in `en.json` and the fifteen stubs now
+   scopes the retry ("sign in again as {username} in this tab, without leaving
+   this page, then press Try Again to finish the upgrade") and carries the
+   fallback as its own sentence ("If you have already left this page, contact
+   support with your account name"). No em-dashes, two `{username}`, "Try Again"
+   byte-equal to `common.tryAgain`. All fifteen stubs are byte-identical to
+   `en.json` and each JSON file changed exactly one line. The `### Updated
+   2026-09-06` block was revised in place, no new heading, and the per-locale
+   lines are untouched. The test is `custody-upgrade session-changed copy
+   contract` at the end of the pin suite.
+2. The title is `handleRetry: resets wizard to idle on a retryable-reset
+   sub-case`.
+3. `NON_RETRYABLE_UPGRADE_ERROR_KEYS` returns nothing across `frontend/`.
+
+Five things to weigh rather than assume:
+
+1. **Item 3's three hits were three of five of the same class, and the other
+   two were the same class as item 2.** The R2 discriminator-guard comment and
+   its test title, one test below item 2's, also called the class
+   "non-backendUnavailable"; that is the counterexample, since `proofRejected`
+   and `sessionChangedBeforeCleanup` are non-backendUnavailable and do not
+   short-circuit. So did the describe header above the whole block, which said
+   `retryUpgradeBackend` is reachable only with
+   `upgradeErrorKey === 'upgrade.backendUnavailable'` while its own branch
+   enumeration eleven lines below named three keys. All three are fixed. The
+   header is where the framing the two items chased started, so item 2's scope
+   as written could not have closed it.
+2. **A false justification rode into the R2 comment on the item-2 fix.** The
+   pre-existing text said retrying a terminal sub-case "would re-broadcast
+   against an already-rotated chain". `retryUpgradeBackend` signs a proof and
+   POSTs; the describe header four lines up said "without re-broadcasting"
+   already. It also does not generalise: `backendTimeout` is terminal and keeps
+   its seed, so "the seed is spent" would have been wrong too. The comment now
+   says only that the guard refuses to act against a decision `RETRYABILITY`
+   makes once.
+3. **The ledger block contradicted itself a paragraph apart.** Appending the
+   second revision's note left the first paragraph saying the copy tells the
+   user to press Try Again "instead of contacting support", which the fallback
+   makes false. Rewritten as one account of both revisions, saying support is
+   back but as the route for a reader the retry can no longer reach.
+4. **Two overclaims, one of them the hold's own framing.** The docblock said the
+   fallback was "the only instruction that survives an unmount"; the message's
+   last sentence, keep your phrase safe, survives too. And the paired "the one
+   route the message can send a reader who has already left" is loose, since a
+   fresh wizard run with the rotated phrase also completes the cleanup. Both
+   replaced with what the copy does rather than what is uniquely possible.
+5. **The copy test guards `en.json` only, deliberately.** Pinning all sixteen
+   locales would false-fail the first time a translator lands a real
+   translation, which is what the raw-English stub convention exists to allow.
+   The stubs are covered by the ledger, not by a test.
+
+Verification: 82 files, 1839 tests green (the three unhandled rejections in the
+run reproduce in `pages-edit.test.js` alone, with none of these files loaded).
+Seven mutation probes against the copy contract, each restored after a
+clean-status check: dropping the fallback sentence, merging it into the retry
+sentence, lowercasing the button label, dropping the in-tab scoping, dropping a
+`{username}`, giving the terminal after-cleanup sibling a Try Again promise, and
+a re-probe of the first after the fix commit. All seven killed.
+
+Review evidence: a six-lens adversarial pass with three refuters per finding,
+27 findings raised. The session hit its model rate limit partway through and
+36 of 87 agents died, including every refuter for the correctness lens and most
+of the adversarial lens, so eleven findings came back with no votes at all. The
+script's majority rule reports those as refuted; they are not. Points 1 to 4
+above are unrefuted findings re-verified against the code by hand, not the
+script's survivors, of which there were none.
