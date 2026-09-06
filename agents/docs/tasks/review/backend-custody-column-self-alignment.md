@@ -271,3 +271,234 @@ Not to act on:
 - The absent-`upgraded_at` leniency is correct as documented. The CHECK's
   contrapositive means a non-`'self'` column implies no epoch, so the column alone
   now yields the right claim.
+
+## Backend re-review signal (2026-09-06, working tree)
+
+Round-2 hold items 1-5 landed. Nothing inside the hold block was edited; the
+diff is the evidence. Every claim below was measured, not reasoned about: the
+canary probes ran against copies of `backend/src` in a scratchpad (the repo was
+never mutated), and the `/link` predicate was probed both at the SQL layer in a
+rolled-back transaction and at the route layer through the real signed handler.
+
+**1. Canary detection.** The shape scans now run against the STATEMENT a line
+opens, not the line. New in
+`tests/eslint/no-custody-claim-derivation-outside-helper.test.ts`:
+`statementFrom` (joins downward to a terminator, stopping at a blank line, a
+block opener, or a small cap, stepping over comment lines),
+`statementOccurrences`, and `inlineDerivations` — the last is what both the
+tree scan and the planted probes call, so a mangled pattern cannot leave the
+probes passing vacuously. `EPOCH_TERNARY_RE` is bounded by the terminator
+rather than the line ending; `COLUMN_COPY_RE` reaches the property through an
+optional chain, a non-null assertion, a cast, an index, or a wrapped accessor,
+with commas/colons/semicolons/quotes excluded so it cannot pair one object's
+`custody:` key with a neighbour's `.custody`; `COLUMN_DESTRUCTURE_RE` refuses a
+declaration destructure naming the column.
+
+Proven gaps, each planted as a new non-minting reader in a copy of the tree and
+each GREEN before the fix, RED after: wrapped ternary, `account?.custody`,
+`account['custody']`, wrapped `custody:` / `account.custody`, `const { custody }
+= rows[0]`, `account!.custody`, `(account as { custody: string }).custody`, and
+a wrapped accessor (`custody: row` / `.custody,`). Whole-tree false positives
+after the widening: zero.
+
+Two false positives the widening created were caught and closed before landing,
+both on real shapes rather than contrived ones. `if (account.upgraded_at) {`
+followed by a body containing any `?` — a ternary error message, or a
+`?? 'self'` nullish default in a log payload — reported the gate line as an
+inline derivation. Those refusal gates are the most common `upgraded_at`
+spelling in the tree (four in `routes/custody.ts`, three in `routes/recover.ts`),
+and every one of them is one line away from tripping it. `BLOCK_OPENER_RE` stops
+the join at a block opener, which is the one place the over-match direction is
+deliberately reversed: there the false positive lands on a whole class of
+legitimate gates rather than on a single odd line. The planted control now
+carries a `??` in its body so it pins that boundary instead of passing because
+no `?` was in reach. Note that the canary's pattern-level planted negative for
+this shape stays green either way — a unit assertion on a single line cannot see
+a gap that lives between lines, which is why the probes go through
+`inlineDerivations` against synthetic files.
+
+Residuals are pinned in the docblock rather than closed: derivation through an
+intermediate binding, derivation as control flow, a differently-named
+destination, an assignment destructure, a column named through a constant, the
+join's blank-line stop and its line cap, and the over-match to expect first
+(a multi-line call mentioning `upgraded_at` whose later lines carry a custody
+ternary). A cast whose inline type lists more than one member is also not
+matched; buying it would need a pattern that reads across property boundaries.
+
+The mechanism is itself pinned: reverting the two patterns and the statement
+join, keeping the new tests, turns exactly the two extended tests red.
+
+**Correction to the earlier completion notes.** The architect is right that
+"verified by mutation: re-inlining the ternary in the password login and copying
+the raw column in the ORCID login each went red" does not support the shape
+scan. Re-measured: each of those two mutations produces TWO failures, the
+caller-set scan and the shape scan, because both also delete the helper call.
+The mutations that isolate the shape scan produce exactly one failure and keep
+the helper call in place: echoing the raw column into the ORCID login's response
+alongside the derived claim, adding a second epoch ternary beside the password
+login's helper call, and adding a new non-minting reader that derives the claim
+inline. The last is the closest to the threat the scan exists for.
+
+**2. `/link` stuck-recovery widening.** Closed in code, not documented-accepted.
+The lookup gains
+`AND (sessions_invalidated_at IS NULL OR sessions_invalidated_at < updated_at)`.
+
+The discriminator is ORDER, not presence. The `/link` finalize stamps
+`updated_at` and the upgrade epoch in one statement and revokes nothing; an
+upgrade necessarily runs after the `/confirm` finalize that set `updated_at` and
+stamps `sessions_invalidated_at` as it goes, so an upgraded row always carries a
+revocation newer than its recency marker.
+
+The bare `sessions_invalidated_at IS NULL` form was written first and rejected
+under probing: `POST /api/auth/reset-request` selects by email alone and
+`POST /api/auth/reset` by reset token alone, neither gating on `username`,
+`verify_token`, or `upgraded_at`, and nothing ever writes the epoch back to
+NULL. So a password reset at ANY point in a row's life — including during an
+abandoned signup later resumed — permanently refuses that row's `/link`
+recovery. The consolation does not exist: `/resume-signup` needs a `confirmed:`
+verify_token, which a finalized row does not have, so the user would be left
+with a finalized, permanently unaccredited account needing operator
+reconciliation. The ordering form admits that row and still refuses the upgraded
+one.
+
+The timestamp-comparison family was also probed rather than dismissed. An exact
+ordering on `upgraded_at` vs `updated_at` is not viable: they are written by the
+SAME statement from two clocks (a Node `Date` and `NOW()`), measured at 0.5-2 ms
+apart with the sign flipping inside an explicit transaction. The pair used here
+is separated by a whole HTTP round trip plus a fresh-auth re-proof, so no clock
+skew can invert it.
+
+Measured at the SQL layer against real Postgres in a rolled-back transaction,
+four seeded rows: shipped predicate admits all four including the upgraded one;
+bare `IS NULL` admits only the never-revoked row; the ordering form admits the
+never-revoked row and the reset-before-finalize row and refuses the upgraded one
+and the revoked-after-finalize one.
+
+Three specs in `tests/routes/signup-verify-stuck-recovery.test.ts`, all driving
+the real `verifyHiveSignature` with a real signature: (e) upgraded-inside-window
+refused, (f) genuinely-stuck row still resumes, (g) reset-before-finalize row
+still resumes. Mutation-verified: removing the term reds (e); the bare `IS NULL`
+form reds (g), which is the spec that separates the two candidate predicates.
+Spec (f) is the over-tightening guard — the `/link` stuck path previously had
+rejection coverage only, so a predicate that refused every row would have passed.
+
+The invariant the predicate leans on is now pinned against the real route rather
+than a fixture: `custody-upgrade.test.ts` already asserted the epoch write twice
+(including the `reissuedAt` identity), so what was missing was the other half.
+The State A row-shape block now captures `updated_at` before the upgrade and
+asserts the handler left it byte-identical. `/confirm`'s lookup is deliberately
+NOT given the same term: it already excludes an upgraded row via
+`custody = 'light' AND posting_key_enc IS NOT NULL`, and adding the term there
+would newly fail-close a real `/confirm` user who reset their password.
+
+Comments corrected at all four sites that carried the "leaving `updated_at`
+alone is what keeps the row out" half-truth: the `/link` query, the `/upgrade`
+UPDATE, migration 017's header, and `STUCK_RECOVERY_WINDOW`'s own docblock.
+
+Severity note for the record, since it prices the trade: the widening bought a
+caller who already holds the account's posting key a bearer JWT they can mint
+anyway through `POST /api/auth/session`, and the re-broadcast is HAF-dedup-probed
+and sanction-gated. The fix is one SQL term with no false negative, which is
+cheaper than the acceptance note would have been.
+
+**3. `CustodyRow` docblock.** The false statement is gone. Verified
+independently: all six calling sites annotate `upgraded_at` as `string | null`
+and none annotates `Date` (a `Date | null` mutation errors TS2345 at exactly
+those six); `001_schema.sql` declares the column `TIMESTAMPTZ` and no
+`ALTER COLUMN` touches it; no `setTypeParser` is registered anywhere; a
+read-only probe against the running database confirms field OID 1184,
+`pg.types.getTypeParser(1184).name === 'parseDate'`, and `value instanceof Date`.
+The docblock now says that: declared shape and runtime shape differ, the union
+spans both so no caller needs a cast asserting something the value does not
+satisfy, and only nullness is read.
+
+**4. The ORCID login comments.** Both blocks rewritten. The unreachability
+claim is gone and state G is named with its § 6.1 anchor, along with the route
+that creates the row. The "finalized (states A/B/C/D)" sentence is not replaced
+with a new closed enumeration — that shape is what went stale in the first
+place; the comment states the invariant (a finalized row's `custody` can be
+NULL, G is that row, the helper resolves it to `'self'`) and leaves the
+population to § 6.1. The second over-claim inside "finalized" is closed too:
+the SELECT reads neither `verify_token` nor `expires_at`, so a state-G row
+matches whether or not its settings-registered email is verified.
+
+Two more comments in the same file asserted the same falsehood and are fixed
+with it: the `// Update orcid column in accounts (if light account row exists)`
+pair sits on the predicate-free `UPDATE accounts SET orcid = $1 WHERE username =
+$2` that is the link in the chain making a state-G row reachable from the login
+SELECT, and a state-G row is precisely not a light account row. Its sibling warn
+message ("row may not exist for self-custody user") is corrected the same way.
+
+**5. "Cannot disagree" wording.** Narrowed at the helper docblock, the ORCID
+login comment, migration 017's header, and the canary docblock — the guarantee
+is now stated as per-read, not per-account, everywhere it appears. The
+read/derive window was traced per handler: the password login awaits
+`argon2.verify` between its SELECT and the derive and both recovery reissues
+await a factor proof and their own UPDATE, so those three have a window; the
+ORCID login and the two settings handlers derive in the same tick as their read.
+
+One thing the drafted wording got wrong and that is NOT in the diff: an earlier
+version claimed a stale token "is minted after the upgrade's revocation epoch
+and so survives" the check. The middleware compares
+`payload.iat <= invalidatedAtSec && payload.reissuedAt !== invalidatedAtMs` with
+`iat` at second granularity, and a login mint carries no `reissuedAt`, so a
+stale token minted in the same integer second as the upgrade IS revoked; only
+one landing in a later second survives, and it is refused at the acting route
+instead. The shipped text says that. Landing the original would have put two
+files in this repo asserting contradictory revocation semantics, since
+`verifyHiveSignature` documents the same mechanism in the opposite direction.
+
+The related question the architect's framing raises was checked and found clean:
+no route trusts the light claim alone. The five consumers of `req.hiveCustody`
+are the four `routes/custody.ts` gates, each of which re-reads `upgraded_at`,
+and `POST /api/auth/session`, whose refresh runs `verifyHiveSignature` and so
+cannot launder a token the epoch already revoked. No § 6.5 invariant #1
+violation.
+
+### Verification
+
+`npm run typecheck` (both projects) and `npm run lint` clean; the one lint
+warning is a pre-existing unused-disable in `lib/author-supersession.ts`, an
+untouched file. Targeted suites, `--retry=0` against real Postgres/Redis:
+`tests/eslint/` + `tests/lib/custody-claim.test.ts` + `tests/migrations/` +
+`custody-upgrade.test.ts` = 12 files / 146 tests green;
+`custody-claim-mint-parity`, `signup-verify`, `signup-verify-session-binding`,
+`signup-verify-stuck-recovery`, `settings`, `orcid`, `recover` = 7 files / 201
+tests green. `signup-verify-stuck-recovery.test.ts` ran three consecutive times
+with `--retry=0` to confirm the three new specs are not order- or
+limiter-sensitive.
+
+### Surfaced, not acted on (needs triage)
+
+Found while establishing item 4's facts; each is the same stale-model class but
+outside what the hold items ask for, so nothing was changed:
+
+- `jobs/registration-watch.ts` has a BEHAVIOR consequence, not just a comment
+  one: `collectSignupStarted` has no state predicate and `collectCompleted`
+  filters on `verify_token IS NULL AND username IS NOT NULL`, so a Keychain
+  user who registers an email through settings fires "Signup started" and
+  "Registration completed" operator webhooks for an account that never signed
+  up. Its module docblock's event table and `collectCompleted`'s docblock both
+  assert the A/B/C/D enumeration.
+- The same docblock claims `accounts.updated_at` is "bumped by later password,
+  ORCID, and custody writes too". False today: the only writers are the two
+  signup-verify finalizes plus the column DEFAULT. This is also exactly why
+  moving `updated_at` at upgrade was rejected as a mechanism for item 2 — the
+  cursor only moves forward, so a row shoved behind it loses its completion
+  event permanently.
+- `routes/settings.ts` `POST /set-password`: "today only the ORCID-path
+  signup/recover leaves password_hash = NULL" is falsified by state G, whose
+  row is created with no password. This is the comment governing whether a G
+  row can acquire one.
+- `routes/orcid.ts` `/start` and `lib/fresh-auth.ts` (x2) and
+  `routes/settings.ts` restate § 6.3's `A/B/C/D → [no row]` deletion exit.
+  § 6.3 is architect-owned and has no state-G transitions at all — no entry
+  edge for it and no `G → G` ORCID link — so the doc moves first.
+- `POST /api/auth/reset` can set a `password_hash` on a pre-finalize row with
+  no state gate at all. Out of scope here, but it is the mechanism behind the
+  false negative that killed the bare `IS NULL` predicate.
+
+**[TODO Architect]** § 6.1's state-F "Reached by" cell cites `auth.ts:460-490`,
+a source line-number anchor of the kind the repo's comment-anchor convention
+forbids. The `.githooks/pre-commit` gate does not cover `agents/docs/`, so
+nothing catches it mechanically.
