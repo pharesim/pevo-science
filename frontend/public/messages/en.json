@@ -1077,7 +1077,7 @@
     },
     "keychainImportFailed": "Hive Keychain import did not complete. Use your seed phrase to import the account from the Keychain extension, or contact support if you need help.",
     "sessionChangedAfterCleanup": "Your account upgrade finished, but this browser is no longer signed in as {username}. Sign in again with your new recovery phrase to finish setting up Hive Keychain.",
-    "sessionChangedBeforeCleanup": "Your account keys were updated, but this browser is no longer signed in as {username}, so the upgrade stopped before it could finish. Sign in again as {username}, then press Try Again to finish the upgrade. Keep your new recovery phrase safe and do not share it."
+    "sessionChangedBeforeCleanup": "Your account keys were updated, but this browser is no longer signed in as {username}, so the upgrade stopped before it could finish. Sign in again as {username} in this tab, without leaving this page, then press Try Again to finish the upgrade. If you have already left this page, contact support with your account name. Keep your new recovery phrase safe and do not share it."
   },
   "resetPassword": {
     "requestTitle": "Reset your password",

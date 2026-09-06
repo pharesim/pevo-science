@@ -603,8 +603,8 @@ export function initSettingsPage() {
     // `canRetryUpgrade` getter consults this key (not the translated
     // `upgradeError`) so its decision is invariant to locale switches the
     // user might trigger from the header switcher on the error screen, and
-    // so a future non-retryable sub-case requires only an addition to
-    // NON_RETRYABLE_UPGRADE_ERROR_KEYS at module top — not a coincidental
+    // so a future non-retryable sub-case requires only a 'terminal' entry
+    // in RETRYABILITY at module top, not a coincidental
     // string match. Per
     // agents/docs/solutions/conventions/correlated-options-discriminated-union-2026-04-28.md.
     // Reset alongside `upgradeError` at every clear site.
@@ -1549,6 +1549,10 @@ export function initSettingsPage() {
     // re-login keeping this component mounted: the global header's sign-in
     // modal and another tab's login both do, while the signed-out body's
     // own button navigates away and takes the retry's inputs with it.
+    // That is why the before-cleanup copy scopes its retry instruction to
+    // this tab and this page and then carries an out-of-band fallback: the
+    // one route the message can send a reader who has already left, and the
+    // only instruction in it that survives an unmount.
     _endUpgradeAsSessionChanged({ cleanupLanded, upgradeSubject }) {
       // Mirrors _handlePostBroadcastError's entry guard: most callers reach
       // this after at least one await (the retry's start guard is the one

@@ -518,3 +518,74 @@ describe('custody-upgrade re-login subject pin', () => {
     expect(mockRequestImportKey).toHaveBeenCalled();
   });
 });
+
+// The before-cleanup sub-case is the only upgrade error whose recovery is a
+// button on the page that renders it. `_endUpgradeAsSessionChanged` sets it
+// with `cleanupLanded: false`, `canRetryUpgrade` keeps Try Again visible, and
+// `retryUpgradeBackend`'s start guard declined without spending the proof
+// attempt or the seed, so signing back in as the pinned subject and pressing
+// that button finishes the upgrade. But the button belongs to the settings
+// page: a re-login that unmounts it (the signed-out body's own button
+// navigates to the login route) runs `destroy()`, which clears the seed and
+// the pin the retry needs. So the copy has to do two jobs at once, and a
+// reader who has already left the page can only be helped out of band.
+//
+// These assertions are on the source `en.json`, not on a rendered component:
+// the sibling tests here stub `$t` to echo the key, which is what makes their
+// subject assertions readable, and that stub cannot see the sentence a copy
+// edit deletes. Nothing else in the suite would fail if the fallback were
+// dropped, which is exactly the silent regression this pins.
+describe('custody-upgrade session-changed copy contract', () => {
+  const loadUpgradeCopy = async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    return JSON.parse(
+      fs.readFileSync(path.join(here, '../../public/messages/en.json'), 'utf8'),
+    );
+  };
+
+  const sentences = (value) => value.split(/(?<=\.)\s+/);
+
+  it('the before-cleanup message carries an in-tab retry instruction and an out-of-band fallback', async () => {
+    const messages = await loadUpgradeCopy();
+    const value = messages.upgrade.sessionChangedBeforeCleanup;
+    const parts = sentences(value);
+
+    // The retry instruction is scoped to where the button actually is.
+    const retryIndex = parts.findIndex(
+      (s) => /in this tab/i.test(s) && /without leaving this page/i.test(s),
+    );
+    expect(retryIndex).toBeGreaterThan(-1);
+    // It names the button by the label the template renders, so the two
+    // cannot drift into telling the user to press something not on screen.
+    expect(parts[retryIndex]).toContain(messages.common.tryAgain);
+
+    // The fallback is for the reader the retry instruction can no longer
+    // reach, and it is the only instruction in the message that survives an
+    // unmount.
+    const fallbackIndex = parts.findIndex(
+      (s) => /already left this page/i.test(s) && /support/i.test(s),
+    );
+    expect(fallbackIndex).toBeGreaterThan(-1);
+
+    // Two sentences, not one: merging the fallback into the retry sentence
+    // makes it read as a condition on the retry rather than a separate route.
+    expect(fallbackIndex).not.toBe(retryIndex);
+
+    // The account is still named, twice: once for what the browser is no
+    // longer signed in as, once for what to sign back in as.
+    expect(value.match(/\{username\}/g)).toHaveLength(2);
+  });
+
+  it('the after-cleanup message promises no in-app retry', async () => {
+    const messages = await loadUpgradeCopy();
+    const value = messages.upgrade.sessionChangedAfterCleanup;
+
+    // Its RETRYABILITY entry is 'terminal' and Try Again is hidden, so copy
+    // that told the user to press it would name a button that is not there.
+    expect(value).not.toContain(messages.common.tryAgain);
+    expect(value).not.toMatch(/try again/i);
+  });
+});

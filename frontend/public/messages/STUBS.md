@@ -3876,6 +3876,16 @@ named account and press Try Again instead of contacting support. The inline
 renders `common.tryAgain`. Translators who started on the earlier `Added`
 entry should retranslate.
 
+Revised a second time under this same heading, so anyone who already started
+from the first revision above should retranslate as well. Two things are new.
+The retry is now scoped to the tab and the page the message is read on ("in
+this tab, without leaving this page"), because that Try Again is the settings
+page's own button and navigating away destroys the state it needs. And a
+fallback sentence was added for the reader who has already navigated away: it
+tells them to contact support with their account name. Keep the fallback as a
+separate sentence; it is the only instruction that still holds once the in-tab
+retry is gone, and dropping or merging it silently strands that reader.
+
 ar: upgrade.sessionChangedBeforeCleanup
 cs: upgrade.sessionChangedBeforeCleanup
 da: upgrade.sessionChangedBeforeCleanup

@@ -2151,7 +2151,7 @@ describe('settingsPage', () => {
     // server-side custody — the rotation in the current flow still
     // landed on-chain, so retrying is structurally unavailable. The
     // code routes 409 to its dedicated `upgrade.alreadyUpgraded`
-    // sub-case key (a member of NON_RETRYABLE_UPGRADE_ERROR_KEYS); the
+    // sub-case key (annotated 'terminal' in RETRYABILITY); the
     // canRetryUpgrade=false assertion below verifies the non-retryable
     // contract regardless of which specific terminal key fired.
     it('post-broadcast backend 409 ALREADY_UPGRADED routes to non-retryable (alreadyUpgraded)', async () => {
@@ -2617,7 +2617,7 @@ describe('settingsPage', () => {
     // canRetryUpgrade returns true and Try Again is shown; clicking it
     // must clear the wizard back to 'idle' so a fresh attempt
     // regenerates the new mnemonic.
-    it('handleRetry: resets wizard to idle on non-backendUnavailable retryable sub-case', () => {
+    it('handleRetry: resets wizard to idle on a retryable-reset sub-case', () => {
       const comp = createComponent();
       comp.upgradePhase = 'error';
       comp.upgradeErrorKey = 'upgrade.failed';
@@ -2662,12 +2662,15 @@ describe('settingsPage', () => {
       expect(comp.upgradePhase).toBe('upgrading');
     });
 
-    // R2: discriminator guard. Reaching retryUpgradeBackend from a
-    // non-backendUnavailable error sub-case (e.g. someone wired the
-    // dispatcher wrong, or the field was stale) must short-circuit —
-    // retrying a terminal sub-case would re-broadcast against an
-    // already-rotated chain.
-    it('retryUpgradeBackend: no-op when upgradeErrorKey !== "upgrade.backendUnavailable"', async () => {
+    // R2: discriminator guard. The guard reads the RETRYABILITY value, not
+    // one key: reaching retryUpgradeBackend from a sub-case that is not
+    // annotated 'retryable-backend-only' (e.g. someone wired the dispatcher
+    // wrong, or the field was stale) must short-circuit, because retrying a
+    // terminal sub-case would re-broadcast against an already-rotated chain.
+    // The other two 'retryable-backend-only' keys are not backendUnavailable
+    // and deliberately do NOT short-circuit here, so the class the guard
+    // rejects is the annotation's, not that one key's.
+    it('retryUpgradeBackend: no-op when the sub-case is not retryable-backend-only', async () => {
       const fetchSpy = vi.fn();
       vi.stubGlobal('fetch', fetchSpy);
 
@@ -2708,7 +2711,7 @@ describe('settingsPage', () => {
       // a regression that added an upgradePhase write before the
       // !newSeedPhrase check would fail this.
       expect(comp.upgradePhase).toBe('error');
-      // partialApplyFailed is on NON_RETRYABLE_UPGRADE_ERROR_KEYS, so the
+      // partialApplyFailed is annotated 'terminal' in RETRYABILITY, so the
       // derived `canRetryUpgrade` getter must be false. Mutation-killing:
       // a regression that omitted the partialApplyFailed routing (e.g.,
       // left upgradeErrorKey at backendUnavailable) would still hit the
