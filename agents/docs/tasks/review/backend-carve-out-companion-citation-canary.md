@@ -279,3 +279,220 @@ em-dash rule and carve-out clauses (a), (b) and (c) all pass.
 The `[TODO Architect]` above is acknowledged and deliberately deferred: the
 convention entry gets reconciled at archive, once the ratchet's shape has settled,
 so it is not rewritten twice.
+
+## Backend re-review signal (2026-09-06, commits 407474cb, 94e093a1, 2518d1f5, 626bcbc0)
+
+All eight items landed. The first commit is the hold as prescribed; the other
+three are what three adversarial passes over it found, fixed in the same round
+rather than carried as residuals. They are described together because the
+later ones change the shape of the first.
+
+### The mechanism (items 1 to 5)
+
+The file list and its ceiling are gone. Two per-file count maps carry the
+backlog: `DEFERRED_FREE_PROSE` for blocks whose prose names a test file,
+`DEFERRED_FILELESS` for blocks that carry the label and name no file (14
+files, 16 claims, matching the hold's measurement). The count is the file's
+label DEFICIT, labels minus structured citations, summed per class, so a
+second label line inside an existing block weighs the same as a new block
+(103 files and 133 claims in the free-prose map: the hold's 102 files and 108
+blocks, plus the multi-label blocks now counted per label, plus one file whose
+reverse-direction companion declaration the widened label pattern now sees).
+Each pin is EXACT against the tree, and each map is bounded by a frozen,
+never-edited landing snapshot: keys must be a subset, a pin cannot exceed its
+landing count, a pin must be a positive integer. The ceiling is implied by the
+subset assertion, so there is no number to keep in step, and the false
+"exact-membership check" sentence went with the constant it sat on. A sha256
+of both snapshot maps' entries is pinned as `LANDING_DIGEST`, so a change to
+any entry or count needs a recomputed literal (a reorder is a no-op).
+
+The names-a-file guard is dropped: a label with fewer structured citations
+than labels is a violation whether or not it names a file; the filename test
+only routes it between the two backlogs. A block whose citations are all
+structured has them stripped and the remainder tested for a test-file name; a
+hit is the `leaky` class and always a violation, and a filename tucked into
+the label's own qualifier slot counts as that prose. A citation-shaped line
+that does not parse as the label is its own violation class rather than a
+skipped block.
+
+### Items 6, 7 and 8
+
+Item 6: `ratchetClass` is probed with the marker present and absent on the
+same text and with synthetic shapes for every class, and `auditSources` is
+driven with a synthetic source carrying one block of each class, so the loop
+and every consumer of a class (the deficit sums, the class lists, validation,
+the mixed-script list) are proven live rather than only the predicate. Item 7:
+one direct `citationViolations` call with an over-generic real token against
+the real tree asserts the reach message; the companion stub asserts the token
+so only the reach arm can fire. Item 8: the stripper is no longer a line-shape
+heuristic at all, which is the strongest available form of the fix. The
+sentinel value, the `startsWith('/*')` predicate, a `*`-led SQL continuation
+line, a generator method and a `/*` at line start inside a template literal
+are all probed as code; a line-start block comment, indented or JSDoc, is
+still stripped.
+
+### What three adversarial passes found, and what changed
+
+Each pass ran attackers in isolated worktrees against the previous commit.
+The verifier and critic stages were cut off by the session rate limit in both
+red-team rounds, so every claim below was re-verified by hand in a detached
+worktree, in both directions, and each is now a probe in the canary.
+
+**Round 1** (against 407474cb, fixed in 94e093a1). The comment collector
+admitted only lines that START with a comment marker: a labelled claim in a
+trailing comment on the `vi.mock(` line, a gutter-less block comment, a bare
+or blank line inside a docblock, and a `//` note under the header separated by
+a blank line were all invisible, and a STRUCTURED citation in a trailing block
+comment was never validated either, which made the whole-tree claim false. The
+pin counted blocks, so a second label inside an existing backlog block was
+invisible. The label pattern missed `Realpath`, `real-path-companion`, a
+parenthesised or digit qualifier, `@realPathCompanion` and markup; the
+filename pattern missed `settings.test`, a frontend `.test.js`, a name wrapped
+inside its last segment and a bare `backend/tests/...` path. The shared walker
+used `isFile()`, which is false for a symlink vitest would run.
+
+**Round 2** (against 94e093a1, fixed in 2518d1f5). The two remaining textual
+heuristics disagreed with each other and with the language. On the citing
+side: a claim in a trailing comment after a template literal's closing line
+(the house style backticks every path, so the claim's own backtick paired with
+the literal's) or beside a regex holding a quote was blanked out with the
+literal; a regex holding `/*` opened a phantom block that swallowed a correct
+citation into a false `leaky` accusation; a labelled line inside a
+template-literal fixture was read as a claim. On the companion side: a `*`-led
+SQL continuation and a generator method were dropped as gutter lines; a `/*`
+at line start inside a template deleted real code; and a token occurring only
+inside a `vi.mock` factory, a `vi.spyOn` or `vi.doMock` stub, a mocked row, a
+spec title, or a longer identifier (`hafQueryMock` for `hafQuery`) counted as
+an assertion, which is the historical incident shape reproduced against real
+corpus files. A punctuated token (`verifyHiveSignature:`) dodged the reach cap
+by selecting exactly the mock stubs. A filename in the label's qualifier slot
+was cut out with the citation; a sentence ending in the bare label above a
+citation fused with it; ordinary prose ("the real path and companion
+fixtures") was a label; a Cyrillic look-alike letter hid the label or a
+filename; a claim split across two trailing comments was two unlabelled
+blocks. A `__proto__` entry in the live map admitted an unlisted file and a
+`NaN` pin switched every arithmetic arm off. And honest headers went red:
+naming the fixture path root `CLAUDE.md` requires, the reserved `example.test`
+domain, a `RE.test(...)` call, `companion(s):`, or a parenthetical after the
+token.
+
+The fix lets TypeScript's parser decide what a comment is, on both sides.
+Every comment is trivia attached to some token, nothing inside a string,
+template or regex literal is one, and the companion's code is the source minus
+those ranges, minus every vitest mocking call with its body, minus every spec
+title, matched as a whole word. The label's qualifier slot admits plain words
+only (never the label's own words, a stop word or a path). Any comment word
+mixing the Latin script with another is refused. A reverse form (`Real-path
+companion for: <path>`) lets a real-path suite declare itself the companion,
+checked from both ends, so the convention entry's two-sided link is writable
+without the marker. Fixtures, support modules, mail addresses, URLs, the
+reserved domain and method calls are not test filenames; a glob or alternation
+family is. Pins are read as own integer properties only. Companions under
+`tests/eslint/` or `tests/support/` are refused, since they scan sources and
+run no route. Under the parser's definition `verifyHiveSignature` is spelt in
+code by 8 files (nearly every suite naming it does so inside the call that
+mocks it), so the over-generic example in the cap docblock is now `createApp`
+at 117, and `argon2` falls from 41 raw files to 32, which removes a false
+rejection of an honest token.
+
+**Round 3** (self-audit against 2518d1f5, fixed in 626bcbc0). Re-running the
+round-1 probe battery caught a regression the new parser introduced: a comment
+block below the last statement was not collected, because the end-of-file
+token carries it as its own JSDoc child and the walk skipped every JSDoc
+subtree without first asking that token for its leading trivia. A companion
+claim appended to the end of any file was therefore invisible. A node is now a
+leaf once its JSDoc children are set aside, and both shapes are probed.
+
+The corpus classification is identical across all four commits (103 files and
+133 claims; 14 and 16), so none of this moved the backlog.
+
+### Residuals, stated in the header rather than claimed away
+
+Unlabelled prose is not a claim the ratchet can see: an unlabelled sentence
+naming no file beside a structured citation, or naming a test file in a block
+that is neither the labelled one nor adjacent to it, passes. So does a file
+named without `.test`/`.spec` and without a `tests/<dir>/` path in front of
+it. A claim replaced by a different claim in the same file at constant deficit
+is invisible. The live maps are bounded by the snapshot, not monotonic: a
+lowered pin can be raised back to its landing count and a removed entry
+re-added while the tree agrees. A confusable forming a single-script word of
+its own is not refused. A token in a fixture row outside any mocking call, or
+in a string that is not a spec title, still counts, as does a companion behind
+`describe.skipIf` or whose only spec is `it.todo`. The marker is unbounded and
+needs no reason. The digest can be recomputed by anyone. The first two and the
+same-file replacement were confirmed green by probe, so the header's statement
+of them is true rather than assumed.
+
+### Deviations from the prescription
+
+1. Pins are exact, not "fail when EXCEEDS". Under `<=`, converting one of a
+   file's two claims leaves a slot a new claim can take with no edit at all,
+   the freed slot of item 2 one level down. Exactness makes a conversion (or a
+   deletion) lower the pin, a visible edit.
+2. The frozen snapshot holds counts, not just filenames, and is digest-pinned.
+   A filename-only snapshot bounds membership but not pins, and a raised pin is
+   the block-level form of an added file.
+3. The remainder check runs on every non-exempt block, not only non-deferred
+   ones. Zero blocks are leaky at landing, and a backlog file's freshly
+   converted block is exactly where the half-true compound appears next.
+4. Deleting a claim outright is indistinguishable from converting it; both
+   lower a pin. What IS closed is that the removal frees nothing for anyone:
+   the slot cannot be taken by a new file (absent from the snapshot), by a new
+   claim in the same file (the deficit cannot exceed the pin), or by a snapshot
+   edit without a recomputed digest. Probed in all four directions.
+5. Renaming a backlog file forces its claims to convert (or take the marker):
+   the old path leaves the map and the new path cannot enter it.
+6. The names-a-file test is not literally dropped; it routes a label deficit
+   between the two backlogs, on the prose remainder, so a structured citation
+   beside a file-less label lands in the file-less backlog and its message
+   offers the marker or the reverse form.
+7. The canary now parses every scanned file once. It runs in about three and a
+   half seconds rather than under one; `tests/eslint/` as a whole is 6.3s.
+
+### Verification
+
+`npm run typecheck` passes. `tests/eslint/` plus every suite importing the
+shared walker plus the two converted middleware suites: 11 files, 129 tests
+and 4 skipped, green. `npm run lint` not run: it lints `src/` only and no
+`src/` file changed.
+
+Mutation probes ran in a detached worktree at each commit, each observed red
+with the named message, restored, and the control green after each group.
+Against the prescribed commit: a new prose block in a listed file (item 1);
+the de-file-and-drop sequence, the freed slot and the same-length swap (items
+2 and 3); filename prose beside the structured citations in the fail-closed
+header (item 4); a new file whose only clause-(c) line is the settings-suites
+sentence, and the same with the marker (item 5); the exempt gate inverted and
+deleted (item 6); the reach arm set to constant false (item 7); the stripper
+reverted (item 8); a pin raised above landing, a pin set to zero, a snapshot
+entry removed; and the original criteria on the converted exemplar (a
+nonexistent path, an absent token, and a nonexistent path wrapped across a
+continuation line naming the rejoined path).
+
+Against the later commits, one probe per red-team finding, all red: the
+trailing `//` claim and the trailing block comment carrying a structured
+citation to a nonexistent file; the gutter-less header; the bare and the blank
+line inside a docblock; the adjacent `//` block; a second label inside an
+existing backlog block in each class; the U+2011 hyphen, `Realpath`, the JSDoc
+tag, the parenthesised qualifier, the backticked qualifier, bold markup and a
+Cyrillic look-alike letter; the suffix-less, `.test.js`, wrapped-segment, bare
+`tests/` and glob-family names; a symlinked test file; the template-closer and
+regex-quote trailing claims; the label split across two trailing comments; the
+qualifier-slot filename; the fused sentence; a token found only in a real
+companion's `vi.mock` factory, `vi.spyOn` target, describe title, or as a
+longer identifier; a punctuation-suffixed token; a source-scanning canary as
+companion; a `__proto__` entry and a `NaN` pin. And green where green is
+correct: the regex holding `/*`, the template-literal fixture, the fixture
+path in clause (a), the reserved domain, `companion(s):`, a trailing
+parenthetical, ordinary "real path ... companion" prose, a token on a `*`-led
+SQL line, and the reverse form with the link visible from both ends (red when
+only one end has it).
+
+### [TODO Architect]
+
+`agents/docs/solutions/conventions/carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02.md`
+still ends its canary section with "Do not describe this canary as existing.
+It is a proposal." That is now false. The entry's sketch of the citation shape
+also predates the reverse form and the qualifier rules, and its "the realistic
+sequencing is a diff gate first" paragraph is superseded by the in-tree
+ratchet. The file is architect-owned, so backend has not touched it.
