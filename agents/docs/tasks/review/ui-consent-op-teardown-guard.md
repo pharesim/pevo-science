@@ -974,3 +974,97 @@ cited specs drive; no task slug, path, or file redirect appears on any added lin
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
 re-review signal. Do not edit this hold block; the commit diff is the evidence and the
 architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-09-06, commit 9b14f43d):
+
+The held item landed, and an independent sweep found the same false citation on
+two further surfaces the hold did not enumerate. All five are corrected in one
+comment-only commit.
+
+### Item 1 — the three headers now name what their cited specs drive
+
+Ground truth was re-derived from the spec rather than from the hold: it has one
+test, it route-stubs `/api/orcid/callback`, and it asserts the `session_auth`
+handler caches the issued window. It drives no broadcast, no upload, and no
+acquisition. It also hand-seeds the ORCID mode and return path that the redirect
+starter would have written, so the start leg never runs either, and because the
+callback response is test-authored, no backend fresh-auth code executes at any
+point. The four incidental real requests it makes (the HTML shell and bundle, an
+accreditation poll, and the papers feed after the navigation) are unasserted.
+
+1. `lib-ipfs-upload`: the "upload + broadcast against the real backend" claim is
+   gone. False on both halves, with no partially-true reading.
+2. `fresh-auth-401-retry`: the broadcast claim is gone, **and so is a second
+   reference the hold did not name** — the clause-a sentence citing the same
+   spec as the home of the real FRESH_AUTH_REQUIRED setup. It induces none of
+   those combinations.
+3. `lib-fresh-auth-session-window`: the "acquisition + broadcast" claim is gone.
+
+Each now states the gap behaviourally, with no slug, path, or file redirect to
+the follow-up.
+
+### Beyond the hold
+
+**The `publish.spec.js` clause in the session-window header is also false, and
+the hold treated it as sound.** It is corrected in the same paragraph. On
+self-custody, `uploadFileToIpfs` signs the upload-token descriptor with Keychain
+and posts it through the unauthenticated `request()` helper, so no Bearer rides
+along; `verifyHiveSignature` has no test bypass and parses the signature
+structurally; and the Keychain fixture's own docblock states that tests using it
+cannot assert a 2xx from any endpoint it guards. The spec nonetheless asserts a
+200 from `POST /api/ipfs/upload`. Independently of whether it passes, it runs
+self-custody, so no window proof is involved and it cannot discharge clause (c)
+for that suite either way — which is how the corrected paragraph puts it.
+
+**`lib-fresh-auth-outcome-dispatch`**: the hold called "exercises acquisition
+against the real backend" defensible and invited disagreement. Recorded as
+disagreement, and corrected. Acquisition is `acquireSessionProof` /
+`ensureSessionWindow`; none of it runs, nothing is minted, and the measured path
+has no backend in it. Leaving it would also have left one header contradicting
+the three rewritten ones.
+
+**`authorship-consent-actions.spec.js`** (an e2e spec, not one of the four unit
+suites): its clause (c) claimed the custody-broadcast fresh-auth path is covered
+by that spec against the real backend. Neither half holds. Enumerated by neither
+the hold nor the follow-up task; corrected here rather than left to reopen the
+sweep.
+
+Where real coverage exists it is now named precisely: `settings.spec.js`
+resolves the password factor against a real `GET /settings/email` and mints at
+the real `POST /custody/fresh-auth`, and `settings-orcid-factor.spec.js`
+completes a genuine backend-minted proof end to end. Both mint the per-action
+consent-op kind, not the multi-use session window, so they are called out as
+standing in for factor selection only.
+
+### Surfaced, not fixed (root CLAUDE.md "Code Review Findings")
+
+- `publish.spec.js` looks unable to pass as written, on two independent grounds:
+  the self-custody upload-token 401 described above, and a strict-mode locator
+  clash between `form button[type="submit"]` and the always-in-DOM global reauth
+  modal. Its own header states a Bearer-JWT rationale that stopped applying when
+  the two-step custody-split pre-flight landed. **Not confirmed by a Playwright
+  run** — the e2e dance swaps the shared dev backend into test mode and a sibling
+  agent is active in this checkout. Several specs cite it for upload coverage.
+- `lib-accredited-directory.test.js` discharges clause (c) by citing
+  `tests/e2e/publish.spec.ts`, which does not exist (the file is `.js`), and the
+  namesake asserts nothing about `authors[]` or ORCID prefill.
+- The two ORCID-discrepancy specs cite backend tests that do not cover what is
+  claimed; `settings-orcid-factor.spec.js` cites a `test.fixme` as a companion;
+  `pages-orcid-callback.test.js` cites a promised, unwritten e2e test.
+- The already-archived `lib-authorship-consent` and `lib-fresh-auth-settings-orcid`
+  headers carry milder overclaims about the two settings specs. Left alone.
+- Nothing mechanical catches any of this: the citation canary resolves citations
+  under `backend/tests/` only. A frontend counterpart is the standing gap.
+
+### Verification
+
+Frontend unit suite **1835 passed / 82 files**, with the same three pre-existing
+`pages-edit` unhandled rejections. The known 1 ms absolute-cap flake in the
+session-window suite showed once, then went green three consecutive runs, and
+also went green three runs on a stashed baseline of that file, so it is the
+recorded flake and not this change. Every added line was run through each arm of
+the pre-commit anchor gate individually as well as the gate itself: no slug,
+path redirect, ordinal, line-number cite, or positional anchor. Comment-only
+diff, so no mutation probes apply. No browser or Playwright run.
