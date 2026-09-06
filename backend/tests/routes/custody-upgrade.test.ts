@@ -262,6 +262,13 @@ describe.skipIf(!dbReachable)(
       const proof = buildProofBody(STATE_A_USER, wifA);
       getAccountsMock.mockResolvedValue([fakeChainAccount(proof.derived_pubkey)]);
 
+      // Captured before the upgrade so the row-shape block below can assert the
+      // handler left it alone, rather than comparing two clocks.
+      const { rows: before } = await pool.query<{ updated_at: Date }>(
+        'SELECT updated_at FROM accounts WHERE username = $1',
+        [STATE_A_USER],
+      );
+
       const res = await request(app)
         .post('/api/custody/upgrade')
         .set('Authorization', bearerForLight(STATE_A_USER))
@@ -284,12 +291,18 @@ describe.skipIf(!dbReachable)(
       // custody column is what a raw-column reader (the ORCID login mint
       // reads it through the shared claim derivation) would otherwise
       // re-mint as a stale 'light' claim.
-      const { rows } = await pool.query<{ custody: string | null; upgraded_at: Date | null; posting_key_enc: Buffer | null; iv_posting: Buffer | null; memo_key_enc: Buffer | null; iv_memo: Buffer | null }>(
-        'SELECT custody, upgraded_at, posting_key_enc, iv_posting, memo_key_enc, iv_memo FROM accounts WHERE username = $1',
+      const { rows } = await pool.query<{ custody: string | null; upgraded_at: Date | null; updated_at: Date; posting_key_enc: Buffer | null; iv_posting: Buffer | null; memo_key_enc: Buffer | null; iv_memo: Buffer | null }>(
+        'SELECT custody, upgraded_at, updated_at, posting_key_enc, iv_posting, memo_key_enc, iv_memo FROM accounts WHERE username = $1',
         [STATE_A_USER],
       );
       expect(rows[0].custody).toBe('self');
       expect(rows[0].upgraded_at).not.toBeNull();
+      // `updated_at` is the signup-finalize recency marker, and the upgrade
+      // must not touch it: the /link stuck-recovery lookup reads the ordering
+      // between it and the revocation epoch stamped here to tell an upgraded
+      // account apart from a mid-crash link. Bumping it would make the two
+      // simultaneous and collapse that distinction.
+      expect(rows[0].updated_at.getTime()).toBe(before[0].updated_at.getTime());
       expect(rows[0].posting_key_enc).toBeNull();
       expect(rows[0].iv_posting).toBeNull();
       expect(rows[0].memo_key_enc).toBeNull();

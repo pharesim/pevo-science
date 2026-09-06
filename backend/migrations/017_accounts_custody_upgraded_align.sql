@@ -14,6 +14,16 @@
 --   the rows the old route left behind and makes the shape unreachable at the
 --   schema layer.
 --
+--   What that buys is agreement about a row AS READ: two mints handed the same
+--   snapshot now produce the same claim. It does not make a minted claim
+--   authoritative afterwards. A login that reads the row and then awaits before
+--   minting (the password login awaits argon2; the recovery reissues await a
+--   factor proof and their own UPDATE) can still hand out a stale 'light' claim
+--   if an upgrade commits in between. That window predates this work and this
+--   migration does not close it; the routes that would act on a light claim
+--   re-read `upgraded_at` and refuse an upgraded row, which is where the safety
+--   comes from.
+--
 -- Two steps, in this order:
 --   1. Back-fill: every row with an upgrade epoch becomes `custody = 'self'`.
 --      The predicate is `IS DISTINCT FROM 'self'` rather than `= 'light'` so
@@ -36,7 +46,12 @@
 -- signup-finalize recency marker that bounds the `/link` stuck-recovery lookup
 -- (migration 016), and that lookup matches `custody = 'self'` rows. Bumping it
 -- here would put every repaired account inside the recovery window for an hour
--- after deploy. A plain UPDATE leaves it alone (there is no trigger).
+-- after deploy. A plain UPDATE leaves it alone (there is no trigger). Recency
+-- is not the only term that lookup applies: it also requires a row's last
+-- session revocation to predate its recency marker, which is what keeps an
+-- upgraded account out of a window measured from its own signup finalize. The
+-- back-fill writes neither column, so a repaired row keeps whichever answer it
+-- already had.
 --
 -- Idempotent: the back-fill matches no rows on re-apply, and the DO block
 -- below compares the installed constraint's deparsed definition with the one

@@ -15,15 +15,16 @@
  *     (ARCHITECTURE.md § 6.1 states A-C), `'self'` once it does not (state D),
  *     written by the same two writers alongside `upgraded_at` and back-filled
  *     to agree with it. A schema CHECK refuses an epoch on any row whose
- *     column is not `'self'`. The column is also NULL on a row that never
- *     went through light signup at all: a pure self-custody Keychain account
+ *     column is not `'self'`. The column is also NULL on a finalized row that
+ *     never went through light signup at all (§ 6.1 state G): a Keychain account
  *     that registered an email through settings gets a row with a username,
  *     no password, no keys, and no custody value. The server holds nothing
  *     for that account either.
  *
  * Every session mint that reads a row (password login, ORCID login, both
  * recovery reissues) and every reader that reports custody to the SPA derives
- * the value here, so the sites cannot disagree about what one row means. The
+ * the value here, so two sites handed the SAME row snapshot cannot disagree
+ * about what it means. That guarantee is per-read, not per-account. The
  * rule: `'light'` is minted only from a row with no epoch AND an explicit
  * `'light'` column; everything else is `'self'`. That direction is
  * deliberate. The light claim is the one with authority attached, so an
@@ -32,14 +33,37 @@
  * toward server signing. The writer sites that mint a literal claim right
  * after writing the column (`/upgrade`, `/confirm`, `/link`) do not go
  * through here; the literal IS the value they just wrote.
+ *
+ * What "per-read" excludes: a handler that reads the row and then awaits
+ * before deriving is working from a snapshot, and an upgrade can commit inside
+ * that await. The password login awaits `argon2.verify` (which queues behind
+ * the argon2 semaphore) between its SELECT and this call, and both recovery
+ * reissues await a factor proof and their own UPDATE, so each can mint
+ * `'light'` for an account that is already self-custody. The window predates
+ * this helper and the helper does not close it. It does not need to, because
+ * the claim is not the authority. Such a token carries no `reissuedAt`, so the
+ * session-invalidation epoch revokes it whenever the mint lands in the same
+ * integer second the upgrade stamped; a mint landing in a later second
+ * survives that check and is refused instead at the route it is presented to.
+ * Every route that acts on a light claim re-reads `upgraded_at` itself and
+ * refuses a row that carries one (`/api/custody/broadcast`, `/fresh-auth`,
+ * `/session-auth`, `/upgrade`), and the encrypted keys such a claim would
+ * unlock were nulled by the upgrade in the statement that set the epoch.
  */
 
 export type CustodyClaim = 'light' | 'self';
 
-/** The two `accounts` columns the derivation reads. `upgraded_at` is typed
- *  loosely because the row types across the mint sites annotate it as the
- *  pg-driver `Date` in some places and the ISO string in others; only its
- *  nullness matters here. */
+/** The two `accounts` columns the derivation reads.
+ *
+ *  `upgraded_at` is typed loosely because its declared shape and its runtime
+ *  shape differ. Every row type at the calling sites annotates the column
+ *  `string | null`. The column is `TIMESTAMPTZ`, and this backend registers no
+ *  `setTypeParser`, so node-postgres decodes it with the default timestamptz
+ *  parser and hands back a `Date` on every read at every one of those sites.
+ *  The union spans both spellings so each caller can pass its row in as it is
+ *  typed, rather than through a cast asserting something the value does not
+ *  satisfy. Only nullness is read here, so the difference cannot change the
+ *  claim. */
 export interface CustodyRow {
   custody: string | null;
   upgraded_at: string | Date | null;

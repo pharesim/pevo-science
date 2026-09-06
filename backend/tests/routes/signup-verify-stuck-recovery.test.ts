@@ -15,6 +15,18 @@
  *       long-since-completed account (400, no JWT). Inverse of the
  *       fresh-row (a)/(b) cases, which seed updated_at = now() and so
  *       fall inside the window.
+ *   (e) An account upgraded to self-custody inside its own /confirm recovery
+ *       window → /link recovery NOT admitted. Recency alone cannot tell that
+ *       row from a stuck link; the ordering between its recency marker and its
+ *       last session revocation can.
+ *   (f) A genuinely-stuck /link row → recovery admitted (200 + self-custody
+ *       JWT). The admitted side of (e), so a predicate that refused every row
+ *       cannot pass for a fix.
+ *   (g) A stuck /link row carrying a session revocation from BEFORE its
+ *       finalize (a password reset earlier in the row's life) → still
+ *       admitted. The reset handlers gate on nothing about account state, so
+ *       refusing on the mere presence of a revocation would strand a real
+ *       user with a finalized, permanently unaccredited account.
  *
  * **Carve-out clause-(a)/(c) justification.** Mocks
  * `broadcastJsonWithTimeout`, `seedAccreditationBonus`, `getAccreditedSet`, and
@@ -234,24 +246,45 @@ async function seedStaleFinalizedAccount(opts: {
  * must reject it, so a real-signed /link retry against such a row cannot mint a
  * fresh session (the steady-state recovery bypass the recency guard closes).
  */
+/**
+ * A finalized self-custody row, as the /link finalize UPDATE leaves it:
+ * username set, custody 'self', verify_token cleared, and the upgrade epoch and
+ * `updated_at` both stamped by that one statement.
+ *
+ * `staleInterval` ages both timestamps together, which is how the recency guard
+ * is exercised; `'0 seconds'` gives the just-finalized shape.
+ *
+ * `sessionsInvalidatedAt` is a raw SQL expression for the session-revocation
+ * epoch, so a caller can seed the three orderings the /link stuck lookup
+ * distinguishes: never revoked (the default), revoked before the finalize (a
+ * password reset earlier in the row's life, still recoverable), and revoked
+ * after it. `upgradedAt` is likewise an override, because the one shape that
+ * must NOT recover — a light account upgraded inside its own /confirm recovery
+ * window — is exactly the row whose upgrade epoch is newer than its
+ * `updated_at` rather than written beside it.
+ */
 async function seedStaleSelfCustodyAccount(opts: {
   username: string;
   email: string;
   staleInterval?: string;
+  sessionsInvalidatedAt?: string;
+  upgradedAt?: string;
 }) {
   if (!dbReachable) return;
   const pool = getAppPool()!;
   await cleanupByUsername(opts.username);
   await pool.query('DELETE FROM accounts WHERE email = $1', [opts.email]).catch(() => {});
 
+  const stale = opts.staleInterval ?? '2 hours';
   await pool.query(
     `INSERT INTO accounts (
        email, password_hash, full_name, institution, field,
-       username, custody, verify_token, upgraded_at, signup_binding_hash,
-       expires_at, updated_at
+       username, custody, verify_token, upgraded_at, sessions_invalidated_at,
+       signup_binding_hash, expires_at, updated_at
      ) VALUES ($1, NULL, 'Link Stale Self Test', 'MIT', 'physics',
-               $2, 'self', NULL, NOW() - INTERVAL '${opts.staleInterval ?? '2 hours'}', NULL,
-               NOW() + INTERVAL '24 hours', NOW() - INTERVAL '${opts.staleInterval ?? '2 hours'}')`,
+               $2, 'self', NULL, ${opts.upgradedAt ?? `NOW() - INTERVAL '${stale}'`},
+               ${opts.sessionsInvalidatedAt ?? 'NULL'},
+               NULL, NOW() + INTERVAL '24 hours', NOW() - INTERVAL '${stale}')`,
     [opts.email, opts.username],
   );
 }
@@ -621,5 +654,117 @@ describe.skipIf(!dbReachable)('signup-verify /link stale-finalized self-custody 
     expect(rows.length).toBe(1);
     expect(rows[0].verify_token).toBeNull();
     expect(rows[0].custody).toBe('self');
+  });
+});
+
+// The /link stuck lookup admits a row on three properties, not two: the
+// recency marker, and the ordering between that marker and the row's last
+// session revocation. The three specs below cover the row shapes that ordering
+// separates. The signature is real in each (carve-out clause (b) — only the
+// chain `getAccounts` posting-key lookup is stubbed, supplying the public key
+// the real recovery is checked against), so a 400 is the lookup refusing and
+// never an auth failure.
+describe.skipIf(!dbReachable)('signup-verify /link recovery and the session-revocation ordering', () => {
+  const upgraded = `lnkupg${SUFFIX}`;
+  const stuck = `lnkstk${SUFFIX}`;
+  const reset = `lnkrst${SUFFIX}`;
+
+  const keyFor = (username: string) => {
+    const postingPrivate = PrivateKey.fromSeed(`${username}-p`);
+    return { postingPrivate, postingPublic: postingPrivate.createPublic().toString() };
+  };
+
+  async function attemptLink(username: string, postingPrivate: PrivateKey, postingPublic: string) {
+    getAccountsMock.mockImplementation(async (names: string[]) => {
+      if (names.includes(username)) {
+        return [{ name: username, posting: { key_auths: [[postingPublic, 1]] } }];
+      }
+      return [];
+    });
+    // No row carries this verify_token, so the primary lookup misses and the
+    // signature-gated stuck branch is the only way to reach a session.
+    const body = { auth_token: `linkprobe:${'5e'.repeat(32)}` };
+    const timestamp = new Date().toISOString();
+    const signature = signRequestBound(postingPrivate, 'POST', '/api/auth/link', body, timestamp);
+    return request(app)
+      .post('/api/auth/link')
+      .set('X-Hive-Username', username)
+      .set('X-Hive-Signature', signature)
+      .set('X-Hive-Timestamp', timestamp)
+      .send(body);
+  }
+
+  afterAll(async () => {
+    await cleanupByUsername(upgraded);
+    await cleanupByUsername(stuck);
+    await cleanupByUsername(reset);
+  });
+
+  it('(e) an account upgraded inside its own recovery window is refused (400, no JWT, no broadcast)', async (ctx) => {
+    if (!dbReachable) return ctx.skip(true, 'pg unreachable');
+    // The row POST /api/custody/upgrade leaves behind on a light account whose
+    // /confirm finalize landed 10 minutes ago: the upgrade stamps its epoch and
+    // revokes sessions now, and leaves `updated_at` at the finalize. Every other
+    // term of the lookup is satisfied, so the revocation-ordering term is the
+    // only thing refusing. Drop it and this flips to a recovered 200 + JWT.
+    await seedStaleSelfCustodyAccount({
+      username: upgraded,
+      email: `lnkupg_${RUN_ID}@example.com`,
+      staleInterval: '10 minutes',
+      upgradedAt: 'NOW()',
+      sessionsInvalidatedAt: 'NOW()',
+    });
+    const { postingPrivate, postingPublic } = keyFor(upgraded);
+
+    const res = await attemptLink(upgraded, postingPrivate, postingPublic);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error?.code).toBe('BAD_REQUEST');
+    expect(res.body.data?.token).toBeFalsy();
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+  });
+
+  it('(f) a genuinely-stuck /link row still resumes (200 + self-custody JWT)', async (ctx) => {
+    if (!dbReachable) return ctx.skip(true, 'pg unreachable');
+    // The admitted side. Without it the exclusion above is satisfied by a
+    // predicate that refuses every row, and the /link stuck path had only
+    // rejection coverage.
+    await seedStaleSelfCustodyAccount({
+      username: stuck,
+      email: `lnkstk_${RUN_ID}@example.com`,
+      staleInterval: '0 seconds',
+    });
+    const { postingPrivate, postingPublic } = keyFor(stuck);
+
+    const res = await attemptLink(stuck, postingPrivate, postingPublic);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data?.custody).toBe('self');
+    expect(res.body.data?.token).toBeTruthy();
+    expect(broadcastJsonMock).toHaveBeenCalled();
+  });
+
+  it('(g) a stuck /link row whose password was reset before the finalize still resumes', async (ctx) => {
+    if (!dbReachable) return ctx.skip(true, 'pg unreachable');
+    // The reset handlers gate on nothing about account state, so a row can
+    // carry a session-revocation epoch from any point in its life, including
+    // an abandoned signup resumed weeks later. Refusing every row that ever
+    // carried one would strand this user with a finalized, permanently
+    // unaccredited account: /resume-signup needs a `confirmed:` verify_token,
+    // which a finalized row does not have. The ordering is what separates it
+    // from the upgraded row above.
+    await seedStaleSelfCustodyAccount({
+      username: reset,
+      email: `lnkrst_${RUN_ID}@example.com`,
+      staleInterval: '0 seconds',
+      sessionsInvalidatedAt: "NOW() - INTERVAL '30 days'",
+    });
+    const { postingPrivate, postingPublic } = keyFor(reset);
+
+    const res = await attemptLink(reset, postingPrivate, postingPublic);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data?.custody).toBe('self');
+    expect(res.body.data?.token).toBeTruthy();
   });
 });

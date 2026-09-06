@@ -692,15 +692,24 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
     return;
   }
 
-  // `accounts.custody` is `TEXT` (nullable) in the schema. The
-  // `WHERE username IS NOT NULL` filter excludes states E/F, so this
-  // query only matches finalized rows (A/B/C/D) where `custody` is
-  // set. Annotate the column as `string | null` per the wrapping-
-  // primitive convention; this honest-types the column's nullability
-  // as belt-and-suspenders if the filter ever drops, not a defense
-  // against a currently-reachable null row. `upgraded_at` rides along
-  // because the claim derivation below reads the epoch, not just the
-  // column.
+  // `accounts.custody` is `TEXT` (nullable) in the schema, and the NULL is
+  // reachable through this query. The `WHERE username IS NOT NULL` filter
+  // excludes the transient signup-pending states (E and F both carry a NULL
+  // username), but a finalized row can still have no custody value:
+  // ARCHITECTURE.md § 6.1 state G is a self-custody Keychain account that
+  // acquired a row only by registering an email through
+  // `POST /api/settings/email`, and it reaches this query as soon as it links
+  // an ORCID. So `string | null` is the custody column's real shape at this
+  // call site per the wrapping-primitive convention, not a hypothetical the
+  // filter already excludes. The filter also reads neither `verify_token` nor
+  // `expires_at`, so a state-G row matches whether or not its
+  // settings-registered email is verified; nothing here depends on that,
+  // because the ORCID round-trip is the authentication and the binding it
+  // presents was proven by OAuth when the link was written.
+  // `custodyClaimFor` below is what resolves the column: anything that is not
+  // an explicit `'light'` with no epoch becomes `'self'`, the right answer for
+  // a row the server holds no keys for. `upgraded_at` rides along because that
+  // derivation reads the epoch, not just the column.
   const result = await pool.query<{ username: string; custody: string | null; upgraded_at: string | null }>(
     `SELECT username, custody, upgraded_at FROM accounts WHERE orcid = $1 AND username IS NOT NULL LIMIT 1`,
     [orcidId],
@@ -721,11 +730,17 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
 
   const account = result.rows[0];
   // The custody claim is derived by the shared `custodyClaimFor`, the same
-  // derivation the password login and the recovery reissues use, so an
-  // ORCID login and a password login cannot mint different claims for one
-  // row. The row matched by this query is finalized (states A/B/C/D per
-  // ARCHITECTURE.md § 6.1); the state-C passwordless shape (password_hash
-  // NULL) is defended at /upgrade per the § 6.4 re-auth contract, not here.
+  // derivation the password login and the recovery reissues use, so this mint
+  // and the password login cannot disagree about a row they both read in the
+  // same state. This handler derives in the same tick as its SELECT; the
+  // password login awaits `argon2.verify` in between and can therefore mint
+  // from a pre-upgrade snapshot. Neither claim is re-checked after minting,
+  // and neither needs to be: every route that acts on a light claim re-reads
+  // `upgraded_at` and refuses a row that carries one. The row matched here is
+  // finalized, which includes the state-G row whose `custody` column is NULL
+  // because it never went through light signup; the helper resolves that one
+  // to `'self'`. The state-C passwordless shape (password_hash NULL) is
+  // defended at /upgrade per the § 6.4 re-auth contract, not here.
   const custody = custodyClaimFor(account);
   const token = jwt.sign(
     { sub: account.username, custody },
@@ -954,7 +969,9 @@ async function handleAccredit(
       await cacheOrcidBinding(orcidId, username);
       currentStep = 'account_update';
 
-      // Update orcid column in accounts (if light account row exists)
+      // Update the orcid column on the account row, if the user has one. A
+      // pure Keychain user has no row at all; one that registered an email
+      // through settings does (§ 6.1 state G), and it is not a light account.
       // Routed through __test_seams so a unit spec can spy on this call
       // (replaces the fragile getAppPool() Once-stack).
       await __test_seams.updateAccountOrcid(username, orcidId);
@@ -1121,7 +1138,9 @@ async function handleLink(
       await cacheOrcidBinding(orcidId, username);
       currentStep = 'account_update';
 
-      // Update orcid column in accounts (if light account row exists)
+      // Update the orcid column on the account row, if the user has one. A
+      // pure Keychain user has no row at all; one that registered an email
+      // through settings does (§ 6.1 state G), and it is not a light account.
       // Routed through __test_seams so a unit spec can spy on this call
       // (replaces the fragile getAppPool() Once-stack).
       await __test_seams.updateAccountOrcid(username, orcidId);
@@ -1460,7 +1479,7 @@ async function updateAccountOrcid(username: string, orcidId: string): Promise<vo
         username,
         err,
       },
-      'Failed to update accounts.orcid (row may not exist for self-custody user)',
+      'Failed to update accounts.orcid (a self-custody user may have no row at all)',
     );
   }
 }

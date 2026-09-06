@@ -1518,8 +1518,15 @@ router.post('/upgrade', verifyHiveSignature, validateUpgradeBodyShape, upgradeLi
     //
     // `updated_at` is deliberately NOT bumped: it is the signup-finalize
     // recency marker that bounds the `/link` stuck-recovery lookup, and that
-    // lookup matches `custody = 'self'` rows. Bumping it here would re-open
-    // the recovery window for every freshly upgraded account.
+    // lookup matches `custody = 'self'` rows. Bumping it here would put every
+    // freshly upgraded account inside that window for an hour. Leaving it
+    // alone is necessary but not sufficient, because the window is measured
+    // from the `/confirm` finalize and an upgrade landing inside it inherits
+    // the remainder. What excludes the row there is the ordering between the
+    // two timestamps this statement writes and does not write: the revocation
+    // epoch below is stamped after the finalize that set `updated_at`, and the
+    // `/link` lookup admits only rows whose last revocation predates their
+    // recency marker.
     const invalidatedAt = new Date();
     await pool.query(
       `UPDATE accounts

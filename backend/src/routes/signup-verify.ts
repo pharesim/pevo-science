@@ -410,6 +410,11 @@ const SIGNUP_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000;
 // recoverable for this long; after it, the user re-enters via the password-gated
 // login flow. The finalize UPDATE bumps `accounts.updated_at = NOW()`, so the
 // window measures time since the last activation, not since signup.
+//
+// Recency alone does not identify a mid-crash row on the /link side, because
+// the custody upgrade leaves `updated_at` alone and so inherits whatever is
+// left of the recovery window its own /confirm finalize opened. That lookup
+// conjoins a second row property; see the comment at its query.
 const STUCK_RECOVERY_WINDOW = '1 hour';
 
 // Username format: 3-16 chars, lowercase a-z, 0-9, dots/hyphens not at start/end
@@ -1108,12 +1113,32 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
       // bypass. A fresh signature is the per-request ownership proof that
       // justifies skipping the binding; JWT callers fall through to the no-row
       // 400 reject.
+      //
+      // The session-revocation term is what keeps an UPGRADED account out of
+      // this lookup. `POST /api/custody/upgrade` writes `custody = 'self'` and
+      // deliberately leaves `updated_at` alone, so for the rest of that
+      // account's own `/confirm` recovery window its row satisfies every other
+      // term here while being nothing like a stuck link: its finalize landed
+      // and its accreditation is done. The discriminator is ORDER. The
+      // finalize below stamps `updated_at` and the upgrade epoch in one
+      // statement and revokes nothing, while an upgrade necessarily runs after
+      // the `/confirm` finalize that set `updated_at` and stamps
+      // `sessions_invalidated_at` as it goes — so an upgraded row always
+      // carries a revocation NEWER than its recency marker, and a
+      // finalize-then-stuck row carries none at all. A password reset taken
+      // before the finalize leaves an OLDER one and still recovers, which
+      // matters because the reset handlers gate on nothing about account state
+      // and can run at any point in a row's life. What refuses is a revocation
+      // stamped AFTER the finalize: the one case where minting a session
+      // through the binding bypass would contradict a revocation the account
+      // has already asked for.
       const stuckLookup = await pool.query<LinkRow>(
         `SELECT id, email, password_hash, full_name, institution, field, orcid, signup_binding_hash
          FROM accounts
          WHERE username = $1
            AND verify_token IS NULL
            AND custody = 'self'
+           AND (sessions_invalidated_at IS NULL OR sessions_invalidated_at < updated_at)
            AND updated_at > NOW() - INTERVAL '${STUCK_RECOVERY_WINDOW}'`,
         [hiveUsername],
       );
