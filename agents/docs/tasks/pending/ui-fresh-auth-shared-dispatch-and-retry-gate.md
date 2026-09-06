@@ -250,3 +250,104 @@ fa436034's message, which stands as written — siblings have committed on top.
 three `pages-edit` unhandled errors are the documented pre-existing ones);
 `npm run build` clean. No behavioral test was rewritten; the only edit to an
 existing spec file outside the new cases is the mock-factory line above.
+
+---
+
+## Architect re-review (2026-09-06) — HELD PENDING FIXES:
+
+Full /ce-code-review fan-out on `fa436034` + `806bfcdb` (correctness, security,
+adversarial, reliability, testing, julik-frontend-races, project-standards, learnings),
+plus an independent validation gate on the merged set. No cross-model peer was available
+on this host, so the adversarial lens ran in-process and did its own mutation probes in a
+private scratch tree at the reviewed head.
+
+**All three round-1 hold items are FIXED, each verified independently rather than from
+the signal block's prose.** Item 1: the learnings pass grepped the reviewed head and
+confirmed `windowOutcomeKey` has exactly one definition and two consumers with no
+surviving local copy; correctness proved the delegation equivalent on all four axes (key
+set, key order, the dropped optional chain, and the `??` fall-through versus the old
+ternary). Item 2: testing and correctness each confirmed the three arms were previously
+uncovered on BOTH orchestrator suites, and adversarial's per-arm mutations each killed
+exactly the claimed new spec and nothing else; adversarial also checked the two
+`consentOpFreshAuthRetryGate` call sites argument-for-argument and confirmed "one pair
+covers both" is sound. Item 3: correctness re-enumerated every value
+`acquireSessionProof` can resolve, independently of the signal block's enumeration, and
+found the guard behavior-preserving on every live path. `806bfcdb` verified literally
+comments-only. project-standards (comment anchors audited line by line, including the
+durable "Cases above already reach two of them" form) and julik-frontend-races returned
+zero findings.
+
+Three findings survived synthesis and validation. The user triaged all three onto this
+hold. They are one round of work on the same short span of `ensureSessionWindow` and its
+docblock, so treat them as a batch.
+
+1. **(P2, validated, found independently by reliability and security) The fail-closed
+   guard refuses without evicting the cache entry that caused the refusal.** The new
+   `typeof proof !== 'string'` branch in `ensureSessionWindow` returns
+   `{ ready: false, failed: true }` and clears nothing. `acquireSessionProof` returns a
+   cache hit before it ever reaches the mint, and `readSessionWindow` rejects only a
+   FALSY token, never a non-string one. So a truthy non-string that reaches the window
+   slot is re-read and re-refused on every later attempt, with no user action able to
+   clear it until the absolute cap elapses. This is a regression in the failure mode, not
+   a pre-existing gap: before the guard, that same value went to the network, drew
+   `FRESH_AUTH_REQUIRED` reason `missing` (the backend applies its own string test), and
+   `uploadFile`'s remintable branch answered with `clearCachedSessionProof()` and a
+   retry. The guard removed that round-trip without replacing the clear it relied on. The
+   validator confirmed both halves, including that the pre-change self-heal was real.
+   Reachability is narrow and was weighed: it needs a JSON-survivable truthy non-string,
+   so a backend contract violation or a tampered storage entry. A Symbol self-clears
+   because `JSON.stringify` drops a Symbol-valued key, which is exactly why the new spec
+   does not catch this. Suggested shape:
+   `if (typeof proof !== 'string') { clearCachedSessionProof(); return { ready: false, failed: true }; }`
+   The exported clear already lives in this module and is what the sibling 401 paths call.
+
+2. **(P2, validated, adversarial, measured not inferred) The guard's pin covers only
+   `symbol`, and the suite stays green when the guard is narrowed to match.** Adversarial
+   ran the probes for real against the reviewed head: deleting the guard kills the new
+   spec, weakening it to an `undefined` check kills the new spec, but narrowing it to
+   `typeof proof === 'symbol'` leaves all 1835 tests passing. Under that surviving
+   mutation a mint response missing `fresh_auth_proof` makes `freshAuthWindowReady()`
+   return TRUE with no window, sending a light account down `uploadFile`'s self-custody
+   branch. The validator independently confirmed the staged Symbol is the only non-string
+   acquisition result anywhere in the frontend unit tests. So the pinned slice is the
+   unreachable one and the reachable slice is unpinned. This is NOT the preemptive
+   hardening this project dismisses: the mutation was executed and survived, and the
+   green-while-red was measured. Drive the existing spec from a table of unregistered
+   results rather than one Symbol, so the assertion covers the class the guard names.
+   `undefined` alone closes the surviving mutation; adding a number makes the class
+   explicit. Re-stub the mint and clear the toast spy per iteration if you loop inside the
+   existing `it`.
+
+3. **(P3, validated, found independently by adversarial and security) The guard's
+   docblock names a wire mechanism a sentinel proof never takes.** The block claims an
+   unregistered result read as ready "attaches a sentinel to the pre-flight request".
+   Nothing attaches: every sentinel here except the registered `null` is a Symbol,
+   `uploadFileToIpfs` serializes its body with `JSON.stringify`, and a Symbol-valued key
+   is omitted entirely; the truthiness guard at that call site does not catch a Symbol
+   either. The request would go out with the field ABSENT. The outcome half of the
+   sentence survives (the user still gets a rejection they cannot act on); only the
+   mechanism is wrong. Say what actually happens instead. While in that block, also fix
+   the adjacent overstatement correctness raised: "acquisition resolves a proof string or
+   a registered sentinel today" is not true unconditionally, because the cached-token read
+   is never type-checked, which is the same hole item 1 above closes. Keep the replacement
+   text free of line numbers, SHAs, task slugs and bare positional anchors.
+
+Triage dispositions the implementer does not need to act on. One finding was DROPPED at
+validation: reliability and adversarial both reported that an unregistered result refuses
+loudly through `ensureSessionWindow` but silently through `acquisitionAborted` on the
+broadcast path. The mechanics are real, but the validator ruled the silence pre-existing,
+untouched by this diff, and documented as intended at the toast dispatch; the guard's
+comment claims parity of refusal, not of messaging. Do not "fix" it as part of this hold.
+The testing lens also proposed a structural pin so that reverting item 1's delegation
+turns something red; adversarial refuted it (a behavior-preserving refactor cannot be
+distinguished behaviorally, and key-set equality is already pinned by the exhaustiveness
+suite), and the architect accepted the refutation. No action.
+
+Soft-bucket observations recorded in the review artifacts, no action required this round:
+the real `alpinejs` now loads transitively in the upload suite through the new
+`importOriginal` factory and is inert only because vitest keeps the default per-file
+isolation; the guard is a type test rather than a validity test, so an empty-string proof
+still classifies ready; `windowProof`'s unknown-outcome fall-through is now dead code
+since every non-ready outcome carries a registered key; and the vocabulary key list and
+the upload code table are pinned as sets rather than ordered lists, which is unobservable
+while no outcome carries two members.
