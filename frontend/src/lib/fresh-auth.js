@@ -1105,21 +1105,33 @@ export async function ensureSessionWindow({
   const outcomeKey = acquisitionOutcomeKey(proof);
   if (outcomeKey) return { ready: false, [outcomeKey]: true };
   // Fail closed on anything outside the vocabulary, and evict whatever
-  // produced it. The mint and the sentinel legs resolve a proof string or a
-  // registered sentinel, but the cache read that runs ahead of both is not
-  // type-checked: `readSessionWindow` drops an entry whose token is FALSY and
-  // passes anything else through. So a truthy non-string sitting in the window
-  // slot arrives here as a proof, and refusing it without clearing the slot
-  // would re-read and re-refuse that same entry on every later attempt, with
-  // no user action able to break out until the absolute cap elapsed. The clear
-  // is what keeps a refusal the cost of one re-auth act.
+  // produced it. Only the sentinel legs are closed by construction; the other
+  // two run through the window slot and neither type-checks what passes.
+  // `readSessionWindow` hands back any token that is not FALSY (it checks the
+  // deadlines, never the token), and the mint callback returns the response's
+  // `fresh_auth_proof` verbatim after writing it into the slot one statement
+  // earlier. So a non-string here either came out of that slot or has just
+  // gone into it, and refusing without clearing leaves whatever the slot kept
+  // to be re-read and re-refused for the rest of that entry's life. Retrying
+  // does not clear it; only signing out, which scrubs the slot with the rest
+  // of the subject-bound keys, or a fresh tab. A value `JSON` cannot carry
+  // dropped itself on the write and makes the clear a no-op; a number or an
+  // object is the case the clear is here for, and for one this module wrote
+  // the bound is the IDLE deadline (`cacheSessionProof` always anchors idle
+  // nearer than the cap, and every consume site refuses before it reaches
+  // `slideSessionWindow`), while an entry written by anything else can outlast
+  // both deadlines.
   //
   // The direction this guard exists to close is the quiet one. Read as a ready
-  // window instead, an unregistered result travels on AS the proof: it is
-  // truthy, so the upload pre-flight's own missing-proof check waves it
-  // through, and `JSON.stringify` then omits a Symbol-valued field entirely,
-  // so the request leaves carrying no proof at all and comes back rejected for
-  // a reason the user cannot act on. This is also the string test
+  // window, an unregistered result travels on AS the proof, and how it fails
+  // then turns on its own shape rather than on anything the user can answer. A
+  // truthy one clears the upload path's missing-proof checks and reaches the
+  // pre-flight request: `JSON.stringify` omits a Symbol-valued field, so that
+  // request leaves carrying no proof at all, while a number or an object goes
+  // out as it stands for the backend's own string test to reject. A falsy one
+  // takes the unproofed branch instead, the one self-custody uses, where a
+  // light account is refused before a request is built. Every route ends in a
+  // rejection with nothing to act on. This is also the string test
   // `acquisitionAborted` applies to the raw acquisition result, so both
   // readings of an outcome refuse an unnamed one alike. They still differ on
   // whether the refusal speaks, which the toast dispatch decides and this

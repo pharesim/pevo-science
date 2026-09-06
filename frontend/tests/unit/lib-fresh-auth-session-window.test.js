@@ -741,11 +741,11 @@ describe('the gate never fails open into silence', () => {
   });
 
   // The guard names the whole non-string class, so the pin drives the class
-  // rather than one member of it. A Symbol is the LEAST reachable member: a
-  // Symbol-valued field does not survive `JSON.stringify`, so it never reaches
-  // the window slot and never reaches the wire either. A mint response simply
-  // missing `fresh_auth_proof` is what a backend contract slip actually
-  // produces, and a guard narrowed to symbols would read exactly that as a
+  // rather than one member of it. A Symbol is the least consequential member:
+  // a Symbol-valued field does not survive `JSON.stringify`, so it is dropped
+  // on the way into storage and dropped again on the way to the wire. A mint
+  // response simply missing `fresh_auth_proof` is what a backend contract slip
+  // actually produces, and a guard narrowed to symbols reads exactly that as a
   // ready window with no proof behind it.
   it.each([
     { label: 'a mint response with no proof field', value: undefined },
@@ -753,10 +753,12 @@ describe('the gate never fails open into silence', () => {
     { label: 'a sentinel nobody registered', value: Symbol('an outcome nobody registered') },
   ])('an acquisition result the vocabulary does not name refuses the work: $label', async ({ value }) => {
     // Classification is a lookup, so a result nobody registered classifies to
-    // nothing — and the quiet direction is the dangerous one: an unclassified
-    // result read as a ready window travels on AS the proof, and the upload
-    // pre-flight sends a request the backend rejects for a reason the user
-    // cannot act on. Refusing costs one re-auth act and says so.
+    // nothing — and the quiet direction is the dangerous one: read as a ready
+    // window, an unclassified result travels on AS the proof and dead-ends
+    // downstream with nothing the user can answer. Which way it dead-ends
+    // depends on its truthiness, so the rows below differ there; the split is
+    // spelled out at `ensureSessionWindow`'s fail-closed guard. Refusing costs
+    // one re-auth act and says so.
     mockMintSessionAuthProof.mockImplementation(async () => ({
       ...issuance('window-proof'),
       fresh_auth_proof: value,
@@ -772,14 +774,16 @@ describe('the gate never fails open into silence', () => {
   });
 
   it('the refusal evicts the entry that caused it', async () => {
-    // The cached-token read is the one leg into the guard that is not
-    // type-checked (`readSessionWindow` drops a FALSY token and passes
-    // anything else), so a truthy non-string in the window slot is what
-    // actually reaches it. Refusing without clearing that slot re-reads and
-    // re-refuses the same entry on every later attempt: every windowed action
-    // is dead until the absolute cap elapses, with nothing the user can do to
-    // break out. Before the guard existed the value went to the network, drew
-    // a remintable rejection, and the upload retry's clear healed it.
+    // Both legs that can produce a non-string run through the window slot, and
+    // neither type-checks what goes through it: the cache read passes back any
+    // token that is not FALSY, and the mint writes its response value in
+    // before handing it back. So refusing without clearing leaves the entry to
+    // be re-read and re-refused for the rest of its idle life, with retrying
+    // no way out. This case seeds the cache leg, where the entry outlives the
+    // acquisition that produced it and a number survives the round-trip
+    // through storage. Before the guard existed that value went to the
+    // network, drew a remintable rejection, and the upload retry's own clear
+    // healed it.
     seedWindow(4242, { idleInMs: IDLE_MS });
 
     expect(await ensureSessionWindow()).toEqual({ ready: false, failed: true });
