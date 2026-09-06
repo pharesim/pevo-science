@@ -176,3 +176,77 @@ the table pattern was judged not a net win; no follow-up filed. Soft-bucket
 observations (fresh-auth.js size growth, UPLOAD_ERROR_TEXT completeness,
 empty-catalog toast testing, mid-ladder teardown coverage) recorded in the
 review artifacts, no action required this round.
+
+---
+
+## UI re-review signal (2026-09-06, commits fa436034 + 806bfcdb)
+
+All three hold items landed. Verified by a five-lens adversarial fan-out
+(behavior-preservation, hold-compliance, conventions, mutation-probing,
+adversarial) with three independent skeptics per finding; every finding was
+refuted except two false statements in my own comments, corrected in 806bfcdb.
+Both probing lenses worked in private worktrees, never this checkout.
+
+**Item 1 (P1, upload pre-flight delegates the scan).** `windowProof()` in
+`lib/ipfs-upload.js` now calls `windowOutcomeKey(outcome)` and indexes
+`UPLOAD_CODE_BY_WINDOW_OUTCOME[outcomeKey] ?? UPLOAD_CANCELLED` — the shape the
+hold suggested. Behavior-identical, verified two ways: the vocabulary and the
+upload table hold the same five members in the same order (already pinned
+both-ways by the exhaustiveness suite), exactly one member is truthy per
+outcome by construction, and a null key indexes to undefined so the
+unknown-outcome fall-through stays the cancel it was. The dropped optional
+chain is unreachable, since `outcome.ready` is dereferenced a line earlier.
+
+Honest note the probe surfaced: reverting item 1 turns NOTHING red. The two
+implementations are behaviorally identical by construction, so the only guard
+would be a structural assertion, which is the preemptive hardening this project
+dismisses. What IS pinned is that the delegation is live: stubbing
+`windowOutcomeKey` to return null in the upload suite's mock reddens four
+pre-existing specs.
+
+**Item 2 (P2, retry-path consumption specs).** Three specs added to
+`lib-settings-fresh-auth.test.js`, driving the shared gate through the public
+orchestrator: a dismissed second prompt unwinds `{ cancelled: true }`, an
+exhausted second prompt `{ freshAuthFailed: true }`, and a non-fresh-auth error
+from the RETRY's `run()` propagates to the caller rather than mapping to
+`freshAuthFailed`. Each of the three matching gate arms was mutated
+individually against the full suite: every mutation kills exactly one spec, and
+in each case it is the new one, so no pre-existing spec covered any of the
+three. One surface per the hold's "one pair covers both"; both orchestrators
+verifiably delegate to the same gate.
+
+**Item 3 (P2, fail closed).** `ensureSessionWindow` now refuses an acquisition
+result that is neither a registered sentinel nor a string. Behavior-preserving:
+every value `acquireSessionProof` can resolve was enumerated (cache read,
+`guard.cancel()`, the ORCID-or-refuse leg, the mint) and each is a string or a
+registered sentinel; the self-custody `{ ready: true, proof: null }` return
+precedes the check. It also brings the window reading into line with
+`acquisitionAborted`, which already applied the same string test to the raw
+acquisition result. Pinned by a new spec in
+`lib-fresh-auth-session-window.test.js` that drives the real acquisition to an
+unregistered Symbol; deleting the guard, or weakening it to an undefined check,
+kills that spec and nothing else. No module-state leakage: the suite is green
+across three sequential and three shuffled runs.
+
+**One harness change beyond the three items.** `lib-ipfs-upload.test.js`
+wholesale-mocks `fresh-auth.js`, so it had to supply the newly imported
+`windowOutcomeKey`. Hand-mirroring the scan in the mock factory would recreate
+exactly the divergence item 1 removes, so the factory now pulls the real
+function through `importOriginal`. Checked for the hazards that invites: no
+import cycle, no module-scope side effects in `fresh-auth.js` or its transitive
+imports, `ensureSessionWindow` still stubbed at the boundary, collection time
+unchanged.
+
+**Corrections in 806bfcdb (comments only).** The fail-closed guard's rationale
+named the broadcast surface, which never consumes `ensureSessionWindow`; it now
+names the upload pre-flight and the parity with `acquisitionAborted`. The
+retry-gate section header claimed every case above it stops at the gate's entry
+check, when two of them drive the retry's successful `run()` and a second
+FRESH_AUTH_REQUIRED out of it and are the sole cover for those arms; it now
+says which three arms were actually unpinned. The same over-broad claim is in
+fa436034's message, which stands as written — siblings have committed on top.
+
+**Verification.** Full frontend unit suite 82 files / 1835 tests green (the
+three `pages-edit` unhandled errors are the documented pre-existing ones);
+`npm run build` clean. No behavioral test was rewritten; the only edit to an
+existing spec file outside the new cases is the mock-factory line above.
