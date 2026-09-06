@@ -76,6 +76,12 @@ run_case "R11 lines NNN-NNN reference" 1 "" \
   'mkdir -p backend/src; printf "// see lines 555-560 of the handler\n" > backend/src/a.ts; git add backend/src/a.ts'
 run_case "R12 see task ITEM N redirect" 1 "" \
   'mkdir -p frontend/src; printf "// See task ITEM 3 for the contract\n" > frontend/src/a.js; git add frontend/src/a.js'
+run_case "R13 bare positional anchor (the rule below)" 1 "" \
+  'mkdir -p frontend/src; printf "// with the keys left alone under the rule below\n" > frontend/src/a.js; git add frontend/src/a.js'
+run_case "R14 bare positional anchor (the helper above)" 1 "" \
+  'mkdir -p backend/src; printf "// mirrors the helper above\n" > backend/src/a.ts; git add backend/src/a.ts'
+run_case "R15 bare positional anchor (the spec just above)" 1 "" \
+  'mkdir -p frontend/tests; printf "// same fixture as the spec just above\n" > frontend/tests/a.test.js; git add frontend/tests/a.test.js'
 
 echo
 echo "=== Legitimate / out-of-scope → accept (exit 0) ==="
@@ -101,6 +107,14 @@ run_case "A10 in-scope dir but non-source ext (.md)" 0 "" \
   'mkdir -p backend/src; printf "fixed per backend-foo-bar archived\n" > backend/src/a.md; git add backend/src/a.md'
 run_case "A11 empty staged set" 0 "" \
   'true'
+# The carve-out's DURABLE form: a stable behavioral name rides along inside the
+# container, so the article does not sit against the structural noun.
+run_case "A12 positional anchor with SQLSTATE name companion" 0 "" \
+  'mkdir -p backend/tests; printf "// same shape as the 42601 canary above\n" > backend/tests/a.test.ts; git add backend/tests/a.test.ts'
+run_case "A13 positional anchor with CONSTANT name companion" 0 "" \
+  'mkdir -p frontend/src; printf "// removed by the SUBJECT_BOUND_STORAGE_KEYS loop below\n" > frontend/src/a.js; git add frontend/src/a.js'
+run_case "A14 ordinary prose using above/below" 0 "" \
+  'mkdir -p backend/src; printf "// clamp values above the cap and below the floor\n" > backend/src/a.ts; git add backend/src/a.ts'
 
 echo
 echo "=== Diff-gate semantics ==="

@@ -4,9 +4,10 @@
 # Fails the commit when a STAGED, NEWLY-ADDED line under frontend/{src,tests} or
 # backend/{src,tests} introduces a comment-anchor-rot token forbidden by root
 # CLAUDE.md "Comment anchors": task-slug citations, round-N / hold-item ordinals,
-# Option X.N labels, source line-number cites, and tasks-archive / acceptance-#
-# redirects. These rot when task files archive and tasks-archive.md trims; anchor
-# on stable symbol names or behavior instead.
+# Option X.N labels, source line-number cites, tasks-archive / acceptance-#
+# redirects, and bare positional anchors (`the rule below`). These rot when task
+# files archive, when tasks-archive.md trims, or when an edit lands between the
+# citation and what it points at; anchor on stable symbol names or behavior.
 #
 # DIFF gate, not whole-tree: backend/tests and frontend/** carry many accepted
 # pre-existing gray-area IDs, so a whole-tree gate would block every unrelated
@@ -24,6 +25,18 @@
 # uppercase shout form — sidesteps that allowlist minefield: none of those legit
 # tokens begin with a task-slug prefix.
 #
+# Why the positional arm is article-adjacent: the carve-out at
+# agents/docs/solutions/conventions/positional-anchor-stable-named-container-carve-out-2026-05-20.md
+# holds that `above`/`below` is DURABLE when a stable behavioral name rides along
+# inside one container (`the 42601 canary above`), and rot when the citation is
+# purely positional (`the helper below`). A blanket above/below grep would flag
+# the durable form and re-open a dismissal the architect has already made three
+# times. Requiring the article to sit DIRECTLY against the structural noun
+# separates them mechanically: in the durable form the stable name occupies that
+# slot, so `the 42601 canary above` and `the `unwindFlowKeys` helper above` do not
+# match, while `the canary above` and `the helper above` do. Only criterion 2
+# (stable-name companion) is machine-checkable; criteria 1 and 3 stay with review.
+#
 # Install (one-time, per clone):  git config core.hooksPath .githooks
 # Skip one commit:                PEVO_ANCHOR_GATE=off git commit ...   (sparingly)
 # Exempt one legitimate line (a regex self-test fixture, an intentional
@@ -40,6 +53,9 @@
 #   - bare SEC-<n> security-requirement IDs and E2E coverage-matrix header IDs
 #     (E2E-AUTH-N, READ-N, ...) — legitimate stable references.
 #   - commit SHAs — rare; a `commit <hex>` arm would be the extension point.
+#   - the `the previous <noun>` / `the next <noun>` positional variant — the same
+#     rot class, but `the next step` / `the previous value` are ordinary prose in
+#     algorithm comments, so gating it needs tuning the above/below form does not.
 #
 # After editing this hook run:  bash .githooks/tests/test-pre-commit.sh
 
@@ -70,6 +86,10 @@ anchor_violation() {
   # not gated here — see header.)
   grep -qiE '\.(ts|tsx|js|jsx|mjs|cjs|sql)(:[0-9]+|[[:space:]]+L[0-9]+)|\blines?[[:space:]]+[0-9]' <<<"$content" && return 0
   grep -qiE '\btasks-archive\b|\btask acceptance\b|\b(AC|acceptance)[[:space:]]+#[0-9]|\bsee task[[:space:]]+(item\b|#|[a-z0-9]+-)' <<<"$content" && return 0
+  # Bare positional anchors: an article sitting DIRECTLY against a structural
+  # noun, then above/below. The adjacency is the whole discriminator — see the
+  # header. Nouns here name a slot, never a thing, so none can carry identity.
+  grep -qiE '\b(the|this|that)[[:space:]]+(rule|helper|function|method|spec|test|case|block|comment|docblock|section|paragraph|sentence|clause|note|example|check|guard|canary|loop|query|call|hook|entry|item|line|one|snippet|definition|branch|arm|step|code)[[:space:]]+(just[[:space:]]+)?(above|below)\b' <<<"$content" && return 0
 
   # Task-slug citations. A line referencing the persistent knowledge store
   # (solutions/ or api-contracts/) is the convention's allowed class, so it is
@@ -130,7 +150,9 @@ if [ "${#violations[@]}" -gt 0 ]; then
     echo "  Newly-added lines introduce coordination-state anchors that rot when task"
     echo "  files archive (root CLAUDE.md \"Comment anchors\"). Anchor on stable symbol"
     echo "  names or behavior, not task slugs, round/hold ordinals, source line numbers,"
-    echo "  or tasks-archive / acceptance-# redirects (${#violations[@]}):"
+    echo "  tasks-archive / acceptance-# redirects, or bare positional anchors such as"
+    echo "  \"the rule below\" (name what you point at: \"the flow-key ownership rule\")"
+    echo "  (${#violations[@]}):"
     for v in "${violations[@]}"; do echo "    - $v"; done
     echo ""
     echo "  Fix the line, or if it is a legitimate fixture (e.g. a regex self-test) or an"
