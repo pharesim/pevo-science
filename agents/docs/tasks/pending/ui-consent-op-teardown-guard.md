@@ -851,3 +851,126 @@ browser or Playwright run, as in previous rounds: the change has no DOM
 surface of its own. No `/ce-compound` entry: the mechanisms extend what the
 existing guard-report entry records, and that entry's needed correction is
 listed above for the architect.
+
+---
+
+## Architect re-review (2026-09-06) — HELD PENDING FIXES:
+
+Round-4 review of `462a79b5` + `237f1509` via `/ce-code-review` (nine reviewers plus an
+independent validator batch; no cross-model peer is installed on this host, so the
+adversarial lens ran in-process, as in rounds 1 through 3).
+
+**All six items held in round 3 are FIXED.** Each was checked against the committed diff
+rather than the signal block, and the load-bearing ones were re-derived independently:
+
+- Item 1: `cancel()`'s comparison is byte-identical to the pre-change version — five
+  reviewers diffed the whole `subjectTeardownGuard` body against it separately and all
+  five report character-for-character equality. The rewritten `_reportedTeardownGeneration`
+  docblock describes what the code does. The two-teardown test is a genuine pin: a reviewer
+  ran the per-flight mutation in a scratch export and it fails exactly that case.
+- Item 2: exactly two `slideSessionWindow()` call sites exist in `frontend/src`, both
+  gated, and `retryOnce` threads the entry guard rather than opening a fresh one. Four
+  reviewers enumerated the call sites independently; no (N+1)th path was found. The
+  inverse-defect question is answered negatively: `abandonInFlightAcquisitions()` has one
+  production caller, which clears the window first, so no reachable state has the
+  generation advanced with the flight's own window still in the slot. A same-subject
+  re-login does not scrub at all.
+- Item 3: confirmed red on both consent-op surfaces when the gate's `guard.cancel()` is
+  deleted, by real vitest execution rather than reasoning.
+- Item 4: the `invocationCallOrder` assertion genuinely fails when the two scrub calls are
+  swapped. Not an end-state assertion.
+- Item 5: the claim now sits inside the branch that ran the disconnect, and the docblock
+  states a true invariant.
+- Item 6: both rewritten headers are accurate, and all four e2e specs they cite were read
+  at the reviewed head and cover what is claimed. The authorship header's corrected
+  citation is correct as restated.
+
+The mechanism itself came through nine lenses with nothing surviving validation: no
+correctness, reliability, race, or project-standards defect. Three candidate findings were
+raised and rejected on inspection — the torn-down upload's success pass-through predates
+this diff byte-for-byte, the two-teardown test does reach `cancel()` through
+`mintViaPasswordFactor`'s post-mint check, and the retry-leg comment's claim holds (the
+mutation that survived opened its guard before the transfer, which is not the case the
+comment names).
+
+One item is held.
+
+### Item 1 — three touched suites still cite a clause-c companion that does not cover them
+
+`lib-ipfs-upload.test.js` says its mocking is backed by a spec that "exercises upload +
+broadcast against the real backend". `fresh-auth-401-retry.test.js` says the same spec
+"exercises broadcastWithFreshAuth against the real backend for the happy path and the
+window-reuse path". `lib-fresh-auth-session-window.test.js` says it "exercises acquisition
++ broadcast against the real backend".
+
+That spec has one test. It route-stubs the ORCID callback and asserts the `session_auth`
+handler caches the issued window in sessionStorage. It drives no broadcast and no upload,
+and its own closing note records the real-vote case as prototyped and removed. The
+acquisition half of those claims is defensible; the broadcast and upload halves are false.
+
+This commit corrected the identical false citation in `lib-authorship-consent.test.js`
+while leaving three others contradicting it, two of which it also added new mocked cases
+to. That is the same half-finished-sweep shape the round-3 hold's own item 6 existed to
+close, and nothing mechanical catches it: the carve-out citation canary resolves citations
+under `backend/tests/` only, so a frontend suite can cite a spec that does not cover it
+indefinitely with every check green.
+
+Fix: correct the clause-c paragraph in all three headers so each names only what its cited
+spec genuinely drives, and state the remaining gap plainly. The follow-up that closes the
+gap for real is filed and in `pending/`; clause (c) is discharged by its existence, so
+**do not cite it by slug, path, or a "see the task file" redirect** — that is the
+comment-anchor rot class the repo's conventions forbid in test source, and it would rot
+the moment that task archives. State the gap behaviourally instead: no real-path companion
+currently drives a light-account broadcast or upload with a window proof attached, and a
+follow-up is filed to add one.
+
+While in these headers, check `lib-fresh-auth-outcome-dispatch.test.js` too. It cites the
+same spec but claims only "acquisition against the real backend", which is defensible as
+written — confirm that reading and leave it, or correct it if you disagree. It is outside
+this commit's diff, so it is noted rather than required.
+
+### Not held
+
+- **The clear-before-bump invariant is enforced only by statement order in one caller.**
+  `abandonInFlightAcquisitions()` is exported, and a future second caller that skips the
+  window clear would silently invert all four gates from protecting the successor's window
+  to retaining a dead one, with every test still green. Three reviewers reached this
+  independently. Recorded rather than held: it is preemptive hardening against a caller
+  that does not exist, and the diff's own test pins the order for the caller that does. The
+  option on the table if it ever becomes load-bearing is calling `dropWindow()` as the
+  first statement of `abandonInFlightAcquisitions()`.
+- **Item 5's narrowing is unpinned in either direction.** Reverting the `if (auth)` branch
+  to the pre-change unconditional claim reddens no test. Flagged by four reviewers. Not
+  held: the store-absent path is unreachable in production (the store is registered at
+  boot), and round 3 explicitly asked for no test here.
+- **Recorded, not owed here**: the two `attemptOnce` implementations now duplicate both the
+  gate and its explanatory prose across two modules, and neither names the `auth.js`
+  invariant its reasoning depends on; the "successor" framing reads as though a different
+  account necessarily takes the slot, where the guard is correctly identity-agnostic and a
+  same-account re-auth after a forced disconnect is an untested shape; the slide-gate
+  docblocks assert a window-slot invariant that the ORCID callback's ungated
+  `cacheSessionProof` write can falsify; `uploadFile`'s first-attempt `username_mismatch`
+  still disconnects tab-wide without consulting the guard, and the consent-op retry gate
+  still issues one status read under the successor's JWT before its first guard check
+  (both pre-existing, both independently re-confirmed this round).
+
+### Two architect-zone follow-ups this round produced
+
+Neither is yours to action; recorded so the trail is complete.
+
+- The guard-report dedup entry in `agents/docs/solutions/conventions/` is stale in two
+  places against this commit: its statement that the mark "only ever suppresses a second
+  report of the same event" is the claim item 1's docblock rewrite exists to correct, and
+  its "After" snippet for `handleSessionInconsistency` is now the pre-change shape. Being
+  corrected via `/ce-compound-refresh`.
+- The session-inconsistency idempotency task in `pending/` describes the pre-item-5 shape
+  as current fact and carries a proposal snippet that, applied literally, would move the
+  claim back outside the `if (auth)` branch. Being corrected directly.
+
+Verification expected at re-review: the three corrected headers each name only what their
+cited specs drive; no task slug, path, or file redirect appears on any added line in
+`frontend/`; the frontend unit suite green apart from the recorded pre-existing failures.
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
+re-review signal. Do not edit this hold block; the commit diff is the evidence and the
+architect updates the block at re-review.
