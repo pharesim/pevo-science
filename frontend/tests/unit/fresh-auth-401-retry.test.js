@@ -7,8 +7,8 @@
 // `/api/custody/broadcast` endpoint. Exercising the real path per-test
 // would require a running backend + Hive + ORCID stack and the ability
 // to induce specific FRESH_AUTH_REQUIRED status/reason combinations
-// (401 missing/expired/malformed; 403 username_mismatch). That setup is
-// the E2E suite's domain (`non-consent-fresh-auth.spec.js`). Here we
+// (401 missing/expired/malformed; 403 username_mismatch). That setup
+// belongs to the E2E layer, and no spec there drives it today. Here we
 // mock signer.broadcastOps so we can deterministically trigger each
 // error shape and assert the wrapper's branching: dropping the dead
 // window, re-authing, retrying, disconnecting, toasting.
@@ -18,10 +18,23 @@
 // upstream and reacts to backend rejections. Cryptographic verification
 // is performed server-side. No frontend auth middleware is mocked.
 //
-// Clause-c real-path companion: the E2E spec at
-// `frontend/tests/e2e/non-consent-fresh-auth.spec.js` exercises
-// broadcastWithFreshAuth against the real backend for the happy path
-// and the window-reuse path.
+// Clause-c real-path companion: none exists yet for this suite's risk
+// class. `frontend/tests/e2e/non-consent-fresh-auth.spec.js` was cited
+// here, but it never calls `broadcastWithFreshAuth` and issues no
+// custody broadcast at all: it drives the `/orcid/callback` session_auth
+// handler caching an issued window, against a stubbed callback response,
+// and its closing note records the broadcast-driving case as prototyped
+// and removed. Every e2e spec that does reach a broadcast runs on a
+// self-custody account through the Keychain stub, where no window proof
+// is attached. The mint this wrapper's re-auth leg depends on is
+// exercised for real on the settings surface:
+// `frontend/tests/e2e/settings.spec.js` mints at the real POST
+// /custody/fresh-auth through the reauth modal, and
+// `frontend/tests/e2e/settings-orcid-factor.spec.js` completes a genuine
+// backend-minted proof end to end. Both mint the per-action consent-op
+// kind rather than the multi-use session window this wrapper consumes.
+// The gap that leaves is the light-account broadcast itself, and a
+// follow-up is filed to add one.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 

@@ -24,9 +24,12 @@
 // is bypassed (clause-b). Clause-c real-path companions: the behavioral
 // acquisition suites (lib-fresh-auth-session-window.test.js,
 // fresh-auth-401-retry.test.js, lib-ipfs-upload.test.js) pin each member's
-// user-visible action at each site, and
-// frontend/tests/e2e/non-consent-fresh-auth.spec.js exercises acquisition
-// against the real backend.
+// user-visible action at each site. No e2e spec covers the dispatch itself:
+// frontend/tests/e2e/non-consent-fresh-auth.spec.js drives only the
+// /orcid/callback session_auth handler caching an issued window, against a
+// stubbed callback response, and reaches no site in this vocabulary. A
+// follow-up is filed to add real-path coverage of the acquisition these
+// outcomes describe.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 

@@ -17,9 +17,11 @@
  *         called Keychain" — they never assert a 2xx from a verifyHiveSignature-
  *         guarded endpoint. The op SHAPE (action, target fields) is the assertion.
  *   - (c) real-path companion: the broadcast-attach + fresh-auth orchestration is
- *         unit-tested (lib-authorship-consent / lib-fresh-auth-consent-op-cache),
- *         and the custody-broadcast fresh-auth path is covered by
- *         non-consent-fresh-auth.spec.js against the real backend.
+ *         unit-tested (lib-authorship-consent / lib-fresh-auth-consent-op-cache).
+ *         The custody-broadcast fresh-auth path has no real-path companion:
+ *         non-consent-fresh-auth.spec.js was cited for it, but it issues no
+ *         custody broadcast, and its closing note records the broadcast-driving
+ *         case as prototyped and removed. A follow-up is filed to add one.
  */
 import { test, expect } from './fixtures/keychain.js';
 import { installPaperMocks } from './fixtures/paper-mocks.js';

@@ -18,8 +18,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // module boundary because its own behavior is the subject of a sibling suite,
 // not of these tests.
 //
-// Clause-c real-path companion: `frontend/tests/e2e/non-consent-fresh-auth.spec.js`
-// exercises upload + broadcast against the real backend.
+// Clause-c real-path companion: none exists yet for this suite's risk class.
+// `frontend/tests/e2e/non-consent-fresh-auth.spec.js` was cited here, but it
+// drives only the `/orcid/callback` session_auth handler caching an issued
+// window, against a stubbed callback response. It performs no upload and no
+// broadcast, and its closing note records the broadcast-driving case as
+// prototyped and removed. No e2e spec uploads with a window proof attached, so
+// the proof-carrying two-step and the window-rejected-mid-flight retry are
+// pinned here only. A follow-up is filed to add that real-path coverage.
 const mockUploadFileToIpfs = vi.fn();
 vi.mock('../../src/api.js', async (importOriginal) => {
   // Spread the real module so ApiRequestError (and any other real exports) stay

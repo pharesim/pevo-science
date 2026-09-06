@@ -26,12 +26,26 @@
 // server-side; these tests assert which factor the client chooses and how it
 // models the window it was handed.
 //
-// Clause-c real-path companion: `frontend/tests/e2e/non-consent-fresh-auth.spec.js`
-// exercises acquisition + broadcast against the real backend, and
-// `frontend/tests/e2e/publish.spec.js` drives the upload leg against the real
-// upload endpoint (on the self-custody path, where no window is involved).
-// The one case here that reaches the real upload module does so for the
-// acquisition underneath it, not for the transport, which stays mocked.
+// Clause-c real-path companion: none exists yet for this suite's risk class.
+// `frontend/tests/e2e/non-consent-fresh-auth.spec.js` was cited for acquisition
+// and broadcast, and drives neither. It hand-seeds the ORCID mode and return
+// path that `beginSessionAuthOrcidRedirect` would have written, so no factor is
+// selected and nothing is minted, and it stubs the callback response, so the
+// window it caches is test-authored rather than backend-issued. What it does
+// drive is that return leg's client-side cache write. It issues no broadcast.
+// `frontend/tests/e2e/publish.spec.js` was cited for the upload leg; it runs
+// self-custody, where `ensureSessionWindow` short-circuits and no window is
+// involved. The shared factor resolver is exercised for real on the settings
+// surface: `frontend/tests/e2e/settings.spec.js` resolves the password factor
+// against a real GET /settings/email and mints at the real POST
+// /custody/fresh-auth, and `frontend/tests/e2e/settings-orcid-factor.spec.js`
+// completes a genuine backend-minted proof end to end. Both mint the per-action
+// consent-op kind, so they stand in for factor selection only, not for the
+// multi-use window this suite models. What has no real-path coverage is a
+// light-account broadcast or upload carrying a window proof, and a follow-up is
+// filed to add one. The one case here that reaches the real upload module does
+// so for the acquisition underneath it, not for the transport, which stays
+// mocked.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
