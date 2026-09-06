@@ -275,3 +275,151 @@ pre-existing and persist with the canary directory excluded); pre-commit anchor
 gate clean over the staged diff; `ce-simplify-code` three-reviewer pass returned
 no findings, and two of its reviewers independently re-derived the width of 8
 and the extension census against the tree.
+
+---
+
+## Architect re-review (2026-09-06) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` scoped to `276e4788` (the two canary files only), six
+reviewer personas plus a validation batch that re-derived every surviving finding by
+EXECUTING the scan machinery against planted sources. The cross-model adversarial route
+was unavailable on this host (no different-provider CLI installed), so the adversarial
+lens ran in-process and no cross-model agreement promotion was available.
+
+**All six items held on 2026-09-01 landed, and both load-bearing claims verify
+independently.** The re-pinned `flight` width of 8 is the true count against
+`git show 276e4788:frontend/src/lib/fresh-auth.js`; the walker floor and the extension
+census are true of the committed tree (86 `.js`, one `.css`). Mutation checking confirms
+the "reverting a fix reddens exactly its own probe" claim for every one of the six. The
+`importStatementOpens` reorder was checked against the real pre-fix implementation rather
+than a reconstruction. Held items 4 and 5 landed but are incomplete, which is where two
+items below come from.
+
+The round nonetheless introduced one regression and left two executed evasions open, all
+in the detection-fidelity class this task's Notes name as the recurring failure mode. Fix
+in the order given: item 1 first (it is the regression and it shares the brace walk with
+item 4), then items 2 and 3, then item 4's probes over the branches the first three settle.
+
+### Item 1 — the block-comment region tracking opens inside template literals, narrowing resolution (REGRESSION)
+
+`enclosingSymbol`'s brace walk enters a comment region on any line whose trimmed form
+opens `/*`, including one inside a template literal where it is markup and not a comment.
+The phantom region never closes, and it swallows the real closing brace. A/B execution of
+one input against both module versions: for a declaration holding a template literal that
+carries `/* stray note in markup`, a following module-scope line resolved to `<module>` at
+`276e4788^` and resolves to the enclosing declaration at `276e4788`.
+
+This is worse than an ordinary wrong answer. The file's fail-closed argument rests on
+set-equality, where a wrong symbol is a new member and therefore a red bar. Here the wrong
+symbol can instead be an ALREADY-LICENSED key, which the width pin then absorbs. The
+frontend is the tree that writes one large template literal per page module, and
+`pages/settings.js#template` is a licensed key covering hundreds of markup lines, so this
+is the reachable shape rather than a theoretical one.
+
+Fix: enter the region only when the walk can see it close (require some line between the
+opener and the target to carry `*/`), so an unterminated `/*` falls through to the ordinary
+brace test. Plant the template-literal shape as a probe beside the existing
+brace-inside-a-block-comment probe.
+
+### Item 2 — `isCommentLine` still swallows live code on a comment-CLOSING line
+
+Held item 5 asked for the predicate to stop treating live code behind an inline block
+comment as prose. The fix rewrote the `/*` arm and left the leading-`*` arm above it
+untouched, and `*/` starts with `*`. So the opener side is fixed and the closer side is
+not: a line reading `*/ return status.hasPassword === true;` is classified as prose and the
+read is skipped. Executed: that shape yields no keys, and a real module carrying it under
+`frontend/src` left the suite green.
+
+The predicate is the `skipLine` for two of the four layers, including the password-state
+discriminator scan, which exists precisely because a factor decision can receive the status
+object second-hand but cannot avoid writing the property.
+
+Fix: give the leading-`*` arm the same close-then-inspect treatment the `/*` arm received,
+and plant mirror probes in both directions (a `*/`-prefixed live read counts; a bare `*/`
+stays prose).
+
+This is the shape `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`
+documents: the fix for one arm of a predicate did not audit its sibling arm.
+
+### Item 3 — `sourcesUnder` drops symlinks from both `sources` and `foreign`
+
+`readdirSync` does not follow links, so a symlink's dirent reports neither `isFile()` nor
+`isDirectory()`, and the `!entry.isFile()` guard drops the entry before both branches. It
+is neither scanned nor censused. That falsifies this round's own new contract, which says
+`foreign` carries every OTHER file the walk passed over, and it falsifies the assertion
+titled "finds nothing script-shaped it cannot read".
+
+Executed end to end: a symlinked module under `frontend/src/lib` importing the status fetch
+and branching on the discriminator left the suite green. Deleting the guard line outright
+also leaves the suite green, so no probe covers that guard in either direction.
+
+Fix: resolve links (`statSync` on the full path) and route to the walk, to `sources`, or to
+`foreign` by real type; add `symlinkSync` fixtures for both a file and a directory to the
+walker probe. The backend port already follows links deliberately and carries a cycle
+guard; match that shape.
+
+### Item 4 — the new comment-region branches and the declaration guard's fast-path arms are each mangle-green
+
+Removing the region tracking wholesale is red, because the brace-inside-a-block-comment
+probe discriminates the composite. But each sub-branch is independently mangle-green:
+weakening the region-exit test to an `endsWith` leaves the suite green while flipping a real
+resolution, and dropping the single-line-comment guard from the opener does the same. The
+same audit on the declaration guard that held item 4 named shows its `function`-keyword and
+arrow arms are each mangle-green too, because every probe that reaches that guard also has
+unbalanced parens and short-circuits before them.
+
+This is held item 4's own shape recurring one level in: the fix added branches faster than
+it added probes. Add one probe per decision point: a single-line comment above a closing
+brace; a region closed mid-line; a `function`-keyword declaration whose parens balance on
+the line; an arrow declaration whose parens balance on the line. Sequence this after items
+1 and 2, which change the branches being probed.
+
+### Item 5 — the per-match paragraph does not name the skipped-line exception (documentation)
+
+`skipLine` drops the whole line before the tally runs, so a match riding on a skipped line
+is invisible. Executed: an import statement and a live reference to the same name on ONE
+physical line yield nothing, while the same two statements split across two lines are a red
+bar. Reaching it requires a formatter-hostile shape, so the minimal response is the right
+one: name the skipped-line case in the residual paragraph alongside constant-width
+replacement, soften the per-match paragraph to say the tally covers same-line addition only
+on lines the skip predicate does not drop, and plant the shape as a negative. Do NOT make
+`skipLine` per-match; no consumer needs it, and it widens shared machinery for a shape a
+formatter removes.
+
+### Item 6 — the residual paragraph names one residual where there are two (documentation)
+
+Both scans are token matches, so a derivation that spells neither token is invisible to all
+four layers. Executed: a module assembling the names from string fragments and reading the
+discriminator through a computed key left the suite green. No textual guard can close this
+and none should be attempted. Add one sentence to the same residual paragraph naming
+computed and built-string access as the second residual, and why it is left to review of
+the diff.
+
+### Item 7 — pre-existing, folded in because the walk is open anyway
+
+NOT a defect of this round. A `*/` sharing a line with a real closing brace resolves too
+narrow, and a `/*` opened mid-line resolves too wide. Both behave identically at
+`276e4788^`, and both are asserted as known in the walk's own comment. They are listed here
+only because they are the same comment boundary as items 1 and 2, and the walk will be open
+for those. Close them in the same pass, or state why not.
+
+### Item 8 — clarity only, explicitly NOT a convention violation
+
+The walker probe's comment reads "The walk is the floor every scan above stands on." Two
+reviewers reached opposite readings: one as a bare positional anchor, one as an
+architectural layering metaphor. **The architect's ruling is the metaphor reading**, so this
+is NOT a positional-anchor violation, the carve-out's "cuts both ways" clause applies, and
+the line is deliberately not part of `ui-positional-anchor-sweep-frontend`'s enumeration.
+It is listed only because the ambiguity cost two reviewers a debate. Drop the positional
+word (for instance "every scan in this suite") so a third reviewer does not have it again.
+
+### Not held, filed separately
+
+The walk root excluding `frontend/index.html`, and the star re-export ban matching per line
+so a line break defeats it, are both real and both pre-date this round; validation rejected
+them as findings against `276e4788`. They are filed as
+`ui-canary-walk-root-and-star-reexport-gaps`.
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
+re-review signal. Do not edit this hold block or annotate items as fixed; the commit diff is
+the evidence and the architect updates the block at re-review.
