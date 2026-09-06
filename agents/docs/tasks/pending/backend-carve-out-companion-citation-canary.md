@@ -496,3 +496,141 @@ It is a proposal." That is now false. The entry's sketch of the citation shape
 also predates the reverse form and the qualifier rules, and its "the realistic
 sequencing is a diff gate first" paragraph is superseded by the in-tree
 ratchet. The file is architect-owned, so backend has not touched it.
+
+## Architect re-review (2026-09-06) — HELD PENDING FIXES:
+
+All eight items held on 2026-09-03 are FIXED, and the round is substantial work
+that closed real defects. Verified independently rather than from the signal
+block: the two backlog maps are 103 files / 133 claims and 14 files / 16 claims,
+each an exact subset of its frozen snapshot with no live key absent from the
+snapshot and no pin above its landing count; the suite is green at 10 tests; the
+`exempt` gate and the over-generic-token reach cap (items 6 and 7) are now
+genuinely covered, confirmed by inverting and deleting each in a scratch copy;
+the block-comment stripper class (item 8) is closed, with `codeOf` over-reach
+measured at 2 files of 253 and both losses intentional; and the comment
+collector's recall was probed at 20 exotic positions and against every `//` and
+`/*` in all 253 files with zero misses. `sourcesUnder`'s symlink change is a
+behavioural no-op for its four consumers. The four commits stage only backend
+paths, carry the trailer, and use the bare `backend(tests):` form. Project
+standards came back clean, including a full anchor-rot sweep of every added line.
+
+What this hold is about: three of the four items below each contradict a specific
+sentence in the file's own header docblock. That is the same defect class round 1
+was raised for, now recurring in the round-2 mechanism rather than the round-1
+one. Two independent reviewers reproduced each escape end to end on isolated
+copies, and an independent validation gate reproduced them again before this
+block was written; it also rejected four other candidate findings, listed at the
+bottom so they are not re-litigated.
+
+Items 1 and 4 are one theme and should be settled together. Anchor every code
+comment you write here on stable symbols, never on line numbers.
+
+1. A companion claim whose qualifier WRAPS across a docblock continuation line
+   vanishes from the ratchet entirely. `LOOSE_CLAIM_SRC` matches with `[^\n]`
+   between `path` and `companion`, so the loose-claim guard cannot cross a line
+   break, while `LABEL_SRC`'s `[\s-]*` can. Such a claim yields labels=0 and
+   unparsed=0, and `auditSources` drops the block before any class is assigned.
+   Reproduced: `(c) Real-path, no-mock companion: routes/foo.test.ts covers it`
+   is caught on one line and passes silently when wrapped before `companion`,
+   landing a brand-new free-prose claim in a file in neither backlog, suite
+   green. Docblocks in this corpus wrap near 76 columns, so wrapping is the
+   default spelling for anything longer than one line, and the wrapped-path case
+   was AC 4 of this task. The header asserts the opposite outcome in so many
+   words: a citation-shaped line that does not parse as the label "is a violation
+   of its own rather than a skipped block". Run `unparsedClaims` over a
+   whitespace-collapsed copy of the block, the same rejoin `namesATestFile`
+   already performs, and widen the window after `companion` so a wrapped or
+   longer qualifier still registers. Probe the wrapped spelling of the
+   already-probed one-line case.
+
+2. The REVERSE citation form discharges clause (c) on a filename substring and
+   never reaches the token arm. The reverse branch of `citationViolations` tests
+   only that the cited file's raw text contains the citing file's basename, then
+   returns; `blockShape` still counts the citation as satisfying its label, so
+   `ratchetClass` returns `structured`. Nothing constrains direction: neither
+   file need be a real-path suite, and the cited file may itself be a mocking
+   suite. Reproduced: a reverse citation planted in a mocked suite naming an
+   unrelated route suite passed, purely because that file's prose happens to
+   contain the citing basename. 505 basename cross-mentions already exist under
+   `backend/tests`, so for most files this is a one-file edit. This is the
+   filename-presence blindness the header's own "WHY THE TOKEN AND NOT THE
+   FILENAME" section rejects for forward citations, re-entering through the form
+   added this round. Resolve the link by PATH rather than by substring: parse the
+   named file's comment blocks and require a forward citation back to the citing
+   file, or a reverse citation pointing back.
+
+   Named design question, yours to settle rather than guess: should a reverse
+   citation additionally carry a `[TOKEN]` that the CITING file asserts in its
+   own `codeOf` output? Resolving the link by path closes the reproduced escape
+   on its own. Requiring a token as well is a convention change, because the
+   reverse form is what the solutions entry recommends precisely so both ends of
+   the link are visible, and a token requirement raises the cost of writing it.
+   Decide, implement the decision, and record the reasoning in the header. If you
+   conclude the question needs architect input rather than an implementer call,
+   move this task to `blocked/` with a `[BLOCKED by Architect]` note instead of
+   guessing.
+
+3. A third decision arm has no mutation probe, which is the class of round 1's
+   items 6 and 7. The token-shape arm in `citationViolations`, the one rejecting
+   a token that is not a single whitespace-free code token, can be deleted or set
+   to a constant false with the whole of `tests/eslint` staying green (8 files,
+   108 tests). Two reviewers found this independently by mutation. The line
+   carrying it is one this round itself modified when it added the forward-kind
+   guard, so the round's own sweep passed over it.
+
+   Do not fix only this instance. Enumerate every decision arm in
+   `citationViolations` and every class in `ratchetClass`, and pin each with a
+   direct probe that goes red when that arm alone is neutered. Report the
+   enumeration and which arms already had a probe, so the class is closed rather
+   than its third instance. This is the third time the same class has surfaced on
+   this file.
+
+4. A backticked filename in a citation's own trailer slips past the leaky arm,
+   re-admitting the half-true compound that round 1's item 4 closed. `surroundOf`
+   blanks every backticked span in the matched text and then blanks greedily from
+   the first `[` to the last `]`, so a second filename in the citation's trailing
+   parenthetical is erased before `namesATestFile` sees it and the block
+   classifies as `structured` rather than `leaky`. Reproduced: a trailer reading
+   `(see also backend/tests/routes/custody-upgrade.test.ts)` is caught, and the
+   identical trailer in backticks passes. Backticking a path is this convention's
+   own house style, stated in the header, so the evading spelling is the natural
+   one and the caught spelling is the unusual one. The `Citation.surround`
+   docblock states the guarantee that fails: "A filename in here is prose beside
+   the citation, not part of it." Build `surround` from the match's own captures,
+   removing the first occurrence of the captured path and token by literal
+   substring, rather than by a global pattern sweep. Probe the backticked and
+   bracketed trailer spellings beside the existing unbackticked one.
+
+   Items 1 and 4 are one theme: detection defeated by the corpus's own authoring
+   style, line wraps and backticks respectively. Fix the shared cause and audit
+   for other house-style spellings that defeat a pattern, rather than patching
+   two symptoms. Say in the signal block what that audit covered.
+
+### Not held, recorded so it is not re-litigated
+
+Four further candidates were raised and REJECTED at independent validation. Do
+not act on them, and do not re-raise them in the next round.
+
+- That the file should be split because it crosses 1000 lines. No rule backs it:
+  there is no `CODING_STANDARDS.md`, no `max-lines` in the eslint config, and no
+  file-length limit in root `CLAUDE.md`. The engine and its probe battery are
+  deliberately colocated in a self-contained canary. Preference, not a defect.
+- That the `eslint/`+`support/` companion rejection should apply to reverse
+  citations too. The forward-only guard is semantically CORRECT: in the reverse
+  form the named path is the mocked suite being served, not the witness, and a
+  real mocked suite lives under that prefix today. Dropping the guard would emit
+  a false "witnesses nothing" verdict against a legitimate declaration. Note this
+  is independent of item 2 above, which is about the reverse branch's link check,
+  not about which directories it accepts.
+- That `citationViolations` should route the companion through `codeCache`. The
+  bypass is real and immaterial: measured at 32 ms of a 1255 ms validation pass,
+  while the dominant `tokenReach` path already uses the cache.
+- That `TESTS_TREE_PATH_RE` and `NON_RUNTIME_DIR_RE` should share a directory
+  exclusion list. They answer different questions, the present asymmetry is the
+  stricter direction with no live false positive, and aligning them would weaken
+  the leaky arm.
+
+The `[TODO Architect]` on the solutions entry is confirmed accurate and stays
+deferred to archive, so the entry is reconciled once against a settled shape
+rather than twice. Its stale disclaimer, its citation-shape sketch, and its
+sequencing paragraph are all superseded; the architect owns that edit.
