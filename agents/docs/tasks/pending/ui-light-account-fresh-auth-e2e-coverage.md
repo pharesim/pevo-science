@@ -4,8 +4,9 @@
 **Created:** 2026-09-06
 
 Routed out of the architect round-4 review of `ui-consent-op-teardown-guard`. Filed to
-give the fresh-auth unit suites a clause-c real-path companion that actually exists: three
-of them currently cite one that does not cover what they claim.
+give the fresh-auth unit suites a clause-c real-path companion that actually exists: four
+of them currently cite one that does not cover what they claim, and a fifth surface (the
+authorship consent-op e2e spec) discharges clause (c) by pointing at this task.
 
 ## Why
 
@@ -51,9 +52,23 @@ does not cover it indefinitely without any check failing.
    is). The window-rejected-mid-flight retry does not need to be reproduced; exercising the
    integrated path with real infrastructure is what clause (c) asks for, not mirroring the
    mocked assertion.
-3. Point the four unit-suite headers at whatever this task actually lands, and drop the
-   claims it does not support. Coordinate with the header corrections held on
-   `ui-consent-op-teardown-guard`, which cites this task in the interim.
+3. Add e2e coverage for the light-account **consent-op** leg: one authorship consent
+   action (`author_accept` or `author_resign`) broadcast with a target-bound consent-op
+   proof attached, against the real backend. This is a distinct mechanism from legs 1
+   and 2, not a variant of them: the consent-op proof is minted by
+   `mintAuthorshipFreshAuthProof` at `POST /custody/fresh-auth` and cached under
+   `CONSENT_OP_PROOF_KEY`, while the session window is minted by `mintSessionAuthProof`
+   at `POST /custody/session-auth` and cached under `SESSION_PROOF_KEY`. Per
+   `ARCHITECTURE.md` 6.4.1 a session-window proof is rejected on the consent-op surface
+   with `kind_mismatch`, so legs 1 and 2 cannot cover this risk class however thoroughly
+   they are built. `frontend/tests/e2e/authorship-consent-actions.spec.js` is the header
+   that depends on this leg.
+4. Point the five headers at whatever this task actually lands, and drop the claims it
+   does not support. Coordinate with the header corrections landed on
+   `ui-consent-op-teardown-guard`, which discharges clause (c) through this task in the
+   interim. While in `lib-fresh-auth-session-window.test.js`, correct its two stale
+   "one case ... reaches the real upload module" statements: two `it()` blocks drive the
+   real upload module, not one.
 
 If either leg proves impractical for the same reason the earlier prototype was removed,
 record that finding in this file and say plainly in the headers that no real-path
@@ -65,9 +80,17 @@ companion exists for that risk class. A stated gap is honest; a false citation i
    fresh-auth proof to a real backend request, and asserts the request carried it.
 2. At least one e2e spec drives the light-account upload leg against the real upload
    endpoint with a window proof.
-3. The clause-c paragraph in each of the four suites named above resolves to a spec that
+3. At least one e2e spec drives a light-account consent-op broadcast that attaches a
+   target-bound consent-op proof to a real backend request, and asserts the request
+   carried it. A session-window proof does not satisfy this criterion.
+4. The clause-c paragraph in each of the four unit suites named above, and in
+   `frontend/tests/e2e/authorship-consent-actions.spec.js`, resolves to a spec that
    genuinely exercises the risk class that suite mocks, or states the gap explicitly.
-4. No suite's clause-c paragraph names a spec that does not cover it.
+5. No suite's clause-c paragraph names a spec that does not cover it, and no suite
+   discharges clause (c) by citing a filed follow-up whose planned proof kind cannot
+   apply to that suite's surface.
+6. `lib-fresh-auth-session-window.test.js` no longer states that one case reaches the
+   real upload module.
 
 ## Notes
 
