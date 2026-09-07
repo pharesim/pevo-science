@@ -8,8 +8,9 @@
 // round-trip. At every one of them it must unwind as a clean cancel — no late
 // issuance cached, no navigation on the departed subject's behalf, no mint
 // spent on the tab's current credentials, no eviction of the successor flight
-// from the in-flight slot, no removal of the successor's flow keys — and the
-// user is told exactly once, however many flights one scrub abandons. The one
+// from the in-flight slot, no removal of the successor's flow keys, no
+// retirement of the successor's password-factor memo — and the user is told
+// exactly once, however many flights one scrub abandons. The one
 // boundary past acquisition, the upload transfer, is different: a transfer the
 // scrub lands inside still completes and its result still reaches the caller,
 // but the departed subject's upload may not re-anchor the idle deadline of
@@ -410,6 +411,38 @@ describe('teardown abandons in-flight acquisitions', () => {
     expect(outcome).toEqual({ ready: false, cancelled: true });
     expect(mockStartOrcid).not.toHaveBeenCalled();
     expect(window.location.href).toBe('');
+  });
+
+  it('a second-mint rejection landing after teardown does not retire the successor\'s memo', async () => {
+    // A second consecutive rejection of the password retires the memo, and
+    // the retry mint is a round-trip a teardown can land inside. By the time
+    // such a late rejection resolves, the memo it would retire is the
+    // successor's: a departed subject's typos must not cost the account that
+    // replaced it a status re-read, nor the observed answer that keeps its
+    // own 401s inline instead of falling back to ORCID.
+    mockMintSessionAuthProof.mockRejectedValueOnce(
+      Object.assign(new Error('wrong password'), { code: 'UNAUTHORIZED' }),
+    );
+    let rejectRetryMint;
+    mockMintSessionAuthProof.mockReturnValueOnce(
+      new Promise((resolve, reject) => { rejectRetryMint = reject; }),
+    );
+
+    const pending = ensureSessionWindow();
+    await tick(); // first mint rejected, second prompt answered, retry mint pending
+    teardownSubjectState();
+
+    // The successor resolves its own factor and memoizes the observed answer.
+    mockAuthStore.username = 'bob';
+    expect(await resolvePasswordFactor()).toEqual({ usesPassword: true, assumed: false });
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(2);
+
+    rejectRetryMint(Object.assign(new Error('wrong password'), { code: 'UNAUTHORIZED' }));
+    expect(await pending).toEqual({ ready: false, cancelled: true });
+
+    // The successor's memo stands: no third status read.
+    expect(await resolvePasswordFactor()).toEqual({ usesPassword: true, assumed: false });
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(2);
   });
 
   it('an ORCID redirect start resolving after teardown does not navigate', async () => {
