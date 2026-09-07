@@ -541,7 +541,7 @@ Proofs come in two kinds. A **consent-op proof** is target-bound (tied to the sp
 
 The act of spending a consent-op proof, performed before the action it authorizes rather than after, so a proof cannot outlive the operation it was minted for.
 
-Distinct from consuming a proof, which is the broader act of presenting one and having it validated: consuming a consent-op proof burns it, while consuming a session proof slides its window instead. A burn is final the moment it happens, and that finality must not depend on the platform succeeding in erasing its stored copy of the proof. The platform holds a canonical copy plus a short-lived local backup, so that a storage outage cannot tell a user the proof they just minted expired, and either copy may be the one that arbitrates a given burn. The guarantee therefore has to be a durable record that the proof was spent, kept until removal of the stored copy is confirmed. Treating that removal as the guarantee is the recurring mistake: any single removal is an instruction that may not execute, and a spent proof whose stored copy outlives the record authorizes a second critical action.
+Distinct from consuming a proof, which is the broader act of presenting one and having it validated: consuming a consent-op proof burns it, while consuming a session proof slides its window instead. A burn is final the moment it happens, and that finality must not depend on the platform succeeding in erasing its stored copy of the proof. The platform holds a canonical copy plus a short-lived local backup, so that a storage outage cannot tell a user the proof they just minted expired, and either copy may be the one that arbitrates a given burn. The guarantee therefore has to be a durable record that the proof was spent, kept until removal of the stored copy is confirmed. That record is the **ledger**, and it carries no expiry of its own: an entry leaves only on a reply that proves the stored copy is unreadable, never on a command merely having been issued, because a deadline guessed on this side can only ever retire an entry earlier than a confirmation would. Treating the removal as the guarantee is the recurring mistake: any single removal is an instruction that may not execute, and a spent proof whose stored copy outlives the ledger entry authorizes a second critical action.
 
 ### Acquire-before-commit
 
@@ -565,6 +565,12 @@ Any operation that broadcasts on-chain, mutates an auth factor, or otherwise tra
 *Avoid:* step-up-required action.
 
 Examples include server-side broadcasting, changing or deleting the account, setting a password where there was none, linking ORCID, recovery, the custody upgrade, and minting an upload token. Which actions count as critical is kept in sync with the canonical contract whenever new control-transferring routes are added.
+
+### Upload Token
+
+A single-use credential minted by an authenticated pre-flight that binds one declared file to one upload, so the upload itself cannot be replayed or redirected to different content.
+
+The pre-flight authenticates like any critical action and records what the caller declares about the file: its hash, its type and its size. The upload leg then presents the token and is refused unless the file it carries hashes to the value that was declared. On the signature path the declared description is bound into the signed envelope too, so a captured pre-flight signature is useless for a different file. The lifetime is deliberately short, long enough only for the pre-flight and the upload it authorizes. Like a consent-op proof it is spent on presentation, and it is stored the same two-tier way; but what actually stops a replay carrying different content is the hash re-check at the upload, not the spend, which matters because the spend is the weaker of the two guarantees.
 
 ### Per-request Hive-signature Auth
 

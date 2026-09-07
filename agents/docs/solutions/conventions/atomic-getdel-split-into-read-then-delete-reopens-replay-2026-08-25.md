@@ -1,6 +1,7 @@
 ---
 title: "Splitting an atomic GETDEL into GET-then-DEL makes a single-use proof replayable, and gating the compensating delete on isRedisAvailable() instead of client existence silently removes the flap backstop"
 date: 2026-08-25
+last_updated: 2026-09-07
 category: conventions
 module: backend/src/lib
 problem_type: convention
@@ -125,10 +126,11 @@ The in-process `inFlightConsumes` lock does not help. It serializes *concurrent*
 token within the single process; a replay after reconnect is sequential and walks straight through
 it.
 
-Blast radius is wider than "the same action twice". The per-user critical targets
-(`setPasswordFreshAuthTarget`, `changeEmailFreshAuthTarget`, `deleteAccountFreshAuthTarget`,
-`ipfsUploadFreshAuthTarget`, `adminActionFreshAuthTarget`) all bind
-`{ action, root_author: username, root_permlink: '' }` and never the operation payload. A second
+Blast radius is wider than "the same action twice". Every target builder in the per-user critical
+family binds `{ action, root_author: username, root_permlink: '' }` and never the operation payload:
+the `PER_USER_CRITICAL_ACTION_TUPLE` actions, plus the set-password and admin builders. (Anchor on
+that tuple rather than a hand list. This paragraph originally named five builders and was already
+missing one on the day it was written, because the sixth had arrived from an unrelated task.) A second
 consume is therefore not constrained to the same *effect*: two different `new_email` values, two
 upload tokens, or two admin grants, under one re-authentication act.
 
@@ -177,9 +179,16 @@ if (alreadySpent) {
 // guarded on the client's EXISTENCE only, so ioredis can queue it and flush it
 // if the outage is short. Best-effort CLEANUP, NOT the guarantee.
 if (!redisLegRan && burnedInMemStore && redis) {
+  // Arm the reconnect sweep alongside the ledger write: this branch is the only
+  // thing that ever gives that sweep work to do. Like the delete, the sweep is
+  // cleanup and not the guarantee — what it buys is that an orphaned canonical
+  // key does not outlive the ledger entry guarding it, which is what makes a
+  // later restart safe.
+  armDrainOnReady(redis);
   // Record the spend FIRST. A record written before the command survives that
   // command failing, timing out, or being flushed unsent. Membership is the
-  // WHOLE record — no deadline; see below for why one cannot be computed here.
+  // WHOLE record — no deadline: a resent issuing `SET` restarts its `EX` from
+  // recovery, so none computable here can bound the key's life.
   spentConsentOps.add(token);
   try {
     await redis.del(KEY_PREFIX + token);
@@ -374,16 +383,18 @@ isolation and the suite re-run:
 - delete the `!redisLegRan && burnedInMemStore && redis` compensating leg, and the stubbed-readiness
   file must go red.
 
-**The second probe no longer kills, and why is the more useful lesson.** Once the spent-proof record
-landed, it — not the compensating delete — is what refuses the replay, so deleting the compensating
-leg now leaves every suite green. The delete still earns its place: it retires the record promptly
-and keeps an orphaned canonical key from outliving the process-local entry guarding it. But that
-demoted role is pinned by no assertion, so the next refactor that reads it as dead weight removes it
-unopposed. When a new layer takes over a guarantee an older layer used to provide, the older layer's
-mutation probe goes quiet without anyone editing a test. Re-run the probes a fix supersedes, and
-re-pin the demoted layer against what it still does — here, by asserting the canonical key's absence
-directly rather than through a second consume, which is the only assertion that distinguishes the
-delete from the record.
+**The second probe stopped killing, and why is the more useful lesson.** Once the spent-proof record
+landed, it — not the compensating delete — was what refused the replay, so deleting the compensating
+leg left every suite green. The delete still earns its place: it retires the record promptly and
+keeps an orphaned canonical key from outliving the process-local entry guarding it. That demoted
+role was pinned by no assertion, which is exactly how a later refactor reading it as dead weight
+would have removed it unopposed. When a new layer takes over a guarantee an older layer used to
+provide, the older layer's mutation probe goes quiet without anyone editing a test. Re-run the
+probes a fix supersedes, and re-pin the demoted layer against what it still does.
+
+That re-pin has since landed. Both flap tests now assert the canonical key's absence directly,
+before any replay, rather than inferring it from a second consume — the only assertion that
+distinguishes the delete from the record, and what re-arms both probes.
 
 Then restore. A test written against a bug you already fixed proves nothing until you have watched
 it fail, and doubly so here, where the neighbouring test with the right *name* was passing under
@@ -391,27 +402,37 @@ both defects the whole time.
 
 ## Cross-references
 
-- `conventions/redis-multi-rejection-retry-precondition-isredisavailable-2026-05-19.md` names the
+- `agents/docs/solutions/conventions/redis-multi-rejection-retry-precondition-isredisavailable-2026-05-19.md` names the
   same downstream consequence (a delete that did not commit leaves the canonical row alive) from the
   opposite direction: it is about how a TEST must force `isRedisAvailable()` false to reach a
   fallback leg. This entry is about how PRODUCTION must not consult it on a compensating delete. Read
   as a pair.
-- `conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` and
-  `conventions/redis-advisory-lock-with-lua-cas-nonce-2026-05-15.md` are the readiness-gated cases
+- `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` and
+  `agents/docs/solutions/conventions/redis-advisory-lock-with-lua-cas-nonce-2026-05-15.md` are the readiness-gated cases
   this rule deliberately does not touch. See the scope paragraph under Guidance.
 - `backend/src/lib/ipfs-upload-token.ts` (`consumeUploadToken`) still carries the original shape:
   atomic `getdel` plus an existence-guarded compensating `del` on the fallback leg, and no record of
   the spend. Its docblock claims it mirrors the fresh-auth primitive, and that mirror claim is a
-  two-way obligation. The gap has widened rather than closed: fresh-auth now covers the readiness-skip
-  case (Defect 2) and the retry-budget case (Defect 3), while the upload-token store covers neither
-  and its comments still present the compensating delete as what closes the window. What contains the
-  impact there today is not the delete but the `file_sha256` re-verification at the pin route and the
-  independent pin cap. Treat the divergence as a correctness-of-claim problem: either mirror the
-  record, or downgrade the comments to describe the containment that actually applies. The trap is a
-  future change that widens what an upload token authorizes while reasoning from the older comment.
-- `conventions/final-state-assertions-cannot-discriminate-dispatch-from-confirmation-2026-09-01.md`
+  two-way obligation. What actually diverges is narrower than it first looks. Defect 2 never applied
+  there: that compensating delete was guarded on the client's existence from the start. Defect 3 does
+  apply, since there is no record of the spend behind a delete the offline queue can flush unsent.
+  The inline comment at the compensating delete already concedes the residual window it leaves; the
+  overclaim is in the module docblock above it, which still states flatly that single-use is enforced
+  by the `GETDEL` and the delete-on-read. What contains the impact there today is not the delete but
+  the `file_sha256` re-verification at the pin route and the independent pin cap. Treat the
+  divergence as a correctness-of-claim problem: either mirror the record, or downgrade the module
+  docblock to describe the containment that actually applies. The trap is a future change that
+  widens what an upload token authorizes while reasoning from the older claim.
+- `agents/docs/solutions/conventions/final-state-assertions-cannot-discriminate-dispatch-from-confirmation-2026-09-01.md`
   is the test-side statement of the rule this entry makes about production: a command that was merely
   issued is not a command that was applied. It shows why a suite cannot notice the difference - an
   assertion on the settled state converges under both shapes whenever Redis is healthy - and what a
   discriminating assertion looks like. Read it before trusting any green test that claims to pin the
   record-then-delete-then-retire ordering prescribed above.
+- `agents/docs/solutions/conventions/fail-closed-guard-must-replace-the-recovery-a-round-trip-provided-2026-09-07.md` is
+  this entry's opening rule playing out in the frontend. A fail-closed type guard added ahead of an
+  upload request deleted the remintable-401 handler that had been evicting a poisoned proof cache as
+  a side effect, so a condition that healed itself on the next attempt became a lockout for the rest
+  of the cached entry's life. Different subsystem, no atomicity involved, same check: name what the
+  step you are removing was buying before you remove it. Read as the pair that generalizes the rule
+  beyond Redis.
