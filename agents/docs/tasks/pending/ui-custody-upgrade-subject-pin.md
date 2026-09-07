@@ -484,3 +484,91 @@ of the adversarial lens, so eleven findings came back with no votes at all. The
 script's majority rule reports those as refuted; they are not. Points 1 to 4
 above are unrefuted findings re-verified against the code by hand, not the
 script's survivors, of which there were none.
+
+## Architect re-review (2026-09-07) — HELD PENDING FIXES:
+
+Re-review of commits 1ac83dc6, b89313d0 via /ce-code-review (five reviewers: correctness,
+adversarial, testing, project-standards, learnings; the two actionable findings validated by an
+independent pass; the cross-model pass did not run because no different-provider CLI is installed
+on this machine). All three items held on 2026-09-06 are FIXED: the before-cleanup copy scopes its
+retry to the tab and page and carries the fallback as its own sentence, all fifteen stubs are
+byte-identical to en.json, the `### Updated 2026-09-06` block is revised in place, and the
+copy-contract test pins both halves plus the after-cleanup sibling's no-Try-Again promise; the
+title reads `handleRetry: resets wizard to idle on a retryable-reset sub-case`;
+`NON_RETRYABLE_UPGRADE_ERROR_KEYS` has no hits under frontend/. Verified independently:
+`RETRYABILITY` carries exactly three `retryable-backend-only` keys (proofRejected,
+backendUnavailable, sessionChangedBeforeCleanup), matching the corrected describe header; the R2
+guard reads `RETRYABILITY[this.upgradeErrorKey] !== 'retryable-backend-only'`; the clause-(c)
+companion `backend/tests/routes/custody-upgrade.test.ts` exists and asserts the derived_pubkey
+rejection; the three touched test files pass (147 tests). No functional defect. Five fixes before
+archive, all prose except item 4:
+
+1. **Sweep the second copy of the overclaim out of the pin suite.** Your point 4 says both "only"
+   claims were replaced; b89313d0's diff for
+   `pages-settings-custody-upgrade-subject-pin.test.js` touches only the header paragraph, and
+   the comment above the `fallbackIndex` lookup in the copy-contract block still says the
+   fallback "is the only instruction in the message that survives an unmount". The message's
+   last sentence, keep your phrase safe, survives too, which is the reason you gave for
+   rewording the `_endUpgradeAsSessionChanged` docblock. Mirror that docblock's replacement:
+   the Try Again the rest of the message is about goes with the page, so a reader who has
+   already left needs somewhere else to be sent. Grep `only instruction` and `only route` under
+   frontend/ after the edit and report the count in the signal.
+
+2. **Name the distinguishing property in the copy-contract describe header.** Its opening
+   sentence says the before-cleanup sub-case is "the only upgrade error whose recovery is a
+   button on the page that renders it". `RETRYABILITY` marks six keys non-terminal and every one
+   of them recovers through the same `x-show="canRetryUpgrade"` Try Again dispatched by
+   `handleRetry`. What singles this key out is that its recovery needs a re-login before that
+   button can act. Say that instead; the rest of the paragraph already explains the mount
+   dependency.
+
+3. **Drop the "only route out" framing from the STUBS.md `### Updated 2026-09-06` block.** The
+   rewritten paragraph says the fallback "is the only route out that still holds once the
+   in-tab retry is gone". Your own point 4 removed the paired "one route the message can send"
+   wording from settings.js for being loose (a fresh wizard run with the rotated phrase also
+   completes the cleanup), and the same commit wrote the framing back into the ledger. Say it
+   is the route the message gives a reader the in-tab retry can no longer reach, and keep the
+   "dropping or merging it silently strands that reader" clause.
+
+4. **Name the sign-in control that keeps the page.** Decision (architect and user, 2026-09-07).
+   In the one state where the before-cleanup message is on screen, another light account is
+   signed in from a different tab, the header shows that account's menu, and the reader has to
+   sign out first. After the sign-out the page offers two buttons both labelled sign in: the
+   header's renders `signIn.signInButton` ("Sign in"), calls `handleSignIn` ->
+   `auth.connect()` -> `signInModal.prompt()`, and keeps the settings page mounted; the
+   signed-out body's renders `settings.signIn` ("Sign In"), calls `navigate('/login')`,
+   unmounts the page, and `destroy()` takes the seed and the pin with it. The copy says "in
+   this tab, without leaving this page" but not which control satisfies that, so the reader
+   guesses between two identically labelled buttons, one of which destroys the state the
+   instruction depends on. Change `upgrade.sessionChangedBeforeCleanup` in en.json and the
+   fifteen stubs so the retry sentence tells the reader to sign out, then sign in again as
+   {username} using the Sign in button in the page header, without leaving this page, then
+   press Try Again to finish the upgrade; keep the fallback and the keep-your-phrase sentences
+   as they are. Wording is yours, no em-dashes, and "Sign in" byte-equal to
+   `signIn.signInButton` the way "Try Again" is byte-equal to `common.tryAgain`. Revise the
+   existing `### Updated 2026-09-06` block in STUBS.md in place (no new heading) to say the
+   header control is now named and that anyone who began from the second revision
+   retranslates. Extend the copy-contract test so the retry sentence must contain
+   `messages.signIn.signInButton` and a reference to the header, so a future copy edit cannot
+   drop the affordance silently. The Keychain path of that modal mints custody 'self' and
+   collapses the upgrade section (your point 2, recorded on 2026-09-06, still stands and is
+   not held); the copy still names no sign-in method.
+
+5. **Name what the header pointer points at.** The new header paragraph ends "so the carve-out
+   below does not apply to it". "Carve-out" is a generic noun here (the same header uses it
+   for three clauses) and the pointer crosses a paragraph boundary, which the positional-anchor
+   convention treats as rot; the pre-commit hook did not fire only because "carve-out" is not
+   in its noun list. Write "so carve-out clauses (a) to (c) below do not apply to it", or
+   restate without the pointer.
+
+Recorded, not held: the `!auth.isConnected` half of `_upgradeSubjectDiverged` never displays the
+before-cleanup copy (the signed-out body's only affordance is the one that unmounts), an accepted
+cost of the 2026-09-06 decision; no test pins that header `handleSignIn` and `handleDisconnect`
+leave the router untouched, which is what "without leaving this page" encodes; the pre-existing
+`_endUpgradeAsSessionChanged` docblock sentence "a fresh wizard run is structurally unavailable"
+holds only when the user re-enters the original seed. The testing gaps recorded on 2026-09-06
+stand unchanged.
+
+Comment-anchor reminder as before: no task slugs, round numbers, or line numbers in code or test
+comments; anchor on `_endUpgradeAsSessionChanged`, `handleRetry`, `retryUpgradeBackend`,
+`RETRYABILITY`, `signIn.signInButton`, and the sub-case key names.
