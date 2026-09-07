@@ -89,8 +89,10 @@
  *      files under `backend/tests`.
  *
  * Arms 4 and 5 are about a risk-class token, which the reverse form does not
- * carry; in its place it is checked that the named file cites this one back in
- * the forward form, as above.
+ * carry; in its place it is checked that the named file cites this one back
+ * with a FORWARD citation, which is then resolved and token-checked in its own
+ * right (THE STRUCTURED FORM, arms 1 to 5), so the risk class is witnessed at
+ * the end that owes the justification rather than on the reverse declaration.
  *
  * WHY THE TOKEN AND NOT THE FILENAME. A check built on finding the cited
  * FILENAME inherits the exact blindness it exists to remove: the filename is
@@ -124,18 +126,41 @@
  * corpus's own clause-(a) wording standing above a correct clause-(c) citation
  * is accused, and the message blames the citation.
  *
- * Two wrap-shaped gaps are left open on purpose, both where closing one would
- * open a worse hole in the other direction. A SUFFIX-LESS name broken at its
- * own dot (`settings.` / `test`) is read only on the spaced view, because the
- * glued view cannot tell it from a sentence ending `e.g.` above a line
- * beginning `test-only`, and that abbreviation is the commoner write. And the
- * claim-shaped span gives the qualifier a bounded run before the noun: a
- * qualifier longer than that is not claim-shaped here. Any finite bound can be
- * stepped over, and widening it was measured (the corpus stays green well past
- * the current bound) and declined, because every character of extra room
- * accuses more ordinary prose, and this file is deliberately precision-biased
- * for the same reason the pre-commit anchor gate scopes itself to known slug
- * prefixes.
+ * Gaps left open on purpose, each where closing it would open a worse hole in
+ * the other direction:
+ *
+ *   - A SUFFIX-LESS name broken at its own dot (`settings.` / `test`) is read
+ *     only on the spaced view of `namesATestFile`, because the glued view
+ *     cannot tell it from a sentence ending `e.g.` above a line beginning
+ *     `test-only`, and that abbreviation is the commoner write.
+ *
+ *   - The claim-shaped span in `LOOSE_CLAIM_SRC` gives the room BETWEEN the
+ *     noun `companion` and its colon a bounded run (`{0,8}`). A label whose
+ *     colon lands nine or more characters past `companion` matches neither the
+ *     label nor the loose claim, so the block yields labels=0 and unparsed=0
+ *     and is dropped before any class is assigned — a claim gone unaudited,
+ *     the same silent-drop outcome the wrapped-qualifier fix closed. Worked
+ *     escape, pinned by a boundary probe below: a seven-character gap
+ *     (`companion here:`) is caught, a nine-character one is not. Any finite
+ *     bound can be stepped over, and widening THIS window was measured (the
+ *     corpus stays green well past `{0,8}`) and declined, because every
+ *     character of extra room after the noun accuses more ordinary prose about
+ *     a real code path and some unrelated companion thing, and this file is
+ *     deliberately precision-biased for the same reason the pre-commit anchor
+ *     gate scopes itself to known slug prefixes. The run BEFORE the noun
+ *     (`{0,80}`) is bounded for the mirror reason; it is wide because a real
+ *     qualifier phrase can be long, and a qualifier longer than that is simply
+ *     not claim-shaped here.
+ *
+ *   - The label and loose-claim detectors read the raw and rejoined (spaced)
+ *     views only, never the glued one, so a wrap falling INSIDE the noun itself
+ *     (`compan` / `ion`) is invisible to them: rejoined it is `compan ion`,
+ *     which is not `companion`. Only `namesATestFile` reads the glued view,
+ *     because that view exists to repair a wrapped FILENAME, and gluing the
+ *     label and loose detectors instead would fuse `companion` into the word
+ *     the wrap put beside it (`companionfixtures`) and mangle every ordinary
+ *     wrapped label rather than catch the rare noun-internal one. The noun does
+ *     not wrap inside itself in this corpus; the gap is recorded, not closed.
  *
  * WHY COMMENTS, MOCK BODIES AND TITLES DO NOT COUNT (arm 4). Risk-class tokens
  * appear constantly in prose, including prose that pins the OPPOSITE of the
@@ -200,11 +225,15 @@
  * naming a test file in a block that is neither the labelled one nor adjacent
  * to it, and so is a file named without `.test`/`.spec` and without a
  * `tests/<dir>/` path in front of it. Nor does the citation-shaped test reach
- * across a sentence break: a span whose words run `real ... path. The ...
- * companion ...:` is two sentences to a reader and is read as two here. That
+ * across a sentence break followed by a CAPITAL: a span whose words run
+ * `real ... path. The ... companion ...:` starts a new sentence at `The` and
+ * is read as two here, while a lower-case continuation (the wrapped filename
+ * `ops.` / `test.ts`) is deliberately crossed. That distinction is load-bearing
+ * only because `looseClaimPattern` omits the `i` flag; under `i` the refusal's
+ * `(?![a-z])` folds to accept capitals too and stops firing at all. The
  * refusal, the tight room between the noun and the colon, and cutting the
- * block's own citations out before the scan are what keep it off ordinary
- * technical prose, which mentions a real code path constantly. The label is
+ * block's own citations out before the scan are the three things that keep it
+ * off ordinary technical prose, which mentions a real code path constantly. The label is
  * the only
  * anchor; recall beyond it would need an unbounded phrase list that rots. The
  * label pattern accepts `real`, `path` and `companion(s)` joined by dashes or
@@ -801,7 +830,7 @@ const STOP_WORDS =
  *  \`some.test.ts\`` was neither a label nor (lacking a colon) a citation-shaped
  *  claim, so the block was dropped unaudited. Changing one word of it
  *  (`mock-free`) was caught. */
-const QUALIFIER = String.raw`(?:(?!(?:${STOP_WORDS})(?![\w-]))[(\[\x60'"*_]*[\w-]+[)\]\x60'"*_]*[\s-]+)`;
+const QUALIFIER = String.raw`(?:(?!(?:${STOP_WORDS})(?![\w-]))[(\[\x60'"*_]*[\w-]+[)\]\x60'"*_]*[\s-]{1,4})`;
 
 /**
  * The label, as a pattern source shared by the label count and both citation
@@ -811,9 +840,19 @@ const QUALIFIER = String.raw`(?:(?!(?:${STOP_WORDS})(?![\w-]))[(\[\x60'"*_]*[\w-
  * SQL companion`, `Realpath companion`, `real-path-companion`, `Real-path
  * (Postgres) companion`, `Real-path \`argon2\` companion`, `**Real-path**
  * companion`, `Real-path \`companion\`` and `@realPathCompanion` all count.
+ *
+ * Every run of dashes-or-spaces the label admits is bounded (`{0,4}` between
+ * the words, `{1,4}` at a qualifier's tail, in QUALIFIER above). Unbounded
+ * (`[\s-]*` / `[\s-]+`), two adjacent runs can partition the same stretch of
+ * dashes in many ways, and a section underline or separator written directly
+ * against `real-path` makes the label backtrack super-linearly over those
+ * partitions before it fails for want of `companion` — 180 dashes cost seconds.
+ * A canary slow enough to look hung gets disabled, so the runs are bounded to
+ * a length no honest label spelling in this corpus exceeds. The cost is pinned
+ * by a probe below.
  */
 const LABEL_SRC =
-  String.raw`real[\s-]*path[\s-]*(?:[*_\x60]+[\s-]*)?${QUALIFIER}{0,2}(?:<[a-z]+>|[*_\x60]+)?companions?(?:\(s\))?`;
+  String.raw`real[\s-]{0,4}path[\s-]{0,4}(?:[*_\x60]+[\s-]{0,4})?${QUALIFIER}{0,2}(?:<[a-z]+>|[*_\x60]+)?companions?(?:\(s\))?`;
 
 /** Anything that keeps a phrase going: a comma, a bracket, the dots inside a
  *  filename. Not a sentence break, which ends the phrase and begins an
@@ -821,11 +860,17 @@ const LABEL_SRC =
  *  suites pin it:" reads as a claim. Load-bearing now that the span is matched
  *  across the wraps of a whole block rather than within one line.
  *
- *  A new sentence does not begin with a lower-case letter, and a filename the
- *  docblock wrapped at its own dot (`custody-consent-ops.` / `test.ts`) rejoins
- *  as one that appears to: without that exemption the wrap spells a sentence
- *  break in the middle of a name, the span stops there, and a claim carrying
- *  the wrapped name goes unseen. */
+ *  A new sentence begins with a capital, so `[.;!?]\s` before a NON-lower-case
+ *  letter ends the phrase; a filename the docblock wrapped at its own dot
+ *  (`custody-consent-ops.` / `test.ts`) rejoins as `. test.ts`, whose
+ *  lower-case continuation is NOT a sentence break, so the span crosses it and
+ *  the wrapped name is still seen. That lower-case-vs-capital distinction is
+ *  the whole point of the `(?![a-z])`, so the pattern this appears in
+ *  (`looseClaimPattern`) is built WITHOUT the `i` flag: under `i`, `[a-z]`
+ *  folds to match `A-Z` too, the lookahead can no longer tell a capital from a
+ *  lower-case letter, the refusal is inert, and `real path. The companion:`
+ *  is read as a claim. The literal words in `LOOSE_CLAIM_SRC` are spelt as
+ *  case classes to keep case-insensitive matching without the flag. */
 const CLAIM_SPAN = String.raw`(?:(?![.;!?]\s(?![a-z]))[^\n])`;
 
 /** What a reader takes for a citation even when the label does not parse: the
@@ -835,15 +880,22 @@ const CLAIM_SPAN = String.raw`(?:(?![.;!?]\s(?![a-z]))[^\n])`;
  *  parsing is exactly the one the docblock wraps. The room after the noun stays
  *  tight: prose about a real code path and some unrelated companion thing
  *  ("running on the real path with a mocked companion here:") is common, and
- *  every extra character of slack there accuses more of it. */
+ *  every extra character of slack there accuses more of it.
+ *
+ *  The literal words are case CLASSES, not `real`/`path`/`companion` under an
+ *  `i` flag, because the sentence-break refusal inside `CLAIM_SPAN` needs
+ *  `(?![a-z])` to mean lower-case only; see that docblock. The dash-or-space
+ *  run between the words is bounded for the same reason `LABEL_SRC`'s is. */
 const LOOSE_CLAIM_SRC =
-  String.raw`real[\s-]*path${CLAIM_SPAN}{0,80}?companions?(?:\(s\))?${CLAIM_SPAN}{0,8}?:`;
+  String.raw`[Rr]eal[\s-]{0,4}[Pp]ath${CLAIM_SPAN}{0,80}?[Cc]ompanions?(?:\(s\))?${CLAIM_SPAN}{0,8}?:`;
 
 /** Fresh objects on every call. All are `g`-flagged, and a shared instance
- *  carries `lastIndex` between calls, which silently skips matches. */
+ *  carries `lastIndex` between calls, which silently skips matches.
+ *  `looseClaimPattern` alone omits `i`: its source spells the label words as
+ *  case classes so that `CLAIM_SPAN`'s `(?![a-z])` keeps meaning lower-case. */
 const labelPattern = (): RegExp => new RegExp(LABEL_SRC, 'giu');
 const labelAt = (): RegExp => new RegExp(`^${LABEL_SRC}`, 'iu');
-const looseClaimPattern = (): RegExp => new RegExp(LOOSE_CLAIM_SRC, 'giu');
+const looseClaimPattern = (): RegExp => new RegExp(LOOSE_CLAIM_SRC, 'gu');
 const AFTER_LABEL = String.raw`(?:</[a-z]+>|[*_\x60]+)?`;
 const LINE_END = String.raw`(?:\s*\([^\n()]*\))?\.?[ \t]*(?=\n|$)`;
 const forwardPattern = (): RegExp =>
@@ -1126,7 +1178,15 @@ export function citationViolations(
     return out;
   }
   if (citation.kind === 'reverse') {
-    const back = citationsInSource(source).filter((c) => c.companionPath === citingRepoPath);
+    // The back-link is resolved by comparing PATHS, and a path parsed out of
+    // the named file has not been through the canonicalisation arm above (that
+    // arm guards the citing side). Canonicalise both sides here rather than
+    // trusting the caller to, so the link holds structurally and not by
+    // call-site position: `backend/tests/routes/./this.test.ts` written as a
+    // back-citation still answers a declaration this file makes, and a `..`
+    // spelling that resolves elsewhere still does not.
+    const citingCanonical = path.posix.normalize(citingRepoPath);
+    const back = citationsInSource(source).filter((c) => path.posix.normalize(c.companionPath) === citingCanonical);
     if (back.length === 0) {
       out.push(
         `${companionPath} is named as the suite this file is the companion for, but it ` +
@@ -1713,6 +1773,40 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       expect(unparsedClaims(prose), prose).toHaveLength(0);
       expect(unparsedClaims(prose.replace('. ', '.\n     ').replace('; ', ';\n     ')), prose).toHaveLength(0);
     }
+    // The sentence-break refusal, in both directions. It fires on a CAPITAL
+    // after the break, so `. The companion:` is two sentences and no claim; it
+    // is deliberately crossed by a LOWER-CASE continuation (a filename the wrap
+    // broke at its own dot), so `. the companion:` is read as one claim. This
+    // is the item the refusal exists for, and it works only because
+    // `looseClaimPattern` omits the `i` flag: under `i` the `(?![a-z])` folds
+    // to accept capitals too and the first assertion below flips to 1.
+    expect(unparsedClaims('runs on the real path. The companion: covered')).toHaveLength(0);
+    expect(unparsedClaims('runs on the real path. the companion: covered')).toHaveLength(1);
+    // The same distinction across a wrap, so it is not an artifact of one line.
+    expect(unparsedClaims(block(' runs on the real path.', '     The companion: covered'))).toHaveLength(0);
+    expect(unparsedClaims(block(' runs on the real path.', '     the companion: covered'))).toHaveLength(1);
+
+    // The room between the noun and its colon is `{0,8}`: a near-miss claim (a
+    // path in the qualifier slot stops it parsing as the label) whose colon
+    // lands nine or more characters past `companion` matches neither the label
+    // nor the loose claim, so its block yields labels=0 and unparsed=0 and is
+    // dropped unaudited. Eight characters are caught, nine are not. The gap is
+    // recorded in the header, not closed.
+    const nearMissGap = (afterNoun: string): string =>
+      ` (c) Real-path (also routes/foo.test.ts) companion${afterNoun}: covered`;
+    expect(unparsedClaims(nearMissGap('x'.repeat(8))), '8-char gap').toHaveLength(1);
+    expect(unparsedClaims(nearMissGap('x'.repeat(9))), '9-char gap').toHaveLength(0);
+
+    // `labelAt`'s `^`: a citation-shaped near-miss is still reported when a
+    // later, UNSTRUCTURED label (no citation, so `proseRemainder` keeps it)
+    // sits in the same rejoined span. Without the `^`, `labelAt` would find
+    // that later label anywhere in the slice and wrongly read the near-miss as
+    // parsed, so the near-miss would pass unseen.
+    expect(unparsedClaims(block(
+      ' (c) Real-path (also routes/foo.test.ts) companion: covered elsewhere',
+      '     and the Real-path companion pins it for real',
+    ))).toHaveLength(1);
+
     // Rejoining the block makes it one line, so a citation's own `companion:`
     // is within reach of any earlier mention of a real path. These are honest
     // headers a real author writes, and each was accused when the scan ran on
@@ -1841,11 +1935,35 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       .not.toMatch(tokenMatcher('SESSION_INVALIDATED'));
     expect(codeOf("queryMock.mockResolvedValue({\n  rows: [{ sessions_invalidated_at: 1 }],\n});")).not.toMatch(tokenMatcher('sessions_invalidated_at'));
     expect(codeOf("vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array([1]))));")).not.toMatch(tokenMatcher('Uint8Array'));
+    // Every member of MOCK_CALL_RE strips its call, so a token occurring only
+    // inside a mocking call does not count as an assertion. One representative
+    // call per member, so removing any single member from the pattern turns
+    // its probe red. `mock`, `doMock`, `spyOn`, `stubGlobal`, `fn`,
+    // `mockResolvedValue` and `mockRejectedValue` are pinned by the shaped
+    // cases above; these are the remaining members and the `Once` suffix.
+    for (const call of [
+      "vi.unmock('../ALPHA.js');",
+      "vi.doUnmock('../ALPHA.js');",
+      'const h = vi.hoisted(() => ({ ALPHA: 1 }));',
+      "vi.stubEnv('ALPHA', '1');",
+      'const m = vi.mocked(ALPHA);',
+      "const im = vi.importMock('../ALPHA.js');",
+      'stub.mockReturnValue(ALPHA);',
+      'stub.mockImplementation(() => ALPHA);',
+      'ALPHA.mockReturnThis();',
+      "stub.mockName('ALPHA');",
+      'stub.mockReturnValueOnce(ALPHA);',
+    ]) {
+      expect(codeOf(call), call).not.toMatch(tokenMatcher('ALPHA'));
+    }
     expect(codeOf("describe('requireFreshAdminAuth - JWT path', () => {\n  it('rejects recordAccreditationCompletion', () => {});\n});"))
       .not.toMatch(tokenMatcher('requireFreshAdminAuth'));
     // A spec title built as a template, which is how a table-driven suite
-    // names its cases, is a title like any other.
+    // names its cases, is a title like any other. All three members of
+    // SPEC_CALL_RE (`describe`, `it`, `test`) title-strip, so `test` gets its
+    // own case rather than riding on the `describe`/`it` ones above.
     expect(codeOf('it(`rejects ${name} for requireFreshAdminAuth`, () => {});')).not.toMatch(tokenMatcher('requireFreshAdminAuth'));
+    expect(codeOf("test('asserts requireFreshAdminAuth in the JWT path', () => {});")).not.toMatch(tokenMatcher('requireFreshAdminAuth'));
     expect(codeOf("it('x', () => { expect(hafQueryMock).toHaveBeenCalled(); });")).not.toMatch(tokenMatcher('hafQuery'));
     // The same boundary at the other end: a token that is only the TAIL of a
     // longer identifier is not spelt by it either, so citing `AuthMethod` is
@@ -1896,13 +2014,23 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     // Self-citation.
     expect(citationViolations(citing, forward(citing, 'ALPHA'), synthetic, stub('ALPHA;')))
       .toEqual([expect.stringContaining('cites itself')]);
-    // A source-scanning canary or a support module is no companion.
+    // A source-scanning canary or a support module is no companion. Both
+    // alternatives of NON_RUNTIME_DIR_RE are probed in the FORWARD direction:
+    // the eslint one, and the support one, so removing either half of the
+    // alternation turns a probe red rather than passing unseen.
     expect(citationViolations(citing, forward('backend/tests/eslint/no-foo.test.ts', 'ALPHA'), synthetic, stub('ALPHA;')))
+      .toEqual([expect.stringContaining('witnesses nothing')]);
+    expect(citationViolations(citing, forward('backend/tests/support/helper.test.ts', 'ALPHA'), synthetic, stub('ALPHA;')))
       .toEqual([expect.stringContaining('witnesses nothing')]);
     // Path shape: tests-relative and `./`-prefixed forms are rejected before the
     // filesystem is touched, so the message names the required form.
     for (const bad of [
       'routes/notifications.test.ts', './backend/tests/routes/a.test.ts', 'backend/src/db.ts',
+      // A file under the test tree that is not a `.test.ts` file: the shape
+      // pattern's `\.test\.ts` tail is the only arm rejecting it (the prefix
+      // and canonicalisation arms both pass), so without this entry that tail
+      // can be neutered unseen.
+      'backend/tests/routes/helper.ts',
       // Interior segments satisfy the shape pattern textually (`.` and `/` are
       // both word-ish there) while resolving somewhere else. Each of these is
       // the CITING file spelt so the self-citation arm cannot see it, and the
@@ -1950,6 +2078,13 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     expect(citationViolations(citing, reverse('backend/tests/routes/mocked.test.ts'), synthetic,
       stub('/**\n * Real-path companion: `backend/tests/routes/other.test.ts` [ALPHA]\n */\nconst x = 1;')))
       .toEqual([expect.stringContaining('carries no companion citation naming')]);
+    // The back-link is resolved by CANONICAL path on both sides, so a back
+    // citation written with a `/./` segment still answers this declaration.
+    // Reverting the filter to string equality (the shape it had before this
+    // round) would miss it and falsely accuse an honest link.
+    expect(citationViolations(citing, reverse('backend/tests/routes/mocked.test.ts'), synthetic,
+      stub('/**\n * Real-path companion: `backend/tests/routes/./synthetic.test.ts` [ALPHA]\n */\nconst x = 1;')))
+      .toEqual([]);
     // The named file's citations are read as COMMENTS, by the same collector
     // that reads this one's, rather than off its raw text. The corpus wraps a
     // path across a docblock's continuation, and raw text carries the ` * `
@@ -1999,6 +2134,23 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     expect(tokenReach('createApp', sources)).toBeGreaterThan(TOKEN_FILE_CAP);
     expect(tokenReach('SESSION_INVALIDATED', sources)).toBeLessThanOrEqual(TOKEN_FILE_CAP);
     expect(tokenReach('SESSION_INVALIDATED', sources)).toBeGreaterThan(0);
+  });
+
+  it('the label pattern does not backtrack super-linearly on a run of dashes', () => {
+    // A section underline or separator written directly against `real-path`
+    // (`real-path------------...`) makes the label partition the dash run
+    // between its own `[\s-]` quantifiers and the qualifier's trailing one in
+    // many ways, and every partition is explored before the match fails for
+    // want of `companion`. Unbounded, ~180 dashes cost seconds; a canary slow
+    // enough to look hung gets disabled. The `{0,4}`/`{1,4}` bounds cap each
+    // run so the partitions are constant, not O(n). This pins the cost so it
+    // cannot regress unseen; the bound is generous (a few ms bounded,
+    // seconds-to-timeout unbounded) so machine variance cannot flake it.
+    const adversarial = `real-path${'-'.repeat(400)}x`;
+    const start = performance.now();
+    expect(labelCount(adversarial)).toBe(0);
+    const elapsed = performance.now() - start;
+    expect(elapsed, `label matching took ${elapsed.toFixed(1)}ms on a 400-dash run`).toBeLessThan(250);
   });
 
   it('the ratchet classifies planted blocks correctly and the backlog reconciler names every disagreement', () => {
