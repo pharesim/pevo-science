@@ -290,9 +290,10 @@ describe('factor selection', () => {
 
 describe('password-factor memo', () => {
   it('a password holder is asked once per tab, not once per acquisition', async () => {
-    // An account that has a password cannot lose one without a navigation that
-    // resets module state, so re-fetching the status on every acquisition is
-    // pure latency in front of the modal. A memo hit is an OBSERVED answer.
+    // A password is lost through one rare transition (an ORCID recovery with
+    // no new password), and a memo that outlives it has its own erasers, so
+    // re-fetching the status on every acquisition would be pure latency in
+    // front of the modal. A memo hit is an OBSERVED answer.
     mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
 
     expect(await resolvePasswordFactor()).toEqual({ usesPassword: true, assumed: false });

@@ -702,30 +702,32 @@ export function clearReturnPath() {
 // account whose only registered factor is ORCID. `mintViaPasswordFactor`
 // consumes the flag and hands such callers back to their ORCID factor.
 //
-// A positive answer is memoized per username for the tab: an account that has
-// a password cannot lose one without a navigation that resets module state, so
-// re-fetching on every acquisition is pure latency. The negative and assumed
-// answers are deliberately NOT memoized — a passwordless user who sets a
-// password in settings must be able to use it on their next acquisition, and
-// a guess must never harden into a fact. A successful password MINT under an
-// assumed factor is no longer a guess — the backend verified the password —
-// so it does memoize, via `beginPasswordMintReport`. The memo is keyed on the
-// authenticated username so a re-login as a different account in the same tab
-// cannot inherit it, and `auth.disconnect()` drops it outright alongside the
-// proof caches.
+// A positive answer is memoized per username for the tab. A password is lost
+// through one transition only, an ORCID recovery with no new password (B → C
+// in ARCHITECTURE.md § 6.3), so re-fetching the status on every acquisition
+// would be pure latency; a memo that outlives that transition is retired by
+// the two erasers (the subject scrub and the mint route's second consecutive
+// rejection). The negative and assumed answers are deliberately NOT memoized
+// — a passwordless user who sets a password in settings must be able to use
+// it on their next acquisition, and a guess must never harden into a fact. A
+// successful password MINT under an assumed factor is no longer a guess — the
+// backend verified the password — so it does memoize, via
+// `beginPasswordMintReport`. The memo is keyed on the authenticated username
+// so a re-login as a different account in the same tab cannot inherit it.
 //
-// The memo has one more eraser, at the mint route: a second consecutive
-// rejection of the password (`mintViaPasswordFactor`'s spent re-prompt). The
-// memo can outlive the password it vouches for. The one transition that drops
-// a password, an ORCID recovery with no new password (B → C in
-// ARCHITECTURE.md § 6.3), can run in another tab, and a re-login as the same
-// subject keeps this tab's state on purpose, so the subject scrub never runs
-// here. A memo hit answers "observed", which is exactly the answer that never
-// falls back to ORCID, so a stale memo would prompt for a password that no
-// longer exists on every action until a page reload. Two rejections at the
-// verifying route outrank the memo exactly as one success there outranks the
-// status endpoint; a real password holder who mistypes twice pays one extra
-// status read before the memo is rebuilt.
+// Both erasers run through `clearPasswordFactorMemo`. The subject scrub
+// (`auth.disconnect()`, and a login that changes the JWT subject) drops the
+// memo outright alongside the proof caches. The mint route drops it on a
+// second consecutive rejection of the password (`mintViaPasswordFactor`'s
+// spent re-prompt), because the memo can outlive the password it vouches for:
+// the recovery that drops a password can run in another tab, and a re-login
+// as the same subject keeps this tab's state on purpose, so the subject scrub
+// never runs here. A memo hit answers "observed", which is exactly the answer
+// that never falls back to ORCID, so a stale memo would prompt for a password
+// that no longer exists on every action until a page reload. Two rejections
+// at the verifying route outrank the memo exactly as one success there
+// outranks the status endpoint; a real password holder who mistypes twice
+// pays one extra status read before the memo is rebuilt.
 let _passwordFactorMemo = null;
 // Pairs the memo with `clearPasswordFactorMemo()`: a clear landing while a
 // status fetch is in flight must not be undone by that fetch resolving
