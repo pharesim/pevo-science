@@ -1082,3 +1082,162 @@ which the first implementation round already fixed. No new `/ce-compound` entry
 is warranted for this round: the house-style detection lesson and the
 per-decision-point mutation lesson are both already covered by existing entries
 in the store.
+
+## Backend re-review signal (2026-09-07, commit 2ebe064e)
+
+All three held items and the four folded-in items landed, in one commit that
+touches only the canary
+`backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`.
+No other file is in the diff, so no sibling suite, the shared walker, or the
+two converted middleware exemplars are affected.
+
+### Item 1 — the sentence-break refusal now fires
+
+It was inert because `looseClaimPattern` carried the `i` flag, under which
+`CLAIM_SPAN`'s `(?![a-z])` folds to reject capitals too and can no longer tell a
+new sentence from a continuation. Fixed at the flag: `looseClaimPattern` is
+built with `gu`, and `LOOSE_CLAIM_SRC` spells its literal words as case classes
+(`[Rr]eal`, `[Pp]ath`, `[Cc]ompanions?`) so case-insensitive matching survives
+the dropped flag. `real path. The companion:` (capital) is now two sentences and
+no claim; `real path. the companion:` (lower-case continuation, the
+wrapped-filename shape) is still one claim. Both directions are probed on one
+line and across a wrap. The two header sentences that asserted the refusal
+worked are corrected to state it fires only on a capital and only because the
+flag is omitted; the `CLAIM_SPAN` and `LOOSE_CLAIM_SRC` docblocks record the flag
+requirement so it cannot regress silently.
+
+### Item 3 — LABEL_SRC no longer backtracks on a dash run
+
+Every dash-or-space run the label admits is bounded: `real[\s-]{0,4}path[\s-]{0,4}`
+and the emphasis run `{0,4}` in LABEL_SRC, and QUALIFIER's trailing separator
+`[\s-]{1,4}`. `LOOSE_CLAIM_SRC`'s run between the words is bounded the same way.
+A new test times `labelCount` on `real-path` + 400 dashes and fails past 250ms;
+the bounded pattern runs in single-digit ms, the unbounded one hangs (confirmed
+red by the sweep, which reverted both bounds and timed out). All fifteen label
+spellings the corpus writes still match (the existing label-count probes are
+unchanged and green).
+
+### Fold-in items
+
+- (a) The header's gap paragraph now discloses THREE gaps and names the one
+  that actually drops a claim: the `{0,8}` room between the noun and its colon,
+  so a near-miss whose colon lands nine or more characters past `companion`
+  yields labels=0 and unparsed=0 and is dropped unaudited. Worked escape pinned
+  by a boundary probe: an 8-char gap is caught, a 9-char one is not. The
+  "widening was measured and declined" sentence is moved off the before-noun
+  `{0,80}` run and onto the `{0,8}` after-noun window, the bound that was
+  actually measured.
+- (b) `in the forward form, as above` is replaced by a restatement naming what
+  it points at (a forward citation, resolved and token-checked in its own
+  right, THE STRUCTURED FORM arms 1 to 5), so no bare cross-paragraph positional
+  anchor remains.
+- (c) The reverse back-link filter canonicalises BOTH sides
+  (`path.posix.normalize`), so the invariant holds structurally rather than by
+  call-site position. A back-citation written with a `/./` segment still answers
+  a declaration; a probe pins it (reverting to string equality goes red).
+- (d) The gap paragraph also records the label and loose detectors reading only
+  the raw and rejoined views, so a wrap inside the noun itself is invisible, and
+  why gluing them is not the fix (it would fuse `companion` into the next word
+  and mangle every ordinary wrapped label).
+
+### Item 2 — the enumeration, re-run and reported
+
+The previous claim ("69 arms swept, all red") was false. This pass re-ran a
+mutation sweep as a reproducible harness: neuter exactly one decision arm, run
+`npx vitest run <canary> --retry=0`, a RED run means the arm is pinned and a
+GREEN run means it is not, restoring the file between mutations (and confirming
+byte-for-byte restore against a pre-sweep snapshot). 60 arms were mutated across
+two batches: 59 went RED and 1 stayed GREEN. Zero locator misses.
+
+The four arms the hold named GREEN are now each pinned by a dedicated probe:
+
+- `labelAt`'s `^` anchoring — a near-miss followed by an UNSTRUCTURED label in
+  the same rejoined span (a structured one would be cut by `proseRemainder`, so
+  the probe uses a bare label); without the `^`, `labelAt` finds the later label
+  and skips the near-miss.
+- `COMPANION_PATH_RE`'s `\.test\.ts` tail — `backend/tests/routes/helper.ts`, a
+  file under the tree that is not a `.test.ts`; the prefix and canonicalisation
+  arms both pass it, so the tail alone rejects it.
+- `NON_RUNTIME_DIR_RE`'s `support` half in the FORWARD direction — a forward
+  probe naming a `tests/support/` file, beside the existing `eslint` one.
+- `MOCK_CALL_RE` members — one representative call per member not already
+  shaped-probed (`unmock`, `doUnmock`, `hoisted`, `stubEnv`, `mocked`,
+  `importMock`, `mockReturnValue`, `mockImplementation`, `mockReturnThis`,
+  `mockName`) plus the `Once` suffix, each asserting the token is stripped.
+
+Full arm-by-arm result, so the next pass re-runs the harness rather than
+re-deriving it (all RED unless marked):
+
+```
+citationViolations / ratchetClass / patterns / this round's fixes (36, all RED):
+  labelAt-caret            COMPANION_PATH_RE .test.ts      NON_RUNTIME_DIR_RE support (fwd)
+  MOCK_CALL_RE: hoisted stubEnv importMock unmock mocked mockReturnValue
+               mockReturnThis mockName + Once suffix
+  loose-i-flag (drop i)    loose-case-classes              label-bound-runs (ReDoS)
+  reverse-canonical        spec-test-member                canonicalisation-fwd
+  self-canary              self-citation                   nonruntime-eslint (fwd)
+  nonruntime-fwd-guard     tokenshape-notws                tokenshape-length
+  source-null              reverse-backlen                 reverse-mutual
+  token-in-code            insource-branch                 reach-cap
+  tokenmatcher-trail       tokenmatcher-lead
+  ratchet: exempt unparsed deficit-split leaky/structured
+
+reconcileBacklog / namesATestFile / scrubNonFiles / blockShape / snapshotDigest / parser (24):
+  reconcile: intguard-loop1 frozen-subset pin>landing no-entry intguard-loop2
+             deficit>pin deficit<pin                                    (all RED)
+  namesATestFile: ext-spaced ext-glued suffixless-spaced tree-spaced tree-glued (all RED)
+  scrubNonFiles: mail url example.test .env.test RE.test(                (all RED)
+  blockShape.exempt: glued-view RED ; raw-view GREEN (see below)
+  snapshotDigest: entry-sort order-independence RED ; hashes-entries RED
+  parser: jsdoc-leaf RED ; trailing-comment-ranges RED ; forwardPattern-global RED
+```
+
+Deliberately unpinned, and why: `blockShape.exempt`'s RAW disjunct
+(`text.includes(ALLOW_MARKER)`) is mathematically SUBSUMED by its glued disjunct.
+`glued` removes only newline-runs, so any contiguous marker the raw view sees the
+glued view sees too; no input can distinguish them, so the raw half cannot be
+pinned. It is dead but harmless (fails safe) and is left in place because it
+reads as the one-line case for a reader. That is the single GREEN, and it is a
+redundancy rather than a gap.
+
+Arms NOT re-mutated in this sweep, and why they stay pinned: the comment
+collector's exotic-position recall (the 20-assertion "collector reads comments
+as the language does" block), `citationsIn`'s capture-and-surround mechanics,
+`codeOf`'s literal-boundary handling, and `mixedScriptWords` — all exercised by
+their existing dedicated probe blocks, unchanged and green. The sweep targeted
+the decision arms in the functions this and the prior hold implicated plus the
+five listed above.
+
+### Deviations from the prescription
+
+1. The window after the noun is still NOT widened (`{0,8}`); the fold-in asked
+   only that the gap be disclosed and the measured-sentence re-attached. The
+   boundary probe pins the current bound, and a future round that widens it with
+   justification updates that one probe.
+2. Item 1 was fixed by dropping the `i` flag and spelling case classes rather
+   than by a case-sensitive post-filter (the hold offered either): single pass,
+   one source of truth.
+3. Fold-in (c) canonicalises inside the filter rather than rejecting a
+   non-canonical path at parse time (the hold offered either). Parse-time
+   rejection would drop a malformed forward citation from the audit and downgrade
+   its "not repo-relative" message to a vaguer backlog disagreement, so the
+   localized fix is strictly better.
+
+### Verification
+
+`npm run typecheck` passes (src + tests). The canary is green at 11 tests
+(~5.3s), run standalone without the Docker-IP env (it reads the filesystem only;
+the Redis/HAF connect errors in its log are caught and irrelevant). The sweep
+restored the file byte-for-byte after every mutation. A full anchor-rot check of
+every added line against the pre-commit gate's positional / slug / redirect /
+ordinal patterns returns zero hits. `npm run lint` not run: it lints `src/` only
+and no `src/` file changed.
+
+### [TODO Architect]
+
+`agents/docs/solutions/conventions/carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02.md`
+still ends its canary section with "Do not describe this canary as existing. It
+is a proposal," which is false, and its citation-shape sketch, its "diff gate
+first" sequencing paragraph, and (per the prior pass) its "Current state"
+Examples paragraph are all superseded. The file is architect-owned, so backend
+has not touched it; it is reconciled once at archive against the settled shape.
