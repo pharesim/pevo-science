@@ -107,6 +107,7 @@ import {
   clearPasswordFactorMemo,
   abandonInFlightAcquisitions,
   dismissOpenReauthPrompt,
+  resolvePasswordFactor,
 } from '../../src/lib/fresh-auth.js';
 import { REAUTH_PROMPT_BUSY } from '../../src/components/reauth-modal.js';
 // The mocked start round-trip (api.js factory above): the ORCID-start cases
@@ -354,6 +355,14 @@ describe('withAuthorshipFreshAuth', () => {
     expect(out).toEqual({ redirect: true });
     expect(mockBeginAuthorshipOrcid).toHaveBeenCalledWith(TARGET, expect.any(Function));
     expect(run).toHaveBeenCalledTimes(1);
+
+    // Write-on-success, never write-on-attempt: the rejected mint proved
+    // nothing, so the memo is still empty and the next resolution re-reads
+    // the status. A memo written on the attempt would lock a passwordless
+    // account onto a password that does not exist after its first failed
+    // guess.
+    expect(await resolvePasswordFactor()).toEqual({ usesPassword: true, assumed: true });
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(2);
   });
 
   it('a successful mint under an ASSUMED factor upgrades it: a retry mistype re-prompts, never redirects', async () => {
@@ -376,6 +385,30 @@ describe('withAuthorshipFreshAuth', () => {
     expect(mockFetchEmailStatus).toHaveBeenCalledTimes(1);
     expect(reauthRequest).toHaveBeenCalledTimes(3);
     expect(run).toHaveBeenNthCalledWith(2, 'proof-2');
+  });
+
+  it('two rejections of a password the memo vouched for retire it: the next op can fall back to ORCID', async () => {
+    // The memo can outlive the password it vouches for (an ORCID recovery
+    // with no new password in another tab, then a same-subject re-login that
+    // keeps this tab's state on purpose). A memo hit answers "observed", so
+    // the assumed-401 escape never fires, and without retirement every op
+    // prompts, 401s, re-prompts, and loops until a page reload. Two
+    // consecutive rejections at the verifying route outrank the memo.
+    mockMintAuthorshipFreshAuthProof.mockRejectedValue(
+      Object.assign(new Error('UNAUTHORIZED'), { code: 'UNAUTHORIZED' }),
+    );
+    expect(await withAuthorshipFreshAuth(TARGET, LIGHT, run)).toEqual({ freshAuthFailed: true });
+    expect(reauthRequest).toHaveBeenCalledTimes(2);
+    expect(mockBeginAuthorshipOrcid).not.toHaveBeenCalled();
+
+    // The next op re-reads the status; with that read unavailable the factor
+    // is a guess again, and its rejection hands the op to ORCID.
+    statusUnavailable();
+    expect(await withAuthorshipFreshAuth(TARGET, LIGHT, run)).toEqual({ redirect: true });
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(2);
+    expect(reauthRequest).toHaveBeenCalledTimes(3);
+    expect(mockBeginAuthorshipOrcid).toHaveBeenCalledWith(TARGET, expect.any(Function));
+    expect(run).not.toHaveBeenCalled();
   });
 
   it('an observed password that 401s still re-prompts instead of redirecting', async () => {

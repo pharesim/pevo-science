@@ -193,7 +193,11 @@ function toastLocalized(section, name, fallback) {
 // `beginPasswordMintReport`): the mint route verifying the password is the
 // strongest evidence the account has one, so an ASSUMED factor that just
 // minted is not re-guessed on the next resolution while the status read
-// stays unavailable.
+// stays unavailable. A second consecutive rejection does the opposite: it
+// retires the memo (`clearPasswordFactorMemo`), so the next resolution
+// re-reads the status rather than riding an answer the verifying route has
+// just contradicted twice. Only a rejection of the password retires it; a
+// transport failure on the retry mint leaves the memo standing.
 //
 // Every await below is also a teardown boundary. The prompt is a human-length
 // pause and the mint is a round-trip, so the tab's subject can change under
@@ -271,10 +275,19 @@ export async function mintViaPasswordFactor(
     if (password === null || password === undefined) return FRESH_AUTH_CANCELLED;
     try {
       return await attemptMint(password);
-    } catch {
+    } catch (retryErr) {
       // A teardown outranks the spent-re-auth report here too: the user is not
-      // owed "re-authentication failed" for an attempt this tab abandoned.
+      // owed "re-authentication failed" for an attempt this tab abandoned, and
+      // the memo this leg would retire belongs to the successor by now.
       if (guard.tornDown()) return guard.cancel();
+      // A second consecutive rejection of the password itself retires the
+      // memo: the verifying route has now contradicted it twice, and a memo
+      // hit answers "observed", the one answer that never falls back to
+      // ORCID. The next resolution re-reads the status instead (the
+      // transition this closes is documented at `_passwordFactorMemo`). A
+      // transport failure here says nothing about the password and leaves
+      // the memo alone.
+      if (retryErr?.code === 'UNAUTHORIZED') clearPasswordFactorMemo();
       // Last re-prompt spent: a second auth failure, or any transport error on
       // the retry mint, means re-auth could not be completed. Surface the
       // generic re-auth failure rather than letting it escape as the op's own
@@ -700,6 +713,19 @@ export function clearReturnPath() {
 // authenticated username so a re-login as a different account in the same tab
 // cannot inherit it, and `auth.disconnect()` drops it outright alongside the
 // proof caches.
+//
+// The memo has one more eraser, at the mint route: a second consecutive
+// rejection of the password (`mintViaPasswordFactor`'s spent re-prompt). The
+// memo can outlive the password it vouches for. The one transition that drops
+// a password, an ORCID recovery with no new password (B → C in
+// ARCHITECTURE.md § 6.3), can run in another tab, and a re-login as the same
+// subject keeps this tab's state on purpose, so the subject scrub never runs
+// here. A memo hit answers "observed", which is exactly the answer that never
+// falls back to ORCID, so a stale memo would prompt for a password that no
+// longer exists on every action until a page reload. Two rejections at the
+// verifying route outrank the memo exactly as one success there outranks the
+// status endpoint; a real password holder who mistypes twice pays one extra
+// status read before the memo is rebuilt.
 let _passwordFactorMemo = null;
 // Pairs the memo with `clearPasswordFactorMemo()`: a clear landing while a
 // status fetch is in flight must not be undone by that fetch resolving

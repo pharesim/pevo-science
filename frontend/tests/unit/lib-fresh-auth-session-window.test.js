@@ -246,6 +246,14 @@ describe('factor selection', () => {
     expect(mockReauthModal.request).toHaveBeenCalledTimes(1);
     expect(mockStartOrcid).toHaveBeenCalledWith('session_auth', {});
     expect(window.location.href).toBe('https://orcid.org/oauth/authorize?x=1');
+
+    // The rejected attempt proved nothing, so it must not have hardened the
+    // guess into a memo: the next resolution still re-reads the status. A
+    // memo written on the attempt rather than on success would lock a
+    // passwordless account onto a password that does not exist after its
+    // first failed guess.
+    expect(await resolvePasswordFactor()).toEqual({ usesPassword: true, assumed: true });
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(2);
   });
 
   it('an assumed-password 401 with navigation suppressed refuses instead of redirecting', async () => {
@@ -424,6 +432,63 @@ describe('password-factor memo', () => {
     // A vetoed write means the next resolution still re-fetches.
     expect(await resolvePasswordFactor()).toEqual({ usesPassword: true, assumed: true });
     expect(mockFetchEmailStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('two consecutive rejections of an observed password retire the memo, restoring the in-flow ORCID escape', async () => {
+    // A memo hit answers "observed", the one answer that never falls back to
+    // ORCID, and the memo can outlive the password it vouches for: an ORCID
+    // recovery with no new password in another tab drops the password, and a
+    // re-login as the same subject keeps this tab's state on purpose. Without
+    // a way out, every action then prompts for a password that no longer
+    // exists, 401s, re-prompts, and loops until a page reload. Two
+    // rejections at the verifying route outrank the memo exactly as one
+    // success there outranks the status endpoint.
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+    expect(await resolvePasswordFactor()).toEqual({ usesPassword: true, assumed: false });
+
+    // The password is gone: both prompts' mints are rejected.
+    mockMintSessionAuthProof.mockRejectedValue(
+      Object.assign(new Error('null hash'), { code: 'UNAUTHORIZED' }),
+    );
+    expect(await ensureSessionWindow()).toEqual({ ready: false, failed: true });
+    expect(mockReauthModal.request).toHaveBeenCalledTimes(2);
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+
+    // The memo is retired: the next resolution re-reads the status, and with
+    // that read unavailable the answer is a guess again, which is what lets
+    // the next rejection hand the action to the ORCID round-trip.
+    mockFetchEmailStatus.mockRejectedValue(new Error('rate limited'));
+    expect(await resolvePasswordFactor()).toEqual({ usesPassword: true, assumed: true });
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(2);
+
+    expect(await ensureSessionWindow()).toEqual({ ready: false, redirect: true });
+    expect(mockStartOrcid).toHaveBeenCalledTimes(1);
+  });
+
+  it('one rejection, a dismissed re-prompt, or a transport failure on the retry mint leaves the memo standing', async () => {
+    // Retirement is reserved for the second consecutive rejection of the
+    // password itself. A single typo followed by a dismissed second prompt is
+    // not evidence the password is gone, and neither is a retry mint that
+    // never reached the verifying route.
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+    expect(await resolvePasswordFactor()).toEqual({ usesPassword: true, assumed: false });
+
+    // One rejection, then the second prompt dismissed.
+    mockMintSessionAuthProof.mockRejectedValueOnce(
+      Object.assign(new Error('wrong password'), { code: 'UNAUTHORIZED' }),
+    );
+    mockReauthModal.request.mockResolvedValueOnce('typo').mockResolvedValueOnce(null);
+    expect(await ensureSessionWindow()).toEqual({ ready: false, cancelled: true });
+
+    // One rejection, then a transport failure on the retry mint.
+    mockMintSessionAuthProof
+      .mockRejectedValueOnce(Object.assign(new Error('wrong password'), { code: 'UNAUTHORIZED' }))
+      .mockRejectedValueOnce(new Error('Failed to fetch'));
+    expect(await ensureSessionWindow()).toEqual({ ready: false, failed: true });
+
+    // Neither retired the memo: no second status read.
+    expect(await resolvePasswordFactor()).toEqual({ usesPassword: true, assumed: false });
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(1);
   });
 });
 

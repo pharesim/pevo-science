@@ -265,7 +265,10 @@ export function initAuth() {
       // inheritance is already unreachable; dropping it here also retires a
       // stale positive for the SAME account after the one transition that can
       // remove a password (recover via ORCID with no new password, B → C in
-      // ARCHITECTURE.md § 6.3).
+      // ARCHITECTURE.md § 6.3). A same-subject re-login skips this scrub by
+      // design (see `_adoptSubject`), so a stale positive that survives it is
+      // retired at the mint route instead, by a second consecutive rejection
+      // of the password (`mintViaPasswordFactor`).
       clearPasswordFactorMemo();
       // In-flight acquisition promises outlive the caches they feed: abandon
       // them so a late resolution cannot repopulate the slots just cleared,
