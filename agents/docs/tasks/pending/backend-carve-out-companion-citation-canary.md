@@ -1241,3 +1241,157 @@ is a proposal," which is false, and its citation-shape sketch, its "diff gate
 first" sequencing paragraph, and (per the prior pass) its "Current state"
 Examples paragraph are all superseded. The file is architect-owned, so backend
 has not touched it; it is reconciled once at archive against the settled shape.
+
+## Architect re-review (2026-09-08) — HELD PENDING FIXES:
+
+All three items and all four fold-ins held on the second 2026-09-06 pass are
+FIXED, verified independently rather than from the signal block: the `i` flag
+is gone from `looseClaimPattern` and the capital/lower-case pair is probed in
+both directions, on one line and across a wrap; every dash-or-space run the
+label admits is bounded and a timing probe exists; the four arms the hold named
+GREEN each carry a dedicated probe; the `{0,8}` gap is disclosed with a
+boundary probe; the bare positional anchor is restated; the reverse back-link
+canonicalises both sides; the noun-internal wrap gap is recorded. The sweep
+claim held at every one of the 15 arms an independent reviewer re-mutated (the
+9 the hold named plus 6 more across `citationsIn`, `unparsedClaims`,
+`CLAIM_SPAN`'s lookahead, the case classes and the emphasis-run bound), all red
+with byte-identical restores between mutants, which is the first round on this
+file where a sampled sweep claim survived. The frozen maps and `LANDING_DIGEST`
+are untouched, the commit stages only the canary, and the pre-commit anchor
+gate returns zero hits on all 184 added lines (gate self-tested against a
+control line before the result was trusted).
+
+What this hold is about: two of the round's three code changes are themselves
+defective in a way their own new docblock text denies, and both defects are
+the detection-defeated-by-house-style class the previous hold asked to be
+closed. Every item below was reproduced by execution by at least two
+independent reviewers and once more by a validation gate, each on an isolated
+copy. Anchor every code comment you write here on stable symbols, never on
+line numbers.
+
+Items 1 and 2 are one root cause and should be settled together.
+
+1. The case classes in `LOOSE_CLAIM_SRC` are initial-capital only, so the
+   loose-claim guard now has LESS recall than the `giu` build it replaced.
+   `[Rr]eal`, `[Pp]ath` and `[Cc]ompanions?` match `Real`, `Realpath` and
+   `@realPathCompanion`, but not `REAL-PATH ... COMPANION:`, while
+   `labelPattern` still runs under `i` and accepts every casing. A near-miss
+   claim written in capitals, `(c) REAL-PATH (also routes/foo.test.ts)
+   COMPANION: covered`, therefore yields labels=0 and unparsed=0 and is dropped
+   before any class is assigned; planted in a file in neither backlog, the
+   suite stays green at 11 of 11, and the parent commit's build flags it. The
+   spelling is house style: two backlog headers already write `(c) REAL-PATH
+   COMPANION:` (`routes/settings-set-password-argon-error-translation.test.ts`
+   and `routes/custody-session-auth-argon-errors.test.ts`). The `CLAIM_SPAN`
+   docblock, the `LOOSE_CLAIM_SRC` docblock and the `looseClaimPattern`
+   comment all say the classes "keep case-insensitive matching without the
+   flag", which is false. Spell every letter as a class (`[Rr][Ee][Aa][Ll]`
+   and so on, or a small helper that builds them) so those sentences become
+   true as written, and pin the boundary with a probe beside the
+   capital/lower-case pair: `unparsedClaims(' (c) REAL-PATH (also
+   routes/foo.test.ts) COMPANION: covered')` must be 1. Verified green with
+   that fix on an isolated copy, all label-spelling probes unchanged.
+
+2. `CLAIM_SPAN`'s refusal `(?![.;!?]\s(?![a-z]))` fires on a break followed by
+   ANYTHING other than an ASCII lower-case letter: a capital, a `(c)` clause
+   marker, a backtick, a parenthesis, a digit, end of text. The header's
+   "sentence break followed by a CAPITAL" paragraph and the `CLAIM_SPAN`
+   docblock's "A new sentence begins with a capital" both describe a narrower
+   trigger than the code has. The consequence is a silent drop in a
+   house-style spelling: a near-miss whose qualifier reads `(e.g.` followed by
+   a backticked path, `(c) Real-path (e.g. <backticked path>) companion:
+   covered`, breaks at the full stop before the backtick inside its own
+   qualifier, the span stops there, and the block yields labels=0 and
+   unparsed=0; `(i.e. (routes/foo.test.ts))` likewise. Do NOT narrow the
+   refusal to `\p{Lu}`: reproduced, that accuses
+   `routes/bridge-register-rate-limit-skip-failed.test.ts` and flips the
+   backlog, and the breadth is also what keeps a `(c)` marker after a full
+   stop out of reach of prose above it, which nothing pins today. Correct both
+   texts to the actual trigger set, disclose the abbreviation-then-backtick
+   near-miss as a fourth entry in the header's "Gaps left open on purpose"
+   list, and pin both directions: `unparsedClaims('preserved real-path because
+   every spec issues a call. (c) Real-path SQL companion: x')` must be 0 (it
+   goes red under `\p{Lu}`), and the abbreviation near-miss above must be 0
+   with a comment naming it as the recorded gap, so that widening it later is
+   a visible probe edit rather than a silent recall change.
+
+3. The label pattern is still quadratic on a dash run, and the round's own
+   probe comment says the opposite. `QUALIFIER`'s word class `[\w-]+` admits
+   dashes, so a run after `real-path` is consumed as a qualifier word and
+   partitioned against the bounded separators; the `{0,4}` and `{1,4}` bounds
+   removed the local backtracking the previous hold measured but left the
+   pattern O(n^2). Measured on an isolated copy: 400 dashes 28 ms, 2000 dashes
+   716 ms, 6400 dashes between 7 and 8 s, 10000 dashes 18 s, and a synthetic
+   block the length of the corpus's own largest comment block (19,443
+   characters) 75 s. `forwardPattern` and `reversePattern` embed the same
+   `LABEL_SRC`, run inside `citationsIn` on every block before `labelCount`
+   does, measured 224 ms at 400 dashes, and have no probe. The probe's comment
+   ("the partitions are constant, not O(n)") and the `LABEL_SRC` docblock
+   sentence attributing the fix to the run bounds state a guarantee the code
+   does not provide. No corpus block has the shape today, so the exposure is
+   latent, but a canary slow enough to look hung gets disabled, which is why
+   the previous hold took it. Fix at the word class: `\w[\w-]*` (a qualifier
+   word begins with a word character; verified 11 of 11 green with every
+   label-spelling probe unchanged and 6400 dashes in under a millisecond) or
+   `[\w-]{1,24}` (verified sub-millisecond to 19,443 characters). Either is
+   acceptable; say which and why. Then raise the timing probe's run to a
+   length where quadratic growth is observable (6400 is enough: green only
+   when the match is linear), add the same input to a probe over
+   `citationsIn`, and reword the probe comment and the `LABEL_SRC` docblock to
+   the guarantee actually provided. The probe comment's "machine variance
+   cannot flake it" goes with it: the measured margin at 400 dashes is about
+   9x unloaded and about 2x under 22-core saturation, an overclaim rather than
+   a demonstrated flake, and it becomes true only once the pattern is linear.
+
+### Fold into the same round, mechanical
+
+- The header's "Gaps left open on purpose" worked example reads "a
+  seven-character gap (`companion here:`) is caught, a nine-character one is
+  not". ` here` is five characters, and the `nearMissGap` probe pins eight
+  caught and nine dropped. Rewrite to the probe's boundary and name the probe
+  (`pinned by the nearMissGap probe below`), which also gives that sentence
+  the stable name the convention asks for.
+- The comment on the canonicalisation probe, "(the shape it had before this
+  round)", puts a coordination round in test source. Replace it with a
+  behaviour anchor: "(dropping the `path.posix.normalize` canonicalisation)".
+- The `LABEL_SRC` docblock's "The cost is pinned by a probe below." carries no
+  stable name. Restate what it points at (the dash-run timing spec and its
+  input) so the sentence survives a reorder.
+
+### Not held, recorded so it is not re-litigated
+
+- The rationale for dropping the `i` flag is stated in four places (the
+  header's sentence-break paragraph, the `CLAIM_SPAN` docblock, the
+  `LOOSE_CLAIM_SRC` docblock, the `looseClaimPattern` factory comment). Raised
+  as drift risk and DISMISSED: item 1 rewrites those sentences anyway, and
+  making `CLAIM_SPAN`'s docblock the single owner with pointers by name is
+  optional, not held.
+- The timing probe's threshold was measured rather than feared: 26 to 35 ms
+  unloaded, 27 to 117 ms under synthetic 22-core saturation, no flake
+  reproduced, and the module-level whole-tree scan warms the pattern before
+  the spec runs. The overclaim in its comment is folded into item 3; the
+  threshold itself is not held.
+- Residual risks recorded, not held: `[Rr]eal` in `LOOSE_CLAIM_SRC` has no
+  leading boundary, so a prose mention of a `*-real-path-*` filename within 80
+  characters of `companion:` reads as a near-miss (pre-existing, corpus clean);
+  a near-miss written `<strong>companion</strong>:` falls into the `{0,8}` gap
+  (no such markup in the corpus); `;` sits in the refusal set although a
+  semicolon never begins a sentence; the "not repo-relative" message is also
+  emitted for a repo-relative non-test path such as
+  `backend/tests/routes/helper.ts` (pre-existing wording); no probe records
+  that a separator run over four inside a label is no longer a label, which
+  the docblock says is deliberate; the signal block says fifteen label
+  spellings where the probe list has twenty.
+- The reverse back-link canonicalisation was traced for `./`, `..`, `//` and
+  `/./` back-citations: each answers a declaration, and each is red at the
+  forward shape arm when the mocked file is itself scanned, so the pair fails
+  closed. No finding.
+- Project standards otherwise clean: the em-dash rule does not reach code
+  comments, the carve-out clauses do not apply (the file mocks nothing), and
+  zone, staging, subject prefix and trailer are all correct.
+- The cross-model adversarial pass did not run (no different-provider CLI on
+  this host); the corroboration cited is between separate in-process reviewers
+  and a separate validation gate.
+
+**[TODO Architect]** unchanged and still deferred to archive, so the solutions
+entry is reconciled once against a settled shape.
