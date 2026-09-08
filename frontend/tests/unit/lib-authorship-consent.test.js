@@ -394,9 +394,7 @@ describe('withAuthorshipFreshAuth', () => {
     // the assumed-401 escape never fires, and without retirement every op
     // prompts, 401s, re-prompts, and loops until a page reload. Two
     // consecutive rejections at the verifying route outrank the memo.
-    mockMintAuthorshipFreshAuthProof.mockRejectedValue(
-      Object.assign(new Error('UNAUTHORIZED'), { code: 'UNAUTHORIZED' }),
-    );
+    mockMintAuthorshipFreshAuthProof.mockRejectedValue(codedError('UNAUTHORIZED'));
     expect(await withAuthorshipFreshAuth(TARGET, LIGHT, run)).toEqual({ freshAuthFailed: true });
     expect(reauthRequest).toHaveBeenCalledTimes(2);
     expect(mockBeginAuthorshipOrcid).not.toHaveBeenCalled();
