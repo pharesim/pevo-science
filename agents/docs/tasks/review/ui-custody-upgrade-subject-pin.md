@@ -572,3 +572,106 @@ stand unchanged.
 Comment-anchor reminder as before: no task slugs, round numbers, or line numbers in code or test
 comments; anchor on `_endUpgradeAsSessionChanged`, `handleRetry`, `retryUpgradeBackend`,
 `RETRYABILITY`, `signIn.signInButton`, and the sub-case key names.
+
+## UI re-review signal (2026-09-08, commits ad8ff684, 4f7fb9b9):
+
+The five hold items landed in ad8ff684; 4f7fb9b9 corrects one word in a
+comment that commit added. The diffs are the evidence.
+
+1. The comment above the `fallbackIndex` lookup mirrors the
+   `_endUpgradeAsSessionChanged` docblock: the Try Again the rest of the
+   message is about goes with the page, so a reader who has already left
+   needs somewhere else to be sent. Grep count after the edit: `only
+   instruction` and `only route` return 0 under `frontend/src`,
+   `frontend/tests` and `STUBS.md`. Case-insensitive across all of
+   `frontend/` the count is 1, a pre-existing "name-only Route-3 claim"
+   comment in `paper-detail.js` that this task never touched.
+2. The copy-contract describe header singles the before-cleanup sub-case out
+   among the non-terminal `RETRYABILITY` keys by needing a re-login before
+   its Try Again can act.
+3. The `### Updated 2026-09-06` block says the fallback is the route the
+   message gives a reader the in-tab retry can no longer reach, and keeps
+   "dropping or merging it silently strands that reader".
+4. `upgrade.sessionChangedBeforeCleanup` reads: sign out, then use the Sign
+   in button in the page header to sign in again as {username} in this tab,
+   without leaving this page, and press Try Again to finish the upgrade.
+   "Sign in" is byte-equal to `signIn.signInButton`, "Try Again" to
+   `common.tryAgain`, two `{username}`, no em-dash; the fallback and
+   keep-your-phrase sentences are byte-identical to before. All fifteen
+   stubs match en.json and each JSON file changed exactly one line. The
+   ledger block was revised in place, per-locale lines untouched, with a
+   third-revision paragraph that names the control, states the
+   `signIn.signInButton` byte-equality rule, and sends anyone who began from
+   the second revision back. The copy-contract test requires the retry
+   sentence to match `/sign out/i`, to contain `signIn.signInButton`
+   followed by "button", and to match `/header/i`.
+5. The header pointer reads "so carve-out clauses (a) to (c) below do not
+   apply to it".
+
+Beyond the literal items, in the same area: the `_endUpgradeAsSessionChanged`
+docblock's sentence about what the copy does now also says it names the
+header's sign-in control, so the docblock and the copy describe the same
+message. The describe header's closing sentence lists three jobs (scope the
+retry, name the control, send the departed reader elsewhere) rather than
+two, and drops "can only be helped out of band", since a fresh wizard run
+with the rotated phrase is the counterexample you gave for "only route".
+
+Five things to weigh rather than assume:
+
+1. **The sign-out step names no control, and the control is labelled
+   Disconnect.** The signed-in header's sign-out control renders
+   `header.disconnect`, "Disconnect", on desktop and in the mobile menu; no
+   label anywhere reads "Sign out". The copy keeps the verb the hold
+   prescribed and does not byte-pin it, on three grounds: the hold named
+   `handleDisconnect` in the same block and still chose the verb; there is
+   one such control and no destructive twin, so the reader can hunt but
+   cannot lose state; and `upgrade.backendTimeout` already says "Sign out
+   and sign back in" for the same control. Four of six review lenses raised
+   it. Naming it would put the Disconnect label, which the no-jargon design
+   rule argues against, into more copy, so it is yours to call.
+2. **On a phone the header's Sign in button lives in the hamburger menu, and
+   Disconnect closes that menu.** Below the md breakpoint the desktop button
+   is hidden and the mobile one renders only while `mobileMenuOpen`;
+   `handleDisconnect` sets it false. The reader has just opened that menu to
+   press Disconnect, the mobile nav is inside `<header>`, and the body's
+   button is not, so "in the page header" stays true and still excludes the
+   destructive one. Not changed; recorded because item 4 did not consider
+   the mobile layout.
+3. **The header reference is a separate assertion from the label.** "Use the
+   Sign in button below the page header" or "Sign out from the page header
+   menu, then use the Sign in button" would pass. That is the two-containment
+   shape item 4 prescribed; binding them in one assertion ("Sign in button in
+   the page header") closes it at the cost of pinning the phrase. Left as
+   prescribed.
+4. **The test pins the sign-out step too.** `/sign out/i` is beyond the two
+   containments item 4 asked for; it is the first step of the sentence the
+   same item prescribed, and without it the previous revision's copy would
+   still fail only on the other two.
+5. **"Sign in button", not "Sign in".** The assertion requires the label
+   followed by "button". A sentence that opened with the imperative "Sign in
+   again" contains `signIn.signInButton` byte-for-byte without naming the
+   control; the suffix is what tells the two apart, and it is what killed
+   the probe that paired a sentence-initial "Sign in again" with "the page
+   header" and no "button".
+
+Verification: 83 files, 1847 tests green on the full frontend unit suite;
+the three touched suites 147. Six mutation probes against the copy contract,
+each in its own scratchpad copy of `frontend/` so the shared checkout was
+never mutated: dropping "in the page header", lowercasing the label, dropping
+the sign-out step, moving the control into the fallback sentence, a
+sentence-initial "Sign in again" with "the page header" but no "button", and
+the previous revision's copy. All six killed; the unmutated control passes.
+
+Simplify pass skipped: the diff's substantive code is three assertions,
+under the floor the skill's own guidance sets; the rest is copy, ledger prose
+and comments. Code review is yours at intake, per the UI role.
+
+Review evidence: a six-lens adversarial pass (correctness, copy, i18n
+ledger, test quality, conventions, hold compliance) with three refuters per
+finding and a completeness critic, 31 agents, none died. Nine findings
+raised, eight unique, none survived the vote; each was re-read against the
+code by hand rather than trusted to the tally. Points 1 to 3 above are the
+substance of the refuted findings. The one defect the pass did surface was a
+word in a comment ad8ff684 added, "imperative" for what the new sentence uses
+as an infinitive; 4f7fb9b9 fixes it. The critic's one item was this signal
+block, not yet written at the time.
