@@ -573,3 +573,130 @@ answered by the same dispositions: residual 1 is the filed task, residual 2 (typ
 in `readSessionWindow`) is declined here and noted on the filed task as a candidate
 shape, residual 3 (validate at the write boundary) is partly taken by item 1's
 mint-callback coercion.
+
+---
+
+## UI re-review signal (2026-09-08, commit 0dc1d69b)
+
+All five round-3 hold items landed in one commit. Verified by a six-lens
+adversarial fan-out (behavior-preservation, hold-compliance, comment-accuracy,
+conventions, mutation-probing, adversarial) with three independent refuting
+skeptics per finding: 19 raised, 19 refuted, zero survivors. I did not take that
+result at face value. Six of the refuted findings were substantively right about
+my own new prose, all of the accuracy class this block has now been held for
+three rounds, so I overrode the refutation and fixed them in the same commit;
+they are listed below so the architect can reverse any of those calls. Every
+probing lens worked in a private scratch copy with `node_modules` symlinked;
+this checkout was never mutated by a reviewer.
+
+**Item 1 (P2, the null mint proof).** The mint callback now reads
+`const proof = issued.fresh_auth_proof`, writes it through `cacheSessionProof`
+unchanged, and returns `typeof proof === 'string' ? proof : undefined` — the
+hold's exact prescribed shape, with the `{ token: null }` write kept as
+instructed. Driven proof-first: the new `{ label: 'a null proof field', value:
+null }` row was observed RED before the coercion, failing as
+`{ ready: false, redirect: true }`, and it was the only failing spec. Reverting
+the coercion afterwards kills exactly that row and nothing else, and deleting
+the row while the coercion is also reverted leaves the suite green, so nothing
+that existed before covered the null case.
+
+The docblock sentence the hold named is replaced. `WINDOW_OUTCOME_BY_SENTINEL`
+was re-enumerated rather than trusted: `FRESH_AUTH_REDIRECT_PENDING` is `null`
+and the other four members are Symbols, so the coercion is the only narrowing
+the wire needs.
+
+**Item 2 (P3, the failed-write mirror).** Restated with the substance intact.
+Re-derived from `persistWindow`'s catch, `storedWindow` and
+`readSessionWindow`'s truthy-token rule rather than from the hold's prose: on a
+failed write the mirror keeps the raw entry, Symbol included, and hands it back,
+so there the clear IS the eviction. The test comment was softened to name
+sessionStorage and the mirror.
+
+**Item 3 (advisory, the deadline overstatement).** Replaced with the hold's
+form. `readSessionWindow` drops on the earlier deadline and refuses a
+non-finite one whoever wrote the entry; what an external writer's deadlines need
+not do is sit inside the module's periods.
+
+**Item 4 (advisory, the positional anchor).** "the rows below" is gone. Note the
+gate's noun list now carries `rows?` and `table`, so that phrase would be caught
+mechanically today.
+
+**Item 5 (learnings, the ungated clear).** Stated in the guard's docblock: no
+await separates the acquisition resolving from the clear, every flight crossing
+a teardown boundary resolves FRESH_AUTH_CANCELLED and returns before the guard,
+and the module's one gated clear is gated because a real round-trip sits between
+its window read and its clear. It names `evictUnnamedAcquisition` as the origin
+of the same argument rather than restating it a third time.
+
+**Six defects the review found in my own new text, fixed rather than shipped.**
+Each was re-verified against the code before I acted on it.
+
+1. "the module's other clear" was a false enumeration — `fresh-auth.js` has
+   three `clearCachedSessionProof()` sites, two of them ungated, and the same
+   paragraph names the third. Now "the module's one GATED clear".
+2. The pin's header claimed the table drives the guard's whole non-string class.
+   The coercion in this same commit collapses every row to `undefined` before
+   the guard reads it, so the rows drive the class the WIRE can produce and the
+   seeded cache entry is what drives the guard's own predicate. Measured, not
+   reasoned: narrowing the guard to `proof === undefined` kills only the
+   cache-leg eviction spec.
+3. "a number or an object survives both paths" is false for a falsy number,
+   which `readSessionWindow`'s truthiness test drops. Now "a truthy number".
+4. `acquireSessionProof`'s Returns enumeration did not mention the `undefined`
+   this commit designs in. Added, and marked as deliberately not a vocabulary
+   member.
+5. + 6. Two sibling spec comments this coercion staled, both saying the mint
+   hands its response value back. Corrected to say it narrows what it hands
+   back while the write keeps the raw value.
+
+Two bare positional anchors that my own item-4 fix had introduced ("The write
+above", "a statement before it narrows its own return") were replaced with named
+forms before review, along with a claim that a redirect "ends in silence" — the
+upload pre-flight maps redirect to UPLOAD_CANCELLED, so that surface reports a
+cancel the user never asked for.
+
+**Mutation probes**, every one executed in a private copy. Baseline 1855 passed
+in the probe environment (`sec-001-equivalence.test.js` fails file-level in any
+copy of `frontend/` alone, since it imports across the repo root; excluded from
+all counts as an environment artifact, not a mutant effect).
+
+| mutation | specs killed |
+| --- | --- |
+| revert the coercion to `return issued.fresh_auth_proof;` | the null row, alone (1) |
+| delete the null row, coercion reverted | 0 — nothing else covered null |
+| widen the coercion to `String(proof)` | 6 |
+| narrow the guard to `typeof proof === 'symbol'` | 5 — the survivor the round-2 hold measured is now firmly dead |
+| narrow the guard to `proof === undefined` | 1, the cache-leg eviction spec |
+| delete the guard's own `clearCachedSessionProof()` | 0 |
+
+**One honest result the table should not bury.** The guard's own clear is now
+unkillable: `evictUnnamedAcquisition` has already emptied the slot by the time
+the guard runs. That is what the docblock's first paragraph already claims for
+it ("a deliberate restatement ... a second drop of an already-empty slot costs
+nothing"), so I left it and did not add a structural assertion to pin
+redundancy, which is the preemptive hardening this project dismisses. Flagging
+it so the architect can decide whether the restatement still earns its lines now
+that the acquisition-level eviction exists.
+
+**Verification.** Full frontend unit suite 84 files / 1859 tests green (the
+three `pages-edit` unhandled errors are the documented pre-existing ones);
+`npm run build` clean; `.githooks/pre-commit` passes against a staged copy of
+both files, and the hook's own suite is 37/37. No behavioral test was rewritten:
+the diff adds one `it.each` row and changes comment text.
+
+**Residuals surfaced for triage, deliberately not fixed here.**
+
+1. (by design, sequencing) The mint-callback comment says a narrowed null lands
+   in the guard that "refuses, says so, and evicts", which is true of the guard
+   and of the two readings that reach it, while the broadcast unwinder still
+   refuses in silence. Three lenses raised this; all three refutation panels
+   killed it, and the deciding argument is that
+   `ui-broadcast-unnamed-refusal-speaks` — filed today, sequenced explicitly
+   after this task — makes the broadcast speak and enumerates the ONE docblock
+   sentence to update when it lands. Correcting the mint comment now would add a
+   second stale site outside that task's scope, and would be false again once it
+   lands. Left as written, deliberately.
+2. (low) Narrowing the coercion to `proof === null` leaves the suite green: the
+   wider `typeof` form is defense in depth, since any other non-string reaches
+   the same eviction, the same `failed` outcome and the same silent unwind
+   either way. No test can distinguish them without asserting an internal.
