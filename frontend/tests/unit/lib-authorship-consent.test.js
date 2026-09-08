@@ -442,6 +442,29 @@ describe('withAuthorshipFreshAuth', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it('a mint that answers without a proof string on the RETRY surfaces freshAuthFailed too', async () => {
+    // Both legs mint through the same coercing callback, and the retry leg is
+    // the one with more to lose. The shared gate compares its mint result
+    // against ORCID_FALLBACK, PROMPT_BUSY, CANCELLED and MINT_FAILED, and
+    // against FRESH_AUTH_REDIRECT_PENDING never: the `{ redirect: true }` its
+    // ladder can return belongs to the ORCID_FALLBACK arm, which a null does
+    // not reach. So an uncoerced null falls past every comparison into
+    // `run(retry)` and spends the op's write on a token the mint has already
+    // declined to issue, where that same null on the initial leg is read as a
+    // redirect in flight and merely abandons the op in silence. The
+    // initial-resolution rows cannot see this leg: a coercion applied to the
+    // first alone leaves it uncovered with the whole suite still green.
+    run.mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'));
+    mockMintAuthorshipFreshAuthProof
+      .mockResolvedValueOnce('minted-proof')
+      .mockResolvedValueOnce(null);
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    expect(out).toEqual({ freshAuthFailed: true });
+    // Exactly once: the attempt that 401d. The retry never got a proof to
+    // broadcast with.
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it('non-fresh-auth errors propagate to the caller', async () => {
     mockGetCachedConsentOpProof.mockReturnValue('cached-proof');
     run.mockRejectedValueOnce(codedError('FORBIDDEN'));

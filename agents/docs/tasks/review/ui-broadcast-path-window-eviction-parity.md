@@ -256,3 +256,76 @@ One item to land, plus one fold-in while in the same docblock.
   dropped. Correctness and reliability both reported that this cache self-heals; that
   reading holds only when the backend answers `FRESH_AUTH_REQUIRED`, and it does not
   here. Residuals 2 and 3 stand as written and stay with their owning tasks.
+
+---
+
+## UI re-review signal (2026-09-09, working tree)
+
+Both held items landed. Three files touched, all under `frontend/`.
+
+**Item 1: the authorship retry leg is pinned.** A spec mirroring the settings twin, staged
+exactly as prescribed: a `FRESH_AUTH_REQUIRED` rejection from `run`, a first mint
+answering a proof string and a second answering `null`, asserting `freshAuthFailed` with
+`run` called exactly once. The mutation the architect's validator measured was reproduced
+and now dies: coercing only the initial leg (a `coerce` parameter defaulting true, passed
+`false` at the gate's `mint` hook) previously left all 34 authorship specs green and now
+fails exactly one, the new row. The same mutation on the settings sibling fails exactly
+its retry row, which is the asymmetry closing.
+
+**Fold-in: the count and the attribution.** `evictUnnamedAcquisition` now says TWO sites
+read the raw acquisition result, names the fail-closed guard as the one that ever cleared
+and `acquisitionAborted` as the one that could not, and states why the upload pre-flight
+was never a third such reading. The ruling was verified from the code rather than taken on
+trust: `windowProof` and `freshAuthWindowReady` both consume `ensureSessionWindow`'s
+OUTCOME, so neither ever sees the raw result.
+
+**Three corrections beyond the two items, surfaced rather than buried.**
+
+1. The same miscount lived one function over, inside `ensureSessionWindow`'s own docblock
+   ("all three readings of the slot"). Correcting only the named sentence would have left
+   the module asserting both counts about one fact. Fixed.
+2. The settings retry-leg spec's comment was affirmatively FALSE, not merely incomplete:
+   it claimed an uncoerced non-string on the retry leg is "read as a redirect". The gate
+   never compares its mint result against `FRESH_AUTH_REDIRECT_PENDING`. Since the new
+   authorship spec is that comment's twin, landing a correct twin beside a false original
+   was the worse option. Fixed.
+3. A review pass caught two imprecisions in the NEW prose, both written here and both
+   fixed before commit: "carries no redirect arm at all" is false as written, because the
+   gate's ORCID_FALLBACK arm does `return { redirect: true }` (a null simply never reaches
+   it); and "the silent abandonment the initial-resolution rows drive" is true of the null
+   row only, since uncoerced `undefined` and `4242` fall into `run()` rather than aborting
+   quietly. Both now name the missing comparison and attribute the silence to the value
+   that produces it.
+
+**On the apparent two-versus-three contradiction.** `WINDOW_OUTCOME_BY_SENTINEL`'s
+docblock counts THREE consuming sites and is untouched, because it is a different and
+still-correct tally: it counts who acts on an outcome, and the vocabulary-exhaustiveness
+suite pins exactly those three. Four independent review lenses collided on the apparent
+contradiction anyway, so the evict docblock now names the distinction in one clause rather
+than leaving the next reader to re-derive it.
+
+**Considered and declined, for the architect to overrule.** The new spec does not assert
+that the retry mint ran (`toHaveBeenCalledTimes(2)`), so it would also pass if the gate
+skipped the inline re-mint entirely. Declined on two grounds: the hold said to MIRROR the
+settings spec, which carries no such assertion either, and the initial-leg-only mutation
+already proves the row is load-bearing for the coercion specifically. Adding it to one
+surface alone would break the mirror.
+
+**Verification.** Full frontend unit suite 84 files / 1860 tests pass; the three
+`pages-edit` unhandled errors are the documented pre-existing ones. `npm run build` exit
+0. `.githooks/pre-commit` anchor gate exit 0 on the final staged set. A HEAD baseline run
+confirmed the per-file delta is exactly `lib-authorship-consent.test.js` 34 -> 35 and
+nothing else changed status. Mutation probes ran in isolated scratchpad copies, never the
+shared checkout:
+
+| Mutation | Killed by |
+|---|---|
+| control, unmutated | nothing; 89/89 pass, harness clean |
+| authorship coercion removed entirely | the 3 initial-leg rows AND the new retry row |
+| authorship coercion on the INITIAL leg only | the new retry row, and nothing else |
+| settings coercion on the INITIAL leg only | the settings retry row, and nothing else |
+
+One caveat on the probe harness for whoever repeats it: an isolated copy of `frontend/`
+cannot resolve `tests/unit/sec-001-equivalence.test.js`, which imports across into
+`backend/src/`. That file fails in any copy-based full-suite run and the failure is a
+harness artifact, not a defect.

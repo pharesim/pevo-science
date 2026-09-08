@@ -918,14 +918,20 @@ export function abandonInFlightAcquisitions() {
 
 // Evict the window slot when an acquisition resolves a value the outcome
 // vocabulary does not name, so every reading of that one slot inherits the drop
-// instead of each consumer carrying its own. All three readings already REFUSE
-// such a value — the fail-closed guard in `ensureSessionWindow`, the upload
-// pre-flight `windowProof`, and the broadcast unwinder `acquisitionAborted` —
-// but only the first of them ever cleared, so a truthy non-string reaching the
-// broadcast surface was refused and left where it was, to be re-read and
-// re-refused on every later vote, comment and review until the entry's idle
-// deadline arrived, a sign-out scrubbed the slot, or an unrelated page gate or
-// upload pre-flight happened to run the evicting one.
+// instead of each consumer carrying its own. TWO sites read the raw acquisition
+// result, and both already REFUSE such a value — the fail-closed guard in
+// `ensureSessionWindow` and the broadcast unwinder `acquisitionAborted` — but
+// only the guard ever cleared, so a truthy non-string reaching the broadcast
+// surface was refused and left where it was, to be re-read and re-refused on
+// every later vote, comment and review until the entry's idle deadline arrived,
+// a sign-out scrubbed the slot, or an unrelated page gate or upload pre-flight
+// happened to run the evicting one. The upload pre-flight is not a third such
+// reading: `windowProof` (lib/ipfs-upload.js) calls `ensureSessionWindow` and
+// refuses through its OUTCOME, so it inherited the guard's clear from the start
+// and was never a reader that could strand a value. The THREE-site tally at
+// `WINDOW_OUTCOME_BY_SENTINEL` is a different and equally correct count: it
+// tallies who acts on an outcome, which the page gate and the upload pre-flight
+// both do, not who reads the raw result.
 //
 // The value travels on unchanged: refusing is still each consumer's own, and
 // swallowing an unnamed result into a falsy one would read downstream as the
@@ -1199,8 +1205,8 @@ export async function ensureSessionWindow({
   // non-string here either came out of that slot or has just gone into it, and
   // a refusal that leaves it there is a lockout rather than a refusal: every
   // later reading finds the same entry and refuses again. Which is why the
-  // eviction belongs to `acquireSessionProof`, where both of those legs and
-  // all three readings of the slot pass through one drop; the
+  // eviction belongs to `acquireSessionProof`, where those two legs and the two
+  // readings of the raw result pass through one drop; the
   // `clearCachedSessionProof()` in this guard is a deliberate restatement of
   // it, kept so this gate answers for its own refusal without a reader having
   // to trust an eviction they cannot see from here, and a second drop of an

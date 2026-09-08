@@ -344,9 +344,14 @@ describe('withSettingsFreshAuth', () => {
   });
 
   it('a mint that answers without a proof string on the RETRY surfaces freshAuthFailed too', async () => {
-    // The retry gate mints through the same callback on its own leg, so a
-    // coercion applied to only the first acquisition would leave this one
-    // reading a null proof as a redirect and abandoning the action in silence.
+    // The retry gate mints through the same callback on its own leg, and never
+    // compares that result against FRESH_AUTH_REDIRECT_PENDING: the
+    // `{ redirect: true }` its ladder can return belongs to the ORCID_FALLBACK
+    // arm, which a null does not reach. So an uncoerced null here does not read
+    // as a redirect the way the initial resolution's does; it falls past every
+    // sentinel comparison into `run(retry)` and spends the action's write on a
+    // token the mint has already declined to issue. A coercion applied to only
+    // the first acquisition leaves that open.
     run.mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'missing'));
     mockMintSettingsActionProof
       .mockResolvedValueOnce('minted-proof')
