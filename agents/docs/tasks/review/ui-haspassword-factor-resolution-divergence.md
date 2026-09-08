@@ -582,3 +582,112 @@ guard would; killing the mutant needs a fictional teardown-without-clear state).
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
 re-review signal. Do not edit this hold block or annotate items as fixed; the commit
 diff is the evidence and the architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-09-07, commits e8948317 + a8e54b2b + 44f7b27b + 9d617808)
+
+Both round-4 items landed, proof-first (the item-1 cases were watched red
+before the helper changed), and each claim below names its own mutation
+probe, run against the committed baseline in a scratchpad copy of
+`frontend/` so the shared tree never carried a mutant. After landing, an
+adversarial pass ran five lenses over the commits (hold fidelity,
+cross-surface correctness, test quality with independent probes,
+conventions and prose accuracy, account-state security), each finding then
+attacked by two refuters. Every lens independently re-ran the four probes
+and reported the same kill sets. Eight findings were raised; five were
+refuted by both skeptics (all P4: a coded-5xx variant of the transport
+case, the double-mistype cost in the rate-limited regime, a dead-JWT 401
+also carrying `UNAUTHORIZED`, an inline error shape in one twin, and a
+disclosure list the hold already designates the diff as evidence for). One
+survived and is fixed in the third commit; one is routed to the architect
+below.
+
+**Item 1. A second consecutive rejection retires the memo.** One line in
+`mintViaPasswordFactor`'s spent-re-prompt catch, gated on the retry error
+being `UNAUTHORIZED` and placed after that catch's teardown check, calls
+`clearPasswordFactorMemo()`. The first attempt only reaches the second
+prompt on an `UNAUTHORIZED`, so the gate is exactly "two consecutive", and
+the assumed branch returns `FRESH_AUTH_ORCID_FALLBACK` before a second
+attempt exists, so only an observed factor can retire. Because the eraser
+sits in the shared helper, the session acquisition and both orchestrators
+(initial gate and the shared retry gate) inherit it with no per-caller call.
+The next resolution re-reads the status; with that read unavailable the
+answer is assumed again, and the following 401 reaches the ORCID fallback.
+Docblocks: the helper names the retirement beside the success report;
+`_passwordFactorMemo` names both erasers in one paragraph and documents the
+transition the mint-route one closes (the ORCID recovery with no new
+password in another tab, then a same-subject re-login that `_adoptSubject`
+deliberately does not scrub); the auth store's scrub comment names that
+skipped re-login and the eraser that covers it. Tests: session suite "two
+consecutive rejections of an observed password retire the memo, restoring
+the in-flow ORCID escape" (memo written, two 401s, the next resolution
+re-fetches and comes back assumed, the next acquisition redirects) and "one
+rejection, a dismissed re-prompt, or a transport failure on the retry mint
+leaves the memo standing"; settings and authorship twins "two rejections of
+a password the memo vouched for retire it: the next action/op can fall back
+to ORCID" (`freshAuthFailed` once, then `redirect` with exactly two status
+reads and no `run`). Probes: the clear deleted reddens exactly the three
+retirement tests; the `UNAUTHORIZED` gate widened to any retry failure
+reddens exactly the "leaves the memo standing" test; a reviewer's extra
+probe, clearing on the first 401 as well, also reddens exactly that test,
+so the "second consecutive" half is pinned and not only the
+"`UNAUTHORIZED`-only" half.
+
+**Item 2. Report-on-success is pinned.** The settings retry-fallback test
+now asserts, after its 401'd mint, that a subsequent `resolvePasswordFactor`
+re-fetches (`{ usesPassword: true, assumed: true }`, two status reads); the
+authorship retry-fallback twin and the session suite's assumed-fallback case
+carry the same assertion, so the write-on-success invariant is pinned on all
+three surfaces rather than one. Probe: the report call moved ahead of the
+mint (write-on-attempt) reddens exactly those three assertions and nothing
+else.
+
+**One pin beyond the hold, disclosed.** The docblock claims the retirement
+sits after the teardown check so a torn-down flight cannot retire the
+successor's memo. A probe moving the clear ahead of that check survived
+every suite green, so the claim was unpinned. Added to the teardown suite:
+"a second-mint rejection landing after teardown does not retire the
+successor's memo" (the successor memoizes its own observed answer, the
+departed subject's retry rejection lands, the successor's next resolution is
+still a memo hit). Probe: the reordering reddens exactly that test. The
+suite header's list of what a torn-down flight must leave alone names the
+memo now.
+
+**Review finding fixed (third commit, comments only).** The memo docblock's
+pre-existing rationale, "an account that has a password cannot lose one
+without a navigation that resets module state", was the premise the new
+eraser disproves, and it stood two paragraphs above the paragraph saying
+so; the session suite's "asked once per tab" case restated it verbatim.
+Both now say what is true: a password is lost through one rare transition,
+so re-fetching on every acquisition would be pure latency, and a memo that
+outlives that transition has its own erasers.
+
+**Routed to the architect (outside the ui zone).** The learnings entry
+`agents/docs/solutions/conventions/fail-closed-guard-must-replace-the-recovery-a-round-trip-provided-2026-09-07.md`
+states in its "Which stores can strand you" paragraph that
+`_passwordFactorMemo` "has one call site outside its own definition, the
+subject scrub"; after this change `clearPasswordFactorMemo` has two
+callers, the scrub and `mintViaPasswordFactor`'s second consecutive
+rejection. The entry's conclusion still holds (both erasers sit downstream
+of a mint, so a short-circuit upstream of one still strands the memo), but
+the count is stale. Not edited here: solutions entries are architect-zone
+and are refreshed via `/ce-compound-refresh`, not by hand.
+
+**Simplify pass (fourth commit, test-only).** The three simplify reviewers
+(reuse, quality, efficiency) found nothing in the helper change or the
+docblocks; the one reuse finding was that the authorship retirement twin
+hand-rolled its `UNAUTHORIZED` rejection while its settings twin uses the
+file's `codedError` helper. Swapped, no assertion changed.
+
+### Verification
+
+Affected suites plus the resolver canary: 186 tests green across six files
+(the canary needed no width re-pin: the change adds no `fetchEmailStatus` or
+`hasPassword` occurrence). Full frontend unit suite: 83 files, 1847 tests
+green; the three unhandled rejections are the documented pre-existing
+`pages-edit` `$refs.abstractEditor` ones. `npm run build` clean. Pre-commit
+anchor gate and zone audit passed on every commit. No E2E run this round:
+no spec drives a double 401 at the mint, the change adds no user-facing
+text, and the surfaces the earlier rounds batch-ran are untouched by this
+diff.
