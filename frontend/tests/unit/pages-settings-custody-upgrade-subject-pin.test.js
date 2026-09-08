@@ -20,7 +20,8 @@
 // render. It belongs here because the retryable half's whole recovery is the
 // button this suite proves stays available, and because none of the tests
 // above could notice that copy changing. It uses no fixture from this file:
-// it reads the shipped en.json, so the carve-out below does not apply to it.
+// it reads the shipped en.json, so carve-out clauses (a) to (c) below do not
+// apply to it.
 //
 // Carve-out clause (a): mirrors the sibling settings suites' fixture shape.
 // Alpine stores, dhive, and hive-keys are stubbed because driving a real
@@ -525,16 +526,18 @@ describe('custody-upgrade re-login subject pin', () => {
   });
 });
 
-// The before-cleanup sub-case is the only upgrade error whose recovery is a
-// button on the page that renders it. `_endUpgradeAsSessionChanged` sets it
-// with `cleanupLanded: false`, `canRetryUpgrade` keeps Try Again visible, and
-// `retryUpgradeBackend`'s start guard declined without spending the proof
-// attempt or the seed, so signing back in as the pinned subject and pressing
-// that button finishes the upgrade. But the button belongs to the settings
-// page: a re-login that unmounts it (the signed-out body's own button
-// navigates to the login route) runs `destroy()`, which clears the seed and
-// the pin the retry needs. So the copy has to do two jobs at once, and a
-// reader who has already left the page can only be helped out of band.
+// Among the sub-cases `RETRYABILITY` leaves non-terminal, the before-cleanup
+// one is set apart by needing a re-login before its Try Again can act.
+// `_endUpgradeAsSessionChanged` sets it with `cleanupLanded: false`,
+// `canRetryUpgrade` keeps Try Again visible, and `retryUpgradeBackend`'s
+// start guard declined without spending the proof attempt or the seed, so
+// signing back in as the pinned subject and pressing that button finishes
+// the upgrade. But the button belongs to the settings page: a re-login that
+// unmounts it (the signed-out body's own button navigates to the login
+// route) runs `destroy()`, which clears the seed and the pin the retry
+// needs. So the copy has three jobs at once: scope the retry to the page it
+// lives on, name the sign-in control that keeps that page, and give a reader
+// who has already left somewhere else to go.
 //
 // These assertions are on the source `en.json`, not on a rendered component:
 // the sibling tests here stub `$t` to echo the key, which is what makes their
@@ -568,9 +571,23 @@ describe('custody-upgrade session-changed copy contract', () => {
     // cannot drift into telling the user to press something not on screen.
     expect(parts[retryIndex]).toContain(messages.common.tryAgain);
 
+    // The re-login that retry needs has to keep this page mounted, and in
+    // the state that shows this message another account holds the header,
+    // so the reader signs out first and then sees two controls that both
+    // read as sign in: the header's keeps the page, the signed-out body's
+    // navigates away and takes the seed and the pin with it. So the same
+    // sentence says to sign out, names the header's control by the label
+    // the header renders, and says where it is. The label followed by
+    // "button" is what separates naming that control from the imperative
+    // "sign in", which the sentence uses as well.
+    expect(parts[retryIndex]).toMatch(/sign out/i);
+    expect(parts[retryIndex]).toContain(`${messages.signIn.signInButton} button`);
+    expect(parts[retryIndex]).toMatch(/header/i);
+
     // The fallback is for the reader the retry instruction can no longer
-    // reach, and it is the only instruction in the message that survives an
-    // unmount.
+    // reach: the Try Again the rest of the message is about goes with the
+    // page, so a reader who has already left needs somewhere else to be
+    // sent.
     const fallbackIndex = parts.findIndex(
       (s) => /already left this page/i.test(s) && /support/i.test(s),
     );

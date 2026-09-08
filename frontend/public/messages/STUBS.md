@@ -3870,10 +3870,10 @@ zh: upgrade.sessionChangedBeforeCleanup
 ### Updated 2026-09-06 (ui-custody-upgrade-subject-pin)
 
 English value of `upgrade.sessionChangedBeforeCleanup` was revised in place,
-twice under this heading. The sub-case is retryable now, so contacting support
-is no longer the message's primary instruction: it tells the user to sign back
-in as the named account and press Try Again. The inline "Try Again" names an
-on-screen button, so it must read exactly as that locale renders
+three times under this heading. The sub-case is retryable now, so contacting
+support is no longer the message's primary instruction: it tells the user to
+sign back in as the named account and press Try Again. The inline "Try Again"
+names an on-screen button, so it must read exactly as that locale renders
 `common.tryAgain`. Translators who started on the earlier `Added` entry should
 retranslate.
 
@@ -3884,10 +3884,20 @@ page"), because that Try Again is the settings page's own button and navigating
 away destroys the state it needs. And a fallback sentence was added for the
 reader who has already navigated away: it tells them to contact support with
 their account name. So support is back in the string, no longer as the whole
-instruction but as the route for a reader the retry can no longer reach. Keep
-the fallback as its own sentence: it is the only route out that still holds
-once the in-tab retry is gone, and dropping or merging it silently strands that
-reader.
+instruction but as the route the message gives a reader the in-tab retry can
+no longer reach. Keep the fallback as its own sentence: dropping or merging it
+silently strands that reader.
+
+The third revision names the sign-in control, so anyone who began from the
+second revision should retranslate too. In the state that shows this message
+another account holds the page header, so the reader has to sign out first,
+and then two controls both read as sign in: the one in the page header keeps
+the settings page mounted, the one in the signed-out settings body navigates
+away and destroys the state the retry needs. The retry sentence now says to
+sign out, then use the Sign in button in the page header. That inline "Sign
+in" names an on-screen control, so it must read exactly as that locale renders
+`signIn.signInButton`, the same way "Try Again" must match `common.tryAgain`.
+The fallback and keep-your-phrase sentences are unchanged.
 
 ar: upgrade.sessionChangedBeforeCleanup
 cs: upgrade.sessionChangedBeforeCleanup

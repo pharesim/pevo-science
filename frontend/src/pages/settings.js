@@ -1550,9 +1550,10 @@ export function initSettingsPage() {
     // modal and another tab's login both do, while the signed-out body's
     // own button navigates away and takes the retry's inputs with it.
     // That is why the before-cleanup copy scopes its retry instruction to
-    // this tab and this page and then carries an out-of-band fallback: the
-    // Try Again the rest of the message is about goes with the page, so a
-    // reader who has already left needs somewhere else to be sent.
+    // this tab and this page, names the header's sign-in control as the one
+    // that keeps it, and then carries an out-of-band fallback: the Try Again
+    // the rest of the message is about goes with the page, so a reader who
+    // has already left needs somewhere else to be sent.
     _endUpgradeAsSessionChanged({ cleanupLanded, upgradeSubject }) {
       // Mirrors _handlePostBroadcastError's entry guard: most callers reach
       // this after at least one await (the retry's start guard is the one
