@@ -788,25 +788,38 @@ describe('the gate never fails open into silence', () => {
     expect(mockToastStore.show).toHaveBeenCalledWith(expect.any(String), 'error');
   });
 
-  // The guard names the whole non-string class, so the pin drives the class
-  // rather than one member of it. A Symbol is the least consequential member:
-  // a Symbol-valued field does not survive `JSON.stringify`, so it is dropped
-  // on the way into storage and dropped again on the way to the wire. A mint
+  // The guard names the whole non-string class, and these rows drive the class
+  // the WIRE can put in front of it: four ways a mint can answer without a
+  // proof string. The mint callback narrows all four to `undefined` before the
+  // guard reads them, so a row proves its own response shape is refused, not
+  // that the guard tells four types apart; the cached entry the eviction case
+  // seeds is what drives the guard's predicate from the other leg.
+  // A Symbol is the least consequential member:
+  // `JSON.stringify` omits a Symbol-valued field, so it never reaches the
+  // sessionStorage entry (only the in-memory mirror `persistWindow` falls back
+  // to on a failed write keeps it) and never reaches the wire either. A mint
   // response simply missing `fresh_auth_proof` is what a backend contract slip
   // actually produces, and a guard narrowed to symbols reads exactly that as a
-  // ready window with no proof behind it.
+  // ready window with no proof behind it. The null row is the one value the
+  // wire can land in the vocabulary's own sentinel space, the redirect member
+  // being `null`, so it reaches the guard at all only because the mint
+  // callback narrows a non-string return to `undefined`; handed on as it
+  // stands it classifies as a redirect, which this gate and the broadcast
+  // unwinder refuse without a word and the upload pre-flight reports as a
+  // cancel the user never asked for.
   it.each([
     { label: 'a mint response with no proof field', value: undefined },
     { label: 'a numeric proof', value: 4242 },
+    { label: 'a null proof field', value: null },
     { label: 'a sentinel nobody registered', value: Symbol('an outcome nobody registered') },
   ])('an acquisition result the vocabulary does not name refuses the work: $label', async ({ value }) => {
     // Classification is a lookup, so a result nobody registered classifies to
     // nothing — and the quiet direction is the dangerous one: read as a ready
     // window, an unclassified result travels on AS the proof and dead-ends
     // downstream with nothing the user can answer. Which way it dead-ends
-    // depends on its truthiness, so the rows below differ there; the split is
-    // spelled out at `ensureSessionWindow`'s fail-closed guard. Refusing costs
-    // one re-auth act and says so.
+    // depends on its truthiness; the split itself is spelled out at
+    // `ensureSessionWindow`'s fail-closed guard, and each case in this table
+    // exercises one side of it. Refusing costs one re-auth act and says so.
     mockMintSessionAuthProof.mockImplementation(async () => ({
       ...issuance('window-proof'),
       fresh_auth_proof: value,
@@ -825,13 +838,13 @@ describe('the gate never fails open into silence', () => {
     // Both legs that can produce a non-string run through the window slot, and
     // neither type-checks what goes through it: the cache read passes back any
     // token that is not FALSY, and the mint writes its response value in
-    // before handing it back. So refusing without clearing leaves the entry to
-    // be re-read and re-refused for the rest of its idle life, with retrying
-    // no way out. This case seeds the cache leg, where the entry outlives the
-    // acquisition that produced it and a number survives the round-trip
-    // through storage. Before the guard existed that value went to the
-    // network, drew a remintable rejection, and the upload retry's own clear
-    // healed it.
+    // before narrowing what it hands back. So refusing without clearing leaves
+    // the entry to be re-read and re-refused for the rest of its idle life,
+    // with retrying no way out. This case seeds the cache leg, where the entry
+    // outlives the acquisition that produced it and a number survives the
+    // round-trip through storage. Before the guard existed that value went to
+    // the network, drew a remintable rejection, and the upload retry's own
+    // clear healed it.
     seedWindow(4242, { idleInMs: IDLE_MS });
 
     expect(await ensureSessionWindow()).toEqual({ ready: false, failed: true });
@@ -902,9 +915,10 @@ describe('the broadcast path leaves no poisoned window behind', () => {
     { label: 'an object proof', value: { not: 'a proof' } },
   ])('a mint that answers without a proof string strands nothing in the slot either: $label', async ({ value }) => {
     // The mint leg poisons the slot on its way past: the response value is
-    // written through `cacheSessionProof` one statement before the acquisition
-    // hands it back. Evicting only what the cache leg produced would refuse
-    // this action and still strand the one after it.
+    // written through `cacheSessionProof` even though the acquisition narrows
+    // a non-string one out of what it hands back, so the entry outlives the
+    // value. Evicting only what the cache leg produced would refuse this
+    // action and still strand the one after it.
     mockMintSessionAuthProof.mockImplementationOnce(async () => ({
       ...issuance('window-proof'),
       fresh_auth_proof: value,

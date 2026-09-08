@@ -852,7 +852,10 @@ export async function beginSessionAuthOrcidRedirect(isStale) {
 // started a full-page round-trip (the window lands in cache when the user
 // returns via /orcid/callback), FRESH_AUTH_CANCELLED when the password modal
 // was dismissed, FRESH_AUTH_MINT_FAILED when re-auth could not be completed, or
-// FRESH_AUTH_PROMPT_BUSY when another action already owns the modal.
+// FRESH_AUTH_PROMPT_BUSY when another action already owns the modal. It also
+// returns `undefined` when the mint answered without a proof string: that is
+// deliberately NOT a vocabulary member, so every consumer refuses it as an
+// unnamed result rather than reading it as an outcome anyone registered.
 // Throws on transport / config errors.
 //
 // `allowRedirect: false` suppresses the navigating factor: callers already
@@ -1007,12 +1010,26 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
         // already emptied the window slot, and this write would repopulate
         // it under the wrong subject. Drop the issuance and unwind.
         if (guard.tornDown()) return FRESH_AUTH_CANCELLED;
-        cacheSessionProof(
-          issued.fresh_auth_proof,
-          issued.expires_at,
-          issued.absolute_expires_at,
-        );
-        return issued.fresh_auth_proof;
+        const proof = issued.fresh_auth_proof;
+        cacheSessionProof(proof, issued.expires_at, issued.absolute_expires_at);
+        // Hand back a string or nothing, never the response value verbatim.
+        // The window vocabulary's redirect member IS `null`, the one sentinel
+        // a JSON body can reproduce, so a response carrying
+        // `"fresh_auth_proof": null` returned as it stands would classify as
+        // an ORCID round-trip already in flight, with no navigation behind it:
+        // the page gate and the broadcast unwinder say nothing (the toast
+        // table keeps the redirect row silent, since a page that is leaving
+        // needs no message) and the upload pre-flight raises its cancel code,
+        // so the user is either told nothing or told they cancelled, and
+        // neither is something they can act on. Every other member is a Symbol
+        // no response can produce, which is why this is the only coercion the
+        // wire needs. Narrowing to `undefined` lands a null token where the
+        // other malformed ones already land, in the fail-closed guard that
+        // refuses, says so, and evicts. The `cacheSessionProof` call keeps
+        // the raw value deliberately: a null token reads as tokenless and is
+        // dropped whenever the entry is next read, and
+        // `evictUnnamedAcquisition` removes it before then anyway.
+        return typeof proof === 'string' ? proof : undefined;
       },
       { message: passwordPromptMessage(), assumed: factor.assumed },
     );
@@ -1169,26 +1186,49 @@ export async function ensureSessionWindow({
   const proof = await acquireSessionProof(minRemainingMs, { allowRedirect });
   const outcomeKey = acquisitionOutcomeKey(proof);
   if (outcomeKey) return { ready: false, [outcomeKey]: true };
-  // Fail closed on anything outside the vocabulary. Only the sentinel legs are
-  // closed by construction; the other two run through the window slot and
-  // neither type-checks what passes. `readSessionWindow` hands back any token
-  // that is not FALSY (it checks the deadlines, never the token), and the mint
-  // callback returns the response's `fresh_auth_proof` verbatim after writing
-  // it into the slot one statement earlier. So a non-string here either came
-  // out of that slot or has just gone into it, and a refusal that leaves it
-  // there is a lockout rather than a refusal: every later reading finds the
-  // same entry and refuses again. Which is why the eviction belongs to
-  // `acquireSessionProof`, where both of those legs and all three readings of
-  // the slot pass through one drop; the `clearCachedSessionProof()` in this
-  // guard is a deliberate restatement of it, kept so this gate answers for its
-  // own refusal without a reader having to trust an eviction they cannot see
-  // from here, and a second drop of an already-empty slot costs nothing. A
-  // value `JSON` cannot carry dropped itself on the write and makes the clear
-  // a no-op; a number or an object is the case the clear is here for, and for
-  // one this module wrote the bound is the IDLE deadline (`cacheSessionProof`
+  // Fail closed on anything outside the vocabulary. The sentinel legs are
+  // closed by construction with one exception, and closing it is the mint
+  // callback's job: the redirect member IS `null`, a value JSON can carry, so
+  // that callback narrows what it hands back rather than let a response reach
+  // the sentinel space. Every other member is a Symbol no response can
+  // produce. What stays open is the window slot, which the cache leg and the
+  // mint leg both run through and neither type-checks: `readSessionWindow`
+  // hands back any token that is not FALSY (it checks the deadlines, never the
+  // token), and the mint callback hands `fresh_auth_proof` to
+  // `cacheSessionProof` unexamined, narrowing only what it returns. So a
+  // non-string here either came out of that slot or has just gone into it, and
+  // a refusal that leaves it there is a lockout rather than a refusal: every
+  // later reading finds the same entry and refuses again. Which is why the
+  // eviction belongs to `acquireSessionProof`, where both of those legs and
+  // all three readings of the slot pass through one drop; the
+  // `clearCachedSessionProof()` in this guard is a deliberate restatement of
+  // it, kept so this gate answers for its own refusal without a reader having
+  // to trust an eviction they cannot see from here, and a second drop of an
+  // already-empty slot costs nothing.
+  //
+  // Ungated, where the module's one GATED clear — the 401 eviction in
+  // `broadcastWithFreshAuth` — sits behind `!guard.tornDown()`. That one holds
+  // a real network round-trip between the window it read and the clear it
+  // runs, so a teardown landing inside it would drop a successor's freshly
+  // minted entry and charge them a re-auth that was never theirs. This clear
+  // has no such gap: nothing is awaited between the acquisition resolving and
+  // this line, and every flight that crosses a teardown boundary resolves
+  // FRESH_AUTH_CANCELLED, which is registered and returns before the guard is
+  // reached. It is the same argument `evictUnnamedAcquisition` makes for the
+  // drop this one restates.
+  //
+  // What the clear removes depends on the value. A Symbol never reaches
+  // storage (`JSON.stringify` omits the field, leaving a deadline-only shell
+  // the next read drops as tokenless), but the in-memory mirror `persistWindow`
+  // falls back to on a failed write keeps the raw entry, Symbol included, so
+  // there the clear IS the eviction; a truthy number or an object survives both
+  // paths and is the case the clear is chiefly for. Left in place, an entry
+  // this module wrote is bounded by its IDLE deadline (`cacheSessionProof`
   // always anchors idle nearer than the cap, and every consume site refuses
   // before it reaches `slideSessionWindow`), while an entry written by
-  // anything else can outlast both deadlines.
+  // anything else is bounded only by the deadlines it carries, which
+  // `readSessionWindow` still enforces but which need not sit inside the
+  // module's periods.
   //
   // The direction this guard exists to close is the quiet one. Read as a ready
   // window, an unregistered result travels on AS the proof, and how it fails
