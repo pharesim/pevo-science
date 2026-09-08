@@ -190,10 +190,13 @@ compete. Filed for triage rather than actioned.
 Also verified and NOT a hazard, recorded in the canary docblock because it is
 the shape most likely to be "fixed" into a third writer: the signup upserts
 refresh `created_at` in their `ON CONFLICT ... DO UPDATE` branches and leave
-`updated_at` alone. A column DEFAULT fires on the insert branch only, so those
-branches genuinely do not advance the marker - and that asymmetry is what keeps
-a repeat signup against an existing row from moving the marker past an upgrade
-epoch. Symmetrising it is exactly what this canary refuses.
+`updated_at` alone. What keeps those branches off a finalized row is the
+duplicate-email pre-check in `POST /signup`, which answers 409 when the row's
+`verify_token` is NULL or carries a `confirmed:` token, so the `DO UPDATE`
+branch only ever lands on a pending row with no finalize behind it and no
+upgrade epoch. Leaving `updated_at` out of the branch is defence in depth
+behind that pre-check: should the upsert ever reach a finalized row, it still
+does not move the marker. Symmetrising it is exactly what this canary refuses.
 
 ### Verification
 
@@ -329,3 +332,161 @@ state the probe per item in the re-review note.
   database clock, so that inversion needs no writer), and it is a schema
   change with its own deploy ordering. Tracked separately; do not implement
   it under this task.
+
+## Backend re-review signal (2026-09-08, working tree)
+
+All ten hold items landed. Every item was verified by mutation in a scratch
+copy of `backend/` (tar copy, symlinked `node_modules`, a probe-only vitest
+config), red on the mutation and green on restore, and the probe is stated per
+item below. The suite grew from 8 specs to 20; `tests/eslint/` is 9 files /
+130 tests green.
+
+The hold's own instruction to verify by mutation is what turned this into more
+than ten fixes. Mutation probing confirmed each item, but four adversarial
+sweeps against the file found shapes no probe of the prescribed list reached,
+and most of them were silent passes rather than false alarms. The scanning core
+was rewritten twice as a result. What that bought is recorded under "Beyond the
+hold" below, because it changes what the canary promises.
+
+### Bundle A
+
+1. **Fail-closed resolution is unconditional.** `targetTable` stops at the
+   first head it meets and admits it only when the statement that head opens
+   REACHES the assignment's own position: a head whose statement closed earlier
+   on the line, or on an earlier line, resolves to `<unresolved>` instead of
+   lending its table. The walk no longer climbs past a head to whatever query
+   sits further up. Probes: a foreign `UPDATE sessions` placed two lines above
+   a quoted-identifier head, a variable table name, a `+`-joined head and an
+   interpolated fragment each red the resolve arm, adjacent or spaced; a
+   readable non-accounts head two lines below the same foreign statement stays
+   green; a sibling query that opened and closed to the LEFT of an unreadable
+   head on the same line reds rather than lending `sessions`.
+2. **MERGE is attributed to accounts.** `MERGE INTO` is a head pattern and a
+   statement pattern, both admitting `ONLY` and a parenthesised target, and
+   `writesColumn` reads every `WHEN NOT MATCHED THEN INSERT` branch, not the
+   first. Probes: the `WHEN MATCHED THEN UPDATE SET` branch reds both writer
+   scans with the resolve arm green; the insert branch reds table-first only,
+   which is the demonstration that the two scans see different shapes; a MERGE
+   whose SECOND conditional branch names the column reds; a MERGE insert branch
+   followed by a masking `INSERT INTO accounts (email)` reds; a MERGE in a
+   migration reds both migration arms; `MERGE INTO sessions` stays green.
+3. **A head is read wherever the keyword sits outside a comment.** The
+   line-shape comment test is gone. Comment SPANS are blanked to equal-length
+   spaces before any pattern runs, so an editor tag ahead of a literal
+   (`/* sql */` before the template) is scanned. Probes: the tagged head reds
+   both writer scans on one line and across lines; a commented-out statement,
+   a trailing comment and a docblock mention all stay green.
+4. **The assembled-write claim is true as written.** `joinedByPlus` recognises
+   a `+` before the opening quote, after the terminator, and leading the next
+   line, and the failure list tags each site `[interpolation]` or
+   `[concatenation]`. The KNOWN LIMITS sentence now says what is NOT seen: a
+   join spelled away from the statement's own lines, and a dynamically named
+   target. Probes: three join spellings and an interpolation red the assembled
+   arm; a spelled-out statement and a joined SELECT stay green.
+
+### Bundle B
+
+5. **Both recovery bounds are stated.** `ORDERING_RATIONALE` and the docblock
+   name the `/confirm` bound (`custody = 'light'` plus recency, resuming on a
+   posting-key proof into a light-custody session mint) alongside the `/link`
+   ordering, and close with the test a new writer actually has to meet: not
+   what its WHERE clause says, since one scoped to `custody = 'light'` reopens
+   the `/confirm` window just the same, but whether it can ever bump the marker
+   on a finalized row, light or upgraded. Verified against the route: the
+   `/confirm` resume path mints `custody: 'light'` gated on
+   `verifyPostingKeyAuthorized` alone.
+6. **The upsert paragraph credits the right barrier.** The `POST /signup`
+   duplicate-email pre-check answers 409 for a row whose `verify_token` is NULL
+   or carries a `confirmed:` token, so the `DO UPDATE` branch lands only on a
+   row that check could see as pending. Leaving `updated_at` out of the branch
+   is the defence in depth behind it, and symmetrising the branch stays the
+   refused shape. The same correction is applied to the implementation note
+   above.
+7. **The source scan is no longer claimed to be the only possible guard.** The
+   paragraph says the CHECK constraint would pin the `/link` ordering at commit
+   for every state section 6.1 enumerates, that it is proposed alongside this
+   canary rather than replaced by it, and what it cannot express: the
+   `/confirm` bound is a claim about WHICH statement stamped the marker, which
+   a constraint cannot see.
+
+### Bundle C
+
+8. **The table-first scan runs over migrations.** A second migration arm
+   compares `accountsColumnWriters(migrations)` to the allow-list, and any
+   `.sql` resource found under `src` is scanned with them rather than dropped
+   by an extension filter. Probes: a migration `INSERT INTO accounts (email,
+   updated_at)` reds table-first only, with column-first green, which is the
+   motivating case; a back-fill reds both; a second statement on one migration
+   line reds; a repair that writes no marker stays green.
+9. **Each planted probe fails without the feature it cites.** Every feature was
+   deleted in turn and the resulting bar recorded: the FOR-UPDATE lookbehind
+   needed a fixture where the row lock sits to the RIGHT of the true head, the
+   quote detection needed a decoy literal ahead of the keyword inside the same
+   template, and the occurrence count needed a two-write fixture. The full
+   deletion set (48 features across the reader and the patterns) is exercised;
+   the last four that stayed green were pinned after the final sweep.
+10. **Routine exemptions are keyed exactly.** `RoutineSite.key` is
+    `file#KIND name`, `unexempted` compares by equality, and a trigger or rule
+    bound to `accounts` is refused BEFORE the exemption list is consulted, so
+    no entry can license one. A self-test pins that `NEW.updated_at := now()`
+    does NOT match the column pattern, recording that the routine arm is the
+    sole catcher of a trigger-body write. Probes: the same function name in two
+    migrations is exempted separately; a name-only entry exempts nothing; an
+    accounts-bound trigger and rule red despite exact exemptions; a trigger on
+    another table with both routines judged stays green; a quoted routine name
+    reports `<unnamed>`, which an exemption can name but not widen.
+
+### Beyond the hold, because the sweeps found silent passes
+
+The scanning core was rewritten around one reading layer. Every scan now reads
+a file whose COMMENT spans are blanked to equal-length spaces, walked from the
+top with block-comment, template and dollar-quote state carried across lines.
+The reason is that every pattern needs two tokens adjacent, SQL admits a
+comment wherever it admits whitespace, and the scans share those patterns, so
+one comment between a column and its `=` silenced all of them at once. That
+shape, and its relatives (a comment in a row target list, in an INSERT column
+list, carrying a semicolon that ended the statement read, or carrying a table
+name that supplied a nearer head) were all green before.
+
+The reader errs toward READING, because a blanked line is a line no scan sees:
+an unclosed comment opener is text rather than a comment, a value keeps its
+markers, a decrement is an operator on either side, and an unescaped backtick
+ends a template whatever else is open. Three of those were live defects found
+after the rewrite: a glob in a template opened a comment that blanked the rest
+of the file, an apostrophe in prose left the template flag inverted, and the
+`$${n}` placeholder idiom this repo uses opened a phantom dollar-quoted span
+that had comment blanking switched off across 16 files and 5,568 lines.
+
+Also added, each because a sweep found the shape passing: writes are tallied
+per occurrence rather than per line, so a second write riding on a licensed
+write's line raises the count; an `accounts` statement that cannot be read to a
+terminator is refused rather than cleared; `COPY accounts (..., updated_at)`
+is a writer; and `ALTER TABLE accounts` naming the column is pinned to the
+migration that introduces it, because `ALTER COLUMN ... TYPE ... USING` rewrites
+every row with no statement that writes one.
+
+Residuals are stated in KNOWN LIMITS rather than left to be found: a dynamic
+target whose COLUMN is also dynamic (no `updated_at =` token remains for the
+fail-closed arm), a string value spanning lines, and the shapes that only look
+like a comment or a value to the reader.
+
+### Verification
+
+`npm run typecheck` (src + tests) clean. `npm run lint` clean apart from the
+pre-existing unrelated warning in `src/lib/author-supersession.ts`.
+`tests/eslint/` 9 files / 130 tests green. `.githooks/pre-commit` anchor gate
+exits 0 against the staged diff, including the row and table nouns added to it
+today. No production code changed; the only changed file is the canary.
+
+Read directly off the tree rather than inferred: of 17,925 blanked lines across
+`src` and `migrations`, the 68 whose blanked span contains a SQL word are all
+comment prose, no line changes length under blanking, and the tables the
+assignments resolve to are exactly `accounts` (the two finalizes plus the
+introducing migration's back-fill), `bridge_import_queue` and
+`notification_preferences`.
+
+### [TODO Architect] unchanged
+
+The CHECK constraint proposal above is still an open architect decision and is
+not implemented here. Item 7's rewrite makes the docblock agree with it rather
+than contradict it.
