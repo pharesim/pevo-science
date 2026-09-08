@@ -1057,3 +1057,103 @@ warning is the pre-existing unused-disable in `lib/author-supersession.ts`.
 Postgres/Redis. `.githooks/pre-commit` exit 0 on the staged diff. No
 behaviour changed in `src` (one comment in `orcid.ts`), so no route suite
 was re-run; the `no-stale-comment-anchors` canary covered that edit.
+
+## Architect re-review (2026-09-08, round 5) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` over `a24aae5a` only (the round-4 commits were
+reviewed in their own pass). Six reviewers plus a three-finding validation
+batch. No cross-model pass: no different-family CLI is installed on this host,
+so the in-process adversarial reviewer took that lens.
+
+**All three round-4 hold items landed and are verified.** Item 1's four
+security assertions about `POST /api/auth/session` were independently
+confirmed three times over: the route is `verifyHiveSignature, sessionLimiter,
+handler`, the handler reads no `accounts` row, the JWT branch issues exactly
+`SELECT sessions_invalidated_at FROM accounts WHERE username = $1`, and
+nothing on that path reads `upgraded_at`. Item 2's replacement names its
+control and introduces no positional form; a regex matrix confirmed the
+rewritten sentence is literally true, including the adjacent `COLUMN_COPY_RE`
+count you corrected on your own initiative. Item 3's six claimed mutations
+were reproduced by two reviewers working separately, each red set exactly as
+your signal block reported, and `mintWithClaimAt(CAP + 1)`'s `'none'` was
+confirmed to come from the cap rather than from paren depth or the classifier.
+Three findings were raised against this diff and all three were dropped at
+validation. Two corrections in your favour: the deviation you flagged in
+prose only (the two walks share the BOUND, not the runaway mechanism) is
+right, and the sentence a reviewer read as overclaiming the mint pair is
+self-qualifying as written — its trailing clause states exactly the condition
+that was measured, so it stays.
+
+Two items below. Both are one-sentence or one-probe-pair work; neither
+touches a predicate, a finalize, or a migration.
+
+1. **The state-C sentence names a route that does not defend state C.** In the
+   `handleLogin` comment: "The state-C passwordless shape (password_hash NULL)
+   is defended at /upgrade per the § 6.4 re-auth contract, not here."
+   `POST /api/custody/upgrade` never reads `password_hash`. Its gate is
+   `verifyHiveSignature`, then a `custody !== 'light'` refusal, then the epoch
+   re-read. The routes that actually branch on the passwordless shape are
+   `/fresh-auth` and `/session-auth`, each with an explicit
+   `if (!account.password_hash)` refusal, and `routes/custody.ts` states the
+   real contract in its own words: state C has no password to base a
+   password-mechanism proof on and must mint via
+   `/api/orcid/start { mode: 'fresh_auth' }` instead. This sentence is your
+   own round-3 authorship, not inherited: it passed the round-3 pass and was
+   outside round 4's scope.
+   Requirement: repoint the citation at the routes that hold the defense, or
+   say plainly what `/upgrade` does require of a state-C row. Do not widen the
+   sentence beyond what you verify; the surrounding clauses are settled and
+   must not be reopened.
+
+2. **`STATEMENT_JOIN_CAP` is unpinned at every value it could hold.** The
+   commit hoisted both caps into one docblock and pinned `SCAN` in both
+   directions. Its sibling was left where it was: the cap was mutated to 1, 2,
+   3, 5, 8 and 40 and the file stays green at every one, while a lowered value
+   demonstrably stops a real wrapped derivation from being reported. That is
+   the silent-pass direction on a merge-blocking guard, and it is the same
+   shape round-3 item 6 and round-4 item 3 both held on, one constant over.
+   Scoped honestly: this is pre-existing, it is equally green on the base
+   commit, and no sentence the commit added is made false by it — the "pinned
+   in both directions" claim is scoped to `SCAN` and to the twelve it states.
+   It is held here because the implementer is already in this docblock for
+   item 1 and the standard was set one round ago, not because the diff
+   regressed anything.
+   Requirement: a joined-count boundary pair beside the split-derivation pair,
+   through the same `reader` / `offenders` path so it cannot pass vacuously,
+   with hard-coded literals mirroring the existing convention so the pair pins
+   the VALUE rather than tracking the symbol. Assert the boundary in both
+   directions and state the residual the cap buys, the way the `SCAN` docblock
+   already does.
+
+Raised and routed elsewhere, nothing for you on this task:
+
+- `JWT_MINT_RE` carries no planted probe, unlike every other scanner in the
+  file and unlike the sibling canary that pins its identical copy; the two
+  claim allow-lists are read only through `.includes`, with no set-equality
+  assertion of the kind `ALLOWED_HELPER_CALL_SITES` already gets; and the mint
+  classification is a key-set membership test, so a second mint inside an
+  already-allowed symbol adds no member and is never named. All three are
+  pre-existing, on surfaces this diff never touched. Filed as
+  `backend-custody-canary-unpinned-surfaces`.
+- `mintPayload` walks one line past a mint whose parens close on its own line,
+  because the `depth <= 0` break is gated on a positional term and evaluated
+  after the line is appended. Reproduced, but unreachable today (all eight
+  `jwt.sign` sites open multi-line) and fails loud rather than silent. Folded
+  into the same filed task, together with the missing probe for the walk's
+  start line.
+
+Raised and dismissed, no action needed from you:
+
+- "so the copy only re-mints a session and reaches no signing path" was read
+  as ambiguous next to the handler's own `jwt.sign` six lines below. The claim
+  is verified true in the sense it intends: the copied claim reaches no
+  server-side chain-signing capability and mints no proof window. The reviewer
+  anchored it as a preference, and round 4 already declined to rewrite prose
+  in this block that is not false. It stays as written.
+
+Architect-side, carried forward:
+
+- **[TODO Architect]** The two deferred § 6.1 / § 6.7 doc items and the
+  `api-contracts/auth.md` `/link` stuck-recovery branch still carry to
+  archive, unchanged from the round-4 block. They were not discharged this
+  round because the task did not archive.
