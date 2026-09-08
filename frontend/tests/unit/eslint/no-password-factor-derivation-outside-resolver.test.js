@@ -20,7 +20,11 @@
  * config change, and the `eslint` directory segment mirrors the backend's
  * source-discipline canary directory so both trees carry the class under the
  * same name. Scan machinery lives beside it in `enclosing-symbol.js`, which
- * is not collected because only `.test.js` files are.
+ * is not collected because only `.test.js` files are, and that machinery's
+ * own unit suite sits beside it in `enclosing-symbol.test.js`. This file
+ * keeps the domain assertions and the planted evasions that run through its
+ * scans; a probe that exercises the resolver, the comment predicate, the
+ * brace walk or the region pass on its own belongs in the machinery's suite.
  *
  * WALK. `sourcesUnder` reads `.js` files only, and the first assertion pins
  * both a floor on how many it read and that nothing else script-shaped lives
@@ -125,7 +129,6 @@ import { fileURLToPath } from 'node:url';
 import {
   MODULE_SCOPE,
   blockCommentInterior,
-  enclosingSymbol,
   isCommentLine,
   occurrencesOf,
   sourcesUnder,
@@ -417,9 +420,13 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
     // them an edit that mangles a pattern leaves every scan empty and the
     // suite stays green while the canary enforces nothing. The canary file
     // itself lives outside the scanned tree, so the shapes are synthetic
-    // source strings fed to the extracted matcher.
+    // source strings fed to the extracted matcher. The block-comment region
+    // rides along exactly as `occurrencesOf` hands it to the skip predicate,
+    // so every probe here runs the path the real scan takes rather than the
+    // shape-only reading a region-less call falls back to.
     const countsAt = (lines, i) =>
-      STATUS_FETCH_IDENT_RE.test(lines[i]) && !skipStatusFetchLine(lines[i], i, lines);
+      STATUS_FETCH_IDENT_RE.test(lines[i]) &&
+      !skipStatusFetchLine(lines[i], i, lines, blockCommentInterior(lines)[i]);
     const counts = (line) => countsAt([line], 0);
 
     expect(counts('const status = await fetchEmailStatus();')).toBe(true);
@@ -446,7 +453,14 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
     // Prose and dead code are not occurrences: a commented-out call can
     // neither trip the scan nor keep a licensed member's key alive.
     expect(counts('// const status = await fetchEmailStatus();')).toBe(false);
-    expect(counts(' * fetchEmailStatus is consulted by the resolver on this surface')).toBe(false);
+    // A docblock continuation naming the fetch is prose, and only the region
+    // says so: the same line with no docblock around it is, to the predicate,
+    // a wrapped multiplication and counts. Fed alone it would be spared only
+    // by the shape-only reading, which the real scan never takes.
+    expect(
+      countsAt(['/**', ' * fetchEmailStatus is consulted by the resolver on this surface', ' */'], 1),
+    ).toBe(false);
+    expect(counts(' * fetchEmailStatus is consulted by the resolver on this surface')).toBe(true);
     expect(counts('export function fetchEmailStatus() {')).toBe(false);
     // A different identifier that merely starts with the name does not match.
     expect(counts("const status = await fetchEmailStatusV2();")).toBe(false);
@@ -773,6 +787,21 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
         lines: ['function pick(status) {', '  /* legacy note', '  */ return status.hasPassword === true;', '}'],
       }),
     ).toEqual(['pages/anything.js#pick']);
+    // And behind a close on a line that BEGINS as a `//` comment inside the
+    // open region. The two slashes are comment text there, the close ends
+    // the region, and the read behind it is as live as it is behind the
+    // `  */`-prefixed close in the fixture this one mirrors.
+    expect(
+      passwordStateKeys({
+        rel: 'pages/anything.js',
+        lines: [
+          'function pick(status) {',
+          '  /*',
+          '  // legacy note */ return status.hasPassword === true;',
+          '}',
+        ],
+      }),
+    ).toEqual(['pages/anything.js#pick']);
     // Prose is spared.
     expect(
       passwordStateKeys({
@@ -802,367 +831,6 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
         lines: ['/**', ' * hasPassword drives the factor choice', ' */', 'function pick() {}'],
       }),
     ).toEqual([]);
-  });
-
-  it('the comment predicate skips whole-line prose only, never live code behind an inline block comment', () => {
-    // Whole-line prose in every shape it takes: skipped.
-    expect(isCommentLine('// hasPassword drives the factor choice')).toBe(true);
-    expect(isCommentLine('  * hasPassword is read once, in the resolver')).toBe(true);
-    expect(isCommentLine('  */')).toBe(true);
-    expect(isCommentLine('/* hasPassword lives in the resolver */')).toBe(true);
-    expect(isCommentLine('  /* an opener whose comment runs on')).toBe(true);
-    expect(isCommentLine('/* one */ /* two */')).toBe(true);
-    expect(isCommentLine('/* one */ // and trailing prose')).toBe(true);
-    // Live code behind a leading block comment is NOT prose. Skipping it
-    // would let a pragma hide a factor read from the scan.
-    expect(isCommentLine('/* v8 ignore next */ const usesPassword = status.hasPassword;')).toBe(false);
-    expect(isCommentLine('  /* istanbul ignore next */ hasPassword = data.hasPassword;')).toBe(false);
-    expect(isCommentLine('/* one */ /* two */ return status.hasPassword;')).toBe(false);
-    // The CLOSING side of the same rule. `*/` begins with `*`, so the
-    // docblock-continuation arm claims the line before the block arm ever
-    // sees it, and a read riding behind the close is skipped silently. Both
-    // arms have to close then inspect what is left.
-    expect(isCommentLine('*/ return status.hasPassword === true;')).toBe(false);
-    expect(isCommentLine('  */ hasPassword = data.hasPassword;')).toBe(false);
-    expect(isCommentLine(' * trailing prose */ const usesPassword = status.hasPassword;')).toBe(false);
-    // A bare close, and a close followed by nothing but further comment, stay
-    // prose in both arms.
-    expect(isCommentLine('*/')).toBe(true);
-    expect(isCommentLine('  */ // and trailing prose')).toBe(true);
-    expect(isCommentLine('  */ /* two */')).toBe(true);
-    expect(isCommentLine('const usesPassword = status.hasPassword; // trailing prose')).toBe(false);
-    expect(isCommentLine('')).toBe(false);
-    // A leading star is a docblock continuation AND a wrapped multiplication,
-    // and one line cannot tell them apart. Outside an open comment region the
-    // line is live code, so the predicate needs the region to answer. Passed
-    // explicitly here; the scans compute it per file.
-    expect(isCommentLine('  * (status.hasPassword === false ? 1 : 0)', false)).toBe(false);
-    expect(isCommentLine('  * Number(cached?.hasPassword === false);', false)).toBe(false);
-    expect(isCommentLine('*factorHints() { yield this.emailStatus.hasPassword; }', false)).toBe(false);
-    // Inside one, the same shape is the docblock continuation it looks like.
-    expect(isCommentLine('  * hasPassword is read once, in the resolver', true)).toBe(true);
-    expect(isCommentLine('  * (status.hasPassword === false ? 1 : 0)', true)).toBe(true);
-    // With no region known, the shape reading stands, which is what the
-    // import-clause walk relies on.
-    expect(isCommentLine('  * hasPassword is read once, in the resolver')).toBe(true);
-    // A close ends the region wherever it sits, so what follows is live even
-    // when it is itself star-shaped.
-    expect(isCommentLine('*/ * Number(status.hasPassword === false);', true)).toBe(false);
-  });
-
-  it('the enclosing-symbol resolver names component methods, template literals, and locals, not files', () => {
-    // The granularity every assertion above rests on. A resolver that
-    // returned one label per file would collapse the canary to file
-    // granularity while every planted probe stayed green.
-    const componentLines = [
-      "Alpine.data('settingsPage', () => ({",
-      '    async loadEmailStatus() {',
-      '      const res = await fetchEmailStatus();',
-      '    },',
-      '',
-      '    async handleSetPassword() {',
-      '      this.emailStatus = { hasPassword: true };',
-      '    },',
-      '}));',
-    ];
-    // Method shorthand resolves to the method, and a closed sibling does not
-    // leak downward into the next one.
-    expect(enclosingSymbol(componentLines, 2)).toBe('loadEmailStatus');
-    expect(enclosingSymbol(componentLines, 6)).toBe('handleSetPassword');
-
-    // The immediately-invoked in-flight wrapper inside the resolver: the
-    // nearest enclosing declaration is the local it is assigned to.
-    const flightLines = [
-      'export async function resolvePasswordFactor() {',
-      '  const flight = (async () => {',
-      '    const status = await fetchEmailStatus();',
-      '  })();',
-      '}',
-    ];
-    expect(enclosingSymbol(flightLines, 2)).toBe('flight');
-
-    // A page template literal: markup interior resolves to the declaring
-    // const, and an occurrence after the closing backtick does not.
-    const templateLines = [
-      'const template = `',
-      '  <template x-if="emailStatus.hasPassword === false">',
-      '  </template>',
-      '`;',
-      'const other = status.hasPassword;',
-    ];
-    expect(enclosingSymbol(templateLines, 1)).toBe('template');
-    expect(enclosingSymbol(templateLines, 4)).toBe(MODULE_SCOPE);
-
-    // Control flow is not a declaration.
-    expect(enclosingSymbol(['if (status) {', '  use(status.hasPassword);', '}'], 1)).toBe(
-      MODULE_SCOPE,
-    );
-
-    // A declaration whose parameter list wraps: the opening line shows
-    // neither `=>` nor `function`, so only its unbalanced open paren says it
-    // is a function, and a target inside resolves to it.
-    const wrappedParams = [
-      'const handler = async (',
-      '  status,',
-      '  options,',
-      ') => {',
-      '  return status.hasPassword;',
-      '};',
-    ];
-    expect(enclosingSymbol(wrappedParams, 4)).toBe('handler');
-    // The same `= (` opening a parenthesized EXPRESSION is not a
-    // declaration: its parens balance on the line, so the real enclosing
-    // function wins.
-    const parenExpression = [
-      'function outer(status) {',
-      '  const weight = (base + bonus) * scale;',
-      '  return status.hasPassword;',
-      '}',
-    ];
-    expect(enclosingSymbol(parenExpression, 2)).toBe('outer');
-    // The guard's two fast-path arms, each reached only when the parens
-    // balance on the opening line: every other probe here wraps its
-    // parameter list, so the paren count answers first and neither arm runs.
-    const balancedFunctionKeyword = [
-      'const handler = function (status) {',
-      '  return status.hasPassword;',
-      '};',
-    ];
-    expect(enclosingSymbol(balancedFunctionKeyword, 1)).toBe('handler');
-    const balancedArrow = [
-      'const handler = async (status) => {',
-      '  return status.hasPassword;',
-      '};',
-    ];
-    expect(enclosingSymbol(balancedArrow, 1)).toBe('handler');
-    // A closing brace inside a block comment between the declaration and
-    // the target (a commented-out block left at the declaration's own
-    // indentation) is prose, not the end of the block.
-    const bracedComment = [
-      '    async pick() {',
-      '    /*',
-      '    if (legacy) {',
-      '    }',
-      '    */',
-      '      return this.emailStatus.hasPassword;',
-      '    },',
-    ];
-    expect(enclosingSymbol(bracedComment, 5)).toBe('pick');
-  });
-  it('the brace walk enters a comment region only where one demonstrably exists, and reads the code after its close', () => {
-    // Four decision points, one probe each. Deleting the region tracking
-    // wholesale is already red at the `bracedComment` fixture in the
-    // resolver case, but that composite says only that the mechanism is
-    // load-bearing as a whole. Each branch here flips a real resolution on
-    // its own.
-
-    // OPENER, unterminated: a `/*` the walk cannot see close is not a
-    // comment. Markup inside a template literal writes that shape, and a
-    // phantom region opened there never closes, swallowing the declaration's
-    // real brace and widening every following module-scope line into the
-    // declaration. That is worse than an ordinary wrong answer, because the
-    // wrong symbol can be a key the consumer already licensed, which its
-    // width pin then absorbs.
-    const strayCommentInMarkup = [
-      'function renderPanel(status) {',
-      '  return `',
-      '    <div class="factor-panel">',
-      '    /* spacing note, never closed',
-      '    </div>',
-      '  `;',
-      '}',
-      '',
-      'const usesPassword = status.hasPassword;',
-    ];
-    expect(enclosingSymbol(strayCommentInMarkup, 8)).toBe(MODULE_SCOPE);
-
-    // OPENER, self-contained: a `/* ... */` line closes on itself and opens
-    // no region. The trailing docblock is what lets a phantom region find a
-    // close, so the self-contained guard is the only branch deciding this.
-    const selfContainedBlockComment = [
-      'function pick(status) {',
-      '  /* the legacy branch lived here */',
-      '  return status.hasPassword;',
-      '}',
-      '',
-      '/*',
-      ' * A later docblock, so a phantom region could find a close.',
-      ' */',
-      'const usesPassword = status.hasPassword;',
-    ];
-    expect(enclosingSymbol(selfContainedBlockComment, 8)).toBe(MODULE_SCOPE);
-
-    // EXIT, mid-line: a region ends at its close wherever that sits, not
-    // only at end of line. A test anchored to the line's end keeps the
-    // region open and swallows the declaration's own closing brace.
-    const regionClosedMidLine = [
-      'function pick(status) {',
-      '  /*',
-      '  the legacy branch lived here',
-      '  */ const legacy = null;',
-      '  return status.hasPassword;',
-      '}',
-      '',
-      'const usesPassword = status.hasPassword;',
-    ];
-    expect(enclosingSymbol(regionClosedMidLine, 7)).toBe(MODULE_SCOPE);
-
-    // EXIT, code after the close: what follows `*/` on that line is live, so
-    // a closing brace sitting there ends the block. Skipping the whole exit
-    // line instead resolves a following module-scope line into the
-    // declaration.
-    const closingBraceAfterCommentClose = [
-      'function pick(status) {',
-      '  /*',
-      '  the legacy branch lived here',
-      '*/ }',
-      '',
-      'const usesPassword = status.hasPassword;',
-    ];
-    expect(enclosingSymbol(closingBraceAfterCommentClose, 5)).toBe(MODULE_SCOPE);
-
-    // OPENER inside a template literal, with a real comment close elsewhere
-    // in the file. A later close cannot vouch for an opener that is markup:
-    // every page module carries a docblock, so a test that only asks whether
-    // SOME close follows is satisfied in every real file and the phantom
-    // region opens anyway. Template state is what refuses it.
-    const strayInMarkupWithLaterDocblock = [
-      'function renderPanel(status) {',
-      '  return `',
-      '    <div class="factor-panel">',
-      '    /* spacing note, never closed',
-      '    </div>',
-      '  `;',
-      '}',
-      '',
-      '/**',
-      ' * An ordinary docblock, further down the same module.',
-      ' */',
-      'const usesPassword = status.hasPassword;',
-    ];
-    expect(enclosingSymbol(strayInMarkupWithLaterDocblock, 11)).toBe(MODULE_SCOPE);
-
-    // OPENER outside any template, with no close anywhere below it. Template
-    // state has nothing to say here, so whether a close follows at all is the
-    // branch that decides, and an opener nothing ever closes is not a region.
-    const strayOpenerNoClose = [
-      'function pick(status) {',
-      '  const marker = legacyMarkers[0];',
-      '  /* the note that was never closed',
-      '  return status.hasPassword;',
-      '}',
-      '',
-      'const usesPassword = status.hasPassword;',
-    ];
-    expect(enclosingSymbol(strayOpenerNoClose, 6)).toBe(MODULE_SCOPE);
-
-    // Template state describes where a line BEGINS, not where it ends. The
-    // only line the two readings disagree on is one that both opens a comment
-    // and carries an odd number of backticks, which is an ordinary docblock
-    // in this codebase: prose here quotes identifiers in backticks constantly.
-    // Such a line begins outside the literal, so its opener is a real comment
-    // and the brace it encloses is prose.
-    const backtickInsideCommentOpener = [
-      'function pick(status) {',
-      '/* a note mentioning `hasPassword` once, unbalanced `',
-      '}',
-      '*/',
-      '  return status.hasPassword;',
-      '}',
-    ];
-    expect(enclosingSymbol(backtickInsideCommentOpener, 4)).toBe('pick');
-  });
-  it('the region pass marks docblock interiors and nothing else', () => {
-    // What lets the star arm tell a continuation from an operator. The flag
-    // is about the line's CONTEXT, not its shape: index 2 and index 6 are
-    // textually identical and only one of them is prose.
-    const lines = [
-      'const base = 1;',            // 0
-      '/**',                        // 1
-      ' * a docblock continuation', // 2
-      ' */',                        // 3
-      'const weight = base',        // 4
-      '  * scale',                  // 5
-      '  * a docblock continuation',// 6  same text as index 2, live here
-      ';',                          // 7
-    ];
-    expect(blockCommentInterior(lines)).toEqual([
-      false, false, true, true, false, false, false, false,
-    ]);
-    // The opener's own line is not interior; the close's line is, because a
-    // region is still open when that line begins.
-    expect(blockCommentInterior(['/*', 'x', '*/', 'y'])).toEqual([false, true, true, false]);
-    // A self-contained block comment opens no region.
-    expect(blockCommentInterior(['/* one */', 'const x = 1;'])).toEqual([false, false]);
-
-    // The region pass answers the same question the brace walk does and needs
-    // the same two guards, or it reopens the hole it was added to close. A
-    // page module writes markup in a template literal, a token shaped like an
-    // opener sits in that markup, and every later line reads as prose: the
-    // live derivation below is then invisible to the scans that consume this.
-    const markupOpenerThenLiveRead = [
-      'const template = `',
-      '  <div>',
-      '  /* spacing note, never closed',
-      '  </div>',
-      '`;',
-      '',
-      'export function pick(status, cached) {',
-      '  const orcidOnly = Number(cached != null)',
-      '    * Number(cached?.hasPassword === false);',
-      '  return orcidOnly;',
-      '}',
-    ];
-    expect(blockCommentInterior(markupOpenerThenLiveRead)).toEqual(
-      new Array(markupOpenerThenLiveRead.length).fill(false),
-    );
-    // An opener nothing ever closes is not a region either, template or not.
-    expect(blockCommentInterior(['/* never closed', 'const x = status.hasPassword;'])).toEqual([
-      false,
-      false,
-    ]);
-
-    // Each guard on its own. The fixture above has no close anywhere, so the
-    // close test alone refuses it and the template test is never the reason.
-    // Here a docblock further down supplies a close, which every real module
-    // does, so template state is the only thing left to refuse the opener.
-    const markupOpenerWithLaterDocblock = [
-      'const template = `',
-      '  <div>',
-      '  /* spacing note, never closed',
-      '  </div>',
-      '`;',
-      '',
-      '/**',
-      ' * An ordinary docblock further down the module.',
-      ' */',
-      'export function pick(status) {',
-      '  const orcidOnly = Number(status != null)',
-      '    * Number(status?.hasPassword === false);',
-      '  return orcidOnly;',
-      '}',
-    ];
-    expect(blockCommentInterior(markupOpenerWithLaterDocblock)).toEqual([
-      false, false, false, false, false, false, false, true, true, false, false, false, false, false,
-    ]);
-
-    // And template state describes where a line BEGINS here too: an opener
-    // line quoting identifiers in backticks an odd number of times is still
-    // an opener, because it begins outside the literal.
-    const openerWithOddBackticks = [
-      'const x = 1;',
-      '/* a note mentioning `hasPassword` once, and one stray `',
-      ' * still prose',
-      ' */',
-      'const y = 2;',
-    ];
-    expect(blockCommentInterior(openerWithOddBackticks)).toEqual([false, false, true, true, false]);
-
-    // End to end: the derivation the phantom region would have hidden.
-    expect(
-      occurrencesOf([{ rel: 'pages/thing.js', lines: markupOpenerThenLiveRead }], HAS_PASSWORD_RE, skipCommentLine)
-        .keys,
-    ).toEqual(['pages/thing.js#pick']);
   });
 
 });

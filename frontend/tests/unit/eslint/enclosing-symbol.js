@@ -199,10 +199,43 @@ function aCommentCloseFollows(lines, openIndex, lineIndex) {
  *  This asks the question {@link enclosingSymbol}'s brace walk asks, so it
  *  carries the walk's two guards for the same reasons: an opener inside a
  *  template literal is markup, and an opener nothing ever closes is not a
- *  region. Without them a stray opener in a page module's markup marks every
- *  following line as prose, and a scan consuming this stops seeing live code
- *  from there to the end of the file. On a forbidden-shape scan that is a
- *  silent miss, which is the direction that must never be wrong. */
+ *  region. Without them a stray opener in a page module's markup puts the
+ *  lines below it inside a phantom region, and the skip predicate then reads
+ *  each star-leading line there as a docblock continuation, so a scan
+ *  consuming this stops seeing that shape of live code (a wrapped
+ *  multiplication carrying the read). The window runs to the next line
+ *  carrying a close, which in a real module is the next docblock rather
+ *  than the end of the file. On a forbidden-shape scan that is a silent
+ *  miss, which is the direction that must never be wrong. A star-leading
+ *  line is the whole silent surface: every other line consults its own
+ *  shape, so a phantom region cannot hide them. Leaving a region, the code after the close is read
+ *  the same way the walk reads it: a line that closes one region and opens
+ *  another (`*/ /* second`) re-enters, so a continuation below it is still
+ *  prose to the predicate.
+ *
+ *  TEMPLATE PARITY IS A WHOLE-FILE BACKTICK COUNT, and two things invert it.
+ *  A backtick that is not a delimiter still counts: inside a regex literal,
+ *  a string literal, comment text, or escaped in a template's own text. Each
+ *  one flips the count for every line after it, and this tree writes several
+ *  (a regex character class with a backtick in it; a two-line comment or
+ *  string quoting an identifier). And a nested multi-line template
+ *  (`${items.map((i) => ` + backtick on one line, its close on a later one)
+ *  contributes one backtick per line, so the nested markup reads as OUTSIDE
+ *  any template.
+ *
+ *  Each inversion has a direction. Where a real docblock opener falls in an
+ *  inverted window it is refused and its star lines count as live, which is
+ *  loud (a false red bar, not a miss); where a template with a line-start
+ *  opener in its markup falls in one, the opener is accepted and the
+ *  star-leading reads below it are skipped, which is silent. Only the loud
+ *  direction is reachable in this tree today: the inverted windows the
+ *  non-delimiter backticks open carry no line-start opener, so nothing is
+ *  refused and no scan is affected, and no module nests a multi-line
+ *  template, which is the inversion that flips parity INSIDE markup and so
+ *  points the silent way wherever it occurs. Neither is closed here:
+ *  counting only code-shaped backticks, or tracking `${` depth, is the lexer
+ *  this module declines. Both are pinned as residuals in the resolver's own
+ *  suite. */
 export function blockCommentInterior(lines) {
   const interior = new Array(lines.length).fill(false);
   const last = lines.length - 1;
@@ -210,12 +243,16 @@ export function blockCommentInterior(lines) {
   let ticks = 0;
   for (let i = 0; i < lines.length; i++) {
     interior[i] = open;
-    const trimmed = lines[i].trim();
+    let trimmed = lines[i].trim();
     const inTemplate = ticks % 2 === 1;
     ticks += countOf(lines[i], /`/g);
     if (open) {
-      if (trimmed.includes('*/')) open = false;
-    } else if (opensUnterminatedBlock(trimmed) && !inTemplate && aCommentCloseFollows(lines, i, last)) {
+      const close = trimmed.indexOf('*/');
+      if (close === -1) continue;
+      open = false;
+      trimmed = trimmed.slice(close + 2).trim();
+    }
+    if (opensUnterminatedBlock(trimmed) && !inTemplate && aCommentCloseFollows(lines, i, last)) {
       open = true;
     }
   }
@@ -285,8 +322,31 @@ export function enclosingSymbol(lines, lineIndex) {
     //
     // Leaving the region, the code after the first close on that line is
     // live and gets the same brace test as any other line, at the line's own
-    // indentation. Only the FIRST close on a line is read; the file
-    // docblock's comment-boundary paragraph names what that leaves open.
+    // indentation, and the same opener test: `*/ /* second` re-enters. Only
+    // the FIRST close on a line is read; the file docblock's comment-boundary
+    // paragraph names what that leaves open.
+    //
+    // "Can SEE close" is bounded by the target line, inclusive, not by the
+    // end of the file (the region pass, which has no target, reads to the
+    // end). A close below the target cannot vouch for an opener above it:
+    // taking it would swallow a brace on evidence the walk has not reached
+    // and resolve INWARD, and inward is the direction a licensed key can
+    // absorb. Declining resolves outward, which fails closed.
+    //
+    // Template parity is seeded from the declaration line's own backticks,
+    // because a one-line declaration can open a literal (`= (s) => { const m
+    // = ` + backtick) that the next line is already inside. It is a plain
+    // count of backticks per line from there, and the region pass counts
+    // the same way over the whole file, so both invert on the same two
+    // shapes: a non-delimiter backtick between the declaration and the
+    // target (inside a regex literal, a string literal, comment text, or
+    // escaped in template text) flips every later line's parity, and a
+    // nested multi-line template contributes one backtick per line so its
+    // markup reads as outside any literal. Inverted parity lets
+    // a line-start opener in markup pass the template guard, which is this
+    // walk's inward, silent direction. Not closed here (counting only
+    // code-shaped backticks is the lexer this module declines); both shapes
+    // are pinned as residuals in the resolver's own suite.
     let closedBefore = false;
     let inBlockComment = false;
     let ticks = countOf(lines[i], /`/g);
@@ -343,7 +403,10 @@ export function enclosingSymbol(lines, lineIndex) {
  * accounted for. The one entry appearing in neither list is a directory link
  * back to an ancestor, which the cycle guard declines to re-enter; no module
  * hides there, because the real directory it names is walked under its own
- * non-cyclic path.
+ * non-cyclic path. Nothing else leaves both lists: an entry the walk cannot
+ * stat is censused rather than dropped, and the three calls with no guard of
+ * their own (the link resolution, the directory listing, the file read)
+ * throw rather than skipping in silence.
  */
 export function sourcesUnder(root) {
   const sources = [];
@@ -365,12 +428,10 @@ export function sourcesUnder(root) {
   // so has nowhere to report it.
   const ancestors = new Set();
   const walk = (dir) => {
-    let real;
-    try {
-      real = realpathSync(dir);
-    } catch {
-      return;
-    }
+    // Not guarded: every directory reaching here was just stat-ed by its
+    // parent (or is the root the consumer named), so a failure to resolve
+    // it is a directory vanishing mid-walk, and a throw there is loud.
+    const real = realpathSync(dir);
     if (ancestors.has(real)) return;
     ancestors.add(real);
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -380,8 +441,12 @@ export function sourcesUnder(root) {
       try {
         target = statSync(full);
       } catch {
-        // Unreadable: a broken link, or a permission the walk does not have.
-        // Routed to `foreign`, where a consumer's extension gate can see it.
+        // Nothing to stat: a link pointing nowhere, an entry gone between the
+        // listing and this call, or one under a directory the walk may list
+        // but not search. Routed to `foreign`, where a consumer's extension
+        // gate can see it. An entry the stat CAN see but the walk cannot
+        // open is not caught here: the `readFileSync` call throws and the
+        // consuming suite fails at load, which is the loud direction.
       }
       if (target?.isDirectory()) {
         walk(full);
@@ -403,16 +468,20 @@ export function sourcesUnder(root) {
  *  line with code after it is live code behind a comment prefix, not prose,
  *  and is NOT skipped: a coverage pragma in front of a factor read must not
  *  hide the read. Only further comment may follow the close for the line to
- *  stay prose.
+ *  stay prose. The rule holds for all three prefixes: inside an open region
+ *  a `//` is comment text like any other, so a line that begins with one and
+ *  then closes the region is live behind its close too.
  *
- *  Shape alone decides every case but one. A leading `*` with no close on the
+ *  Shape alone decides every case but two. A leading `*` with no close on the
  *  line is a docblock continuation and a wrapped multiplication and a
  *  generator method, all three identical to this predicate, so that case
  *  takes `insideRegion` from {@link blockCommentInterior} and is prose only
- *  when a region really is open. Passing nothing leaves the old shape-only
- *  reading, which suits a caller with no file in hand; a SCAN must pass it,
- *  because reading live code as prose there is the violation going
- *  unreported.
+ *  when a region really is open. And a leading `//` is prose on its shape
+ *  outside a region, but inside one it is inspected for a close like the
+ *  other two prefixes, because the region is what decides what the two
+ *  slashes are. Passing nothing leaves the shape-only reading of both, which
+ *  suits a caller with no file in hand; a SCAN must pass the region, because
+ *  reading live code as prose there is the violation going unreported.
  *
  *  On a scan for a FORBIDDEN shape the match IS the violation, so every line
  *  skipped is a violation not reported: filter as little as possible. A line
@@ -426,16 +495,18 @@ export function sourcesUnder(root) {
  *  own, re-derived, not inherited. */
 export function isCommentLine(line, insideRegion) {
   const trimmed = line.trim();
-  if (trimmed.startsWith('//')) return true;
-  // Both block-comment arms close before they are believed. A comment CLOSE
-  // begins with the same star a docblock continuation does, so an arm that
-  // answers on that star alone claims a line whose comment has already ended
-  // and skips the live code behind it. An opener is searched past its own
-  // two characters, so an opener that begins with a star is not read as
-  // self-closing; a continuation is searched from the start, which is where
-  // its own close sits.
+  // Every arm closes before it is believed. A comment CLOSE begins with the
+  // same star a docblock continuation does, and inside an open region a `//`
+  // is comment text that can end the region on that same line, so an arm
+  // that answers on its prefix alone claims a line whose comment has already
+  // ended and skips the live code behind it. An opener is searched past its
+  // own two characters, so an opener that begins with a star is not read as
+  // self-closing; the other two prefixes are searched from the start, which
+  // is where a continuation's own close sits.
   const opensBlock = trimmed.startsWith('/*');
-  if (!opensBlock && !trimmed.startsWith('*')) return false;
+  const lineComment = trimmed.startsWith('//');
+  if (lineComment && insideRegion !== true) return true;
+  if (!opensBlock && !lineComment && !trimmed.startsWith('*')) return false;
   const close = trimmed.indexOf('*/', opensBlock ? 2 : 0);
   if (close === -1) {
     // An opener with nothing after it is prose on its own evidence. A
@@ -443,7 +514,8 @@ export function isCommentLine(line, insideRegion) {
     // wrapped multiplication and `*factorHints() {` is a generator method,
     // both shape-identical to a docblock continuation. Only the region says
     // which, so a caller that knows passes it. `undefined` keeps the older
-    // shape-only reading for callers with no file context.
+    // shape-only reading for callers with no file context. A `//` reaching
+    // here is inside a region with no close on its line, so it is prose.
     return opensBlock || insideRegion !== false;
   }
   const rest = trimmed.slice(close + 2).trim();
