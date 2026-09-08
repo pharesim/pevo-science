@@ -164,3 +164,95 @@ would.
    kept from escaping only by the order of two adjacent statements. It now guards
    eviction and not just refusal, so reordering them would evict a live window rather
    than merely refuse one.
+
+---
+
+## Architect re-review (2026-09-08) — HELD PENDING FIXES:
+
+Full `/ce-code-review` fan-out on `85dfe378` (correctness, security, adversarial,
+reliability, testing, maintainability, julik-frontend-races, project-standards,
+learnings), plus an independent validation gate that ran its own behavioural and
+mutation probes against a pinned copy of the reviewed head rather than reasoning from
+the reports. No cross-model peer was available on this host, so the adversarial lens ran
+in-process.
+
+**Both acceptance criteria hold, verified independently of the signal block's table.**
+Testing re-derived the eviction condition's mutation space by hand and confirmed the
+claims: dropping the producer clear reddens the four new broadcast rows and nothing
+else, and dropping the second conjunct is genuinely caught by the pre-existing
+cancelled-proactive-re-auth spec, which would lose its seeded live window as a side
+effect. The `undefined` equivalent-mutant claim checks out against both real consumers.
+The ungated clear was attacked from three directions and survived all of them:
+adversarial verified the joiner ordering and the ORCID_FALLBACK containment,
+julik-frontend-races and correctness each traced the microtask hop, and reliability
+confirmed the eviction reaches the in-memory mirror on every path. project-standards
+audited the new prose line by line and returned zero findings; the learnings pass found
+no documented convention contradicted. Scope item 3 was answered by fixing, and the
+deviation to `FRESH_AUTH_MINT_FAILED` on the two orchestrator surfaces is right: those
+surfaces have no fail-closed guard to catch an `undefined`.
+
+One item to land, plus one fold-in while in the same docblock.
+
+1. **(P1, validated by mutation probe; raised by testing, and named independently as a
+   gap by correctness and reliability) The authorship retry leg's coercion is
+   unpinned.** Both orchestrators wire the same coercing mint callback into two legs:
+   the initial resolution and `consentOpFreshAuthRetryGate`'s `mint` hook. The settings
+   suite pins both legs; the authorship suite pins only the first, because its new rows
+   stage no rejection from `run` and so never enter the gate. The validator measured the
+   consequence rather than inferring it: a mutation that coerces only the initial leg
+   leaves all 34 authorship specs green, while the identical mutation on the settings
+   sibling reddens its retry-leg spec. This is not preemptive hardening. The retry
+   ladder has no `FRESH_AUTH_REDIRECT_PENDING` branch, so an uncoerced non-string on
+   that leg falls past every sentinel comparison into `run(retry)` and spends a live
+   authorship broadcast on a garbage proof, which is a worse failure than the silent
+   abandonment the initial-leg rows already cover. Mirror the settings retry-leg spec on
+   the authorship surface: stage a `FRESH_AUTH_REQUIRED` rejection from `run`, then a
+   first mint that answers with a proof string and a second that answers `null`, and
+   assert the surface reports `freshAuthFailed` with `run` called exactly once.
+
+   **Fold-in, same docblock.** `evictUnnamedAcquisition`'s opening sentence names three
+   readings that refuse an unnamed value and says only the first ever cleared. The
+   upload pre-flight is not a third reading of the acquisition result: `windowProof`
+   calls `ensureSessionWindow` and refuses through its outcome, so it already inherited
+   that guard's clear and was never a never-clearing reader. Two sites read the raw
+   acquisition result, the fail-closed guard and the broadcast unwinder, and the
+   unwinder is the one that could not clear. Correct the count and the attribution.
+
+**Dispositions the implementer does not need to act on.**
+
+- **The session mint returning the wire value uncoerced** was found independently by
+  adversarial, correctness and maintainability, and the validator confirmed it: a
+  response carrying a null proof classifies as the registered redirect outcome, because
+  `FRESH_AUTH_REDIRECT_PENDING` IS `null` and the producer eviction deliberately spares
+  registered sentinels. It is real, and it is already held as item 1 of the round-3 hold
+  on the shared-dispatch task, filed before this diff landed. Do not fix it here. Two of
+  the three reviewers proposed coercing that leg to `FRESH_AUTH_MINT_FAILED`; that
+  proposal is wrong and the existing hold's `undefined` is right, for the reason the
+  next bullet gives.
+- **DROPPED at validation: fold the two orchestrator coercions into a shared helper.**
+  Maintainability proposed moving the ternary into `mintViaPasswordFactor`'s mint
+  wrapper so all three callers inherit it. The validator proved it is not
+  behaviour-preserving: the session leg would then resolve the REGISTERED
+  `FRESH_AUTH_MINT_FAILED`, which the producer eviction never evicts, so the poisoned
+  entry would stay in the slot and the two specs this task added would redden. The three
+  surfaces need different coercion targets because only one of them has a fail-closed
+  guard behind it. The duplication is load-bearing; keep it.
+- **DROPPED at validation: the cross-slot eviction race.** julik-frontend-races raised,
+  and adversarial and correctness each noted, that the two acquisition postures write
+  one window slot and the new clear is ungated, so a poisoned flight could drop a good
+  token a concurrent flight just wrote. The validator ran the interleaving at the PARENT
+  commit and it wipes the window there too, through the pre-existing unconditional clear
+  in the fail-closed guard. Not introduced by this diff, ceiling one extra re-auth, and
+  it needs the backend to hand poison to one flight and a valid proof to another in the
+  same tick.
+- **DISMISSED: the retained consumer-side clear is now redundant.** It is deliberate,
+  documented, and AC 2's "and nothing else" depends on it. **DISMISSED: the
+  `evictUnnamedAcquisition` name does not advertise its pass-through.** Preference.
+- **Residual 1 is CONFIRMED and promoted to its own task**, not folded in here. The
+  architect verified the mechanism the note claims: `consentOpFreshAuthRetryGate`
+  rethrows any non-`FRESH_AUTH_REQUIRED` error at its first statement, before it reaches
+  `clearProofCache()`, and the accreditation-metadata route validates the proof field as
+  a string, so a non-string draws a 400 and the poisoned consent-op entry is never
+  dropped. Correctness and reliability both reported that this cache self-heals; that
+  reading holds only when the backend answers `FRESH_AUTH_REQUIRED`, and it does not
+  here. Residuals 2 and 3 stand as written and stay with their owning tasks.
