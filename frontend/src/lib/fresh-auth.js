@@ -1249,9 +1249,16 @@ export async function ensureSessionWindow({
   // `acquisitionAborted` applies to the raw acquisition result, so both
   // readings of an outcome refuse an unnamed one alike — and both now inherit
   // the one eviction rather than each owning its own, so neither can leave an
-  // entry behind for the other to heal. What they still differ on is whether
-  // the refusal speaks, which the toast dispatch decides and this guard does
-  // not.
+  // entry behind for the other to heal. Neither refuses in silence either:
+  // `acquisitionAborted` falls the unnamed class through to the same `failed`
+  // outcome this guard returns for it. What they still differ on is which
+  // vocabulary carries that refusal out. This guard only names the outcome and
+  // leaves the report to whoever consumes it — `freshAuthWindowReady` through
+  // the toast dispatch, `windowProof` (lib/ipfs-upload.js) through the upload
+  // error codes — while the broadcast unwinder shows the message itself,
+  // because `broadcastWithFreshAuth` collapses every failed acquisition into
+  // the one FRESH_AUTH_REDIRECT_PENDING sentinel, which is the whole of what
+  // its call sites see.
   if (typeof proof !== 'string') {
     clearCachedSessionProof();
     return { ready: false, failed: true };
@@ -1551,9 +1558,27 @@ export async function consentOpFreshAuthRetryGate(err, {
 // passwordless account whose window died between the pre-broadcast gate and
 // the broadcast (or during the 401 retry's re-acquisition) lands here and
 // gets the re-authenticate toast instead of a silent drop.
+//
+// A result the vocabulary does not name classifies to nothing, and a null key
+// is what the dispatch keeps silent for a READY outcome, so a bare
+// classification refused this one class without a word. The fall-through hands
+// it the outcome `ensureSessionWindow`'s fail-closed guard already assigns it,
+// `failed`: re-authentication did not complete, which is the one thing the
+// user can act on. The class is reachable on every action rather than once —
+// `evictUnnamedAcquisition` drops the entry that caused it, so nothing is left
+// in the slot for a later reading to inherit the refusal from. A password
+// account whose mint keeps answering without a proof string is prompted again
+// on the next vote, comment and review, answers correctly again, and is
+// refused again. Silence there is a password answered correctly for nothing,
+// repeatedly.
+//
+// A fall-through on the classification rather than a branch, deliberately:
+// every registered member still resolves through `acquisitionOutcomeKey`, so
+// nothing about their messages or their deliberate silences is restated here,
+// and what is not restated cannot drift from the page gate.
 function acquisitionAborted(proof) {
   if (typeof proof === 'string') return false;
-  showWindowOutcomeToast(acquisitionOutcomeKey(proof));
+  showWindowOutcomeToast(acquisitionOutcomeKey(proof) ?? 'failed');
   return true;
 }
 

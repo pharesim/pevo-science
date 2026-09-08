@@ -895,7 +895,7 @@ describe('the broadcast path leaves no poisoned window behind', () => {
     // `acquisitionAborted` applies the same string test the acquire-before-commit
     // gate does, and for a long time it was the only reading that did not clear.
     // A refusal that leaves its own cause readable is a lockout: the next vote,
-    // comment and review each re-read the entry and each abort in silence, with
+    // comment and review each re-read the entry and each refuse it again, with
     // no way out until the idle deadline arrives, a sign-out scrubs the slot, or
     // an unrelated page gate or upload pre-flight happens to run the eviction.
     seedWindow(value, { idleInMs: IDLE_MS });
@@ -905,7 +905,7 @@ describe('the broadcast path leaves no poisoned window behind', () => {
     expect(cached()).toBeNull();
 
     // And the action after it is an ordinary acquisition rather than a second
-    // silent refusal of the same entry.
+    // refusal of the same entry.
     await broadcastWithFreshAuth('alice', [['vote', {}]]);
     expect(mockBroadcastOps.mock.calls[0][2]).toMatchObject({ freshAuthProof: 'window-proof' });
   });

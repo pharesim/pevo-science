@@ -96,6 +96,8 @@ const {
   broadcastWithFreshAuth,
   freshAuthWindowReady,
   FRESH_AUTH_REDIRECT_PENDING,
+  WINDOW_OUTCOME_KEYS,
+  showWindowOutcomeToast,
   clearPasswordFactorMemo,
   abandonInFlightAcquisitions,
 } = await import('../../src/lib/fresh-auth.js');
@@ -546,5 +548,183 @@ describe('broadcastWithFreshAuth — error-recovery paths', () => {
     // No freshAuthProof passed for Keychain — the request-signing IS the proof.
     expect(mockBroadcastOps.mock.calls[0][2]?.freshAuthProof).toBeUndefined();
     expect(mockFetchEmailStatus).not.toHaveBeenCalled();
+  });
+
+  describe('what the refusal tells the user', () => {
+    // Two things are pinned here. First, that an acquisition result the
+    // vocabulary does not name refuses the broadcast OUT LOUD: it classifies
+    // to nothing, and a null key is what the shared dispatch keeps silent for
+    // a ready outcome, so the unwinder used to drop this one class without a
+    // word while `ensureSessionWindow` reported the same condition as a
+    // re-auth failure. Second, that giving it a voice changed nothing for the
+    // members that were already registered — driven from the vocabulary
+    // itself, so a member added later cannot slip past unasserted.
+
+    // Every registered member, paired with an arrangement that drives it out
+    // of a real acquisition inside `broadcastWithFreshAuth`, and the options
+    // that posture needs. The key set is checked against WINDOW_OUTCOME_KEYS
+    // below rather than trusted.
+    //
+    // `evidence` is what keeps a row from passing on the wrong member. The
+    // comparison against the shared dispatch discriminates the three members
+    // that speak, since their three messages differ — but `redirect` and
+    // `cancelled` are both deliberately silent, so an arrangement that quietly
+    // produced the other one would match anyway. Each row therefore pins a
+    // second observable the two do not share: whether a round-trip started,
+    // and whether the modal was asked at all.
+    const BROADCAST_ROUTE_BY_OUTCOME = {
+      // The passwordless factor navigates, and the round-trip in flight is
+      // the outcome.
+      redirect: {
+        opts: {},
+        arrange: () => {
+          clearPasswordFactorMemo();
+          mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+          mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+        },
+        evidence: () => {
+          expect(mockStartOrcid).toHaveBeenCalledTimes(1);
+          expect(window.location.href).toBe('https://orcid.org/oauth/authorize?x=1');
+        },
+      },
+      // The user dismissed the password prompt.
+      cancelled: {
+        opts: {},
+        arrange: () => { mockReauthModal.request.mockResolvedValue(null); },
+        evidence: () => {
+          expect(mockReauthModal.request).toHaveBeenCalledTimes(1);
+          expect(mockStartOrcid).not.toHaveBeenCalled();
+        },
+      },
+      // Two consecutive rejections of the password: the re-prompt is spent.
+      failed: {
+        opts: {},
+        arrange: () => {
+          mockMintSessionAuthProof.mockRejectedValue(
+            Object.assign(new Error('bad password'), { code: 'UNAUTHORIZED' }),
+          );
+        },
+        evidence: () => { expect(mockReauthModal.request).toHaveBeenCalledTimes(2); },
+      },
+      // Another action's prompt owns the singleton modal.
+      busy: {
+        opts: {},
+        arrange: () => { mockReauthModal.request.mockResolvedValue(REAUTH_PROMPT_BUSY); },
+        evidence: () => { expect(mockReauthModal.request).toHaveBeenCalledTimes(1); },
+      },
+      // A passwordless account on a call site that forbids navigation.
+      reauthRequired: {
+        opts: { allowRedirect: false },
+        arrange: () => {
+          clearPasswordFactorMemo();
+          mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+        },
+        evidence: () => {
+          expect(mockStartOrcid).not.toHaveBeenCalled();
+          expect(mockReauthModal.request).not.toHaveBeenCalled();
+        },
+      },
+    };
+
+    it('routes every registered vocabulary member, and no phantom ones', () => {
+      // Key-set equality both ways. A member added to the vocabulary with no
+      // route here would go unasserted at the unwinder, which is exactly the
+      // silent drop this block exists to close; a route for a member that no
+      // longer exists is dead arrangement.
+      expect(Object.keys(BROADCAST_ROUTE_BY_OUTCOME).sort()).toEqual(
+        [...WINDOW_OUTCOME_KEYS].sort(),
+      );
+    });
+
+    it.each(WINDOW_OUTCOME_KEYS)(
+      'a registered member says through the unwinder exactly what the dispatch says: %s',
+      async (key) => {
+        // The expectation is READ from the shared dispatch rather than copied
+        // here, so a member's message and its deliberate silence are pinned
+        // without either being restated: whatever `showWindowOutcomeToast`
+        // does for this member is what the broadcast path must do, and the
+        // two move together when the copy changes.
+        vi.stubGlobal('window', {
+          ...globalThis.window,
+          location: { href: '', pathname: '/paper/alice/p1' },
+        });
+        try {
+          const { arrange, opts, evidence } = BROADCAST_ROUTE_BY_OUTCOME[key];
+          arrange();
+
+          const result = await broadcastWithFreshAuth('alice', [['vote', {}]], opts);
+          const throughUnwinder = [...mockToastStore.show.mock.calls];
+
+          mockToastStore.show.mockClear();
+          showWindowOutcomeToast(key);
+          const throughDispatch = [...mockToastStore.show.mock.calls];
+
+          expect(result).toBe(FRESH_AUTH_REDIRECT_PENDING);
+          expect(mockBroadcastOps).not.toHaveBeenCalled();
+          evidence();
+          expect(throughUnwinder).toEqual(throughDispatch);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      },
+    );
+
+    // The two legs that can carry a non-string out of an acquisition.
+    // `evictUnnamedAcquisition` drops the entry behind the refusal, so neither
+    // leg leaves a stuck entry for a later action to re-read: a poisoned window
+    // costs one action and the next acquires normally. What recurs is the mint
+    // leg. A mint that keeps answering without a proof string prompts for the
+    // password on every vote, comment and review and refuses every one, and
+    // answering correctly to be told nothing, per action, is what silence here
+    // costs.
+    it.each([
+      {
+        label: 'an entry the window slot handed back',
+        arrange: () => { setWindow(4242); },
+      },
+      {
+        label: 'a mint that answered without a proof string',
+        arrange: () => {
+          mockMintSessionAuthProof.mockResolvedValue({
+            ...issuance('unused'),
+            fresh_auth_proof: { not: 'a proof' },
+          });
+        },
+      },
+    ])('a result the vocabulary does not name refuses the broadcast and says why: $label', async ({ arrange }) => {
+      arrange();
+
+      const result = await broadcastWithFreshAuth('alice', [['vote', {}]]);
+
+      expect(result).toBe(FRESH_AUTH_REDIRECT_PENDING);
+      expect(mockBroadcastOps).not.toHaveBeenCalled();
+      // Exactly once: the unwinder is reached at the initial acquisition and
+      // at the 401 retry's re-acquisition, and the second is only reachable
+      // when the first handed back a real proof string, so one action can
+      // never collect two of these.
+      expect(mockToastStore.show).toHaveBeenCalledTimes(1);
+      expect(mockToastStore.show).toHaveBeenCalledWith(REAUTH_FAILED_SENTINEL, 'error');
+    });
+
+    it('the 401 retry gate owes the same message when ITS re-acquisition is unnamed', async () => {
+      // The other reading of a raw acquisition result inside this wrapper. A
+      // window that dies server-side puts the user through a re-auth act, and
+      // a mint answering without a proof string then loses the action; the
+      // first attempt's proof was real, so this leg is the only one that
+      // speaks.
+      setWindow('doomed-proof');
+      mockBroadcastOps.mockRejectedValueOnce(freshAuthError(401, 'expired'));
+      mockMintSessionAuthProof.mockResolvedValue({
+        ...issuance('unused'),
+        fresh_auth_proof: 4242,
+      });
+
+      const result = await broadcastWithFreshAuth('alice', [['vote', {}]]);
+
+      expect(result).toBe(FRESH_AUTH_REDIRECT_PENDING);
+      expect(mockBroadcastOps).toHaveBeenCalledTimes(1);
+      expect(mockToastStore.show).toHaveBeenCalledTimes(1);
+      expect(mockToastStore.show).toHaveBeenCalledWith(REAUTH_FAILED_SENTINEL, 'error');
+    });
   });
 });
