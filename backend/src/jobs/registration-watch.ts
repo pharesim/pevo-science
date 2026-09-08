@@ -271,12 +271,14 @@ async function collectSignupStarted(
  * therefore does not re-announce on its next profile change.
  *
  * The `seen:accounts` set is still what makes the class report each account
- * once, for two reasons the cursor cannot express. A row can reach a finalize
- * TWICE: a repeat signup on the same email re-opens the pending state, and the
- * finalize that follows re-stamps the marker on an account already announced.
- * And the cursor is carried as whole milliseconds while the column holds
- * microseconds, so the newest row in a batch stays strictly greater than the
- * cursor derived from it and is re-read on the following tick.
+ * once, and the reason is the cursor's own resolution rather than the column's
+ * behaviour: the cursor is carried as whole milliseconds (`getTime()`, read back
+ * through `to_timestamp($1/1000)`) while the column holds microseconds, so the
+ * newest row in a batch stays strictly greater than the cursor derived from it
+ * and is re-read on every following tick until a newer row arrives. The set also
+ * absorbs a second finalize on the same row, which is the only other way a bump
+ * could reach this query; no path in the tree produces one today, and one would
+ * arrive here as a duplicate rather than as a missed announce.
  *
  * Membership is only READ here. Marking happens after delivery succeeds --
  * marking during collection would drop the batch permanently if the webhook
