@@ -86,3 +86,61 @@ mid-line-close re-read to the brace walk, and a round-4 hold now adds a `//`-arm
 per-branch probes on the same module. Re-confirm the clause against the frontend file at its
 then-HEAD at this task's review intake; the divergence itself (backend filters more, frontend
 filters less) is expected to stand.
+
+## Architect re-review (2026-09-08) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on `ffc2d476` (correctness, adversarial, project-standards,
+testing, learnings). The correction half is a strict improvement and is accepted: planted
+positive AND negative probes really do live in the consuming canaries, so
+"in the canaries that consume it" is accurate where "in its own test file" was not.
+Project-standards came back clean: no anchor-rot class in the added lines, and the
+pre-commit anchor gate passes.
+
+The new "Hand-ported sibling." paragraph is held. It describes a synchronization state that
+was already false when it was written, which is the same defect class the paragraph exists to
+warn about. Both items below are one paragraph and one rewrite; decide the shape once.
+
+1. **The pointer aims outbound while the drift is inbound.** The closing sentence says a change
+   to the walk *here* is a prompt to read the other copy. The frontend walk carries
+   block-comment-region state (`inBlockComment`, seeded from `blockCommentInterior`) that this
+   walk has no equivalent of: `enclosingSymbol` here skips any line whose trimmed text starts
+   with `*` or `//`. Run both on a `*/` that shares its line with the real closing brace and
+   they disagree, with this copy returning the inner symbol where the frontend returns the
+   correct outer one. That miss resolves INWARD, the direction this file's own fail-closed
+   argument says set-equality cannot catch. The frontend hardening landed before `ffc2d476`, so
+   the sentence was inaccurate on arrival. Make it bidirectional and name the frontend copy as
+   currently ahead on the comment walk.
+
+2. **The divergence enumeration understates the split, and one verb is wrong.** All four stated
+   facts are individually true, but the frontend also exports `blockCommentInterior`, takes an
+   `insideRegion` argument on `isCommentLine`, counts template-literal backticks inside the
+   brace walk, and returns `{ sources, foreign }` from `sourcesUnder` where this module returns
+   a bare array. Read as an exhaustive list, the paragraph tells a maintainer the walk is in
+   sync and that this copy is the more comment-aware one. Neither is true.
+
+   **Preferred shape: replace the per-feature inventory with the shared invariant plus an
+   explicit "the sibling's walk has already grown guards this one has not."** Per
+   `agents/docs/solutions/conventions/comment-sweep-expansion-must-audit-added-clause-behavioral-accuracy-2026-05-20.md`,
+   an enumerated clause is a stale-by-default anchor: nothing fails when a future edit to
+   either file makes one listed fact false, and no mechanical gate screens for that drift.
+   Extending the list instead is acceptable if you would rather keep the detail, but then it
+   has to name the region pass and the `foreign` census, and it inherits the re-verify cost on
+   every future edit to either file.
+
+   Separately, fix the verb regardless of which shape you pick: `git log -S 'isCommentedOut'`
+   on the frontend path returns no commits, so that copy never carried it and then removed it.
+   "which that copy dropped" should read "which that copy has no equivalent of".
+
+Anchor the rewritten paragraph on the sibling's path and on exported symbol names. No commit
+SHAs, no task slugs, no round numbers, and no line numbers in the docblock text itself.
+
+**Dismissed, do not action:** a probe asserting the cited sibling path still resolves on disk
+(anchor 50, theoretical; the frontend's own suite imports that exact path and would break
+first). **Out of scope, ui-zone:** the frontend docblock cites "the backend port" with no path,
+so the reciprocity is still asymmetric. That is a ui-slug edit and is not required for this
+task to archive.
+
+**Routed out, not yours to fix here:** the review surfaced a live detection hole in
+`isCommentLine` and a reachable counterexample to the SET-EQUALITY fail-closed argument. Both
+are pre-existing and are filed separately as `backend-comment-predicate-region-awareness`. Do
+not widen this task to cover them.
