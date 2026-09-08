@@ -675,3 +675,70 @@ substance of the refuted findings. The one defect the pass did surface was a
 word in a comment ad8ff684 added, "imperative" for what the new sentence uses
 as an infinitive; 4f7fb9b9 fixes it. The critic's one item was this signal
 block, not yet written at the time.
+
+## Architect re-review (2026-09-08) — HELD PENDING FIXES:
+
+Re-review of commits ad8ff684, 4f7fb9b9 via /ce-code-review (five reviewers: correctness,
+adversarial, testing, project-standards, learnings; three merged findings put through an
+independent validation pass; the cross-model pass did not run because the host family is claude
+and no different-provider CLI is installed on this machine).
+
+All five items held on 2026-09-07 are FIXED, verified from the diff rather than from the signal
+prose: `only instruction` and `only route` return 0 under `frontend/src`, `frontend/tests` and
+STUBS.md, and the single case-insensitive hit across `frontend/` is the untouched
+`paper-detail.js` name-only Route-3 comment; the copy-contract describe header now singles the
+sub-case out by needing a re-login before its Try Again can act; the ledger block says the
+fallback is the route the message gives a reader the in-tab retry can no longer reach and keeps
+the stranding clause; `upgrade.sessionChangedBeforeCleanup` names the header control, with
+"Sign in" byte-equal to `signIn.signInButton`, "Try Again" byte-equal to `common.tryAgain`, two
+`{username}`, no em-dash, all sixteen locale files carrying one identical value and each JSON
+changed on exactly one line, the ledger block revised in place with zero per-locale lines touched
+and no new heading; and the header pointer reads "so carve-out clauses (a) to (c) below do not
+apply to it". project-standards returned clean, having re-run the pre-commit anchor matcher
+against every added comment line. One fix before archive:
+
+1. **Collapse the duplicate ledger entry for `upgrade.sessionChangedBeforeCleanup`.** The key is
+   listed twice in STUBS.md: fifteen per-locale lines under `### Added 2026-09-02` and fifteen
+   more under `### Updated 2026-09-06`, so a grep for the key returns thirty-one lines where it
+   should return fifteen. All sixteen locale files hold one identical value, so the key has never
+   been translated, and `agents/docs/solutions/conventions/i18n-stubs-added-vs-updated-scope-never-translated-keys-2026-06-09.md`
+   reserves an `Updated` heading for keys that were previously translated. A translator reading
+   the ledger is told a never-translated key was revised, which is the exact confusion that entry
+   documents. The duplication was introduced by bea00bd3 while this task was in flight, not by
+   ad8ff684, but ad8ff684 edits the narrative prose inside the mis-headed block, so it is this
+   task's to clear. Fold the two blocks into the single `Added` entry, keeping the narrative that
+   explains what the English value now says and why the fallback and the header control must
+   survive translation, and leave one set of fifteen per-locale lines. Re-grep the key after the
+   edit and report the line count in the signal.
+
+Recorded, not held: the copy's "Sign out" step names no rendered control, since the only
+sign-out affordance renders `header.disconnect` ("Disconnect"), while the sign-in half names its
+control by the rendered label and pins it. Two reviewers raised the asymmetry independently and
+the validation pass confirmed every sub-claim. Decision (architect and user, 2026-09-08): keep
+the verb and do not pin it. The rule that produced the sign-in pin exists to disambiguate two
+controls where one destroys the seed; sign-out has one control and no twin, so there is nothing
+to disambiguate, and `upgrade.backendTimeout` already uses the same verb for the same control.
+Naming the label would push web3 jargon into more copy, which the no-jargon design preference
+argues against. The better resolution is to retire the jargon instead, filed separately as
+`ui-header-disconnect-label-signout`.
+
+Also recorded so a later pass does not re-raise them, both rejected under validation: the claim
+that the copy's sign-out step strands the reader with the seed-destroying body control is false,
+because the global header keeps rendering `signIn.signInButton` after sign-out and
+`x-data="settingsPage"` sits outside both `x-if` branches, so the teardown never runs `destroy()`
+and `upgradePhase` and the seed survive the signed-out transition; and the claim that nothing
+pins the header control's behavior is false, because `components-header.test.js` exercises
+`handleSignIn` through `connect()` and the Keychain login spec clicks the header control and
+asserts the modal opens. The remaining key-vs-literal linkage gap is preemptive hardening and is
+dismissed.
+
+Residual risks carried forward, none held: below the md breakpoint the named header control
+renders only inside the mobile menu that `handleDisconnect` closes, so the reader reopens it;
+the Keychain re-login path mints custody 'self' and collapses the upgrade section, recorded on
+2026-09-06 and still not held; locale parity for ledger-tracked keys is convention-only with no
+automated check; and in English the two sign-in controls differ only by case, which the ledger
+note does not spell out for translators.
+
+Comment-anchor reminder as before: no task slugs, round numbers, or line numbers in code or test
+comments; anchor on `_endUpgradeAsSessionChanged`, `handleRetry`, `retryUpgradeBackend`,
+`RETRYABILITY`, `signIn.signInButton`, and the sub-case key names.
