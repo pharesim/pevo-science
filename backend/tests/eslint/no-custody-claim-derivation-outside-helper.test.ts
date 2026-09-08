@@ -132,9 +132,9 @@ const EPOCH_TERNARY_RE = /\bupgraded_at\b[^;]*\?\s*['"`](?:self|light)['"`]/;
  *
  *  That is what keeps the scan from pairing one object's `custody:` key with a
  *  neighbouring property's `.custody` access. Allow commas alone and
- *  `logger.info({ custody: claim }, row.custody)` reports itself; the two
- *  planted negatives that pin this boundary need a comma, a colon AND a quote
- *  admitted together before either fires, so they are not on their own what
+ *  `logger.info({ custody: claim }, row.custody)` reports itself; the
+ *  `hasPassword: row.custody` control planted beside it needs a comma, a colon
+ *  AND a quote admitted together before it fires, so it is not on its own what
  *  demonstrates the exclusion earns its keep.
  *
  *  What the whitelist costs is a column read whose expression carries an
@@ -191,13 +191,29 @@ const ALLOWED_LITERAL_CLAIM_SITES = [
 const VARIABLE_CLAIM_RE = /(?<![.\w])custody\s*(?:,|\})/;
 const ALLOWED_CLAIM_CARRY_SITES = ['routes/auth.ts#POST /session'];
 
+/** How far the forward walks reach, in two independent budgets.
+ *
+ *  `SCAN` bounds a walk itself, in lines below the one it starts from, and is
+ *  shared by the two walks in this file. `mintPayload` gathers a mint's
+ *  argument list and keeps walking while a paren it counted, in code, a
+ *  comment or a string, stays unclosed; `statementFrom` gathers the statement
+ *  a line opens and steps over comment lines for free, so without a bound it
+ *  reaches the code on the far side of a long comment run. Either way the walk
+ *  reports unrelated code as part of the statement it started on, and one
+ *  constant keeps the two bounds from drifting apart by hand.
+ *
+ *  `JOIN` belongs to `statementFrom` alone and counts the lines actually
+ *  joined, so stepping over prose costs nothing there. */
+const STATEMENT_JOIN_CAP = 4;
+const STATEMENT_SCAN_CAP = 12;
+
 /** The payload of a mint: the mint line plus the following lines up to the
- *  first closing `)` at the call's own depth, capped so a runaway scan cannot
- *  swallow the next handler. */
+ *  first closing `)` at the call's own depth, capped by `STATEMENT_SCAN_CAP`
+ *  so a runaway scan cannot swallow the next handler. */
 function mintPayload(lines: string[], lineIndex: number): string {
   let depth = 0;
   let out = '';
-  for (let j = lineIndex; j < lines.length && j <= lineIndex + 12; j++) {
+  for (let j = lineIndex; j < lines.length && j <= lineIndex + STATEMENT_SCAN_CAP; j++) {
     const line = lines[j];
     out += line + '\n';
     for (const ch of line) {
@@ -228,15 +244,6 @@ function classifyMint(lines: string[], lineIndex: number): ClaimSource {
  *  `upgraded_at` spelling in the tree. */
 const BLOCK_OPENER_RE = /\)\s*\{\s*$/;
 
-/** How far the join reaches, in two independent budgets. `JOIN` counts the
- *  lines actually joined, so stepping over prose costs nothing. `SCAN` bounds
- *  the walk itself, which a joined count no longer does: a line sitting
- *  directly above a long docblock would otherwise reach the code on the far
- *  side of it and report two unrelated statements as one. The scan number is
- *  the one `mintPayload` already uses against the same runaway. */
-const STATEMENT_JOIN_CAP = 4;
-const STATEMENT_SCAN_CAP = 12;
-
 /** The STATEMENT a line opens: the line itself, joined with the lines below it
  *  until one carries a terminator or opens a block, a blank line ends the run,
  *  or one of the two caps is reached. Comment lines inside the run are stepped
@@ -258,7 +265,9 @@ const STATEMENT_SCAN_CAP = 12;
  *  by twelve or more consecutive comment lines still escapes; the old cap
  *  escaped at four. Neither bound changes a single reported site across the
  *  current tree, so the choice is between two residuals rather than between a
- *  cost and none.
+ *  cost and none. The boundary is pinned in both directions by the
+ *  split-derivation probes, so moving the cap means moving those counts and
+ *  the twelve stated here with it.
  *
  *
  *  The shape scans run against this instead of the raw line because a
@@ -435,9 +444,13 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
     expect(COLUMN_COPY_RE.test("custody: result.rows[0]?.['custody'],")).toBe(true);
     expect(COLUMN_COPY_RE.test('const custody = row.custody_source;')).toBe(false);
     // The accessor run must not cross a property boundary and pair one
-    // object's key with the next one's column read. The third of these is the
-    // shape that shows the exclusion earning its keep: it is a single argument
-    // list, so only the comma separates the key from the read.
+    // object's key with the next one's column read. The
+    // `logger.info({ custody: claim }, row.custody)` control is the shape that
+    // shows the exclusion earning its keep: it is a single argument list, so
+    // only the comma separates the key from the read. The `hasPassword`
+    // control needs a quote and a colon admitted as well before it fires, and
+    // the `custodyClaimFor(row)` and `custody = $1` controls carry no column
+    // read for the pattern's tail to match, whatever the run admits.
     expect(COLUMN_COPY_RE.test("custody: 'self',\n  hasPassword: row.custody !== null,")).toBe(false);
     expect(COLUMN_COPY_RE.test('custody: custodyClaimFor(row),\n  pending: row.pending_email,')).toBe(false);
     expect(COLUMN_COPY_RE.test("custody = $1,\n  upgraded_at = $2,")).toBe(false);
@@ -481,6 +494,21 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
     // The payload walk stops at the call's own closing paren and never reads
     // into the next statement.
     expect(mintPayload(['jwt.sign(', '  { sub, custody },', '  secret,', ');', "const next = { custody: 'self' };"], 0)).not.toContain('next');
+    // The payload walk is pinned to `STATEMENT_SCAN_CAP` itself rather than to
+    // a count. The split-derivation probes pin the constant's VALUE; this pair
+    // pins that `mintPayload` still reads the constant, so a literal re-inlined
+    // in its loop bound goes red the moment the constant moves away from it. A
+    // claim key exactly the cap's distance below the mint is still read, one
+    // line further is not.
+    const mintWithClaimAt = (linesBelow: number) => [
+      'const token = jwt.sign(',
+      ...Array.from({ length: linesBelow - 1 }, () => '  // a note inside the argument list'),
+      '  { sub: account.username, custody },',
+      '  secret,',
+      ');',
+    ];
+    expect(classifyMint(mintWithClaimAt(STATEMENT_SCAN_CAP), 0)).toBe('variable');
+    expect(classifyMint(mintWithClaimAt(STATEMENT_SCAN_CAP + 1), 0)).toBe('none');
   });
 
   it('a derivation wrapped, optional-chained, bracketed, or destructured is still refused', () => {
@@ -539,6 +567,24 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
         ),
       ),
     ).not.toEqual([]);
+
+    // A derivation split by prose has a far tail, and that is where the walk
+    // cap cuts in. Counting joined lines leaves the walk itself unbounded, and
+    // this tree carries comment runs long enough for an unbounded walk to
+    // swallow the statement beyond one, so `STATEMENT_SCAN_CAP` stops it at the
+    // price of a derivation split by that many comment lines. Both sides of the
+    // boundary are pinned by count: the cap can be neither lowered, raised, nor
+    // deleted without one of these going red, and a deliberate move takes the
+    // docblock's stated cost with it.
+    const splitBy = (commentLines: number) =>
+      reader(
+        '  const custody = account.upgraded_at',
+        ...Array.from({ length: commentLines }, (_, i) => `    // note ${i + 1} beside the branch`),
+        "      ? 'self'",
+        "      : 'light';",
+      );
+    expect(offenders(splitBy(11))).not.toEqual([]);
+    expect(offenders(splitBy(12))).toEqual([]);
 
     // Controls. The licensed shape, and a refusal gate that reads the epoch to
     // say no without deriving anything, must stay clean across the same join.

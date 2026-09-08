@@ -737,7 +737,10 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
   // from a pre-upgrade snapshot. Neither claim is re-checked after minting,
   // and neither needs to be: every route that ACTS on a light claim re-reads
   // `upgraded_at` and refuses a row that carries one. `POST /api/auth/session`
-  // copies a claim forward without reading a row, but it only re-mints a
+  // copies a claim forward without acting on it: its handler reads no
+  // `accounts` row, and the row its request does read is the one
+  // `verifyHiveSignature` reads for `sessions_invalidated_at`, a revocation
+  // check that never looks at `upgraded_at`, so the copy only re-mints a
   // session and reaches no signing path. The row matched here is
   // finalized, which includes the state-G row whose `custody` column is NULL
   // because it never went through light signup; the helper resolves that one
