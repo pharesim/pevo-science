@@ -1,4 +1,4 @@
-# Close the password-factor canary's two pre-existing coverage gaps
+# Close the password-factor canary's pre-existing coverage gaps
 
 **Owner:** ui
 **Created:** 2026-09-06
@@ -48,6 +48,26 @@ of the two. But the ban exists precisely because a star re-export writes neither
 the function's name nor the discriminator, and a line break should not be the
 thing that decides whether it is caught.
 
+### 3. The walk's vacuity floor is loose, and no subtree is pinned
+
+Routed in from the second-pass architect review of
+`ui-factor-resolver-source-discipline-canary` on 2026-09-08, and filed here
+rather than as its own task: it is the same class as the two gaps above, on the
+same file, and it carries the identical sequencing dependency this file's block
+already records.
+
+The canary asserts a floor on the number of files the walk returned, so a broken
+glob fails loudly instead of passing vacuously. The floor is `> 40` against 86
+real `.js` files under `frontend/src`, and no assertion anywhere in the file
+names a path under `components/`, which is 20 of those 86. A walk that silently
+dropped that whole subtree would clear the floor and satisfy every membership
+check the file makes, and a factor derivation planted there would pass
+vacuously. The floor catches a total failure of the walk and little between that
+and the truth.
+
+Pre-existing. The floor predates every round of the sibling task, and this round
+did not move it.
+
 ## Scope
 
 1. Extend the canary to the entry document. Read `frontend/index.html` and assert
@@ -62,6 +82,11 @@ thing that decides whether it is caught.
    existing regex spans newlines through its own `\s*`, so no pattern change is
    needed. Add a line-broken case to the matcher's self-test, which currently
    feeds it single-line strings only.
+3. Tighten the walk's vacuity guard. Raise the floor so it tracks the real tree
+   rather than a fraction of it, and add at least one membership assertion under
+   `components/` so a dropped subtree is a red bar rather than a smaller number.
+   Say what the floor is for in the same paragraph, so a later reader does not
+   round it back down.
 
 ## Acceptance criteria
 
@@ -70,6 +95,8 @@ thing that decides whether it is caught.
    and the matcher's self-test carries that shape as a planted positive.
 3. The file docblock states which surfaces the canary covers and which it does
    not, so the next reader does not have to re-derive the walk's boundary.
+4. A walk that returns every source file except those under `components/` fails
+   the suite.
 
 ## Notes
 

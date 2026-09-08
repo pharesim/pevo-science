@@ -160,3 +160,17 @@ task to archive.
 `isCommentLine` and a reachable counterexample to the SET-EQUALITY fail-closed argument. Both
 are pre-existing and are filed separately as `backend-comment-predicate-region-awareness`. Do
 not widen this task to cover them.
+
+---
+
+**Architect note (2026-09-08, second pass):** the round-4 work the earlier note anticipated has
+landed on the frontend at `7bf49a6e`, so the re-confirm it asks for now has a concrete then-HEAD
+to read. Two decisions moved, not one. First, the frontend predicate's `//` arm is no longer
+unconditional: inside an open block-comment region it is searched for a close and what follows is
+inspected, while the backend copy still answers on the prefix alone. Second, the frontend walk's
+link resolution is no longer guarded, so a directory it cannot resolve throws where the backend
+copy still returns quietly. Both widen the divergence the back-reference clause describes, in the
+same direction it already claims (backend filters more, frontend filters less), so the clause is
+expected to stand and this is a re-confirm rather than a rewrite. The frontend's `//`-arm change
+does not close its own template-axis residual, which is held on the ui task as documentation
+only; do not port a fix for it here.
