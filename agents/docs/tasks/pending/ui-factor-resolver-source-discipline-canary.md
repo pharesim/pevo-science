@@ -531,3 +531,158 @@ a vanished-file race the current shape absorbs.
 Probing ran against copies under a scratch directory with a separate vitest
 config, never by mutating the shared tree, because sibling sessions were active
 in this checkout throughout.
+
+---
+
+## Architect re-review (2026-09-08) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` scoped to `b4d36bb4` + `61bff3f8` + `7aa6a31e` + `72dbaa69`
+(the two canary files only), six reviewer personas plus an independent validation batch that
+EXECUTED every surviving finding against the scan machinery on scratch copies. The cross-model
+adversarial route was again unavailable on this host (no different-provider CLI installed), so
+the adversarial lens ran in-process.
+
+**All eight items held on 2026-09-06 landed.** Two reviewers independently compared base and
+head over the real tree: identical counts and sites for both scans, `enclosingSymbol` agrees on
+all 21,662 real lines, `isCommentLine` agrees on every real line, and `blockCommentInterior`
+matches a real parser's block-comment truth on all 86 files. Every behavior change is on planted
+shapes. Canary 16/16; full frontend unit suite 83 files, 1842 tests green at intake.
+
+Two findings the fleet rated P1 at anchor 100 were DROPPED at validation and are deliberately
+NOT held, so do not act on them: (a) a `  */ }` line whose close is indented deeper than the
+declaration resolves the following module-scope line inward, but three independent executions
+agree this is the pre-existing indentation rule (a plain misindented `  }` resolves identically at
+base and head), the width pin still moves so it is loud for this canary, and the proposed
+`indentOf(code)` fix fails its own probe and regresses `closingBraceAfterCommentClose`; (b) the
+"live derivation below" sentence at the region-pass probe is a restatement adjacent to its
+fixture, not a displaceable citation. The `/*/` search-origin guards (`indexOf('*/', 2)` in the
+opener test and its twin in the predicate) survived mutation but guard a contrived shape and are
+dismissed as theoretical.
+
+Six items follow. Items 1, 5 and 6 touch `enclosing-symbol.js` and its probes; sequence item 1
+first because it is the only open silent direction.
+
+### Item 1 — `isCommentLine`'s `//` arm skips live code on a region-CLOSING line (the third arm)
+
+Held items 2 and 5 of the previous two rounds gave the `/*` opener arm and the `*` continuation
+arm close-then-inspect treatment. The `//` arm still answers on its prefix alone:
+`if (trimmed.startsWith('//')) return true;` runs before either block arm. Inside an open block
+comment, a line reading `  // legacy note */ return status.hasPassword === true;` ends the comment
+and carries a live read, and the password-state scan drops it. Executed by two reviewers and the
+validator: the region pass marks the line interior, the brace walk resolves it to the enclosing
+declaration (it re-reads the code after the close, so the two readers disagree in the silent
+direction), and `occurrencesOf` returns no key; the star-prefixed sibling
+`  * legacy note */ return ...` IS counted after the previous round. Latent: no such line exists
+under `frontend/src` today. The rewritten docblock nonetheless claims "live code behind a comment
+prefix ... is NOT skipped".
+
+This is the shape the committed convention entry `convention-enforcing-fix-must-audit-its-own-new-code`
+names, recurring a second time on the same predicate: two arms hardened, the sibling arm untouched.
+
+Fix: when `insideRegion === true` and the trimmed line starts with `//`, search for `*/` and
+inspect what follows exactly as the other two arms do; leave the shape-only `//` reading for
+lines outside a region so the documented block-toggle behavior is unchanged. Verified on a copy
+by the reviewer: the real-tree pins stay exactly 8/1/2. Plant mirror probes in the comment-
+predicate case (`'  // legacy note */ return status.hasPassword === true;'` with region true is
+live; `'// note */'` and `'// note */ // more'` stay prose) and one end-to-end fixture through the
+password-state scan resolving to `pages/anything.js#pick`.
+
+### Item 2 — split the support-module unit tests out of the canary file
+
+The round grew the test file from 778 to 1168 lines. The four blocks at lines 807, 853, 952 and
+1075 (`the comment predicate skips whole-line prose only ...`, `the enclosing-symbol resolver
+names ...`, `the brace walk enters a comment region only where ...`, `the region pass marks
+docblock interiors ...`) exercise `isCommentLine`, `enclosingSymbol` and `blockCommentInterior`
+directly and never name the status fetch or the discriminator. The validator confirmed they
+import only the module's exports and reach two one-line file-local helpers (`HAS_PASSWORD_RE`,
+`skipCommentLine`).
+
+Fix: move those four blocks to `frontend/tests/unit/eslint/enclosing-symbol.test.js` (the vitest
+include glob collects it with no config change), carrying or re-declaring the two helpers there,
+and record in that file's header that it is the resolver's own unit suite, consistent with the
+placement decision this task's scope item 3 already made. The canary file keeps only its domain
+assertions and the planted evasion cases that run through the scans. Both files green.
+
+### Item 3 — bare positional anchor at test line 1125
+
+"Each guard on its own. The fixture above has no close anywhere, so the close test alone refuses
+it ..." Two fixtures in the same block satisfy "no close anywhere" (`markupOpenerThenLiveRead`
+and the inline `['/* never closed', ...]` literal), so the pointer cannot be resolved in place.
+This is a literal pointer to a test artifact, not the metaphor shape ruled on last round. The
+pre-commit gate did not fire only because `fixture` is absent from its noun list; the architect
+will widen the hook separately, do not touch `.githooks`. Fix: name the fixture in the sentence
+or restate the point without the pointer.
+
+### Item 4 — name the parity-inversion sources in both readers' docblocks (documentation + probes)
+
+Both readers decide "inside a template literal" by counting every backtick on every line.
+Neither docblock says what that counts. Two sources invert it:
+
+(a) Backticks inside regex literals, string literals and comment text accumulate whole-file in
+`blockCommentInterior`. Six real files invert today: the regex character class at
+`pages/blog.js:99` flips template state from line 100 to end of file; five two-line comment or
+string pairs (`api.js:522-523`, `auth.js:119-120`, `auth.js:126-127`, `lib/fresh-auth.js`,
+`pages/accreditation-verify.js:82-83`, `components/threaded-comments.js:27-28`) flip exactly one
+line each. Every reachable consequence today is loud (a real docblock inside an inverted window
+is refused and its star lines count as live). The silent case needs a template with a line-start
+`/*` in its markup to follow an inversion, which nothing in the tree does. The brace walk seeds
+its own parity from the declaration line, so the two readers can disagree about the same opener.
+
+(b) A nested multi-line template (`${items.map((i) => \`` on one line, its close on a later one)
+contributes one backtick per line, so the region pass believes the nested markup is outside any
+template; a line-start `/*` there is accepted as an opener whenever any `*/` follows, and a
+star-leading live read below it is skipped. Executed. Zero nested multi-line templates exist in
+the tree today. This one inverts INSIDE markup, which is the silent direction.
+
+This item is documentation and pins only. Do NOT attempt a mechanical fix: counting only
+code-shaped text, or tracking `${` depth, is the lexer this module declines. Name both sources in
+the `blockCommentInterior` docblock and the brace-walk comment, state the direction each fails
+in and why (a) is loud today, and plant two-sided probes: for (a), a regex line carrying one
+backtick, then a template with a line-start `/*`, then a star-leading live read, then a docblock,
+asserting the read is skipped (the named residual) and that the same file without the regex
+backtick counts it; for (b), the nested-template fixture with the star-leading read skipped and
+the operator-at-line-end form counted.
+
+### Item 5 — one probe per decision the round introduced, plus the region-less helper
+
+The signal block's "24 mutations, all red at every decision point" does not hold. Three
+reviewers independently found survivors on round-touched decisions; three are the untested
+halves of choices this round made and are held:
+
+- the brace walk seeding `ticks` from the declaration line (mutating the seed to 0 leaves the
+  suite green; an odd-backtick declaration line pins it);
+- the close-follows bound in the walk (`k <= lineIndex`, per target) versus the whole-file bound
+  in the region pass (mutating either to the other leaves the suite green);
+- the walk's opener test running on the post-close `code` rather than the raw line (the
+  `*/ /* second` shape on one line re-enters a region in the walk and not in the region pass;
+  neither reader is pinned).
+
+Add one probe per bullet that goes red for exactly that mutation. Also thread the region through
+the test file's `countsAt` helper (line 421): the probe at line 449 expecting a star-prefixed
+docblock line naming the status fetch to be spared currently runs through the shape-only path
+the real scan never takes; executed through `occurrencesOf`, the same lone line counts at module
+scope. Wrap that planted line in a real docblock and pass `blockCommentInterior(lines)[i]`.
+
+### Item 6 — three sentences this round wrote do not match the code
+
+- The walker's catch comment says an entry the walk cannot read is "Routed to `foreign`". An
+  unreadable `.js` file passes `statSync` and crashes in `readFileSync`; an unreadable directory
+  crashes in `readdirSync`; both at module load. Either route them to `foreign` as the comment
+  promises, or make the comment say the walk crashes loudly. The crash is an acceptable direction;
+  the prose is not.
+- The `sourcesUnder` docblock says the ancestor-cycle skip is "the one entry appearing in neither
+  list". The `realpathSync` catch also drops a directory from both lists (unreachable in practice,
+  the stat just succeeded, but the sentence is false as written).
+- The region-pass docblock says a phantom opener "marks every following line as prose". Only
+  star-leading lines consult the region, so the silent surface is narrower than stated.
+
+### Not held, noted for the record
+
+`ui-canary-walk-root-and-star-reexport-gaps` (blocked) still owns the `frontend/index.html` walk
+root and the per-line star re-export match. The backend port's back-reference task re-checked
+the port against `7aa6a31e`, before this round's later hardening; the architect carries that
+note on the backend task, not here.
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the re-review
+signal. Do not edit this hold block or annotate items as fixed; the commit diff is the evidence
+and the architect updates the block at re-review.
