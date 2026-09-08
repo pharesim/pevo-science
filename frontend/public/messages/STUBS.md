@@ -3835,6 +3835,35 @@ zh: auth.reauthCancelled
 
 ### Added 2026-09-02 (ui-custody-upgrade-subject-pin)
 
+These notes are about `upgrade.sessionChangedBeforeCleanup`. The heading
+also lists `upgrade.sessionChangedAfterCleanup`, which is terminal: it
+names no on-screen control and must not gain a retry instruction, because
+on that half no Try Again button is rendered.
+
+The before-cleanup half is recoverable in place, so translate it as an
+instruction sequence. Two phrases name controls the reader has to find on
+screen. "Try Again" must read exactly as this locale renders
+`common.tryAgain`; if the two drift apart, the reader is told to press
+something they cannot find. The "Sign in" immediately before the word
+"button" must read exactly as this locale renders `signIn.signInButton`.
+The other imperatives, "Sign out" and "sign in again", are ordinary verbs
+and should read naturally.
+
+Keep the placement, "in the page header". Two controls read as sign in, and
+in every locale their labels are already identical or differ only by case,
+so placement is the only thing that separates them. The header control
+keeps the settings page mounted; the one in the signed-out settings body
+navigates away and destroys the state the retry needs. The reader acts from
+memory: signing out hides this message, and only then are both controls on
+screen.
+
+Keep the retry scoped to this tab and this page, because Try Again belongs
+to the settings page. Keep the fallback its own sentence: it is the route
+for a reader the in-tab retry can no longer reach, and folding it away
+strands them. Both `{username}` placeholders must survive. The
+recovery-phrase sentence stays too: that phrase is the only key to an
+account whose authorities have already rotated.
+
 ar: upgrade.sessionChangedAfterCleanup
 cs: upgrade.sessionChangedAfterCleanup
 da: upgrade.sessionChangedAfterCleanup
@@ -3850,54 +3879,6 @@ pt: upgrade.sessionChangedAfterCleanup
 sv: upgrade.sessionChangedAfterCleanup
 tr: upgrade.sessionChangedAfterCleanup
 zh: upgrade.sessionChangedAfterCleanup
-
-ar: upgrade.sessionChangedBeforeCleanup
-cs: upgrade.sessionChangedBeforeCleanup
-da: upgrade.sessionChangedBeforeCleanup
-de: upgrade.sessionChangedBeforeCleanup
-es: upgrade.sessionChangedBeforeCleanup
-fa: upgrade.sessionChangedBeforeCleanup
-fr: upgrade.sessionChangedBeforeCleanup
-he: upgrade.sessionChangedBeforeCleanup
-it: upgrade.sessionChangedBeforeCleanup
-nl: upgrade.sessionChangedBeforeCleanup
-pl: upgrade.sessionChangedBeforeCleanup
-pt: upgrade.sessionChangedBeforeCleanup
-sv: upgrade.sessionChangedBeforeCleanup
-tr: upgrade.sessionChangedBeforeCleanup
-zh: upgrade.sessionChangedBeforeCleanup
-
-### Updated 2026-09-06 (ui-custody-upgrade-subject-pin)
-
-English value of `upgrade.sessionChangedBeforeCleanup` was revised in place,
-three times under this heading. The sub-case is retryable now, so contacting
-support is no longer the message's primary instruction: it tells the user to
-sign back in as the named account and press Try Again. The inline "Try Again"
-names an on-screen button, so it must read exactly as that locale renders
-`common.tryAgain`. Translators who started on the earlier `Added` entry should
-retranslate.
-
-The second revision is why anyone who already began from the first one should
-retranslate as well. Two things are new in it. The retry is now scoped to the
-tab and the page the message is read on ("in this tab, without leaving this
-page"), because that Try Again is the settings page's own button and navigating
-away destroys the state it needs. And a fallback sentence was added for the
-reader who has already navigated away: it tells them to contact support with
-their account name. So support is back in the string, no longer as the whole
-instruction but as the route the message gives a reader the in-tab retry can
-no longer reach. Keep the fallback as its own sentence: dropping or merging it
-silently strands that reader.
-
-The third revision names the sign-in control, so anyone who began from the
-second revision should retranslate too. In the state that shows this message
-another account holds the page header, so the reader has to sign out first,
-and then two controls both read as sign in: the one in the page header keeps
-the settings page mounted, the one in the signed-out settings body navigates
-away and destroys the state the retry needs. The retry sentence now says to
-sign out, then use the Sign in button in the page header. That inline "Sign
-in" names an on-screen control, so it must read exactly as that locale renders
-`signIn.signInButton`, the same way "Try Again" must match `common.tryAgain`.
-The fallback and keep-your-phrase sentences are unchanged.
 
 ar: upgrade.sessionChangedBeforeCleanup
 cs: upgrade.sessionChangedBeforeCleanup
