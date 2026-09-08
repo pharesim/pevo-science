@@ -686,3 +686,221 @@ note on the backend task, not here.
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the re-review
 signal. Do not edit this hold block or annotate items as fixed; the commit diff is the evidence
 and the architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-09-08, commit 7bf49a6e):
+
+All six held items landed in one commit, `7bf49a6e` (the three canary files:
+the machinery, the canary, and the new unit suite the split produced). Every
+machinery change was preceded by a probe observed red on the held tree, and
+every decision point the round touched has a mutation that reddens exactly
+its own probe.
+
+**Item 1.** `isCommentLine`'s `//` arm answers on its prefix alone only when
+no region is open. Inside one it is searched for a close and what follows is
+inspected, exactly as the other two arms are, so `// legacy note */ return
+status.hasPassword === true;` is live and `// note */`, `// note */ // more`
+and a `//` with no close stay prose. The three mirror probes the hold named
+sit in the comment-predicate case, plus the outside-a-region and
+region-unknown readings of the same line (both prose), and the end-to-end
+fixture through the password-state scan resolves to
+`pages/anything.js#pick`. Reverting the arm reddens that fixture and the
+predicate probe and nothing else; the whole-tree pins stay 1/1 and 8/1/2.
+
+**Item 2.** The four blocks moved verbatim to
+`frontend/tests/unit/eslint/enclosing-symbol.test.js` (the vitest glob
+collects it unchanged), and every probe this round added for the machinery
+went there rather than into the canary. The header records that it is the
+machinery's own suite under the same placement rule as the canary, and why
+each branch gets a probe of its own. `HAS_PASSWORD_RE` and `skipCommentLine`
+are re-declared there with a comment saying which canary they mirror. The
+canary's PLACEMENT paragraph now names the boundary. The canary keeps its
+domain assertions, the walker probe (it exercises `sourcesUnder` against a
+fixture tree, but its subject is the walk the canary's floor stands on), and
+the planted evasions that run through its scans; `enclosingSymbol` is no
+longer imported there.
+
+**Item 3.** The sentence names `markupOpenerThenLiveRead`.
+
+**Item 4.** Both readers' docblocks now say that template parity is a plain
+per-line backtick count, name the two inversion sources (a backtick in a
+regex, string or comment; a nested multi-line template), and state the
+direction each fails in: for the region pass the first is loud today and the
+second silent inside its own markup; for the walk, whose count is seeded at
+the declaration, both resolve inward. Two-sided probes for each in the unit
+suite: the regex-backtick fixture through the password-state scan yields no
+key and the same file without the backtick yields `pick`; the
+nested-template fixture yields no key and its operator-at-line-end form
+yields `pick`; and the walk-side pair for each resolves to the declaration
+with the inversion and to module scope without it. No mechanical fix was
+attempted, per the hold.
+
+**Item 5.** One probe per decision, each observed red under exactly its own
+mutation in a scratch copy: the parity seed (a one-line declaration that
+opens a literal; seed of zero resolves inward), the walk's per-target close
+bound (the only close below the target; the whole-file bound resolves
+inward), the bound's inclusive end (a close on the target line itself; the
+exclusive form resolves outward, and the same helper mutation reddens the
+region pass's close-on-last-line probe), the walk's opener test on the
+post-close code (`*/ /* second note` re-enters; the raw-line form does not),
+the region pass's whole-file bound (a twelve-line docblock; a windowed bound
+counts its continuations as live). `countsAt` threads
+`blockCommentInterior(lines)[i]` into the skip, and the docblock line naming
+the status fetch is now planted inside a real docblock (spared) and alone
+(counted); with the threading reverted the lone line reads as prose and the
+probe goes red.
+
+Beyond the probe the hold asked for, the region pass now RE-ENTERS on a line
+that closes one region and opens another, as the walk already did. The two
+readers were built to carry the same guards, and pinning them disagreeing on
+one line would have left the skip predicate calling a docblock continuation
+live below such a line (a false red bar). The re-entry has its own probe,
+both readers agree on the shape, and only an unterminated second opener
+re-enters.
+
+**Item 6.** The stat-catch comment says what the catch actually receives
+(nothing to stat: a link pointing nowhere, or an entry gone between listing
+and stat) and that an entry the stat can see but the walk cannot open throws
+at the read, which is loud. The `realpathSync` catch is REMOVED rather than
+described: every directory reaching the walk was just stat-ed by its parent
+or is the root the consumer named, so a resolve failure is a directory
+vanishing mid-walk, and a throw there is the loud direction the hold
+accepted. With it gone, the docblock's "one entry in neither list" sentence
+is true as written, and a sentence beside it says everything else the walk
+cannot resolve or read throws. The region-pass docblock now says a phantom
+region hides the star-leading shape of live code, not every line.
+
+### Eleven defects in this round's own output, found and fixed here
+
+An adversarial pass ran six executing lenses (comment-boundary evasion,
+symbol-resolution evasion, mutation audit, hold-item audit, prose-versus-code,
+walker and structure), each planting its shapes in its own scratch copy, then
+three refuters per finding. Rate limits killed 31 of 67 agents, so every
+finding whose refuters all died was triaged by hand rather than trusted to the
+majority rule. Twenty-eight raised, twenty unique. Ten were defects in text
+this round wrote, all of them the class item 6 held, and all are fixed here:
+
+1. The new suite's header listed the walker among what it exercises;
+   `sourcesUnder` is not imported there, and both walker tests stayed in the
+   canary. The header now says so and says why (the walker reads a directory,
+   and the floor it gives a canary is a claim about that canary's tree).
+2. The item-3 replacement sentence was itself wrong: `markupOpenerThenLiveRead`
+   fails BOTH guards (its opener is inside the literal and nothing closes
+   below it), and the template test short-circuits before the close test ever
+   runs. The inline never-closed fixture is the one the close test alone
+   decides. Both are now named for what they discriminate.
+3. Two claims that the parity inversion is "loud today" described a refusal
+   that does not happen: the inverted windows in the tree carry no line-start
+   opener, so nothing is refused and no scan is affected. Both now say the
+   inversion is inert today and name loud as the direction its reachable
+   consequence would take.
+4. "from there to the end of the file" overstated the phantom region: it ends
+   at the next line carrying a close, which in a real module is the next
+   docblock. The sentence now says that, and names the star-leading line as
+   the whole silent surface.
+5. "Anything the walk cannot resolve or read throws instead of being dropped"
+   contradicted the sentence before it, where a dangling link (which cannot be
+   resolved) is censused into `foreign`. Rewritten to name the three unguarded
+   calls that do throw.
+6. The rewritten stat-catch comment dropped the permission cause the old one
+   named; an entry under a directory the walk may list but not search fails
+   the same way. Restored.
+7. "The granularity every assertion above rests on" moved with the resolver
+   case, leaving its referent (the canary's whole-tree assertions) in the other
+   file. It now names them.
+8. "Four decision points, one probe each" and "Both arms have to close then
+   inspect" were counts this round invalidated (eleven fixtures, three arms).
+9. A canary probe pointed at "the star-prefixed form on the line before this
+   one", a positional pointer to the preceding fixture. It now names the shape.
+10. The header claimed the module's declined residuals are pinned; only the two
+    parity inversions are. It now says which are pinned and why the two
+    comment-boundary residuals need no pin (both resolve outward to module
+    scope, which no canary licenses, so set-equality already fails closed).
+
+Two more findings were accepted and fixed beyond the hold's letter:
+
+- The parity paragraphs listed regex, string and comment backticks; an escaped
+  backtick in a template's own text is the same class and was missing. Both
+  docblocks and the fixture comment now say "a backtick that is not a
+  delimiter" and enumerate all four.
+- `opensUnterminatedBlock`'s line-start boundary had no probe in either reader,
+  so widening the opener test to any mid-line `/*` (the tempting way to close
+  the documented mid-line residual) left all sixteen green while turning an
+  ordinary `'image/*'` into a phantom region. One probe per reader now pins it;
+  the widening reddens both.
+
+The simplify pass (three reviewers) found one more: the stat-catch comment
+this round rewrote pointed at "the read below", a bare positional anchor in
+the same class as item 3. It now names `readFileSync`.
+
+Two simplify findings were not taken. Hoisting the one-line `skipCommentLine`
+adapter and the discriminator regex into the shared module was declined: the
+two suites are siblings over that module and each is meant to stand alone, the
+machinery suite's token is chosen for fixture readability rather than to track
+the canary's domain regex, and widening the shared surface is not this round's
+scope. The reviewer that raised the duplication and the reviewer that assessed
+it reached opposite recommendations, so both are recorded here.
+
+### Residuals surfaced for triage, deliberately not fixed here
+
+1. (P2, executed) `sourcesUnder` splits files on `\n`, but ECMAScript ends a
+   line comment at any line terminator. A `//` comment ended by U+2028, U+2029
+   or a lone CR reaches every skip predicate as one line beginning with `//`
+   and is dropped, while the bundler runs the code after the terminator. Three
+   refuters reproduced it, including inside the licensed files at unchanged
+   width; CRLF is already caught, so no accidental path exists. The fix is one
+   regex in the split, verified pin-neutral. Not applied because the walker's
+   line contract is pre-existing and outside the six items.
+2. (P2, executed) Item 1's `//` arm inspects for a close only when the region
+   pass reports `true`, exactly as the hold specified. Wherever the region pass
+   under-reports (the parity inversions, a mid-line opener), the arm falls back
+   to its shape reading and a real close-plus-live-read is skipped. Widening it
+   to inspect whenever a region state is known at all closes this and leaves
+   the tree's pins unchanged, but it contradicts the hold's explicit "leave the
+   shape-only `//` reading for lines outside a region", so it is the
+   architect's call.
+3. (P2, executed) A line that begins with `//` or `/*` while being the tail of
+   a backslash-continued string, or the last markup line of a template, is
+   prose to both predicates, and the string case seeds a phantom region. A
+   third opener class beside the documented mid-line one. No line under `src`
+   ends in a backslash today.
+4. (P2, executed) A unicode escape inside an identifier (`hasPassword`)
+   spells neither token and passes all four layers while the bundler compiles
+   it to the real name. Residual 3's "no textual guard closes this" is false
+   for this member: a pinned count of identifier-position escapes would close
+   it.
+5. (P3) Three width-pin sentences overstate what the pin holds: it catches an
+   occurrence added while the licensed lines are untouched, and the `flight`
+   width is dominated by the local's name rather than by reads.
+6. (P3) The brace walk's `j <= lineIndex` bound has no probe; mutating it to
+   `<` leaves the suite green and resolves a read behind a target-line closing
+   brace inward. Pre-existing and outside this round's diff.
+
+Two further findings were refuted by majority vote and are not carried: a `}`
+inside an import clause's comment defeating the whole-file import matcher, and
+a split constant-width edit (a removal under a licensed key funding an addition
+under another).
+
+
+### Verification
+
+Canary 12 and unit suite 4 green (16 cases across the two files, the same
+count as before the split; the new probes joined existing cases). Full
+frontend unit suite 84 files, 1847 tests green (the editor-mounting
+unhandled rejections are pre-existing). Pre-commit anchor gate clean over
+the staged diff, re-run after the gate learned the `fixture` and `row`
+nouns. Whole-tree pins unchanged at 1/1 and 8/1/2.
+
+Every behavior change is on planted shapes. An A/B of this round's module
+against the committed one over all 86 real files agrees on every line for
+all three readers: the region pass, the comment predicate fed that region,
+and the brace walk resolved at every line of every file. A separate census
+confirms the sentence the parity paragraph now rests on: no line the
+backtick counter believes is inside a template carries a line-start opener,
+so neither inversion has a consequence in this tree today.
+
+Mutation matrix, each in its own scratch copy: 13 mutations over
+every decision point the round touched, all red at their own probe. Probing
+ran against copies under a scratch directory, never by mutating the shared
+tree, because sibling sessions were active in this checkout throughout.
