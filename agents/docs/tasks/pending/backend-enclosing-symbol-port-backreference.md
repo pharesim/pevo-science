@@ -14,22 +14,38 @@ decision needs.
 `frontend/tests/unit/eslint/enclosing-symbol.js` is a hand-port of
 `backend/tests/support/enclosing-symbol.ts`. Roughly 65-70 of its non-docblock lines
 are a near-literal, dialect-adjusted copy, including the closing-brace / indentation
-walk (the highest bug-risk region). The two files legitimately diverge (the frontend
-adds Alpine method-shorthand and template-literal declaration shapes and a per-key
-occurrence tally; the backend has `isCommentedOut` the frontend dropped), so a shared
-module is not warranted.
+walk (the highest bug-risk region). The two files legitimately diverge, so a shared
+module is not warranted. That decision is ratified and is not reopened here.
 
-The one real cost of the divergence is that a future bugfix to the shared brace-walk
-logic has no forcing function to reach the sibling copy. The frontend docblock already
-acknowledges the port one-directionally; the backend file has no pointer back.
+**Corrected at review (2026-09-08).** This section originally described the divergence
+as "the frontend adds Alpine method-shorthand and template-literal declaration shapes
+and a per-key occurrence tally; the backend has `isCommentedOut` the frontend dropped".
+That is wrong in two ways, and it is the same wrong framing the hold block at the end of
+this file asks you to fix in the docblock, so it is corrected here rather than left one
+screen above the instruction. `isCommentedOut` was never ported into the frontend copy
+and then removed, so nothing was "dropped" (`git log -S 'isCommentedOut'` on that path
+returns no commits). And the list is not exhaustive: the frontend also exports
+`blockCommentInterior`, takes an `insideRegion` argument on `isCommentLine`, counts
+template-literal backticks inside the brace walk, and returns `{ sources, foreign }`
+from `sourcesUnder` where the backend returns a bare array.
+
+The cost of the divergence is also not purely prospective. A bugfix to the shared
+brace-walk logic has no forcing function to reach the sibling copy, and that has already
+happened at least once: the frontend walk carries block-comment-region state the backend
+walk has no equivalent of, and that hardening landed before this task's implementation
+commit. So the pointer this task adds has to describe a two-way obligation and has to say
+which copy is currently ahead. The frontend docblock acknowledges the port
+one-directionally and without a path; the backend file had no pointer back at all.
 
 ## Scope
 
 1. Add a one-line pointer in `backend/tests/support/enclosing-symbol.ts`'s docblock
    naming `frontend/tests/unit/eslint/enclosing-symbol.js` as a hand-ported sibling,
-   so a future change to the shared closing-brace / indent walk prompts checking the
-   frontend copy. Anchor it on the file path and the shared-algorithm description, not
-   on this task's slug.
+   so a change to the shared closing-brace / indent walk on EITHER side prompts reading
+   the other copy. Anchor it on the file path and the shared-algorithm description, not
+   on this task's slug. The originally-written "so a future change ... prompts checking
+   the frontend copy" was outbound-only; see the 2026-09-08 hold block at the end of this
+   file for what the wording now has to carry.
 
 ## Acceptance criteria
 
