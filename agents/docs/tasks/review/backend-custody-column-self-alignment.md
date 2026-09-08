@@ -957,3 +957,103 @@ Architect-side, already done or deferred:
   (`backend-accounts-updated-at-writer-canary`) rather than held here, since a
   new tree-wide guard is separate work from this diff. Nothing for you to do on
   this task.
+
+## Backend re-review signal (2026-09-08, `a24aae5a`)
+
+Round-4 hold items 1-3 landed. Nothing inside the hold block was edited.
+Every claim below was executed rather than reasoned: regex variants ran in
+node against the literal strings, the walk boundary ran against the shipped
+`statementFrom` and `mintPayload` inside the real test file, and each
+mutation was applied to the shipped file and re-run, with the file restored
+from a scratchpad copy and hash-checked afterwards (no git restore touched
+the tree). A four-lens refuter pass over the staged diff (read-only, with
+every executable claim re-run in scratch copies) ran before the commit; what
+it changed is called out where it applies.
+
+**1. `orcid.ts` scoping.** The clause now says: its handler reads no
+`accounts` row, and the row its request does read is the one
+`verifyHiveSignature` reads for `sessions_invalidated_at`, a revocation check
+that never looks at `upgraded_at`. Verified against the code before writing
+it: `POST /session` is `verifyHiveSignature, sessionLimiter, handler`; the
+handler copies `req.hiveCustody` and issues no query; the middleware's JWT
+branch runs `SELECT sessions_invalidated_at FROM accounts WHERE username =
+$1` and nothing on that path reads `upgraded_at`. The wording mirrors the
+`custody-claim.ts` paragraph.
+
+**2. The negative-control comment.** "The third of these" is replaced by the
+control's own text, `logger.info({ custody: claim }, row.custody)`. No
+ordinal or positional form was substituted; the remaining first/second
+mentions in the file are ordinary prose ("a second derivation", "the first
+closing paren"), none an index into a list.
+
+Measuring the four controls to write the replacement surfaced a wrong count
+one paragraph up, in the `COLUMN_COPY_RE` docblock: "the two planted
+negatives that pin this boundary need a comma, a colon AND a quote admitted
+together before either fires". Executed against the shipped pattern and the
+widened variants (comma; comma+colon; comma+quote; colon+quote; all three):
+only the `hasPassword: row.custody` control fires, and only under all three.
+The `custodyClaimFor(row)` and `custody = $1` controls carry no `.custody`
+read for the pattern's mandatory tail, so no widening of the run can fire
+them. The docblock now names the one control; the test comment states that
+the other two carry no column read. Flagged as a fix outside the item's
+letter: a false count in the paragraph adjacent to the one the item names,
+of the class this task keeps producing.
+
+**3. `STATEMENT_SCAN_CAP` pinned, literal extracted.** Both caps are hoisted
+above `mintPayload`, whose loop bound now reads `STATEMENT_SCAN_CAP`. The
+split-derivation shape with eleven interleaved comment lines is asserted
+caught and with twelve missed, as literals, so the pin is on the VALUE.
+
+Mutations on the shipped file, each red set exactly as listed and nothing
+else:
+
+- cap 11: the eleven-line probe alone.
+- cap 13: the twelve-line probe alone.
+- cap term deleted from `statementFrom`: the twelve-line probe alone. Two
+  sites are reported for the one planted derivation, from its `const
+  custody` line and from the synthetic `router.get(...) => {` line above it,
+  which is not a block opener under `BLOCK_OPENER_RE` because `=>` sits
+  between the `)` and the `{`; that is the multi-line reporting
+  `statementOccurrences` documents, not a second offender.
+- `mintPayload` bound re-inlined as literal 12, constant unchanged: nothing.
+
+That last result is the gap the extraction alone leaves: nothing detected a
+re-inlined literal, so "one constant" was unenforced on its second user.
+Also landed, not asked for: a `classifyMint` pair asserting that a claim key
+exactly `STATEMENT_SCAN_CAP` lines below the mint is read and one line
+further is not, written relative to the constant rather than as a count.
+The split probes pin the value; this pair pins that `mintPayload` still reads
+it. Measured: with the literal re-inlined AND the constant moved to 13 AND
+the split probes shifted to 12/13, the mint pair goes red alone. A first
+draft of that pair used literals 12/13 and its comment claimed it would red
+"the moment the constant moves"; measured false (the pair pinned the count,
+not the constant, and the drift case stayed green), rewritten before commit.
+
+One deviation from the hold's framing, in prose only. The hold calls the two
+bounds "the same runaway bound", and my first draft of the hoisted docblock
+said both walks face a walk across a long comment run. The refuter pass
+falsified that for `mintPayload` and I confirmed it: `statementFrom` steps
+over comment lines for free, so its unbounded walk crosses a long comment
+run; `mintPayload` never skips comment lines and counts every line's parens,
+so a balanced comment run of any length never carries it past its own
+closing paren, and its runaway is a counted paren that stays unclosed (a `(`
+in a comment or a string). Executed: 40 balanced comment lines inside an
+argument list, unbounded walk stops at `);`; a single `// see foo(` line,
+cap 12 and unbounded both swallow the next handler. Across `backend/src`,
+none of the eight `jwt.sign` sites change their payload between cap 12 and
+unbounded. What the two walks share is the BOUND, and the shipped docblock
+states each walk's runaway on its own.
+
+The refuter pass also raised the split-derivation probe comment opening with
+"The far tail of that shape", a cross-block anaphor. It was refuted as
+restated within its own paragraph, and reworded anyway so the sentence names
+the shape it opens with.
+
+### Verification
+
+`npm run typecheck` (both projects) and `npm run lint` clean; the one lint
+warning is the pre-existing unused-disable in `lib/author-supersession.ts`.
+`tests/eslint/` = 9 files / 118 tests green, `--retry=0`, real
+Postgres/Redis. `.githooks/pre-commit` exit 0 on the staged diff. No
+behaviour changed in `src` (one comment in `orcid.ts`), so no route suite
+was re-run; the `no-stale-comment-anchors` canary covered that edit.
