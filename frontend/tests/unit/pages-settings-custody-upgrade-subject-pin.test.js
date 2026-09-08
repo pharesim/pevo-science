@@ -578,8 +578,9 @@ describe('custody-upgrade session-changed copy contract', () => {
     // navigates away and takes the seed and the pin with it. So the same
     // sentence says to sign out, names the header's control by the label
     // the header renders, and says where it is. The label followed by
-    // "button" is what separates naming that control from the imperative
-    // "sign in", which the sentence uses as well.
+    // "button" is what separates naming that control from the bare verb
+    // "sign in", which the sentence also uses ("to sign in again") and
+    // which an earlier revision opened with.
     expect(parts[retryIndex]).toMatch(/sign out/i);
     expect(parts[retryIndex]).toContain(`${messages.signIn.signInButton} button`);
     expect(parts[retryIndex]).toMatch(/header/i);
