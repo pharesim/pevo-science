@@ -29,17 +29,34 @@
  * reopens the `/confirm` window just the same) but whether it can EVER bump the
  * marker on a finalized row, light or upgraded.
  *
+ * A third reader depends on the same closed set without a security stake, and
+ * is listed here so a red bar accounts for it: `collectCompleted` in
+ * `jobs/registration-watch.ts` advances an announce cursor over the column, and
+ * a writer that bumped the marker on a long-finalized row would put that
+ * account back in front of the operator. Its `seen:accounts` set absorbs the
+ * repeat, so the cost there is bookkeeping rather than a bypass — but it is the
+ * second place in the tree whose correctness argument names this column, and a
+ * new writer has to be weighed against both.
+ *
  * WHERE THE THIRD WRITER MOST PLAUSIBLY COMES FROM, so the next author reading
  * a red bar recognises their own edit: the signup upserts in `routes/auth.ts`
  * refresh `created_at` in their `ON CONFLICT ... DO UPDATE` branches and leave
- * `updated_at` alone, which reads like an oversight. What keeps those branches
- * off a finalized row is the duplicate-email pre-check in `POST /signup`, which
- * answers 409 for a row whose `verify_token` is NULL or carries a `confirmed:`
- * token, so the `DO UPDATE` branch lands only on a row that check could see as
- * pending, with no finalize behind it and no upgrade epoch. Leaving `updated_at` out of that
- * branch is the defence in depth behind the pre-check: should the upsert ever
- * reach a finalized row, it still does not move the marker. Symmetrising the
- * branch to touch every column is the shape this canary exists to stop.
+ * `updated_at` alone, which reads like an oversight to be tidied up. It is not,
+ * and the reason is NOT the duplicate-email pre-check in `POST /signup`. That
+ * check answers 409 only for a `verify_token` that is NULL or carries a
+ * `confirmed:` prefix, and the state ARCHITECTURE.md section 6.1 enumerates as
+ * G — a self-custody account that acquired a row by registering an email
+ * through settings: username set, `custody` NULL, a random hex token while that
+ * email is unverified — matches neither form and falls through to the
+ * `DO UPDATE` branch. Two things make that overwrite inert for this invariant.
+ * The branch's own column list does not name the marker, so it is not moved.
+ * And both recovery lookups filter on `custody`, one for `'light'` and one for
+ * `'self'`, while state G is neither, so no row the branch can still reach is a
+ * row either lookup admits. Leaving `updated_at` out of the branch is the
+ * defence in depth behind the second of those, and symmetrising the branch to
+ * touch every column is the shape this canary exists to stop. That the upsert
+ * can overwrite a finalized state G row at all is a separate defect in
+ * `POST /signup`, tracked on its own; it is not what this scan guards.
  *
  * WHY A SOURCE SCAN. A CHECK of the same family as the custody-alignment
  * constraint, `upgraded_at IS NULL OR upgraded_at >= updated_at`, would pin the
@@ -64,7 +81,18 @@
  * the two writer walks and the fail-closed arm all go quiet at once, which is
  * the failure this file exists to prevent. Blanking closes that class rather
  * than one shape of it. Values are not blanked, so a `--` inside a string, a
- * URL, or a semicolon in an error message stays part of the statement.
+ * URL, or a semicolon in an error message stays part of the statement — but a
+ * routine or `DO $$` body is source rather than data, so its comments are
+ * blanked like any other and a comment planted in a token gap inside one reds.
+ *
+ * Because the reader is the single point every scan passes through, its own
+ * end state is asserted: a file left mid-comment, mid-template or mid-quoted
+ * span is a file whose remaining lines were copied with blanking OFF, and that
+ * is the one defect class which silences the whole guard at once instead of one
+ * arm of it. The two shapes that produced it are refused at the opener — a
+ * block comment with no closer, and a dollar-quote tag that is not a
+ * PostgreSQL tag or never recurs — and the end-state assertion is what catches
+ * the next one.
  *
  * FOUR SCANS OVER `src`, two of them deriving the same writer set from
  * opposite ends so a misattribution in either walk is a red bar rather than a
@@ -149,7 +177,8 @@
  *
  * KNOWN LIMITS, stated here rather than discovered later:
  *
- *   - Detection is TEXTUAL: the reading above, and the symbol attribution in
+ *   - Detection is TEXTUAL: the comment blanking in {@link blankLine}, the
+ *     statement read in {@link statementAt}, and the symbol attribution in
  *     `tests/support/enclosing-symbol.ts`. A
  *     dynamically NAMED target — `UPDATE ${table}`, an `EXECUTE format('UPDATE
  *     %I SET updated_at = now()', 'accounts')` in a migration — hides from the
@@ -197,6 +226,15 @@
  *     value in either tree spans lines. Where that shape appears, a comment
  *     marker on the continuation line blanks live SQL, so the residual is a
  *     silent one and is named here rather than left to be found.
+ *   - The two judgements the reader makes at a dollar-quote opener have their
+ *     own residuals. Whether the span is a body or a value is decided from the
+ *     keyword before it, and when the opener leads its line (`... AS` on one
+ *     line, `$$` on the next) the previous non-blank line is read RAW, so a
+ *     comment ending in one of those keywords could answer for it; neither tree
+ *     spells a body that way. And a nested value inside a body — a `format()`
+ *     literal in its own tag — is read as more body, so a comment marker in
+ *     that value is blanked. Both err toward blanking inside a routine, which
+ *     is where a comment gap is a silent pass rather than a red bar.
  *   - The scans read the shapes an author writes by accident, not the ones an
  *     author writes to evade a test. A writer determined to get past them can.
  *
@@ -331,10 +369,31 @@ const ROW_TARGET_LIST_RE = /\(([^()]*)\)\s*=(?![=>])/;
  *  string is untouched. */
 const TYPESCRIPT_LOCAL_RE = /\b(?:const|let|var)\s+updated_at\s*[:=]/;
 
-/** Where `text` writes the column, in either spelling, or -1. The position is
- *  what lets {@link targetTable} ask which statement encloses the assignment
- *  rather than which one merely shares its line. */
+/** The window {@link assignmentIndex} tests for a local declaration around a
+ *  match: back far enough to hold the longest declaration keyword and the
+ *  whitespace after it, forward far enough to hold the `:` or `=` the pattern
+ *  needs. Both are deliberately small — the window exists so the exclusion
+ *  applies to the match it precedes rather than to the whole text. */
+const LOCAL_DECLARATION_BEFORE = 12;
+const LOCAL_DECLARATION_AFTER = 2;
+
+/** Where `text` FIRST writes the column, in either spelling, or -1. The
+ *  position is what lets {@link targetTable} ask which statement encloses the
+ *  assignment rather than which one merely shares its line.
+ *
+ *  Both spellings are collected and the EARLIER returned, rather than the
+ *  plain form short-circuiting the row form. A line may carry one of each —
+ *  `SET (email, updated_at) = ($1, NOW()), custody = $2, updated_at = NOW()` is
+ *  ordinary PostgreSQL — and returning the plain match first hands
+ *  {@link assignmentIndexes} a position PAST the row assignment, which then
+ *  resumes its walk beyond it and never counts it. The line would report one
+ *  write where it holds two, so a second write added beside a licensed one
+ *  disappears into the count that exists to catch it. */
 function assignmentIndex(text: string): number {
+  let earliest = -1;
+  const note = (at: number): void => {
+    if (earliest === -1 || at < earliest) earliest = at;
+  };
   for (const match of text.matchAll(new RegExp(COLUMN_ASSIGNMENT_RE.source, 'g'))) {
     const at = match.index ?? 0;
     // The local-declaration exclusion is scoped to the match that it precedes.
@@ -342,14 +401,23 @@ function assignmentIndex(text: string): number {
     // =` appearing anywhere — in a value, in prose the blanking left alone —
     // would switch detection off for an entire line or statement, which is a
     // silent pass and the one direction this file cannot afford.
-    if (TYPESCRIPT_LOCAL_RE.test(text.slice(Math.max(0, at - 12), at + 'updated_at'.length + 2))) continue;
-    return at;
+    if (
+      TYPESCRIPT_LOCAL_RE.test(
+        text.slice(Math.max(0, at - LOCAL_DECLARATION_BEFORE), at + 'updated_at'.length + LOCAL_DECLARATION_AFTER),
+      )
+    )
+      continue;
+    note(at);
+    break;
   }
   for (const targets of text.matchAll(new RegExp(ROW_TARGET_LIST_RE.source, 'g'))) {
     const column = targets[1].search(/\bupdated_at\b/);
-    if (column !== -1) return (targets.index ?? 0) + 1 + column;
+    if (column !== -1) {
+      note((targets.index ?? 0) + 1 + column);
+      break;
+    }
   }
-  return -1;
+  return earliest;
 }
 
 /** Whether `text` writes the column, in either spelling. */
@@ -370,20 +438,36 @@ function assignmentIndexes(text: string): number[] {
   return found;
 }
 
-/** The table an `UPDATE` targets. `FOR UPDATE SKIP LOCKED` is excluded by the
- *  lookbehind and PostgreSQL's `ON CONFLICT ... DO UPDATE SET` (and MERGE's
+/** The table an `UPDATE` targets. PostgreSQL's two locking clauses that carry
+ *  the keyword — `FOR UPDATE` and `FOR NO KEY UPDATE` — are excluded by the
+ *  lookbehinds, and `ON CONFLICT ... DO UPDATE SET` (with MERGE's
  *  `WHEN MATCHED THEN UPDATE SET`) by the {@link NOT_A_TABLE} rejection, so
  *  those assignments resolve to the INSERT's or MERGE's table rather than to a
- *  table named `set`. */
+ *  table named `set`.
+ *
+ *  Both lookbehinds are needed, and the second is not a spelling variant of the
+ *  first: the characters immediately before `UPDATE` in the weaker lock are
+ *  `KEY `, which the `FOR ` lookbehind never sees, so that clause matches and
+ *  names a table after whatever word follows it. */
 const QUALIFIED_NAME = '[a-z_][a-z0-9_]*(?:\\s*\\.\\s*[a-z_][a-z0-9_]*)*';
-const UPDATE_TARGET_RE = new RegExp(`(?<!\\bFOR\\s+)\\bUPDATE\\s+(?:ONLY\\s+)?\\(?\\s*(${QUALIFIED_NAME})`, 'i');
+const UPDATE_TARGET_RE = new RegExp(
+  `(?<!\\bFOR\\s+)(?<!\\bFOR\\s+NO\\s+KEY\\s+)\\bUPDATE\\s+(?:ONLY\\s+)?\\(?\\s*(${QUALIFIED_NAME})`,
+  'i',
+);
 const INSERT_TARGET_RE = new RegExp(`\\bINSERT\\s+INTO\\s+(${QUALIFIED_NAME})`, 'i');
 /** MERGE is a writer shape on the PostgreSQL this runs against, with an
  *  UPDATE branch and an INSERT branch that name no table of their own. */
 const MERGE_TARGET_RE = new RegExp(`\\bMERGE\\s+INTO\\s+(?:ONLY\\s+)?\\(?\\s*(${QUALIFIED_NAME})`, 'i');
 const HEAD_PATTERNS = [UPDATE_TARGET_RE, INSERT_TARGET_RE, MERGE_TARGET_RE];
-/** `UPDATE` followed by this word names no table. */
-const NOT_A_TABLE = 'set';
+/** Words that follow `UPDATE` in a clause rather than naming a table. `set` is
+ *  the upsert and MERGE branch; the rest are the tail of a locking clause whose
+ *  own `FOR` sits far enough left that a lookbehind is not the place to reject
+ *  it (`FOR UPDATE OF t`, `FOR UPDATE NOWAIT`, `FOR UPDATE SKIP LOCKED`). A
+ *  head that resolves to a plausible OTHER table satisfies the fail-closed arm
+ *  instead of tripping it, so a keyword read as a table name is the silent
+ *  direction; rejecting it leaves the assignment unresolved, which is a red
+ *  bar. */
+const NOT_A_TABLE = new Set(['set', 'skip', 'nowait', 'of']);
 
 /** An `accounts` statement, matched case-insensitively so a lowercase-keyword
  *  writer cannot slip past. Prose that happens to read like one is admitted
@@ -479,9 +563,19 @@ const LITERAL_CAP = 40;
  *
  * WHY IT MUST TRACK VALUES. A blank applied inside a string constant would
  * erase live SQL: a value carrying `--`, an address carrying `//`, a prose
- * semicolon in an error message. Quoted and dollar-quoted spans are therefore
- * copied through untouched, and their contents are still matched, since a
- * value is part of the statement even when nothing in it is a token.
+ * semicolon in an error message. Quoted and dollar-quoted VALUES are therefore
+ * copied through untouched, and their contents are still matched, since a value
+ * is part of the statement even when nothing in it is a token.
+ *
+ * WHY A DOLLAR-QUOTED BODY IS NOT ONE OF THEM. `$$ ... $$` spells two different
+ * things. After `AS` or `DO` it is the SOURCE of a routine or an anonymous
+ * block — PL/pgSQL or SQL that PostgreSQL compiles, where `--` and block
+ * comments are comments and a marker between two tokens silences a pattern
+ * exactly as it does outside. Anywhere else it is a string constant whose
+ * characters are data. Copying a body through verbatim reopens the whole
+ * comment-gap class inside it, and both migrations that carry a `DO` block wrap
+ * ordinary `accounts` DDL, so the distinction is made at the opener from the
+ * keyword the span follows.
  *
  * WHY THE STATE IS CARRIED ACROSS LINES. A block comment spans lines, and a
  * line-local guess about which of its lines are comment is wrong in both
@@ -508,6 +602,11 @@ interface BlankState {
   template: boolean;
   /** The dollar-quote tag currently open, which spans lines, or null. */
   dollar: string | null;
+  /** Whether that span is a routine or `DO` BODY rather than a string value.
+   *  A body is PL/pgSQL or SQL source, where a comment is a comment and has to
+   *  be blanked like any other; a value is data, where a comment marker is one
+   *  of its characters. */
+  dollarCode: boolean;
 }
 
 /** A `--` glued to an identifier on either side, which is TypeScript's
@@ -521,19 +620,61 @@ function isDecrement(line: string, at: number): boolean {
   return DECREMENT_RE.test(line[at - 1] ?? ' ') || DECREMENT_RE.test(line[at + 2] ?? ' ');
 }
 
-/** The opener of a dollar-quoted string, `$$` or `$tag$`. The tag admits any
- *  run without whitespace, since PostgreSQL takes any unquoted identifier
- *  including a non-ASCII one, and a bare parameter placeholder cannot match:
- *  `$1,` has no closing `$` before its whitespace. Recognised in SQL files
- *  only, because the same two characters open the placeholder-builder idiom
- *  `` `$${n}` `` in TypeScript, and reading that as a quoted span would switch
- *  comment blanking off for everything between it and the next `$$` in the
- *  file. */
-const DOLLAR_QUOTE_RE = /^\$[^\s$]*\$/;
+/** The opener of a dollar-quoted string, `$$` or `$tag$`, in PostgreSQL's own
+ *  grammar: the tag is empty, or an unquoted identifier — a letter or
+ *  underscore, then letters, digits and underscores — which is why the letter
+ *  classes are Unicode-aware rather than ASCII.
+ *
+ *  The grammar is the load-bearing part, not a tidy-up. A tag pattern loose
+ *  enough to admit punctuation matches a PARAMETER PLACEHOLDER PAIR: `VALUES
+ *  ($1,$2)` reads as a span tagged `$1,$` and `` `${prefix}$1` `` as one tagged
+ *  `${prefix}$`. Neither tag ever recurs, so the span never closes, and a span
+ *  that never closes switches comment blanking off from that point to the end
+ *  of the file — silencing the column walk, the table walk and the fail-closed
+ *  arm together, which is the whole guard. Both spellings are ordinary code.
+ *
+ *  Two further conditions apply at the opener, each closing a shape the grammar
+ *  alone does not: the tag must RECUR later in the file (see
+ *  {@link dollarCloses}), the way a block comment must find a closer, and the
+ *  characters after `$$` must not be a TypeScript interpolation, since
+ *  `` `$${n}` `` is this repo's placeholder-builder idiom rather than a quoted
+ *  span. */
+const DOLLAR_QUOTE_RE = /^\$(?:[\p{L}_][\p{L}\p{Nd}_]*)?\$/u;
 
-/** How far a comment or a template is followed before the reader gives up on
- *  it. */
-const LOOKAHEAD_CAP = 60;
+/** Whether the dollar-quoted span opening at `from` on `lineIndex` ever closes.
+ *  An opener whose tag never recurs is not a quoted span, for the same reason
+ *  a block comment opener with no closer is not a comment: reading it as one
+ *  turns off the blanking that every pattern here depends on, for every line
+ *  after it, and a line no scan reads is a silent pass rather than a red bar. */
+function dollarCloses(lines: string[], lineIndex: number, from: number, tag: string): boolean {
+  for (let i = lineIndex; i < lines.length; i++) {
+    const text = i === lineIndex ? lines[i].slice(from + tag.length) : lines[i];
+    if (text.includes(tag)) return true;
+  }
+  return false;
+}
+
+/** The keyword a routine or anonymous-block body follows. A dollar-quoted span
+ *  is SOURCE, not data, exactly when it is the body of a `CREATE FUNCTION` /
+ *  `CREATE PROCEDURE` (`... AS $$`) or of an anonymous `DO $$` block;
+ *  everywhere else it is a string constant whose characters are data. */
+const DOLLAR_CODE_BODY_RE = /\b(?:DO|AS)\s*$/i;
+
+/** Whether the span opening after `before` on `lineIndex` is a code body.
+ *
+ *  `before` is the current line already blanked up to the opener, so a comment
+ *  ahead of the keyword cannot supply one. When the opener leads its line — the
+ *  `AS` on one line and `$$` on the next — the previous non-blank line is read
+ *  RAW, since its blanked form is not in hand here; that spelling appears in
+ *  neither scanned tree today and the limit is recorded with the others. */
+function opensCodeBody(lines: string[], lineIndex: number, before: string): boolean {
+  if (before.trim() !== '') return DOLLAR_CODE_BODY_RE.test(before);
+  for (let i = lineIndex - 1; i >= 0; i--) {
+    if (lines[i].trim() === '') continue;
+    return DOLLAR_CODE_BODY_RE.test(lines[i]);
+  }
+  return false;
+}
 
 /** Whether the block comment opening at `from` on `lineIndex` actually closes.
  *  An opener that never closes is not a comment: in a template it is ordinary
@@ -541,9 +682,19 @@ const LOOKAHEAD_CAP = 60;
  *  produces one. Treating it as a comment would blank every line after it, and
  *  a blanked line is a line no scan sees, so that mistake is silent and
  *  unbounded. Inside a template the close must also come before the template
- *  ends, since text after the backtick is code again. */
+ *  ends, since text after the backtick is code again.
+ *
+ *  The search runs to the end of the file rather than to a fixed lookahead.
+ *  A bounded one answers "not a comment" for every block comment longer than
+ *  the bound, which reads that comment's prose as live source — and this tree
+ *  writes docblocks in the hundreds of lines, one of them over a thousand. That
+ *  is how a `$` inside comment prose came to open a phantom quoted span. The
+ *  file is already in memory, so the unbounded search costs nothing, and the
+ *  bound's purpose is served by the two answers that remain: no closer anywhere
+ *  is not a comment, and inside a template the closer must precede the
+ *  backtick. */
 function blockCloses(lines: string[], lineIndex: number, from: number, template: boolean): boolean {
-  for (let i = lineIndex; i < lines.length && i <= lineIndex + LOOKAHEAD_CAP; i++) {
+  for (let i = lineIndex; i < lines.length; i++) {
     const text = i === lineIndex ? lines[i].slice(from + 2) : lines[i];
     const closes = text.indexOf('*/');
     const ends = template ? text.indexOf('`') : -1;
@@ -564,7 +715,7 @@ function blankLine(
 ): { text: string; state: BlankState } {
   const line = lines[lineIndex];
   const escapes = !sql;
-  let { block, template, dollar } = state;
+  let { block, template, dollar, dollarCode } = state;
   let opaque: string | null = null;
   let out = '';
   let i = 0;
@@ -578,17 +729,9 @@ function blankLine(
       block = !closing;
       continue;
     }
-    if (dollar !== null) {
-      if (line.startsWith(dollar, i)) {
-        out += dollar;
-        i += dollar.length;
-        dollar = null;
-        continue;
-      }
-      out += char;
-      i++;
-      continue;
-    }
+    // A value inside a code body is read before the body itself, so the body's
+    // comment handling cannot blank a marker that is one of the value's own
+    // characters.
     if (opaque !== null) {
       if (escapes && char === '\\' && next !== undefined) {
         out += char + next;
@@ -603,7 +746,48 @@ function blankLine(
       if (char === '`') {
         template = !template;
         opaque = null;
+        dollar = null;
+        dollarCode = false;
       } else if (char === opaque) opaque = null;
+      i++;
+      continue;
+    }
+    if (dollar !== null) {
+      if (line.startsWith(dollar, i)) {
+        out += dollar;
+        i += dollar.length;
+        dollar = null;
+        dollarCode = false;
+        continue;
+      }
+      // A VALUE body is data: every character of it belongs to the statement,
+      // markers included. A CODE body is source, so its comments are blanked
+      // like any other — a comment between two tokens a pattern needs adjacent
+      // silences that pattern wherever it sits, and a routine or `DO` body is
+      // not an exception to that. Only the shapes that belong to the body's own
+      // dialect are read here: no template delimiter, and no nested tag.
+      if (!dollarCode) {
+        out += char;
+        i++;
+        continue;
+      }
+      if (char === "'" || char === '"') {
+        opaque = char;
+        out += char;
+        i++;
+        continue;
+      }
+      if (char === '-' && next === '-') {
+        out += ' '.repeat(line.length - i);
+        break;
+      }
+      if (char === '/' && next === '*' && blockCloses(lines, lineIndex, i, template)) {
+        block = true;
+        out += '  ';
+        i += 2;
+        continue;
+      }
+      out += char;
       i++;
       continue;
     }
@@ -628,9 +812,16 @@ function blankLine(
       const opener = line.slice(i).match(DOLLAR_QUOTE_RE);
       // `$${n}` is the placeholder-builder idiom, not a quoted span: the `$$`
       // is a SQL sigil followed by a template interpolation. Reading it as one
-      // would switch comment blanking off from there to the next `$$`.
-      if (opener !== null && line[i + opener[0].length] !== '{') {
+      // would switch comment blanking off from there to the next `$$`. And a
+      // tag that never recurs closes nothing, so reading it as a span would
+      // switch blanking off for the rest of the file.
+      if (
+        opener !== null &&
+        line[i + opener[0].length] !== '{' &&
+        dollarCloses(lines, lineIndex, i, opener[0])
+      ) {
         dollar = opener[0];
+        dollarCode = opensCodeBody(lines, lineIndex, out);
         out += opener[0];
         i += opener[0].length;
         continue;
@@ -657,19 +848,31 @@ function blankLine(
     out += char;
     i++;
   }
-  return { text: out, state: { block, template, dollar } };
+  return { text: out, state: { block, template, dollar, dollarCode } };
 }
 
 /** Every line of a file with its comments blanked, read from the top so a
  *  block comment, a template and a dollar-quoted body each end where they
- *  really end. */
-function blankFile(lines: string[], sql: boolean): string[] {
-  let state: BlankState = { block: false, template: false, dollar: null };
-  return lines.map((_line, i) => {
+ *  really end, together with the state the reader is left in at the last line.
+ *
+ *  That final state is asserted on. Every span the reader tracks is closed by
+ *  the end of a well-formed file, so a file it leaves mid-span is a file it
+ *  misread, and the lines after the misread point were copied verbatim with no
+ *  comment blanking — which is the one failure mode that silences every scan at
+ *  once instead of one of them. Reading the state out is what turns that from a
+ *  defect someone has to think of into a red bar. */
+function blankAll(lines: string[], sql: boolean): { code: string[]; state: BlankState } {
+  let state: BlankState = { block: false, template: false, dollar: null, dollarCode: false };
+  const code = lines.map((_line, i) => {
     const blanked = blankLine(lines, i, state, sql);
     state = blanked.state;
     return blanked.text;
   });
+  return { code, state };
+}
+
+function blankFile(lines: string[], sql: boolean): string[] {
+  return blankAll(lines, sql).code;
 }
 
 /** Every line of a file, blanked once, since every scan reads them repeatedly. */
@@ -725,7 +928,7 @@ function statementHead(line: string, before?: number): StatementHead | null {
     for (const match of line.matchAll(new RegExp(pattern.source, 'gi'))) {
       const index = match.index ?? 0;
       if (before !== undefined && index >= before) break;
-      if (bareTable(match[1]) === NOT_A_TABLE) continue;
+      if (NOT_A_TABLE.has(bareTable(match[1]))) continue;
       if (nearest === null || index > nearest.index) nearest = { table: bareTable(match[1]), index };
     }
   }
@@ -1094,6 +1297,23 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     );
   });
 
+  it('the reader finishes every file it reads with no span left open', () => {
+    const unfinished = [...sources, ...migrations]
+      .map((file) => ({ rel: file.rel, state: blankAll(file.lines, file.rel.endsWith('.sql')).state }))
+      .filter(({ state }) => state.block || state.template || state.dollar !== null)
+      .map(({ rel, state }) => `${rel} — ${JSON.stringify(state)}`);
+    expect(
+      unfinished,
+      'a file the reader left mid-span is a file it misread, and every line after the misread ' +
+        'point was copied with NO comment blanking. That is the one failure mode which silences ' +
+        'every scan at once rather than one of them: the column walk, the table walk and the ' +
+        'fail-closed arm all go quiet together, so the guard reports nothing and reads green. ' +
+        'A block comment, a template and a dollar-quoted span each close in a well-formed file, ' +
+        'so an open one at the last line names the shape the reader got wrong — fix the reader, ' +
+        `not this list. Why the guard matters: ${ORDERING_RATIONALE}\n${unfinished.join('\n')}`,
+    ).toEqual([]);
+  });
+
   it('every updated_at assignment resolves to the table it writes', () => {
     const unresolved = [
       ...(columnAssignments(sources).get(UNRESOLVED_TABLE) ?? []),
@@ -1245,6 +1465,18 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     expect(assignsColumn('  const updated_at = row.updated_at;')).toBe(false);
     expect(assignsColumn('  let updated_at: Date | null = null;')).toBe(false);
     expect(assignsColumn('             signup_binding_hash = NULL, updated_at = NOW()')).toBe(true);
+    // A row assignment LEFT of a plain one. The two spellings are collected and
+    // the earlier returned, rather than the plain form answering first: a
+    // position past the row assignment sends the occurrence walk beyond it, so
+    // the line reports one write where it holds two and a second write added
+    // beside a licensed one disappears into the count meant to catch it.
+    const mixed = 'SET (email, updated_at) = ($1, NOW()), custody = $2, updated_at = NOW()';
+    expect(assignmentIndex(mixed)).toBe('SET ('.length + 'email, '.length);
+    expect(assignmentIndexes(mixed)).toHaveLength(2);
+    // And the same line, end to end, through both writer scans.
+    const mixedFile = readable([{ rel: 'x.ts', lines: ['async function touch(id: number) {', `  await q(\`UPDATE accounts ${mixed} WHERE id = $3\`, [id]);`, '}'] }]);
+    expect(countsOf(columnAssignments(mixedFile).get('accounts') ?? [])).toEqual({ 'x.ts#touch': 2 });
+    expect(countsOf(accountsColumnWriters(mixedFile))).toEqual({ 'x.ts#touch': 1 });
   });
 
   const finalize = [
@@ -1289,6 +1521,27 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     expect(
       targetTable(asCode(['`UPDATE accounts SET x = (SELECT v FROM q FOR UPDATE SKIP LOCKED), updated_at = NOW() WHERE id = $1`,']), 0),
     ).toBe('accounts');
+    // PostgreSQL's weaker row lock, `FOR NO KEY UPDATE`, in the same position.
+    // Its keyword is preceded by `KEY `, which the `FOR ` lookbehind never
+    // sees, so it needs a lookbehind of its own — pinned on the pattern here,
+    // because the keyword-tail rejection below would otherwise answer for it
+    // and leave the deletion of either one green.
+    expect(UPDATE_TARGET_RE.test('SELECT id FROM q FOR UPDATE SKIP LOCKED')).toBe(false);
+    expect(UPDATE_TARGET_RE.test('SELECT id FROM q FOR NO KEY UPDATE SKIP LOCKED')).toBe(false);
+    expect(UPDATE_TARGET_RE.test('SELECT id FROM q FOR NO KEY UPDATE OF q')).toBe(false);
+    expect(UPDATE_TARGET_RE.test('UPDATE accounts SET updated_at = NOW()')).toBe(true);
+    expect(
+      targetTable(asCode(['`UPDATE accounts SET x = (SELECT v FROM q FOR NO KEY UPDATE SKIP LOCKED), updated_at = NOW() WHERE id = $1`,']), 0),
+    ).toBe('accounts');
+    // A locking clause SPLIT across lines puts its `FOR` out of every
+    // lookbehind's reach, since a head is read one line at a time. The word
+    // after the keyword is then captured as a table, and a head that resolves
+    // to a plausible other table satisfies the fail-closed arm instead of
+    // tripping it — the silent direction. Rejecting the keyword tails is what
+    // leaves the write unresolved and the bar red.
+    for (const tail of ['  UPDATE SKIP LOCKED', '  UPDATE NOWAIT', '  UPDATE OF q']) {
+      expect(targetTable(asCode(['SELECT id FROM q', '  FOR', tail, '  , updated_at = NOW();'], true), 3), tail).toBe(UNRESOLVED_TABLE);
+    }
     // `ONLY`, the default schema, and another schema.
     expect(targetTable(asCode(['`UPDATE ONLY accounts', ' SET updated_at = NOW()`,']), 1)).toBe('accounts');
     expect(targetTable(asCode(['`UPDATE public.accounts', ' SET updated_at = NOW()`,']), 1)).toBe('accounts');
@@ -1451,6 +1704,14 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     expect(acrossValue.lastLine).toBe(3);
     expect(acrossValue.closedAt).toBe(valued[3].indexOf(';'));
     expect(writesColumn(acrossValue.text)).toBe(true);
+    // The escape skip inside `enclosingQuote`. An escaped backtick does not end
+    // the template it sits in, so the statement below it is still delimited by
+    // the template's own quote. Read without the skip, the enclosing quote is
+    // the apostrophe after it, and the read then stops at the next value in the
+    // SET list — short of the assignment, which is a silent pass.
+    const escapedDelimiter = asCode(["  await q(`SET note = 'a\\`b'; UPDATE accounts SET custody = 'x', updated_at = NOW()`);"]);
+    expect(enclosingQuote(escapedDelimiter[0], escapedDelimiter[0].indexOf('UPDATE accounts'))?.char).toBe('`');
+    expect(writesColumn(statementAt(escapedDelimiter, 0, escapedDelimiter[0].indexOf('UPDATE accounts')).text)).toBe(true);
     // The comment blank, in both dialects and in neither direction too far:
     // a marker inside a value is left alone, and a decrement is not a comment.
     expect(scanned('UPDATE accounts -- SET updated_at = now()')).toBe('UPDATE accounts' + ' '.repeat(26));
@@ -1763,10 +2024,52 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // an accounts write that follows.
     const globThenWrite = asCode(['  const keys = `${prefix}:sessions/*`;', '  await q(`UPDATE accounts SET updated_at = NOW() WHERE id = $1`);', '  /* an ordinary comment further down the file */']);
     expect(statementHead(globThenWrite[1])?.table).toBe('accounts');
-    const farClose = asCode(['  /* an opener with no close in reach', ...Array.from({ length: LOOKAHEAD_CAP + 5 }, () => '  filler'), '  */']);
-    expect(farClose[1]).toBe('  filler');
-    // A dollar tag is any identifier PostgreSQL accepts, not only an ASCII one.
-    expect(scansOf(['UPDATE accounts', "   SET note = $t-1$x -- y$t-1$, updated_at = NOW()", ' WHERE id = 1;'], '018_probe.sql').tableFirst).toEqual([migration]);
+    // A block comment is a comment however FAR its closer sits, and an opener
+    // with no closer anywhere is not one. Both counts are LITERAL: derived from
+    // whatever bound the reader holds they move with it and pin nothing, which
+    // is how a bound shorter than the docblocks in this tree stayed unnoticed
+    // while seventeen of them were read as live source.
+    const farClose = asCode(['  /* an opener whose closer is a long way down', ...Array.from({ length: 400 }, () => '  filler'), '  */']);
+    expect(farClose[1].trim()).toBe('');
+    expect(farClose[400].trim()).toBe('');
+    const neverCloses = asCode(['  const keys = `${prefix}:sessions/*`;', ...Array.from({ length: 400 }, () => '  filler')]);
+    expect(neverCloses[1]).toBe('  filler');
+    expect(neverCloses[400]).toBe('  filler');
+    // A dollar tag is any identifier PostgreSQL accepts, not only an ASCII one,
+    // and an identifier is what it has to be: the tag rules are the unquoted
+    // identifier rules minus the dollar sign.
+    expect(scansOf(['UPDATE accounts', "   SET note = $não$x -- y$não$, updated_at = NOW()", ' WHERE id = 1;'], '018_probe.sql').tableFirst).toEqual([migration]);
+    // A parameter placeholder PAIR is not an opener, in either spelling this
+    // tree writes it. Read as one it opens a span whose tag never recurs, and a
+    // span that never closes switches comment blanking off to the end of the
+    // file — which silences every scan together rather than one of them. The
+    // write below each opener carries its comment in the gap a pattern needs,
+    // so it is seen only while blanking is still on.
+    const gapped = '  await q(`UPDATE accounts SET custody = $1, updated_at /* the server clock */ = NOW()`, [id]);';
+    expect(scansOf(['async function touch(id: number) {', '  await q(`INSERT INTO staging (a, b) VALUES ($1,$2)`, [id]);', gapped, '}']).tableFirst).toEqual([key]);
+    expect(scansOf(['async function touch(id: number) {', '  const named = body.replace(re, `${prefix}$1`);', gapped, '}']).tableFirst).toEqual([key]);
+    // And a grammatical tag that never recurs opens nothing either: a span that
+    // cannot close is not a span, the same answer `blockCloses` gives.
+    expect(scansOf(['async function touch(id: number) {', '  await q(`SELECT $tag$ AS sigil`, [id]);', gapped, '}']).tableFirst).toEqual([key]);
+    expect(DOLLAR_QUOTE_RE.test('$$')).toBe(true);
+    expect(DOLLAR_QUOTE_RE.test('$body$')).toBe(true);
+    expect(DOLLAR_QUOTE_RE.test('$não$')).toBe(true);
+    expect(DOLLAR_QUOTE_RE.test('$1,$2)')).toBe(false);
+    expect(DOLLAR_QUOTE_RE.test('${prefix}$1')).toBe(false);
+    expect(DOLLAR_QUOTE_RE.test('$t-1$')).toBe(false);
+    // Inside a routine or `DO` body a comment is a comment: the body is source,
+    // not data, so a marker in a token gap silences the same patterns there as
+    // anywhere else. Two migrations already carry an anonymous block wrapping
+    // ordinary DDL.
+    expect(
+      scansOf(['DO $$', 'BEGIN', '  UPDATE accounts', '     SET custody = $1,', '         updated_at -- the server clock, never a client value', '           = NOW();', 'END $$;'], '018_probe.sql').tableFirst,
+    ).toEqual([migration]);
+    expect(
+      scansOf(['CREATE OR REPLACE FUNCTION f() RETURNS void AS $$', 'BEGIN', '  UPDATE accounts SET custody = $1, updated_at /* stamped */ = NOW();', 'END $$ LANGUAGE plpgsql;'], '018_probe.sql').tableFirst,
+    ).toEqual([migration]);
+    // And a VALUE body is still data: the same marker there is one of its
+    // characters, and blanking it would erase live SQL.
+    expect(scansOf(['UPDATE accounts', "   SET institution = $$Porto -- Engenharia$$, updated_at = NOW()", ' WHERE institution = $1;'], '018_probe.sql').tableFirst).toEqual([migration]);
     // Each assignment is resolved from its OWN position: two writes on one
     // line belong to the head each one sits after, not both to the first.
     expect(
@@ -1893,5 +2196,10 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // Spelled-out statements, one-line and multi-line, are not assembled.
     expect(how(["  'UPDATE accounts SET custody = $1 WHERE id = $2',", '  [custody, id],'])).toEqual([]);
     expect(how(['  `UPDATE accounts', "   SET custody = 'light', updated_at = NOW()", '   WHERE id = $1`,'])).toEqual([]);
+    // A read that never reached a terminator has no "after the closing quote"
+    // text at all. Taking the whole last line for it reads an ordinary
+    // continuation as the join and reports a concatenation that is not there;
+    // the unterminated statement itself is the separate red bar.
+    expect(how(['  `UPDATE accounts SET custody = $1', '  + fragment'])).toEqual([]);
   });
 });

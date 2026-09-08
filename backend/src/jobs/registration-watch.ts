@@ -258,10 +258,25 @@ async function collectSignupStarted(
 
 /**
  * Finalized rows (states A/B/C/D per ARCHITECTURE.md section 6.1: `verify_token`
- * NULL and `username` set). The `updated_at` cursor cannot stand alone here --
- * that column is an overlay bumped by later password, ORCID, and custody writes
- * too, so a long-finalized account would re-announce on its next profile change.
- * The `seen:accounts` set is what makes the class report each account once.
+ * NULL and `username` set), cursored on `accounts.updated_at`.
+ *
+ * That column is NOT a general recency overlay, and reading it as one is the
+ * mistake to avoid here. The only statements that write it are the two signup
+ * finalizes in `routes/signup-verify.ts`; a later password, ORCID, profile or
+ * settings write does not touch it, and the custody upgrade deliberately leaves
+ * it alone. The closed writer set is a standing invariant -- the stuck-recovery
+ * lookups in that file measure their windows against this column, so a third
+ * writer would hand a finalized account a binding-free session mint -- and a
+ * canary under `tests/eslint/` fails the build on one. A long-finalized account
+ * therefore does not re-announce on its next profile change.
+ *
+ * The `seen:accounts` set is still what makes the class report each account
+ * once, for two reasons the cursor cannot express. A row can reach a finalize
+ * TWICE: a repeat signup on the same email re-opens the pending state, and the
+ * finalize that follows re-stamps the marker on an account already announced.
+ * And the cursor is carried as whole milliseconds while the column holds
+ * microseconds, so the newest row in a batch stays strictly greater than the
+ * cursor derived from it and is re-read on the following tick.
  *
  * Membership is only READ here. Marking happens after delivery succeeds --
  * marking during collection would drop the batch permanently if the webhook
