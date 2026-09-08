@@ -422,6 +422,26 @@ describe('withAuthorshipFreshAuth', () => {
     expect(mockBeginAuthorshipOrcid).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { label: 'a null proof field', value: null },
+    { label: 'a mint response with no proof field', value: undefined },
+    { label: 'a numeric proof', value: 4242 },
+  ])('a mint that answers without a proof string surfaces freshAuthFailed: $label', async ({ value }) => {
+    // The redirect sentinel is `null`, the one member of the outcome vocabulary
+    // a JSON response can carry, and the mint returns `fresh_auth_proof`
+    // verbatim. Handed through uncoerced, a null proof reads as an ORCID
+    // round-trip in flight: the op aborts silently, no navigation happens, and
+    // the user watches a correctly-answered prompt do nothing. The row drives
+    // the whole non-string class rather than the null member alone, because the
+    // coercion is a type test and not a null check.
+    mockMintAuthorshipFreshAuthProof.mockResolvedValue(value);
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    expect(out).toEqual({ freshAuthFailed: true });
+    // Never broadcast: `run(undefined)` is the self-custody shape, and sending
+    // it would spend a broadcast on an op the backend refuses.
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it('non-fresh-auth errors propagate to the caller', async () => {
     mockGetCachedConsentOpProof.mockReturnValue('cached-proof');
     run.mockRejectedValueOnce(codedError('FORBIDDEN'));

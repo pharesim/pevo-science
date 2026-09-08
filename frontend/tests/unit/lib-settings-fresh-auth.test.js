@@ -323,6 +323,39 @@ describe('withSettingsFreshAuth', () => {
     expect(run).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    { label: 'a null proof field', value: null },
+    { label: 'a mint response with no proof field', value: undefined },
+    { label: 'a numeric proof', value: 4242 },
+  ])('a mint that answers without a proof string surfaces freshAuthFailed: $label', async ({ value }) => {
+    // The redirect sentinel is `null`, the one member of the outcome vocabulary
+    // a JSON response can carry, and the mint returns `fresh_auth_proof`
+    // verbatim. Handed through uncoerced, a null proof reads as an ORCID
+    // round-trip in flight: the caller aborts silently, no navigation happens,
+    // and the user watches a correctly-answered prompt do nothing. The row
+    // drives the whole non-string class, not the null member alone, because the
+    // coercion is a type test rather than a null check.
+    mockMintSettingsActionProof.mockResolvedValue(value);
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
+    expect(out).toEqual({ freshAuthFailed: true });
+    // Never handed on to the action: `run(undefined)` is the self-custody shape,
+    // and sending it would spend a write on a request the backend refuses.
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('a mint that answers without a proof string on the RETRY surfaces freshAuthFailed too', async () => {
+    // The retry gate mints through the same callback on its own leg, so a
+    // coercion applied to only the first acquisition would leave this one
+    // reading a null proof as a redirect and abandoning the action in silence.
+    run.mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'missing'));
+    mockMintSettingsActionProof
+      .mockResolvedValueOnce('minted-proof')
+      .mockResolvedValueOnce(null);
+    const out = await withSettingsFreshAuth('change_email', LIGHT, run);
+    expect(out).toEqual({ freshAuthFailed: true });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it('propagates a non-fresh-auth error (e.g. DUPLICATE) to the caller', async () => {
     run.mockRejectedValue(codedError('DUPLICATE'));
     await expect(withSettingsFreshAuth('change_email', LIGHT, run)).rejects.toMatchObject({ code: 'DUPLICATE' });

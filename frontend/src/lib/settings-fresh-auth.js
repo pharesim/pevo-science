@@ -49,9 +49,24 @@ import {
 // differs. `assumed` is the resolver's observed-vs-guessed flag, threaded
 // through so an assumed password the backend 401s hands the action to the
 // ORCID factor rather than a second prompt.
+// The wire value is coerced before it leaves this callback, because the mint
+// hands back `fresh_auth_proof` verbatim and FRESH_AUTH_REDIRECT_PENDING is
+// `null` — the one member of the outcome vocabulary a JSON response can
+// carry. Without the coercion a response whose proof field is null reads as
+// "an ORCID round-trip is in flight" at `withSettingsFreshAuth`'s outcome
+// ladder, and every caller aborts silently for a navigation that never
+// started: the user answers the prompt, the spinner clears, and the action
+// simply does not happen. The vocabulary's other members are Symbols, which no
+// response can produce. FRESH_AUTH_MINT_FAILED is what a non-string lands on
+// instead, because it is already this surface's word for re-auth that could
+// not be completed and it reaches the user without spending a second prompt
+// and a second write on a token the backend has declined to issue.
 function mintViaPassword(action, assumed, guard) {
   return mintViaPasswordFactor(
-    (password) => mintSettingsActionProof(action, password),
+    async (password) => {
+      const proof = await mintSettingsActionProof(action, password);
+      return typeof proof === 'string' ? proof : FRESH_AUTH_MINT_FAILED;
+    },
     { message: passwordPromptMessage(), assumed, guard },
   );
 }

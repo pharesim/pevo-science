@@ -57,9 +57,21 @@ import {
 // differs. `assumed` is the resolver's observed-vs-guessed flag, threaded
 // through so an assumed password the backend 401s hands the op to the ORCID
 // factor rather than a second prompt.
+// The wire value is coerced before it leaves this callback, for the reason the
+// twin in settings-fresh-auth.js is: the mint hands back `fresh_auth_proof`
+// verbatim and FRESH_AUTH_REDIRECT_PENDING is `null`, the one member of the
+// outcome vocabulary a JSON response can carry, so an uncoerced null proof
+// reads as a redirect in flight at `withAuthorshipFreshAuth`'s outcome ladder
+// and the op aborts silently for a navigation that never started.
+// FRESH_AUTH_MINT_FAILED is the honest answer for a non-string: re-auth could
+// not be completed, and re-prompting cannot mend a token the backend has
+// declined to issue.
 function mintViaPassword(target, assumed, guard) {
   return mintViaPasswordFactor(
-    (password) => mintAuthorshipFreshAuthProof(target, password),
+    async (password) => {
+      const proof = await mintAuthorshipFreshAuthProof(target, password);
+      return typeof proof === 'string' ? proof : FRESH_AUTH_MINT_FAILED;
+    },
     { message: passwordPromptMessage(), assumed, guard },
   );
 }

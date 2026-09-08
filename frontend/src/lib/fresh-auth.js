@@ -913,10 +913,47 @@ export function abandonInFlightAcquisitions() {
   _factorResolutionSubject = null;
 }
 
+// Evict the window slot when an acquisition resolves a value the outcome
+// vocabulary does not name, so every reading of that one slot inherits the drop
+// instead of each consumer carrying its own. All three readings already REFUSE
+// such a value — the fail-closed guard in `ensureSessionWindow`, the upload
+// pre-flight `windowProof`, and the broadcast unwinder `acquisitionAborted` —
+// but only the first of them ever cleared, so a truthy non-string reaching the
+// broadcast surface was refused and left where it was, to be re-read and
+// re-refused on every later vote, comment and review until the entry's idle
+// deadline arrived, a sign-out scrubbed the slot, or an unrelated page gate or
+// upload pre-flight happened to run the evicting one.
+//
+// The value travels on unchanged: refusing is still each consumer's own, and
+// swallowing an unnamed result into a falsy one would read downstream as the
+// self-custody no-window case and reopen the quiet direction the guard closes.
+//
+// Ungated, unlike the sibling clears in `broadcastWithFreshAuth`. Those hold a
+// real round-trip between the window they read and the clear they run, so a
+// teardown landing inside it leaves the successor's freshly minted entry in the
+// slot and dropping it would charge them a re-auth that was never theirs.
+// Nothing here has that shape: the cache leg reads and clears in adjacent
+// synchronous statements, and every teardown boundary a flight crosses resolves
+// FRESH_AUTH_CANCELLED, a registered outcome this check never fires on —
+// including the boundary between the mint's cache write and its return. What is
+// left is a microtask hop, and the subject scrub empties the slot before it
+// bumps the generation while both writers of that slot sit behind a round-trip,
+// so a teardown landing in the hop can only make this clear a no-op.
+function evictUnnamedAcquisition(proof) {
+  if (typeof proof !== 'string' && acquisitionOutcomeKey(proof) === null) {
+    clearCachedSessionProof();
+  }
+  return proof;
+}
+
 async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } = {}) {
   const cached = getCachedSessionProof(minRemainingMs);
-  if (cached) return cached;
+  if (cached) return evictUnnamedAcquisition(cached);
   const slot = allowRedirect ? 'permissive' : 'suppressed';
+  // A joiner runs no eviction of its own: the flight that installed itself
+  // drops an unnamed result before its `finally` releases the slot, so by the
+  // time a joiner or a later cold caller can look, it has already happened once
+  // for everyone.
   if (_acquireInFlight[slot]) return _acquireInFlight[slot];
 
   // Opened before any await: a teardown bumping the generation mid-flight
@@ -988,7 +1025,7 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
 
   _acquireInFlight[slot] = flight;
   try {
-    return await flight;
+    return evictUnnamedAcquisition(await flight);
   } finally {
     // A teardown may have cleared the slot and a newer flight may have
     // claimed it since; only the flight that installed itself may clear it.
@@ -1132,23 +1169,26 @@ export async function ensureSessionWindow({
   const proof = await acquireSessionProof(minRemainingMs, { allowRedirect });
   const outcomeKey = acquisitionOutcomeKey(proof);
   if (outcomeKey) return { ready: false, [outcomeKey]: true };
-  // Fail closed on anything outside the vocabulary, and evict whatever
-  // produced it. Only the sentinel legs are closed by construction; the other
-  // two run through the window slot and neither type-checks what passes.
-  // `readSessionWindow` hands back any token that is not FALSY (it checks the
-  // deadlines, never the token), and the mint callback returns the response's
-  // `fresh_auth_proof` verbatim after writing it into the slot one statement
-  // earlier. So a non-string here either came out of that slot or has just
-  // gone into it, and refusing without clearing leaves whatever the slot kept
-  // to be re-read and re-refused for the rest of that entry's life. Retrying
-  // does not clear it; only signing out, which scrubs the slot with the rest
-  // of the subject-bound keys, or a fresh tab. A value `JSON` cannot carry
-  // dropped itself on the write and makes the clear a no-op; a number or an
-  // object is the case the clear is here for, and for one this module wrote
-  // the bound is the IDLE deadline (`cacheSessionProof` always anchors idle
-  // nearer than the cap, and every consume site refuses before it reaches
-  // `slideSessionWindow`), while an entry written by anything else can outlast
-  // both deadlines.
+  // Fail closed on anything outside the vocabulary. Only the sentinel legs are
+  // closed by construction; the other two run through the window slot and
+  // neither type-checks what passes. `readSessionWindow` hands back any token
+  // that is not FALSY (it checks the deadlines, never the token), and the mint
+  // callback returns the response's `fresh_auth_proof` verbatim after writing
+  // it into the slot one statement earlier. So a non-string here either came
+  // out of that slot or has just gone into it, and a refusal that leaves it
+  // there is a lockout rather than a refusal: every later reading finds the
+  // same entry and refuses again. Which is why the eviction belongs to
+  // `acquireSessionProof`, where both of those legs and all three readings of
+  // the slot pass through one drop; the `clearCachedSessionProof()` in this
+  // guard is a deliberate restatement of it, kept so this gate answers for its
+  // own refusal without a reader having to trust an eviction they cannot see
+  // from here, and a second drop of an already-empty slot costs nothing. A
+  // value `JSON` cannot carry dropped itself on the write and makes the clear
+  // a no-op; a number or an object is the case the clear is here for, and for
+  // one this module wrote the bound is the IDLE deadline (`cacheSessionProof`
+  // always anchors idle nearer than the cap, and every consume site refuses
+  // before it reaches `slideSessionWindow`), while an entry written by
+  // anything else can outlast both deadlines.
   //
   // The direction this guard exists to close is the quiet one. Read as a ready
   // window, an unregistered result travels on AS the proof, and how it fails
@@ -1161,9 +1201,11 @@ export async function ensureSessionWindow({
   // light account is refused before a request is built. Every route ends in a
   // rejection with nothing to act on. This is also the string test
   // `acquisitionAborted` applies to the raw acquisition result, so both
-  // readings of an outcome refuse an unnamed one alike. They still differ on
-  // whether the refusal speaks, which the toast dispatch decides and this
-  // guard does not.
+  // readings of an outcome refuse an unnamed one alike — and both now inherit
+  // the one eviction rather than each owning its own, so neither can leave an
+  // entry behind for the other to heal. What they still differ on is whether
+  // the refusal speaks, which the toast dispatch decides and this guard does
+  // not.
   if (typeof proof !== 'string') {
     clearCachedSessionProof();
     return { ready: false, failed: true };

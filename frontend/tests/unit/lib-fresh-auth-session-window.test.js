@@ -863,6 +863,62 @@ describe('the gate never fails open into silence', () => {
   });
 });
 
+describe('the broadcast path leaves no poisoned window behind', () => {
+  beforeEach(() => {
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+  });
+
+  // Two rows, chosen for REACHABILITY rather than for illustrating the type: a
+  // number and an object are what a backend contract slip can actually put in
+  // the slot, since both survive the JSON round-trip through `sessionStorage`
+  // and both read as truthy, which is what makes the entry stick. A Symbol
+  // would be the tidier illustration and the wrong pin: `JSON.stringify` omits
+  // it, so the next read drops the entry as tokenless on its own and a check
+  // narrowed to numbers would still look covered.
+  it.each([
+    { label: 'a numeric token', value: 4242 },
+    { label: 'an object token', value: { not: 'a proof' } },
+  ])('an entry the vocabulary does not name is evicted, not re-refused on every later action: $label', async ({ value }) => {
+    // `acquisitionAborted` applies the same string test the acquire-before-commit
+    // gate does, and for a long time it was the only reading that did not clear.
+    // A refusal that leaves its own cause readable is a lockout: the next vote,
+    // comment and review each re-read the entry and each abort in silence, with
+    // no way out until the idle deadline arrives, a sign-out scrubs the slot, or
+    // an unrelated page gate or upload pre-flight happens to run the eviction.
+    seedWindow(value, { idleInMs: IDLE_MS });
+
+    expect(await broadcastWithFreshAuth('alice', [['vote', {}]])).toBeNull();
+    expect(mockBroadcastOps).not.toHaveBeenCalled();
+    expect(cached()).toBeNull();
+
+    // And the action after it is an ordinary acquisition rather than a second
+    // silent refusal of the same entry.
+    await broadcastWithFreshAuth('alice', [['vote', {}]]);
+    expect(mockBroadcastOps.mock.calls[0][2]).toMatchObject({ freshAuthProof: 'window-proof' });
+  });
+
+  it.each([
+    { label: 'a numeric proof', value: 4242 },
+    { label: 'an object proof', value: { not: 'a proof' } },
+  ])('a mint that answers without a proof string strands nothing in the slot either: $label', async ({ value }) => {
+    // The mint leg poisons the slot on its way past: the response value is
+    // written through `cacheSessionProof` one statement before the acquisition
+    // hands it back. Evicting only what the cache leg produced would refuse
+    // this action and still strand the one after it.
+    mockMintSessionAuthProof.mockImplementationOnce(async () => ({
+      ...issuance('window-proof'),
+      fresh_auth_proof: value,
+    }));
+
+    expect(await broadcastWithFreshAuth('alice', [['vote', {}]])).toBeNull();
+    expect(mockBroadcastOps).not.toHaveBeenCalled();
+    expect(cached()).toBeNull();
+
+    await broadcastWithFreshAuth('alice', [['vote', {}]]);
+    expect(mockBroadcastOps.mock.calls[0][2]).toMatchObject({ freshAuthProof: 'window-proof' });
+  });
+});
+
 describe('collisions and suppressed navigation', () => {
   it('a prompt already open is not silently dropped as a cancel', async () => {
     // Two orchestrators that share the singleton modal but not an in-flight
