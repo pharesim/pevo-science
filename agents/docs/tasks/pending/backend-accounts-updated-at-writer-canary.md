@@ -490,3 +490,156 @@ introducing migration's back-fill), `bridge_import_queue` and
 The CHECK constraint proposal above is still an open architect decision and is
 not implemented here. Item 7's rewrite makes the docblock agree with it rather
 than contradict it.
+
+## Architect re-review (2026-09-08, round 2) — HELD PENDING FIXES:
+
+Reviewed at commit ea57bb29 via /ce-code-review (correctness, security,
+adversarial, testing, maintainability, project-standards, learnings). Eleven
+findings survived an independent validation gate; one was rejected and is
+recorded under "Dismissed" below. The round-1 items all landed: the writer set
+re-enumerated from the tree matches the allow-list exactly, the three ALTER
+statements pinned by count are all in the introducing migration, and every
+named artifact from the ten items is present in the code.
+
+The hold is that the reading layer those fixes were built on is not sound. It
+is the single point of failure for every scan, and it can be switched off by
+ordinary source text that already exists in the tree. Verify every item by
+mutation in a scratch copy (red on the mutation, green on restore) and state
+the probe per item in the re-review note.
+
+### Bundle A: the reader must not be disarmable by ordinary source text
+
+1. **`DOLLAR_QUOTE_RE` must accept only a PostgreSQL dollar-quote tag.**
+   `/^\$[^\s$]*\$/` matches an ordinary placeholder pair: `VALUES ($1,$2)`
+   opens a span tagged `$1,$`, and `` `${prefix}$1` `` opens one tagged
+   `${prefix}$`. Neither ever closes, and `blankLine`'s dollar branch copies
+   verbatim, so comment blanking is off from that point to end of file and the
+   column-first walk, the table-first walk and the fail-closed arm all go quiet
+   together. Both shapes are live today: `hafsql.ts` at the `namePrefix`
+   replacement (717 lines left unblanked) and `lib/ipfs-shared.ts`. A planted
+   `UPDATE accounts SET ..., updated_at /* note */ = NOW()` below either point
+   leaves the suite green. The `!== '{'` guard closes the `$${n}` spelling
+   only. Use the real grammar, empty tag or unquoted identifier; consider also
+   requiring the tag to recur later in the file, the way `blockCloses` already
+   requires a closer. Probes: a fixture carrying `VALUES ($1,$2)` and one
+   carrying the `${...}$N` shape must each open no span, and a commented write
+   on a LATER line of the same fixture must still be seen.
+
+2. **`LOOKAHEAD_CAP` must exceed the block comments the scanned trees actually
+   contain, or go away.** Seventeen block comments in `src` exceed 60 lines and
+   the longest is over a thousand, so `blockCloses` reports "not a comment" for
+   each and the prose is read as live code. That is what puts `ipfs-shared.ts`
+   into the state item 1 describes. The file is already in memory; scanning to
+   the end for the closer costs nothing, and the cap's stated purpose is
+   already served by the unbounded "no closer anywhere" answer plus the
+   must-close-before-the-backtick clause.
+
+3. **The cap, whatever it becomes, must be pinned by fixtures that do not
+   derive from it.** `farClose` builds its filler as `LOOKAHEAD_CAP + 5`, so
+   setting the constant to 5, 500 or 2000 all leave the suite green. Use
+   literal counts, and add the mirror fixture below the intended bound
+   asserting the opener IS a comment there, so a move in either direction reds.
+
+4. **Decide and state what happens inside a `DO $$` body.** Blanking is off
+   inside a dollar span, and migrations 007 and 017 already carry one. A write
+   with a comment in the `updated_at`/`=` gap planted inside 017's body stays
+   green while the same write outside it reds. Either keep blanking inside a
+   code-shaped body (the opener follows `DO`, `AS`, or `RETURNS ... AS`) and
+   keep today's verbatim copy for value bodies, or refuse anonymous `DO` blocks
+   in migrations the way `ROUTINE_CREATION_RE` refuses `CREATE FUNCTION`, with
+   007 and 017 exempted by exact key. Either is acceptable; say which and why.
+
+5. **Add a terminal-state assertion over the real trees.** Asserting that
+   `blankFile` leaves every file in `sources` and `migrations` at
+   `{block:false, template:false, dollar:null}` would have caught items 1 and 2
+   at authoring time, and is the cheapest standing guard against the next
+   reader defect of this class.
+
+### Bundle B: two pattern gaps
+
+6. **A row-assignment left of a plain one must still be counted.**
+   `assignmentIndex` returns on the first plain match before the row-target
+   loop ever runs, so `SET (email, updated_at) = ($1, NOW()), custody = $2,
+   updated_at = NOW()` reports one occurrence, not two. The docblock's claim
+   that a line carrying two contributes two is false as written. Collect both
+   and return the earlier. Plant the mixed-form line.
+
+7. **`FOR NO KEY UPDATE` must not become a statement head.** The lookbehind
+   sees `KEY ` rather than `FOR `, so the clause matches `UPDATE_TARGET_RE` and
+   captures a table named `skip`. A planted accounts write carrying
+   `FOR NO KEY UPDATE SKIP LOCKED` leaves the file green where the `FOR UPDATE`
+   spelling reds. Widen the exclusion, and promote `NOT_A_TABLE` from one
+   string to a set that also rejects `skip`, `nowait` and `of`, so a keyword
+   head resolves unresolved rather than naming a fiction.
+
+### Bundle C: the rationale a red bar hands the next author
+
+8. **The upsert paragraph still names the wrong barrier.** Round-1 item 6 asked
+   for the `POST /signup` pre-check to be credited, and that correction is
+   itself wrong: the pre-check answers 409 only for a NULL or `confirmed:`
+   token, so a state G row (ARCHITECTURE.md section 6.1: username set, random
+   hex token, custody NULL) falls through to the `DO UPDATE` branch. What makes
+   that inert is the branch's own column list together with the `custody`
+   filters on both lookups. Correct the docblock, `ORDERING_RATIONALE` if it
+   repeats the claim, and the matching sentence in this task's implementation
+   note.
+
+9. **`accounts.updated_at` has a third reader, and its docblock states the
+   opposite invariant.** `collectCompleted` in `jobs/registration-watch.ts`
+   uses the column as an announce cursor, and its docblock says the column is
+   "an overlay bumped by later password, ORCID, and custody writes too", which
+   no writer in `src` does. That comment tells the next author precisely what
+   this canary exists to deny. Correct it to say the two finalizes are the only
+   writers and that the `seen:accounts` set suppresses a re-announce on a
+   re-finalize, and add this reader to the docblock's account of what a third
+   writer would affect.
+
+10. **Replace the bare positional anchor.** "the reading above" in KNOWN LIMITS
+    points across paragraphs with a generic noun and no stable name riding
+    along, which is the rot form rather than the carve-out form. Name what it
+    points at. The pre-commit gate does not catch this shape, so it is not
+    evidence the line is fine.
+
+### Bundle D: the coverage claim
+
+11. **"The full deletion set (48 features ...) is exercised" is false.**
+    Deleting `enclosingQuote`'s escape-skip, and separately `joinedByPlus`'s
+    `closedAt === -1` early return, each leaves the whole suite green. Add a
+    probe for each, then either re-verify the claim across the full set or
+    replace it with what was actually checked. Do not restate the number.
+
+12. **Minor, fold in if convenient.** The `12` and `2` bounds of the
+    local-declaration window in `assignmentIndex` are the only unnamed numeric
+    bounds in a file that names every other one.
+
+### Also correct the compound entry
+
+The `/ce-compound` entry committed at the same time as this work records the
+`$${n}` guard as closing the phantom-dollar-span class. It closed one spelling
+of it. Once bundle A lands, correct that entry so the next reader is not told
+the class is shut. It is architect-zone, so commit it separately with
+`[skip-zone-audit]`, not bundled into the code commit.
+
+### Dismissed, recorded here so they are not re-raised
+
+- Extracting the reading layer into `tests/support/`: dismissed. The span is
+  not domain-agnostic (`targetTable` defaults its position through
+  `assignmentIndex`, which is built on the `updated_at`-keyed patterns), and
+  per-canary private reading cores are the ratified pattern here. The file's
+  own reuse paragraph already records why its reach cannot be the shared one.
+- Em dashes in the docblock and in the failure-message constant: out of scope
+  per the project rule's own wording, which excludes code comments and
+  operator-facing output.
+- `escapes = !sql`, the non-recursive migration walk, and `backend/scripts/`
+  being outside the scan roots: seen and accepted. None is reachable on
+  today's tree; a KNOWN LIMITS line for the walk is welcome, not required.
+
+### Not part of this hold
+
+- The `[TODO Architect]` CHECK constraint remains an open architect decision.
+  The review confirmed `upgraded_at IS NULL OR upgraded_at >= updated_at` holds
+  for every state section 6.1 enumerates. Tracked separately; do not implement
+  it under this task.
+- The `POST /signup` upsert overwriting a finalized state G row is a real
+  pre-existing defect in `routes/auth.ts`, filed as its own task. Out of scope
+  here.
