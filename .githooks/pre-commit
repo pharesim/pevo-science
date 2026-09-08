@@ -89,7 +89,7 @@ anchor_violation() {
   # Bare positional anchors: an article sitting DIRECTLY against a structural
   # noun, then above/below. The adjacency is the whole discriminator — see the
   # header. Nouns here name a slot, never a thing, so none can carry identity.
-  grep -qiE '\b(the|this|that)[[:space:]]+(rule|helper|function|method|spec|test|case|block|comment|docblock|section|paragraph|sentence|clause|note|example|fixture|check|guard|canary|loop|query|call|hook|entry|item|line|one|snippet|definition|branch|arm|step|code)[[:space:]]+(just[[:space:]]+)?(above|below)\b' <<<"$content" && return 0
+  grep -qiE '\b(the|this|that)[[:space:]]+(rule|helper|function|method|spec|test|case|block|comment|docblock|section|paragraph|sentence|clause|note|example|fixture|check|guard|canary|loop|query|call|hook|entry|item|line|one|snippet|definition|branch|arm|step|code|rows?|table)[[:space:]]+(just[[:space:]]+)?(above|below)\b' <<<"$content" && return 0
 
   # Task-slug citations. A line referencing the persistent knowledge store
   # (solutions/ or api-contracts/) is the convention's allowed class, so it is
