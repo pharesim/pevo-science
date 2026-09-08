@@ -1,0 +1,235 @@
+---
+title: "A source-scanning canary must normalize comments before it matches, and a prescribed mutation-probe list can only confirm the items it names"
+date: 2026-09-08
+category: conventions
+module: backend/tests/eslint + code-review process
+problem_type: convention
+component: testing_framework
+severity: high
+applies_when:
+  - "Writing or reviewing a source-discipline canary whose detection is textual (regex over lines) rather than a parse"
+  - "The canary's patterns need two tokens adjacent (a column and its `=`, a target list's `)` and its `=`, a keyword and its table) and a comment may sit in that gap"
+  - "Several scans in one canary share the same patterns, so one silencing gap disables all of them together"
+  - "Deciding whether a guard verified by a prescribed list of mutation probes has been shown to be closed"
+  - "Reviewing a scanner that decides what is a comment, a string, or a template, where a wrong decision blanks live code"
+symptoms:
+  - "A comment between a column and its `=` silences every scan that shares the pattern, not one of them"
+  - "A merge-blocking canary stays green for exactly the violation class it exists to catch"
+  - "A glob inside a template literal is read as a block-comment opener and blanks the rest of the file"
+  - "An apostrophe in prose inside a template inverts the scanner's template state for the rest of the file"
+  - "Hundreds of prescribed mutation probes behave exactly as specified while unscripted adversarial search finds dozens of live evasions of the same guard"
+root_cause: incomplete_enumeration
+resolution_type: workflow_improvement
+related_components:
+  - development_workflow
+  - testing_framework
+tags:
+  - canary-tests
+  - source-discipline
+  - comment-normalization
+  - mutation-resistance
+  - silently-disarmed-guards
+  - evasion-enumeration
+  - adversarial-review
+---
+
+# A source-scanning canary must normalize comments before it matches, and a prescribed mutation-probe list can only confirm the items it names
+
+## Context
+
+`backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`
+scans `backend/src` and `backend/migrations` as text and asserts that exactly
+two statements write `accounts.updated_at`: the finalize UPDATE in each of the
+two signup activation handlers. The column is the recency marker both
+stuck-recovery lookups in `backend/src/routes/signup-verify.ts` measure
+against, and each of those lookups admits a row past the signup
+session-binding check. A third writer anywhere in the tree puts finalized rows
+back inside a recovery window,
+and nothing at the schema layer can refuse it, because a constraint sees a
+marker being stamped and not which statement stamped it.
+
+The canary was reviewed against a ten-item hold whose instruction was to verify
+every item by mutation in a scratch copy. Doing that confirmed all ten. Running
+an unscripted adversarial search alongside it found two classes of defect the
+prescribed probes could not reach, and the scanning core was rewritten twice as
+a result. Both findings generalize to every textual guard in this repo.
+
+This is the second time the same comment-detection hazard has been hit here
+(session history). The frontend sibling canary had already grown a
+block-comment region tracker and a whole-file backtick parity pass, and its own
+review found that opening a comment region on any line starting with a block
+opener swallowed a real closing brace when the opener was markup inside a
+template literal. That was recorded as the only genuine regression of its
+round. The same review judged the whole-file backtick parity "wrong in
+principle but not yet exploitable", and judged the backend canary's total lack
+of comment-region tracking a deliberate, accepted divergence. The work
+documented here found the exploitable form of the parity problem and reversed
+the divergence, because the divergence rested on the assumption that comments
+could only cost a canary precision, not silence.
+
+## Guidance
+
+### Normalize comments once, underneath every pattern
+
+Every regex in a scanner like this needs two tokens adjacent: a column and its
+`=`, a parenthesised target list's `)` and its `=`, a keyword and the table
+after it, a column list's parentheses. SQL admits a comment anywhere it admits
+whitespace. So any comment dropped into one of those gaps silences the pattern
+that spans it, and because the scans share patterns, one comment silences them
+together. Shapes that were green before the fix, each confirmed by mutation:
+
+- a comment between the column and its `=`, in either dialect's spelling
+- a comment between a row target list's `)` and its `=`
+- a comment carrying parentheses inside a target list, truncating the capture
+- a comment carrying a semicolon in prose, ending the statement read early
+- a comment naming another table, supplying a nearer and wrong statement head
+- a closed block comment ahead of a template literal, dropping the whole line
+  from a scan that asked whether a LINE was a comment rather than whether the
+  matched position was
+
+The fix is not another pattern. It is a reading layer beneath all of them:
+`blankLine` and `blankFile` walk a file from the top and replace every comment
+span with spaces of the same length, so reported positions stay true to the
+source line, carrying block-comment, template-literal and dollar-quote state
+across line boundaries while copying quoted and dollar-quoted VALUES through
+untouched. A value keeps its comment markers and its semicolons because it is
+part of the statement even though nothing in it is a token. Every scan reads
+that one blanked view.
+
+### A scanner that skips what it reads as a comment must UNDER-match
+
+This is the half that matters more than the mechanism. A line wrongly blanked
+is a line no scan sees, so the miss is silent and unbounded. A line wrongly
+read as live code costs at most a red bar on a statement that was never live,
+which is loud and self-limiting. Ambiguity therefore resolves toward reading,
+and three live defects came from getting that backwards, each in ordinary code:
+
+- A block comment opener with no closer is not a comment. A Redis key namespace
+  ending in a wildcard, written inside a template literal, opened a comment
+  that never closed and blanked every following line of its file. `blockCloses`
+  now requires a matching closer within a bounded lookahead, and inside a
+  template requires it before the template ends.
+- An unescaped backtick ends a template whatever else is open. An apostrophe in
+  prose inside a one-line template was being read as opening a string, which
+  swallowed the closing backtick and left the template state inverted for the
+  rest of the file.
+- A dollar-quote opener is recognised in SQL files and inside templates, but
+  never when the characters after it are a TypeScript interpolation. The
+  placeholder-builder idiom this repo writes as a SQL `$` sigil immediately
+  followed by an interpolation looks exactly like a PostgreSQL dollar-quote
+  opener. Reading it as one opened a span that ran to the next literal `$$`,
+  switching comment blanking off across the 17 files under `backend/src` that
+  contain the idiom.
+
+The same asymmetry governs smaller decisions: a `--` glued to an identifier on
+either side is TypeScript's decrement operator, not a comment, and a comment
+marker inside a value is part of the value.
+
+### A prescribed probe list confirms items; only unscripted search tests closure
+
+Verification ran as five rounds, each with two kinds of agent working in
+parallel on isolated copies of the tree.
+
+**Probe agents** were given an explicit list of mutations, each with an expected
+outcome ("add a third writer here, expect these two scans red"). Roughly 380
+such probes ran. Nearly all behaved exactly as specified. The gaps they found
+were almost entirely of the shape "this feature is real but nothing fails
+without it", which is dead coverage rather than missing coverage.
+
+**Lens agents** were given no list, only the goal: find a valid statement that
+writes the guarded column and leaves the suite green, then prove it by applying
+the mutation and running it. Every claim was replayed by an independent agent
+that tried to refute it. These found roughly 50 confirmed evasions, several of
+them house-style code an author would write by accident, including the phantom
+comment region, the inverted template state and the phantom dollar-quoted
+span.
+
+The structural reason they find different things: a probe answers "does the
+feature I named work", while a lens answers "is the guard closed". A canary is
+a claim about everything the tree does not contain, in any valid spelling, so a
+finite author-written list can only sample that space. It can confirm the
+sampled points behave; it cannot establish that no unsampled point exists. A
+checklist does not become a proof by getting longer.
+
+### Check a verification run's summary against its raw record
+
+When refuter agents in one round were killed mid-flight by a rate limit, a
+majority rule scored a finding with zero returned votes as refuted. The run's
+own summary read "N raised, N refuted, 0 survivors", which is what a clean run
+looks like, while the per-agent journal still held the unreplayed findings.
+"Nobody voted" and "everybody voted no" produce the same aggregate under a
+naive majority. Read the raw per-agent record before believing a clean summary,
+especially after any interruption.
+
+## Why This Matters
+
+No behavioural test can catch what this canary guards. Reaching either bypass
+needs a row already in the narrow post-finalize state plus a valid ownership
+proof at the right route, so a rogue third writer changes nothing observable at
+the wire until someone exercises a recovery path against a finalized account,
+which is the incident and not a failing test. The canary's whole value is the
+completeness of its claim, so a comment-matching gap does not make it fail
+loudly. It makes it pass while asserting nothing, which is worse than not
+having it, because a green bar reads as an active guarantee.
+
+The cost asymmetry is what should drive the design. Over-refusing produces a
+red bar someone investigates. Under-reading produces silence that survives
+until the incident it was written to prevent.
+
+## When to Apply
+
+- Writing or reviewing any textual canary that scans source for a forbidden or
+  licensed shape, and any change to the shared scanning helpers such a canary
+  builds on.
+- Reviewing a claim that a guard is "verified by mutation": ask whether the
+  mutations came from a fixed list. If so, that is confirmation of the named
+  items and not evidence the guard is closed. Ask whether an open-ended
+  adversarial pass with independent refutation ran too.
+- Any time a scanner's patterns need two tokens adjacent in a language that
+  admits comments or whitespace between them. Ask what happens when a comment,
+  a line break, or a string value sits in the gap.
+- Any time a scanner decides that something opens or closes a comment, a
+  string, or a template. Audit each decision for direction: the wrong answer
+  toward "comment" is silent, the wrong answer toward "code" is loud.
+- Triaging any multi-agent verification run whose findings are scored by vote,
+  before accepting a clean summary.
+
+## Examples
+
+The reader in the accounts-updated-at writer canary is the worked example.
+`blankLine` and `blankFile` are the shared normalization layer, `statementAt`
+reads a whole statement from a head to its terminator over the blanked text,
+`targetTable` resolves an assignment to the statement head that actually
+reaches its position and fails closed rather than borrowing a nearer
+statement's table, and `assignmentIndexes` tallies every write rather than
+every line, which is what stops a second write from hiding beside a licensed
+one inside the same long route handler. A separate arm refuses any statement
+too long to read to a terminator, because a statement the scan could not read
+whole is one it cannot clear.
+
+The failure messages carry the invariant rather than the drift. Their shared
+rationale constant tells the next author what test a new writer actually has to
+meet: not what its WHERE clause says, but whether it can ever bump the marker
+on a finalized row.
+
+## Related
+
+- `source-discipline-canary-detection-must-survive-ordinary-authoring-shapes-2026-08-31.md`
+  is the closest neighbour and treats comments as a detection-reach hazard, but
+  scopes its fix as a per-scan trailing-comment strip whose safe direction it
+  decides from scan polarity. That generalization needs narrowing: a comment
+  splitting two tokens a pattern needs adjacent under-matches on a forbidden
+  scan too, which is the direction that doc treats as safe there.
+- `composite-mutation-probe-does-not-cover-its-constituent-branches-2026-09-06.md`
+  is the same family on a narrower axis. It shows a probe can prove a mechanism
+  exists without covering its branches; this entry shows a whole list of probes
+  can pass while the guard stays open.
+- `mutation-probes-are-per-site-not-per-fix-2026-08-31.md` and
+  `source-discipline-canaries-must-assert-at-call-site-not-file-granularity-2026-08-26.md`
+  are earlier rungs of the same ladder, about what a probe covers and what a
+  canary collects. Normalization happens before either question.
+- `fail-closed-does-not-transfer-from-set-equality-to-pairing-canaries-2026-08-31.md`
+  covers the shared symbol-attribution module these canaries build on.
+- `static-sql-lint-rule-blind-to-extracted-fragments-2026-06-14.md` is the
+  sibling blind spot: a fragment moved out of the statement defeats a static
+  text scan the same way a comment moved into it does.
