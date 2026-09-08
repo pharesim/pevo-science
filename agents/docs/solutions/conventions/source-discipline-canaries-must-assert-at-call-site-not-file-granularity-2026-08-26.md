@@ -34,7 +34,9 @@ tags:
 When a standing source-scanning test enforces "only these places may do X", the unit
 it asserts on must be the **narrowest identifiable site** (an enclosing function, a
 route handler, an exported symbol), never a **container** (a file, a directory, a
-module).
+module). The symbol is the narrowest *name*, not the narrowest unit: where two
+occurrences can share one symbol, the assertion has to count them, not merely name the
+symbol they sit in.
 
 The moment an allowlist entry is a container, the canary can no longer distinguish
 "the licensed occurrence" from "a second, different occurrence that happens to live in
@@ -112,13 +114,25 @@ Three supporting rules:
   two occurrences in one file produce two entries. Without that, a refactor can quietly
   collapse the collector back to container granularity and the self-tests will not
   notice.
+- **A symbol is itself a container once two occurrences share it.** The `Set` above is
+  right for a membership invariant ("only these sites may call X") and wrong for a count
+  invariant ("exactly these two statements write this column"), because it collapses a
+  second write added beside a licensed one inside the same long handler. For the count
+  case, collect occurrences into a list and compare a tally, so a duplicate has to move a
+  number instead of disappearing into an already-listed key. The worked example is
+  `backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`,
+  whose planted self-tests assert `{ 'x.ts#touch': 2 }` for two writes in one symbol.
 
 ## Examples
 
 ### PEvO concrete instances
 
 Three landed in a single commit, in two canaries written specifically to prevent silent
-regressions.
+regressions. Both canaries have since been repaired, so the descriptions below are of
+the defect as found and not of the current tree: they now collect `file#symbol` keys
+through the shared `occurrencesOf` helper in
+`backend/tests/support/enclosing-symbol.ts`, walk `src/` recursively, and skip the
+definition LINE by shape rather than skipping its module by path.
 
 **`backend/tests/eslint/no-session-proof-mint-outside-reauth-routes.test.ts`** enforces
 ARCHITECTURE 6.5 invariant #9: only the two re-auth routes may mint a session-kind

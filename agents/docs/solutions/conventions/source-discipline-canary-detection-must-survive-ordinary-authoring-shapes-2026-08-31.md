@@ -64,8 +64,17 @@ prose. The recurring shapes, each found live:
   pairing pass, so strip trailing comment content before a line may satisfy
   the demand — and accept that a naive strip truncating at a marker inside a
   string literal fails closed there (the call after it goes unread and the bar
-  turns red). The same strip is deliberately WRONG on a forbidden-call scan,
-  where an over-match is loud; direction decides, per scan.
+  turns red). That naive per-line strip is deliberately WRONG on a
+  forbidden-call scan, where truncating at a marker inside a string drops a
+  real match; polarity decides whether THIS strip belongs. Polarity does NOT
+  make a forbidden-call scan safe to leave comment-blind. A comment sitting
+  between two tokens the pattern needs adjacent (`kind /* note */: 'session'`
+  against a `kind`-then-`:` construction signal) under-matches, and
+  under-matching is the silent direction in either polarity. What a forbidden
+  scan needs instead is comment NORMALIZATION beneath every pattern: each
+  comment span replaced in place by spaces of the same length before any match
+  runs, with ambiguous openers resolved toward code so a wrong call costs a red
+  bar rather than a blind spot.
 - **Definition self-satisfaction.** A required-call pattern matches the
   callee's own definition line, so a demand arising INSIDE that function is
   satisfied by its own signature. Every scan needs a definition-line skip for
@@ -142,6 +151,10 @@ planted probes for its evasion shape.
   helper-body vs call-site-bypass distinction behind the registry fix.
 - `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` — the parent
   principle; the planted-probe discipline here is its application to scans.
+- `source-discipline-canary-comment-normalization-and-lens-vs-probe-coverage-2026-09-08.md`
+  — the successor on comment handling; it replaces the per-scan trailing-comment
+  strip with a normalization layer beneath every pattern, and shows that a
+  prescribed probe list confirms only the items it names.
 - Distinct from `eslint-custom-rule-unwrap-arms-need-compound-form-canary-2026-05-16.md`:
   that entry is about a rule's own TEST SUITE missing an AST arm; this one is
   about a production scan's reach over real source.

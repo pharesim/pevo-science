@@ -57,19 +57,28 @@ supply-side occurrence both sit outside a declaration in the same file, both res
 violated.
 
 The property was verified once, against the set-equality shape, and then inherited by
-assumption when pairing canaries were added later. A grep for the constant shows the
-asymmetry directly: only the set-equality canary references `MODULE_SCOPE` at all; neither
-pairing canary imports it or guards against it.
+assumption when pairing canaries were added later. When this was found, a grep for the
+constant showed the asymmetry directly: only the set-equality canary referenced
+`MODULE_SCOPE` at all; neither pairing canary imported it nor guarded against it. The
+guidance below has since landed. `no-session-consume-without-revocation-epoch.test.ts` and
+the revocation-column pairing in `tests/routes/session-proof-invalidation.test.ts` both
+import `isModuleScopeKey` and drop module-scope keys from their satisfying sets, the
+consume side additionally asserting that no primary-side occurrence resolved to module
+scope. Read what follows as the reasoning to re-derive for the NEXT pairing scan, not as a
+description of an open gap.
 
-The support module's own docblock states the fail-closed argument as a property of the
-resolver rather than of one assertion shape, so it hands the false invariant to the next
-author who builds on it. Its reasoning ("a wrong symbol is a new member of the occurrence
+The support module's own docblock stated the fail-closed argument as a property of the
+resolver rather than of one assertion shape, so it handed the false invariant to the next
+author who built on it. Its reasoning ("a wrong symbol is a new member of the occurrence
 set and therefore a red bar, never a silent pass") is airtight for a fixed allowlist and
-does not hold when the comparison set is another scan's output.
+does not hold when the comparison set is another scan's output. That docblock now splits
+the claim in two, SET-EQUALITY and PAIRING, and states the rule every pairing scan must
+follow; the hand-ported frontend copy carries the same split.
 
-Not currently exercised: every real occurrence in the tree today resolves inside a named
-function or route handler, so no live false pass exists. This is a latent property of the
-harness, and nothing prevents a module-scope occurrence from landing tomorrow.
+Never exercised live: every real occurrence in the tree resolves inside a named function or
+route handler, so no false pass ever shipped. What was a latent property of the harness is
+now a red bar. A module-scope occurrence landing tomorrow fails the primary-side assertion
+by name instead of pairing itself away.
 
 ## Guidance
 
@@ -82,11 +91,12 @@ unresolved demand-side occurrence an offender in its own right rather than somet
 can be paired away:
 
 ```js
-const isModuleScope = (key) => key.endsWith(`#${MODULE_SCOPE}`);
+// `isModuleScopeKey` is exported from tests/support/enclosing-symbol.ts; do not re-derive it.
 const epochs = new Set(
-  occurrencesOf(sources, EPOCH_REF_RE, isCommentLine).keys.filter((k) => !isModuleScope(k)),
+  occurrencesOf(sources, EPOCH_REF_RE, isCommentLine).keys.filter((k) => !isModuleScopeKey(k)),
 );
-const offenders = consumes.keys.filter((key) => isModuleScope(key) || !epochs.has(key));
+const moduleScoped = consumes.keys.filter(isModuleScopeKey); // asserted empty in its own right
+const offenders = consumes.keys.filter((key) => !epochs.has(key));
 ```
 
 That restores the forcing function set-equality gets for free: an occurrence the resolver

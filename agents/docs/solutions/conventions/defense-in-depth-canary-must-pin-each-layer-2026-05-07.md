@@ -97,29 +97,32 @@ During review or authorship, look for any of these signals:
 
 ### PEvO concrete instance — `findCanonicalRoot` `cont_columns_invalid` branch
 
-The upstream guard in `backend/src/routes/papers.ts` (around line 1346):
+The upstream guard, on `findCanonicalRoot`'s initial probe in `backend/src/lib/chain-walkers.ts` (the walkers were extracted out of `backend/src/routes/papers.ts` into `lib/` after this entry was written):
 
 ```sql
-WHERE c.json_metadata -> $3 ->> 'app' = $1
+WHERE c.author = $1 AND c.permlink = $2
+  AND c.parent_author = '' AND c.parent_permlink = $3
   AND c.json_metadata -> $3 -> 'continues' IS NOT NULL  -- upstream guard
-  AND ${validPevoPaperWhere(...)}
+  AND ${startTypeFilter}                                -- validPevoPaperWhere(...)
 ```
 
-The downstream branch (`backend/src/routes/papers.ts`, around lines 1401-1416):
+The downstream branch (same function, `backend/src/lib/chain-walkers.ts`):
 
 ```ts
 if (typeof startRow.cont_author !== 'string' || typeof startRow.cont_permlink !== 'string') {
   const reason: CanonicalRootBailReason = 'cont_columns_invalid';
   logger.warn(
-    { event: 'canonical_root_walker_start_invalid', reason, startAuthor, startPermlink },
-    'canonical-root walker START row had non-string cont_author or cont_permlink',
+    { event: 'canonical_root_walker_start_invalid', reason, startAuthor: author, startPermlink: permlink },
+    'canonical-root walker rejected START: cont_author/cont_permlink not string',
   );
-  // Level: warn (per discipline comment above) — IS NOT NULL guard normally prevents reaching this branch.
+  await hafCache.set(cacheKey, { root: null }, CHAIN_CUMULATIVE_AUTHORS_TTL_MS);
   return null;
 }
 ```
 
-The existing canary in `backend/tests/routes/canonical-root-walker.test.ts` (around lines 690-723) force-feeds a row with `cont_author: null, cont_permlink: null`. The responder mock returns this row whenever the initial-probe regex matches; it does not inspect whether `'continues' IS NOT NULL` is in the SQL string. The canary correctly mutation-kills "delete the JS narrowing check." It does NOT mutation-kill "drop the SQL `IS NOT NULL` predicate."
+The `warn` level on that branch is chosen against the `Level discipline for canonical_root_walker_* events` comment block at the top of `findCanonicalRoot` (warn = rare attack-signal or data-integrity path worth alerting; debug = high-frequency benign path where warn would drown signal in noise). That classification is exactly what the IS NOT NULL guard underwrites: drop the guard and `cont_columns_invalid` stops being rare.
+
+The existing canary in `backend/tests/routes/canonical-root-walker.test.ts` (the `rejects START with invalid cont_author/cont_permlink columns (cont_columns_invalid)` case) force-feeds a row with `cont_author: null, cont_permlink: null`. The responder mock returns this row whenever the initial-probe regex matches; it does not inspect whether `'continues' IS NOT NULL` is in the SQL string. The canary correctly mutation-kills "delete the JS narrowing check." It does NOT mutation-kill "drop the SQL `IS NOT NULL` predicate."
 
 Failure walkthrough:
 
@@ -132,7 +135,7 @@ Failure walkthrough:
 | `cont_columns_invalid` canary | Still passes — bypasses the deleted guard by construction |
 | Level-discipline comment | Now factually incorrect; no test catches the drift |
 
-The fix landed as round-2 hold item 4: a 5th canary whose responder mock inspects the live SQL text for `'continues' IS NOT NULL` and varies its output accordingly. The mutation-kill matrix grew from 4 canaries × 5 mutations to 5 canaries × 6 mutations.
+The fix landed as a companion canary, `pins SQL IS NOT NULL guard on initial probe (no cont_columns_invalid on benign non-continuation lookup)`, which sits immediately after the `cont_columns_invalid` canary in the same file and whose responder mock inspects the live SQL text for `'continues' IS NOT NULL`, varying its output accordingly. The mutation-kill matrix grew from 4 canaries × 5 mutations to 5 canaries × 6 mutations.
 
 ### Hypothetical second instance — auth middleware + handler permission check
 

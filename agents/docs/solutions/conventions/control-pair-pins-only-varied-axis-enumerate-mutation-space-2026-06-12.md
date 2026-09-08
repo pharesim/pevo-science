@@ -48,7 +48,7 @@ Relationship to the revert-probe rule ([[tests-must-fail-on-mutation-of-code-und
 ## When to Apply
 
 - Designing or reviewing controls for any gate whose correctness depends on operator strictness or precision (epoch-ms vs seconds, bytes vs characters, `<` vs `<=`).
-- At review intake for a task that added a discrimination pair: ask which weakenings of the comparison the suite would catch, and simulate the plausible ones case-by-case (the validator-simulation that found this gap is cheap and decisive).
+- At review intake for a task that added a discrimination pair: ask which weakenings of the comparison the suite would catch, and simulate the plausible ones case-by-case (the validator-simulation that found this gap is cheap, and decisive whenever it finds one). A green pass over an author-written list of weakenings confirms the weakenings on the list; it is not evidence that the comparison is pinned against one nobody listed. The list is worth walking here because a single comparison's operator/granularity/operand space is small enough to walk; the wider a guard's claim gets, the less a finite list settles.
 - When choosing where a boundary case lives: prefer the fixed-constant suite over the real-path suite for sub-unit boundary inputs.
 
 ## Examples
@@ -84,3 +84,4 @@ The suite's full boundary walk: claim absent (revoked), exact identity (spared),
 - [[dedup-shared-constant-defeats-test-value-pin-2026-05-26]] — the operand axis in isolation; this doc generalizes across all three axes.
 - [[defense-in-depth-canary-must-pin-each-layer-2026-05-07]] — each layer needs its own canary; each weakening boundary needs its own control.
 - [[test-mock-carve-out-clause-c-2026-05-04]] — the carve-out framework justifying the boundary case's home in the mocked suite (fixed-constant determinism) with real-path companions covering the integrated path.
+- [[source-discipline-canary-comment-normalization-and-lens-vs-probe-coverage-2026-09-08]] — the same enumeration question at the far end of the scale, and the limit on this doc's method. Roughly 380 prescribed probes over a textual canary behaved as specified while unscripted adversarial search found roughly 50 confirmed evasions of the same guard. A comparison's weakenings can be walked case-by-case; a canary's claim about everything the tree does not contain cannot, so there an enumerated list has to be paired with open-ended adversarial search.
