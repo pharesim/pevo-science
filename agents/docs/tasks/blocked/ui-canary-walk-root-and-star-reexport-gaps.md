@@ -106,3 +106,31 @@ read through.
 Unblocks when `ui-factor-resolver-source-discipline-canary` reaches
 `tasks/review/` with the round-3 fixes landed. The ui agent moves this file back
 to `tasks/pending/` at that point.
+
+### Block re-characterized (2026-09-08) — still [BLOCKED by ui]
+
+The condition this note originally named is now literally met: the round-3
+fixes landed, and `ui-factor-resolver-source-discipline-canary` has since taken
+a round-4 hold and returned to `tasks/review/` at `5598bc46`. It is NOT moved
+to `pending/` on that basis, because the sequencing dependency it stands on has
+not gone away, it has moved forward one round:
+
+- The task sits in `review/` awaiting a round-5 architect pass over the same two
+  files. Round 4 exists because the round-3 review held on them after they had
+  already reached `review/` once, so arrival there is not evidence the surfaces
+  have settled.
+- Round 4 rewrote `sourcesUnder` again (its unguarded link resolution is gone,
+  and the docblock sentence about what appears in neither list changed with it).
+  Scope item 1 here decides whether the entry document widens that walk root,
+  and a widened root has to keep the extension census honest against whatever
+  the walk finally does.
+- Round 4's signal surfaces six residuals for triage. Two of them land on this
+  task's surfaces: the walker splitting files on newlines rather than on every
+  ECMAScript line terminator (`sourcesUnder`'s line contract), and three width
+  pin sentences in the paragraph acceptance criterion 3 here restates. If the
+  architect takes either, this task rebuilds on top of it.
+
+Unblocks when that task is ARCHIVED, not when it reaches `review/`. Archive is
+the point at which the walk, the comment predicate and the residual paragraph
+stop moving under this one. The ui agent moves this file back to `pending/`
+then.
