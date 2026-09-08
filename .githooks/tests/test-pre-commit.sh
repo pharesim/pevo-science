@@ -82,6 +82,8 @@ run_case "R14 bare positional anchor (the helper above)" 1 "" \
   'mkdir -p backend/src; printf "// mirrors the helper above\n" > backend/src/a.ts; git add backend/src/a.ts'
 run_case "R15 bare positional anchor (the spec just above)" 1 "" \
   'mkdir -p frontend/tests; printf "// same fixture as the spec just above\n" > frontend/tests/a.test.js; git add frontend/tests/a.test.js'
+run_case "R16 bare positional anchor (the fixture above)" 1 "" \
+  'mkdir -p frontend/tests; printf "// Each guard on its own. The fixture above has no close anywhere\n" > frontend/tests/a.test.js; git add frontend/tests/a.test.js'
 
 echo
 echo "=== Legitimate / out-of-scope → accept (exit 0) ==="
@@ -115,6 +117,8 @@ run_case "A13 positional anchor with CONSTANT name companion" 0 "" \
   'mkdir -p frontend/src; printf "// removed by the SUBJECT_BOUND_STORAGE_KEYS loop below\n" > frontend/src/a.js; git add frontend/src/a.js'
 run_case "A14 ordinary prose using above/below" 0 "" \
   'mkdir -p backend/src; printf "// clamp values above the cap and below the floor\n" > backend/src/a.ts; git add backend/src/a.ts'
+run_case "A15 positional anchor with FIXTURE name companion" 0 "" \
+  'mkdir -p frontend/tests; printf "// the markupOpenerThenLiveRead fixture above has no close anywhere\n" > frontend/tests/a.test.js; git add frontend/tests/a.test.js'
 
 echo
 echo "=== Diff-gate semantics ==="
