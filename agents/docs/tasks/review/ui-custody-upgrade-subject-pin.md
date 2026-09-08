@@ -742,3 +742,94 @@ note does not spell out for translators.
 Comment-anchor reminder as before: no task slugs, round numbers, or line numbers in code or test
 comments; anchor on `_endUpgradeAsSessionChanged`, `handleRetry`, `retryUpgradeBackend`,
 `RETRYABILITY`, `signIn.signInButton`, and the sub-case key names.
+
+## UI re-review signal (2026-09-08, commit b1aee50f):
+
+The one hold item landed in b1aee50f. The diff is the evidence.
+
+1. The duplicate ledger entry is collapsed. `### Updated 2026-09-06
+   (ui-custody-upgrade-subject-pin)` is gone as a heading; its fifteen
+   per-locale lines are dropped and its narrative is folded, rewritten, into
+   the surviving `### Added 2026-09-02 (ui-custody-upgrade-subject-pin)`
+   block. Grep counts after the edit, both requested numbers: fifteen lines
+   match `^[a-z]{2}: upgrade\.sessionChangedBeforeCleanup$`, down from
+   thirty; a bare grep for the key returns sixteen, down from thirty-one,
+   the extra one being the narrative's opening sentence naming the key it is
+   about. `sessionChangedAfterCleanup` is untouched at fifteen. No locale
+   JSON file was opened. Everything in STUBS.md above the `### Added
+   2026-09-02` heading is byte-identical to HEAD, checked by comparing the
+   two prefixes rather than by reading the diff.
+
+The narrative was rewritten rather than moved, because the prose was built as
+a revision history: three paragraphs keyed to a first, second and third
+revision, each ending in an instruction to retranslate. Under a single
+`Added` heading for a key that was never translated, every one of those
+sentences is either false or vacuous. The replacement is a standing brief for
+a translator picking the key up fresh, at 263 words against the old 330.
+
+Three things the rewrite fixes that were not in the hold, all verified before
+being written down:
+
+1. **The string says "sign in" three times and only one of them names a
+   control.** The retry sentence carries "Sign out", "the Sign in button" and
+   "to sign in again as {username}". The old prose said only that the inline
+   "Sign in" must match `signIn.signInButton`, which leaves a translator two
+   candidates in one sentence and no rule for choosing. The copy-contract
+   test already encodes the answer, asserting the label followed by "button".
+   The brief now states it: only the "Sign in" immediately before the word
+   "button" is pinned, and "Sign out" and "sign in again" are ordinary verbs
+   that should read naturally. This is also the durable form if the
+   header's sign-out affordance is ever relabelled, since it pins two
+   controls by name and leaves the imperatives free.
+2. **The label collision is not hypothetical, it is universal.** The old
+   prose noted the two controls "both read as sign in"; your own residual
+   risks noted the English pair differ only by case. Checking all sixteen
+   locale files: `signIn.signInButton` and `settings.signIn` render byte
+   identically in fourteen (ar, cs, da, de, es, fa, fr, he, it, nl, pl, pt,
+   sv, zh) and differ only by case in the other two, English ("Sign in" /
+   "Sign In") and Turkish ("Giris yap" / "Giris Yap"). So in no locale can
+   the label separate the two controls. The placement phrase "in the page
+   header" is the only disambiguator that exists, today, everywhere, and the
+   brief says so as fact rather than as a conditional.
+3. **The narrative sits above two key lists.** The `### Added 2026-09-02`
+   block lists `sessionChangedAfterCleanup` first and
+   `sessionChangedBeforeCleanup` second, so a merged narrative reads as
+   governing both. The after-cleanup half is `terminal`, `canRetryUpgrade`
+   hides Try Again, and its own copy-contract spec asserts the value does not
+   contain `common.tryAgain`. A translator who carried a retry rule across
+   would name a button that is not rendered. The brief scopes itself to the
+   before-cleanup key in its first sentence and states the after-cleanup
+   negative explicitly.
+
+Surfaced, not touched, because they belong to other sweeps: STUBS.md holds
+five more duplicated keys of the same shape. `upgrade.backendTimeout` is
+listed three times (under `### Added 2026-05-15 (ui-keychain-api-misuse)`,
+`### Added 2026-05-17 (UI-CUSTODY-UPGRADE-SEED-PHRASE-DERIVE-FLOW)` and
+`### Updated 2026-05-17 (UI-CUSTODY-UPGRADE-SEED-PHRASE-DERIVE-FLOW)`), and
+`upgrade.keychainImportFailed`, `upgrade.keychainImportWarning.active`,
+`upgrade.keychainImportWarning.memo` and `upgrade.keychainImportWarning.posting`
+are each listed twice. Same broken invariant, same never-translated cause,
+but none of them is this task's to clear and none is in a block this task
+edited. Yours to file or dismiss.
+
+Verification: 84 files, 1858 tests green on the full frontend unit suite. The
+three unhandled rejections it reports are in `pages-edit.test.js` around
+`$refs.abstractEditor`; they reproduce identically with this change stashed,
+and no test in the tree reads STUBS.md. No code, copy, or locale value
+changed in this round, so there was nothing to mutation-probe: the previous
+round's six probes against the copy contract still stand unaltered.
+
+Review evidence: a judge-panel workflow, eight agents, none died. Four
+independent drafts of the replacement narrative from different angles, three
+judges scoring on constraint compliance, translator usefulness and register
+fit, and a completeness critic. The judges split three ways on a winner with
+zero constraint violations logged; the critic overturned that by finding the
+sign-in ambiguity, the universal label collision and the sibling-key hazard
+that all four drafts and all three judges had missed, and by measuring the
+drafts against the file's actual register (its three other narrative blocks
+run 24, 40 and 66 words). Every load-bearing claim the critic made was
+re-verified by hand against en.json, the fifteen other locale files, the
+settings template, `RETRYABILITY` and the copy-contract spec before any of it
+was written into the brief. The synthesis is mine, not any single draft.
+
+Simplify pass skipped: the diff contains no code.
