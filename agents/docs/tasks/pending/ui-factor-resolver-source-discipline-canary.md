@@ -904,3 +904,93 @@ Mutation matrix, each in its own scratch copy: 13 mutations over
 every decision point the round touched, all red at their own probe. Probing
 ran against copies under a scratch directory, never by mutating the shared
 tree, because sibling sessions were active in this checkout throughout.
+
+---
+
+## Architect re-review (2026-09-08, second pass) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` scoped to `7bf49a6e` (the three files only), seven lenses plus an
+independent validation pass that executed the one surviving finding against the scan machinery on
+scratch copies. The cross-model adversarial route was again unavailable on this host, so the
+adversarial lens ran in-process.
+
+**All six items held earlier on 2026-09-08 landed, and the round's central claim is verified
+independently rather than accepted.** An architect A/B of the base and head machinery over all 86
+real files under `frontend/src` agrees on every line for all three readers: `regionDiff=0
+commentDiff=0 symbolDiff=0`. The whole-tree pins are unmoved, the new suite is collected by the
+existing vitest include glob, and the baseline is 16 green. The reviewers reproduced the round's
+own claims rather than trusting them: the mutation matrix was re-run independently (17 of 20
+mutations die at their own probe, and the three survivors are the gaps named below or already
+self-reported), the `countsAt` region threading was confirmed to change exactly one probe's
+meaning, the split was confirmed to have dropped zero assertions (`expect(` 123 before, 74 + 76
+after), and the repo's own pre-commit anchor gate was run over the added lines with a control line
+proving the run was not vacuous. Zero anchor violations.
+
+Three findings were raised and are NOT held, so do not act on them: the real-tree floor on the
+walk and the missing `components/` membership assertion are pre-existing and are filed as their
+own task; the missing probe for the `realpathSync` guard removal is accepted as untestable (it
+needs a directory vanishing mid-walk, which no fixture can stage) and the change is loud by
+design; and the canary keeping its own `mkdtemp` walker fixture after the split is a boundary
+judgment with no live cost.
+
+**This hold is documentation-only. No machinery change is wanted.** Every item below is a
+sentence. If landing one appears to require a behavior change, stop and say so rather than
+changing the readers; the mechanical fix is a separate decision that has deliberately not been
+made here.
+
+### Item 1 — the template axis is a third undocumented residual of the comment predicate
+
+`isCommentLine` is the only reader that never receives template parity. Both opener readers guard
+their opener test with `!inTemplate`; the predicate has no such signal. Inside a template literal
+the two slashes of a `//` line, and the `/*` of a CSS-comment line, are markup text, and the block
+region is legitimately false there, so the arm this round hardened answers on its shape and the
+whole line is dropped before `enclosingSymbol` runs. Because the line never reaches the resolver,
+the module-scope fail-closed argument never engages: the miss is silent, not a new member.
+
+Executed three ways. A live password-state derivation planted inside a page module's template
+literal on a line whose trimmed text starts with `//` leaves the suite at 16/16 green; the
+byte-identical derivation with the prefix removed reddens both pinned assertions and names the
+new key. The `/*` half behaves the same, in the unterminated, later-closing and self-closing
+forms. The mechanism predates this round (base and head answer identically on these shapes), and
+no line under `frontend/src` has this shape today: the tree's markup-comment idiom is `<!--`,
+which the scans already count, and a sweep of all 86 files finds none. It is nonetheless not
+untouched code. This round rewrote this arm, rewrote the enumeration of what shape alone decides,
+and added pins for the outside-a-region readings of the same line, which license the shape-only
+answer this residual rides on.
+
+Two sentences this round wrote are false in the template case: the predicate docblock's claim that
+shape alone decides every case but two, and its claim that the rule holds for all three prefixes.
+
+Fix, in the predicate's own docblock: name the template axis as a documented residual, in the same
+register the file docblock already uses for the two comment boundaries it declines to close. Say
+which direction it fails in and why that direction is the dangerous one (the line is dropped whole
+before the resolver runs, so set-equality never sees a wrong member). Say why it is not closed
+here: threading template parity into the predicate widens the shared surface and is the lexer this
+module declines, so it is a separate decision. Correct the two false sentences to match. And say,
+where a future implementer will find it, that the outside-a-region pins license this reading, so
+closing the residual means changing those pins.
+
+### Item 2 — the `/*` arm's search origin: correct the sentence, do not change the code
+
+The `/*` arm reads its close from past its own two characters, so inside an open region a
+`/*/`-prefixed line answers as an opener rather than as a close. The `/*/` shape stays dismissed
+as contrived; that dismissal is unchanged and no code fix is wanted. It is named here only because
+it is the second reason the all-three-prefixes sentence does not hold, and item 1's correction is
+expected to cover it. Do not reopen it as a behavior change.
+
+### Item 3 — the walk's parity comment names only one direction of its inversion
+
+The brace walk's parity paragraph ends by naming the inward, silent direction. The sibling reader's
+docblock names both directions of the same inversion. Add the missing clause to the walk: parity
+inverted the other way refuses a real opener, so a commented-out brace at the declaration's own
+indentation ends the block early and the target resolves outward, which fails closed.
+
+### Not held, noted for the record
+
+The backend port still reads a `//` line as unconditional prose and still swallows its link
+resolution. This round widened that drift by two decisions. The architect carries that note on the
+backend port's own back-reference task, not here.
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the re-review
+signal. Do not edit this hold block or annotate items as fixed; the commit diff is the evidence
+and the architect updates the block at re-review.
