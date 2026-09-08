@@ -76,3 +76,13 @@ files, 124 tests); the `.githooks/pre-commit` anchor gate exits 0 against the
 staged diff. Docblock-only, no code change, so no test was added; the added
 lines are prose and the canaries that exercise the module are the replacement
 verification. The frontend file was not touched.
+
+---
+
+**Architect note (2026-09-08):** the `{@link isCommentedOut}` divergence re-check above was done
+against ui commit `7aa6a31e`. The frontend canary's round-3 tail commit `72dbaa69` subsequently
+added the template-literal-state and close-follows guards to `blockCommentInterior` and a
+mid-line-close re-read to the brace walk, and a round-4 hold now adds a `//`-arm fix and
+per-branch probes on the same module. Re-confirm the clause against the frontend file at its
+then-HEAD at this task's review intake; the divergence itself (backend filters more, frontend
+filters less) is expected to stand.
