@@ -458,3 +458,118 @@ the same body and adds one spec, and `8ffe72a6` touches nothing but comments.
 3. (low) Nothing validates the mint response at the boundary:
    `cacheSessionProof` writes whatever token it is handed. The guard is a
    downstream backstop for a defect whose natural home is the write.
+
+---
+
+## Architect re-review (2026-09-08) — HELD PENDING FIXES:
+
+Full /ce-code-review fan-out on `98b4a8f6` + `8ffe72a6` (correctness, security,
+adversarial, reliability, testing, julik-frontend-races, project-standards, learnings)
+plus an independent validation gate. No cross-model peer exists on this host, so the
+adversarial lens ran in-process with measured mutation probes in a scratch copy of the
+reviewed head; the working tree had already drifted on both files (teardown split, memo
+commits), so every lens inspected the reviewed head directly.
+
+**All three round-2 hold items are FIXED, each verified independently of the signal
+block.** Item 1: correctness traced both legs (cache read, mint write) and every teardown
+boundary; reliability, security and julik each proved the ungated clear cannot evict a
+non-offending window (the clear runs in the acquisition's own microtask continuation, a
+competing mint needs a macrotask, the password modal is globally exclusive across both
+slots, and `dropWindow` nulls the mirror before the storage try). Item 2: adversarial
+reproduced all four probe-table claims by measurement and ran four more mutants (clear
+moved after the return, clear reduced to nulling the mirror, clear hoisted above the
+registered-outcome early return, `readSessionWindow` type-checking the token); every one
+is killed, and the hoisted clear is killed by an existing acquire-before-commit spec, so
+never-evict-a-live-window is pinned for the cancelled outcome. Item 3: the three named
+mechanisms verified against ipfs-upload.js, api.js and the backend's own string test, and
+the implementer's correction of this hold's earlier "absolute cap" phrasing is confirmed
+by three lenses (idle is always the earlier bound; no consume site reaches
+`slideSessionWindow` for a refused proof).
+
+Two findings survived synthesis and validation, three anchor-50 advisories were routed to
+soft buckets, and the user triaged five items onto this hold. All five sit in the guard's
+docblock, the mint callback beside it, and the `it.each` pin, so treat them as one pass.
+Item 1 is a deliberate, triage-approved behavior change; the task's original "no behavior
+change" scope was for the refactor, not for the holds.
+
+1. **(P2, validated, adversarial + security) A `null` mint proof is the one non-string
+   the guard cannot see, and it dead-ends silently.** `FRESH_AUTH_REDIRECT_PENDING` is
+   `null` and is registered as `redirect`; the acquisition's mint callback returns
+   `issued.fresh_auth_proof` verbatim. A response carrying `"fresh_auth_proof": null`
+   (the backend's shape when the issued token is null; an undefined token drops the key,
+   which the existing row covers) therefore classifies as the redirect outcome one line
+   above the guard: no toast (the redirect row is silent by design), no navigation, the
+   upload pre-flight throws the cancel code, and the broadcast path unwinds silently.
+   The mapping predates this round, but the new docblock ("Only the sentinel legs are
+   closed by construction") and the pin's header ("the pin drives the class") newly claim
+   the mint-leg class is closed. Adversarial demonstrated it: a `null` row added to the
+   `it.each` fails with `{ ready: false, redirect: true }`. Resolved as a design call:
+   coerce at the mint callback. After the cache write, hand back only a string, e.g.
+   `const proof = issued.fresh_auth_proof; cacheSessionProof(proof, issued.expires_at, issued.absolute_expires_at); return typeof proof === 'string' ? proof : undefined;`
+   so a null on the wire lands in the fail-closed guard (refused, toasted, evicted)
+   instead of reading as the redirect sentinel. Add `{ label: 'a null proof field',
+   value: null }` to the `it.each` table. Replace the docblock sentence "Only the
+   sentinel legs are closed by construction" with one that names the exception: the
+   redirect sentinel is `null`, a value JSON can carry, so the mint callback is what
+   keeps the wire out of the sentinel space; the other members are Symbols no response
+   can produce. Keep the `{ token: null }` write as is (`readSessionWindow` drops it on
+   the next read, and the guard's clear removes it anyway). The broadcast path is
+   unchanged by this: `undefined` unwinds through `acquisitionAborted` as silently as
+   `null` did.
+
+2. **(P3, validated, correctness) The docblock's "A value `JSON` cannot carry dropped
+   itself on the write and makes the clear a no-op" is false on the failed-write mirror
+   path.** When `sessionStorage.setItem` throws, `persistWindow` keeps the RAW entry
+   (Symbol token included) in the in-memory mirror, `storedWindow` hands it back, and
+   `readSessionWindow` returns any truthy token, so on that path the guard's clear IS the
+   eviction. Even when storage works, the write leaves a deadline-only shell that the
+   clear removes (the next read would drop it as tokenless, which is a different claim).
+   Suggested shape: "A Symbol never reaches storage (`JSON.stringify` omits the field,
+   leaving a deadline-only shell the next read drops as tokenless), but the in-memory
+   mirror `persistWindow` falls back to on a failed write keeps the raw entry, Symbol
+   included, so there the clear IS the eviction; a number or an object survives both
+   paths and is the case the clear is chiefly for." Soften the test comment's "dropped on
+   the way into storage" to name sessionStorage and the failed-write mirror.
+
+3. **(advisory, correctness) "an entry written by anything else can outlast both
+   deadlines" overstates.** `readSessionWindow` drops ANY entry once its earlier deadline
+   passes and refuses one whose deadlines are missing or non-finite, whoever wrote it.
+   The true statement is that an external writer's deadlines need not sit inside the
+   module's periods. Suggested shape: "while an entry written by anything else is
+   bounded only by the deadlines it carries, which `readSessionWindow` still enforces but
+   which need not sit inside the module's periods." (The commit message's "no deadline
+   at all for one it did not write" is the false stronger reading; it stands as written.)
+
+4. **(advisory, project-standards) "the rows below" in the `it.each` body comment is a
+   bare positional anchor.** The named reference later in the sentence points at the
+   guard, not at the rows, so the carve-out does not rescue it. Restate instead of
+   pointing, e.g. "Which way it dead-ends depends on its truthiness; the split itself is
+   spelled out at `ensureSessionWindow`'s fail-closed guard, and each case in this table
+   exercises one outcome of it." (The pre-commit gate's noun list lacked "rows", which
+   is why the hook passed it; the architect is widening the gate separately.)
+
+5. **(learnings) Say why the clear is ungated.** Every sibling `clearCachedSessionProof()`
+   in the module is wrapped in `if (!guard.tornDown())`; this one is deliberately not,
+   and the docblock never says why, so two reviewers re-derived the argument this round.
+   The convention entry written for this fix
+   (`solutions/conventions/fail-closed-guard-must-replace-the-recovery-a-round-trip-provided-2026-09-07.md`)
+   asks for exactly that sentence. State it in the guard's docblock: no await separates
+   the acquisition's resolution from this clear, every torn-down flight resolves a
+   registered sentinel above the guard, and the sibling clears are gated because a real
+   network round-trip sits between their window read and their clear. Keep every
+   replacement text in items 1 through 5 free of line numbers, SHAs, task slugs and bare
+   positional anchors, and audit it against the code once more before it lands; this
+   block has now been rewritten three times for accuracy.
+
+Triage dispositions the implementer does not need to act on. The broadcast path's
+`acquisitionAborted` refuses a non-string without evicting (four lenses; the
+implementer's residual 1): pre-existing, FILED as its own task,
+`ui-broadcast-path-window-eviction-parity`, rather than folded here. DISMISSED: the
+empty-string proof reading as ready (pre-existing predicate, self-heals on the next
+read, dismissed class); a mint-leg `cached()` assertion in the `it.each` rows, a
+boolean `false` row, and a Symbol-plus-failed-write mirror spec (no single-site mutant
+survives; preemptive hardening). The implementer's residuals from last round are
+answered by the same dispositions: residual 1 is the filed task, residual 2 (type check
+in `readSessionWindow`) is declined here and noted on the filed task as a candidate
+shape, residual 3 (validate at the write boundary) is partly taken by item 1's
+mint-callback coercion.
