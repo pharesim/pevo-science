@@ -202,3 +202,130 @@ pre-existing unrelated warning in `src/lib/author-supersession.ts`.
 `tests/eslint/` 9 files / 117 tests green. `.githooks/pre-commit` anchor gate
 exits 0 against the staged diff. No production code changed; the only new file
 is the canary.
+
+## Architect re-review (2026-09-08) — HELD PENDING FIXES:
+
+Reviewed at commit 57ffc5cf via /ce-code-review (correctness, security,
+adversarial, testing, maintainability, project-standards, learnings; eight
+actionable findings independently validated). The core path is confirmed:
+the writer set re-enumerated from the tree matches the allow-list, the suite
+is green (9 files / 117 tests), and two mutations re-run by the architect in a
+scratch copy both red as claimed (a third writer in `POST /verify` as a new
+key; a second writer inside `POST /confirm` as count 2). The hold is about
+what the guard promises beyond the shapes the tree writes today, and about
+the accuracy of the rationale the next author will read. Each item states
+the invariant; the construct is the implementer's choice. Verify every item
+by mutation in a scratch copy (red on the mutation, green on restore) and
+state the probe per item in the re-review note.
+
+### Bundle A: the fail-closed resolution arm must be unconditional
+
+1. **An assignment whose statement head the walk cannot read must resolve to
+   `<unresolved>` regardless of what other DML sits above it in the file.**
+   Today `targetTable` walks up to `WALK_CAP` lines without stopping at the
+   assignment's own string literal, so a head the regexes cannot read (a
+   `MERGE INTO`, a quoted identifier, a comment-tagged head, a `+`-joined
+   fragment) resolves to the PREVIOUS statement's table and passes as "not
+   accounts". Route handlers chain queries a few lines apart, so the silent
+   direction is the common placement. Two fix shapes are acceptable: stop
+   the walk when it leaves the assignment's literal, or require that the
+   statement text read from the found head contains the assignment line.
+   Probe: place a foreign-table `UPDATE` two lines above each of the three
+   shapes in items 2 to 4 and confirm each reds.
+2. **`MERGE INTO accounts` must be attributed to accounts, not merely
+   unresolved.** Add a MERGE head to `ACCOUNTS_STATEMENT_RE` and a MERGE
+   target consulted by `targetTable`, so both the `WHEN MATCHED THEN UPDATE
+   SET updated_at` branch and the `THEN INSERT (..., updated_at)` branch red
+   the writer scans. Planted positives for both branches. PostgreSQL 16 is
+   what runs here, so MERGE is a valid writer shape.
+3. **A head line prefixed with an editor tag (`/* sql */ \`UPDATE accounts`)
+   must be scanned.** `isCommentLine` is shape-only and skips that line in
+   `accountsColumnWriters`, the interpolation scan and `targetTable`. Ask
+   whether the SQL keyword itself sits inside a comment, not whether the line
+   starts like one. Planted positive.
+4. **The KNOWN LIMITS claim "a SET list composed from a variable is refused"
+   must be true or narrowed.** Scan 4 tests only for `${`; a `+`-joined
+   fragment is unseen by every scan today. Either extend scan 4 to the
+   concatenated shape, or narrow the sentence to `${...}` interpolation and
+   list `+` concatenation as unscanned. After item 1 such a fragment reds by
+   resolution, so say that if you narrow.
+
+### Bundle B: the rationale must describe the whole invariant
+
+5. **`ORDERING_RATIONALE` and the "WHAT THE CLOSED SET BUYS" paragraph must
+   state that `updated_at` is also the sole recency bound of the `/confirm`
+   stuck-recovery lookup on light rows** (`custody = 'light' AND updated_at >
+   NOW() - INTERVAL`), whose resume path mints a light-custody session on a
+   posting-key proof alone. The safety test for a new writer is "it can never
+   bump the marker on a finalized row, light or upgraded". Today a writer
+   scoped `WHERE custody = 'light'` reads as safe by the message's own words,
+   which is the acceptance-criterion-3 failure the message exists to prevent.
+6. **The "WHERE THE THIRD WRITER MOST PLAUSIBLY COMES FROM" paragraph credits
+   the upsert's DEFAULT-only asymmetry with keeping a repeat signup off an
+   upgraded row. The actual barrier is the 409 pre-check in `POST /signup`**
+   (`verify_token === null` or a `confirmed:` token), which keeps the upsert
+   off every finalized row, so the `DO UPDATE` branch only ever touches a
+   pending row with no upgrade epoch. Reword; keep "symmetrising is refused"
+   as the defence-in-depth conclusion. Apply the same correction to the "Also
+   verified and NOT a hazard" paragraph in this task's implementation note.
+7. **"WHY A SOURCE SCAN" says the schema cannot express the ordering. It
+   can:** `CHECK (upgraded_at IS NULL OR upgraded_at >= updated_at)` pins the
+   `/link` ordering for every state in ARCHITECTURE.md section 6.1 (it does
+   not bound the `/confirm` window). Rewrite the sentence so the docblock
+   does not contradict this task's own `[TODO Architect]` proposal; say what
+   the scan covers that a CHECK cannot.
+
+### Bundle C: guard features must be pinned, and the migration arm complete
+
+8. **The table-first scan must run over `migrations` too.** A migration
+   `INSERT INTO accounts (..., updated_at) VALUES (...)` is green today
+   because `accountsColumnWriters` is only ever called with `sources`. One
+   assertion against `ALLOWED_WRITER_MIGRATIONS` closes it and gives the `;`
+   terminator in `sqlStatementAt` a live path; plant a migration-shaped
+   fixture through `sqlStatementAt` so that branch has a self-test.
+9. **Each planted probe must fail without the feature it cites.** Deleting
+   the `(?<!\bFOR\s+)` lookbehind in `UPDATE_TARGET_RE`, the `(?!=)`
+   lookahead in `COLUMN_ASSIGNMENT_RE`, or the quote detection in
+   `sqlStatementAt` each leaves the suite green today, because the cited
+   probes are answered by a different feature (the FOR UPDATE fixtures put
+   the true head directly above the assignment; the `==` probe is rejected by
+   the `.` lookbehind; the one-liner's over-read line carries no assignment).
+   Replant so each deletion reds.
+10. **Exemption entries must not outlive the routine they were judged for.**
+    `ROUTINES_THAT_CANNOT_REACH_ACCOUNTS` matches by substring of the whole
+    site string, so a routine name would also exempt every later `CREATE OR
+    REPLACE FUNCTION <name>` in any migration, and a trigger body's
+    `NEW.updated_at := now()` is invisible to `COLUMN_ASSIGNMENT_RE` by the
+    `.` lookbehind, so the routine arm is the only catcher. Key exemptions on
+    the exact reported site (or at least `file#routine`); refuse any `CREATE
+    [CONSTRAINT] TRIGGER ... ON accounts` regardless of exemption; pin in the
+    self-test that `NEW.updated_at := now()` does NOT match the column regex,
+    so the dependency on the routine arm is recorded rather than implied.
+
+### Dismissed, recorded here so they are not re-raised
+
+- `countsOf` duplicating the counted tally the frontend hand-port of
+  `enclosing-symbol` returns: dismissed. Per-canary statement and tally
+  helpers are the established pattern (ratified on the custody-column
+  alignment task); no runtime effect; the shared docblock's fail-closed
+  argument holds unchanged for the counted form.
+- Seen and accepted as textual-scan limits, not held: quoted identifier
+  `UPDATE "accounts"`, upper-case `UPDATED_AT`, a column-list-less
+  positional `INSERT INTO accounts VALUES (...)`, an auto-updatable VIEW over
+  accounts, `UPDATE` and `accounts` on separate lines, silent `LITERAL_CAP`
+  truncation, `--` stripping inside migration string constants, and scan
+  roots that exclude scripts, test fixtures, runtime-loaded SQL and operator
+  psql. None is house style. Adding the first three to KNOWN LIMITS is
+  welcome but not required.
+- The task note's class-10 attribution ("reds scan 2") is wrong (the routine
+  arm is the sole catcher of a trigger body) but the outcome is red as
+  claimed; item 10 records the dependency.
+
+### Not part of this hold
+
+- The `[TODO Architect]` CHECK constraint remains an open architect
+  decision. It is the only guard for a backward clock step between a
+  `/confirm` finalize and a custody upgrade (both epochs come from the
+  database clock, so that inversion needs no writer), and it is a schema
+  change with its own deploy ordering. Tracked separately; do not implement
+  it under this task.
