@@ -1395,3 +1395,198 @@ Items 1 and 2 are one root cause and should be settled together.
 
 **[TODO Architect]** unchanged and still deferred to archive, so the solutions
 entry is reconciled once against a settled shape.
+
+## Backend re-review signal (2026-09-09, commit 7db54e21)
+
+All three items and all three fold-ins landed. Item 3 deviates from both
+candidates the hold offered, and the round found that the word class is only
+part of the cost class it belongs to; that is set out below rather than folded
+away. Every number here is measured on an isolated copy of the tree, and the
+frozen maps, `LANDING_DIGEST` and both backlog maps are byte-untouched.
+
+### Item 1 — the loose guard reads every casing now
+
+`anyCase(word)` builds one two-member class per letter, and `LOOSE_CLAIM_SRC`
+spells `real`, `path` and `companion` through it. The plural needed it in both
+halves: `[Ss]?` and `(?:\([Ss]\))?`.
+
+The hold framed this as the all-caps case. Measured, the vulnerable set is any
+spelling with an INTERIOR capital, and all-caps is one member of it:
+`REAL-PATH ... COMPANION:`, `REAL-PATH ... COMPANIONS:`,
+`REAL-PATH ... COMPANION(S):`, `REAL-path ... companion:` and
+`real-PATH ... companions:` were all dropped at labels=0 unparsed=0, while
+`Real-Path ... Companion:` was already caught, because an initial-capital class
+is exactly what the old spelling covered. A fix aimed at the shouted spelling
+alone would have left the two half-shouted forms silent, so the probe pins the
+set.
+
+The bracketed plural is only observable once the room after the noun is spent,
+which is why its probe writes eight characters of slack after `(S)`: with the
+group matching `(S)` the `{0,8}` still reaches the colon, and with the group
+matching nothing it has to cover `(S)` too and falls three short. The
+lower-case twin is caught either way, which is what makes that pair an
+assertion about the casing rather than about the group.
+
+The hold also asked for `ratchetClass(blockShape(...))` on the near-miss. It
+returns `leaky`, but only when called directly: `auditSources` drops a block
+with labels=0 and unparsed=0 before classifying it, so in the real path the
+outcome is no audit at all. The end-to-end plant is what settles it, and it was
+run: an all-caps near-miss planted in a file in neither backlog map left the
+suite at 11 of 11 before the fix and reds it after.
+
+### Item 2 — the refusal is unchanged; five texts now describe it
+
+`CLAIM_SPAN` is byte-identical. What changed is every text that called it a
+capital test. It ends the span after `.`, `;`, `!` or `?` plus one whitespace
+on anything that is not an ASCII lower-case letter: a capital, a digit, a
+backtick, a bracket, a dash, a quote, a second space, a letter outside ASCII,
+or the end of the text. Swept all 29 characters; only ASCII a-z crosses.
+
+**A correction to the hold.** `(?!\p{Lu})`, as the hold writes it, is not a
+narrowing of `(?![a-z])`, it is an inversion: it refuses before lower-case and
+crosses before capitals. Reproduced on the pristine file, it fails exactly one
+spec, the synthetic wrapped-filename probe, and leaves the corpus and both
+backlog reconcilers green. The narrowing the hold MEANS is the positive form,
+`\s\p{Lu}` inside the refusal, and that one behaves exactly as the hold says:
+two specs fail, naming
+`backend/tests/routes/bridge-register-rate-limit-skip-failed.test.ts` and its
+pin. The prescribed breadth probe is 0 under the pattern as it stands and under
+the inversion, and 1 under the narrowing, so it pins what the hold wanted; the
+probe comment names the positive spelling rather than the one in the hold.
+
+The abbreviation-then-backtick near-miss is disclosed as a fourth entry in
+"Gaps left open on purpose" and pinned at its current width by the
+`abbrevNearMiss` probe. Worth recording for triage rather than acting on: the
+backtick member alone IS closable with no corpus fallout today
+(`(?![a-z\x60])` keeps the suite at 11 of 11 and turns the near-miss red). Its
+cost is a latent false positive rather than a live one, so it was left as the
+hold directs, disclosed and not closed. The gate against widening it silently
+is now a probe edit.
+
+### Item 3 — deviation: neither candidate, and the word class is not the whole class
+
+Both hold candidates were built and measured.
+
+- `\w[\w-]*` is close to a no-op on the general shape. It removes the pure-dash
+  blow-up, but an alternating `a-a-a-` run stays quadratic: 472ms against a
+  baseline 477ms at 19,443 characters for `labelCount`, and it is measurably
+  SLOWER than the status quo through `citationsIn`. It also silently un-labels
+  `Real-path ----- companion`, which today parses (labels 1 to 0, and with no
+  colon the block is then dropped rather than counted).
+- `[\w-]{1,24}` is linear but too tight to be honest here: a 29-character
+  qualifier, `Real-path recordAccreditationCompletion companion: <path> [TOK]`,
+  stops parsing and is ACCUSED as an unparsed claim. So is the 42-character
+  `findAccreditationBroadcastByIdempotencyKey`.
+
+Landed `[\w-]{1,64}`: linear on every shape measured, zero change to any of the
+20 label spellings the specs enumerate, zero change to the whole-tree census,
+and clear of the longest exported symbol name in `backend/src`, which is 42
+characters. A hyphenated compound is longer still and splits across the two
+qualifier slots at its own dashes, so the bound is not the constraint there.
+
+**And the word class alone does not close the class.** Two more runs in the
+label were unbounded: the emphasis run on either side of the qualifier slot,
+and a qualifier's own wrappers. All three admit `_`, which is both a word
+character and an emphasis character, so an underscore underline written against
+`real-path` partitions between them and costs far more than the dash run the
+hold names: 400 underscores 5.7s, 1600 underscores 667s, 6400 did not return.
+With the word class fixed and those left alone, 6400 underscores still did not
+return. All three are now bounded, so every quantified run in the label is
+bounded and the work is constant per starting position, measured flat at 2.1ms
+from 6400 to 120,000 characters.
+
+The timing spec is rebuilt around that. Seven separator shapes (`-`, `_`, `*`,
+a backtick, and three alternating mixes), each through `labelCount` AND
+`citationsIn`, at 6400 and then 100,000 characters. The ordering is
+load-bearing and the comment says so: with the word class unbounded a
+100,000-dash run does not return at all, while 6400 fails in about 8 seconds,
+so the short pass has to abort the spec before the long pass runs. The long
+pass is what catches the cheap shapes, where an unbounded emphasis run is 53ms
+at 6400 and green under any bound this side of flaky.
+
+### Fold-ins
+
+- The worked example now reads "an eight-character gap is caught, a
+  nine-character one is not" and names the `nearMissGap` probe. The old text
+  said seven characters and illustrated it with ` here`, which is five.
+- The canonicalisation probe's comment names the dropped behaviour
+  (`path.posix.normalize`) instead of a coordination round.
+- `LABEL_SRC`'s closing sentence names the separator-run timing spec and what it
+  runs, instead of pointing at a probe.
+
+### Found and fixed beyond the prescription, surfaced rather than silent
+
+Each is a sentence describing the same machinery this round had to correct, and
+each was measured before being rewritten. Dismiss any of them and the text goes
+back with no code consequence.
+
+1. The `{0,8}` bullet stated its own precondition too widely. A far colon on its
+   own silences nothing: `Real-path companion coverage for this whole file: ...`
+   has a 30-character gap and is still caught, because the label parses. Only a
+   near-miss, where the qualifier slot has already stopped the label, is hidden
+   by a far colon. The bullet now says the conjunction.
+2. The word-internal-wrap bullet named only the noun. `Re` / `al-path` and
+   `Real-pa` / `th` are equally invisible, and what the corpus actually writes
+   is a wrap at the label's own hyphen, which the dash-or-space run absorbs.
+3. `CLAIM_SPAN`'s first paragraph illustrated the refusal with a string the
+   refusal does not hold off. Removing the refusal entirely leaves
+   `runs on the real path. The companion suites pin it:` at 0, because its
+   14-character tail is outside the `{0,8}` room; the window holds it, not the
+   rule. The short spelling, which the probes use, is the one that demonstrates
+   it, and the paragraph now uses that and says which arm holds the other.
+4. The "this is what the widened window would otherwise start accusing" comment
+   covers two prose cases that behave differently. Measured, the semicolon case
+   is window-only, and the `. The companion suites above pin it:` case needs the
+   refusal AND the room removed together. The comment now names both.
+
+### Residuals, stated rather than claimed away
+
+- The TRAILING emphasis run's bound is not independently pinned: reverting only
+  it leaves the suite green, because that run is linear on its own. It is
+  bounded so the invariant "every run in the label is bounded" holds by
+  construction rather than by its neighbour's bound, and that is the only claim
+  made for it.
+- Reverting only the LEADING emphasis bound trips the long pass at 656ms against
+  a 250ms threshold, a 2.6x margin. The full revert of both is 4537ms, an 18x
+  margin. The partial mutation is detected, but not comfortably.
+- A 64-character bound has its own far side: a qualifier word longer than it is
+  no longer a label, and with no colon within reach the block is dropped rather
+  than counted. Disclosed in the QUALIFIER docblock. Every finite bound has that
+  edge; nothing in this corpus approaches it (longest qualifier 10 characters,
+  longest exported symbol 42).
+- The header's parenthetical "the corpus stays green well past `{0,8}`" is true
+  of the tree and false of this file's own prose probes, one of which flips at
+  `{0,40}`. The parenthetical now says so.
+- `npm run lint` was not run: it lints `src/` only and no `src/` file changed.
+
+### Verification
+
+- `tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`: 11 of 11,
+  and the whole `tests/eslint/` directory 9 files / 131 tests, on the real tree.
+- `npm run typecheck` passes (both `typecheck:src` and `typecheck:tests`).
+- Eleven mutation probes, each applied to an isolated copy, run, then restored
+  with a byte-comparison against the gold copy before the next (a run where the
+  restore path was wrong refused every mutant rather than probing a dirty tree).
+  Ten go red and each fails in seconds rather than hanging: `anyCase` reverted;
+  the bracketed plural un-classed; the refusal narrowed to a capital; the
+  refusal widened to exempt a backtick; the qualifier word unbounded (8.4s at
+  6400 dashes); both emphasis runs unbounded (4.5s at 100,000 underscores); the
+  leading emphasis run only (657ms); the qualifier wrappers unbounded (5.9s at
+  6400 underscores); the back-link canonicalisation dropped; the near-miss colon
+  window widened. The eleventh, the trailing emphasis run alone, survives and is
+  recorded above.
+- Backlog and snapshot untouched: no line inside `LANDING_FREE_PROSE`,
+  `LANDING_FILELESS`, `DEFERRED_FREE_PROSE`, `DEFERRED_FILELESS` or
+  `LANDING_DIGEST` appears in the diff, and the three whole-tree reconcilers are
+  green, which is what proves no file moved class.
+- `.githooks/pre-commit`'s `anchor_violation()` run standalone over all 273
+  added lines with `ALLOW_MARKER` set explicitly: zero hits, with five control
+  lines (a task slug, a bare positional anchor, a line-number cite, a round
+  ordinal, an AC redirect) all firing, so the harness was live.
+
+### [TODO Architect]
+
+Unchanged and still deferred to archive: the solutions entry
+`carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02.md`
+still ends its canary section with "Do not describe this canary as existing. It
+is a proposal."
