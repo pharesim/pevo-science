@@ -550,6 +550,15 @@ The client-side ordering rule that a session proof must be in hand BEFORE starti
 
 The rule exists because one of the auth factors acquires by full-page navigation, which destroys whatever the page was holding: a selected file, a completed upload, a half-entered submit sequence. Acquiring at the moment the work needs a proof would therefore throw that work away for exactly the accounts that have no other factor, which is what would otherwise put inline upload out of reach for a passwordless account. Acquiring first is also what makes it unnecessary to persist in-progress work as a draft. A gate applying this rule asks only whether the work may start, and it must not itself reject: it sits ahead of the caller's own error handling, so an error escaping it leaves the interface stuck with nothing said. Because a window that is open but nearly closed would strand a sequence halfway, such a gate treats a window closing sooner than its own margin as already spent and re-authenticates deliberately instead.
 
+### Acquisition Outcome
+
+The closed vocabulary a session-proof acquisition resolves into: either a usable proof, or one of a registered set of named ways the acquisition did not produce one.
+*Avoid:* acquisition result, window outcome, acquisition sentinel.
+
+The vocabulary has a single registration point, and every consumer is pinned against it, so a member added without a matching arm at each consumer is a failing test rather than a silent fall-through found later in review. Each member also carries what it owes the user, including the members that deliberately say nothing, so the decision of which outcomes speak is made once rather than per consumer. One member is reachable from a response body and the rest cannot be, which is why the value handed back from a mint is narrowed rather than passed through: a response that happens to carry the same shape as that member would otherwise be classified as it.
+
+A value outside the vocabulary is refused everywhere, and refusing it is not enough on its own. Because the acquisition reads from and writes to a cached window, a refusal that leaves the offending value where it was is a lockout rather than a refusal, since every later reading finds the same value and refuses again. The eviction therefore belongs at the producer, where the cache leg and the mint leg both pass through one drop, so a consumer added later inherits it without knowing to. Consumers divide into those reading this raw vocabulary and those reading the outcome object a gate derives from it; the two populations are not the same, and a count of one is not a count of the other.
+
 ### Remintable Rejection
 
 A fresh-auth rejection whose stated reason says the proof was absent, expired, or malformed, meaning the correct client response is to discard the cached proof, acquire a new one, and retry once, in contrast to a terminal rejection where retrying would only repeat the same failure.
