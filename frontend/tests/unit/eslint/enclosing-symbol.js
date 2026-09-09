@@ -344,7 +344,10 @@ export function enclosingSymbol(lines, lineIndex) {
     // nested multi-line template contributes one backtick per line so its
     // markup reads as outside any literal. Inverted parity lets
     // a line-start opener in markup pass the template guard, which is this
-    // walk's inward, silent direction. Not closed here (counting only
+    // walk's inward, silent direction. Inverted the other way it refuses a
+    // real opener, so a commented-out brace at the declaration's own
+    // indentation ends the block early and the target resolves outward,
+    // which fails closed. Not closed here (counting only
     // code-shaped backticks is the lexer this module declines); both shapes
     // are pinned as residuals in the resolver's own suite.
     let closedBefore = false;
@@ -468,20 +471,62 @@ export function sourcesUnder(root) {
  *  line with code after it is live code behind a comment prefix, not prose,
  *  and is NOT skipped: a coverage pragma in front of a factor read must not
  *  hide the read. Only further comment may follow the close for the line to
- *  stay prose. The rule holds for all three prefixes: inside an open region
- *  a `//` is comment text like any other, so a line that begins with one and
- *  then closes the region is live behind its close too.
+ *  stay prose. The rule is written for all three prefixes: inside an open
+ *  region a `//` is comment text like any other, so a line that begins with
+ *  one and then closes the region is live behind its close too. Two shapes
+ *  defeat it, both named as residuals here.
  *
- *  Shape alone decides every case but two. A leading `*` with no close on the
- *  line is a docblock continuation and a wrapped multiplication and a
- *  generator method, all three identical to this predicate, so that case
- *  takes `insideRegion` from {@link blockCommentInterior} and is prose only
- *  when a region really is open. And a leading `//` is prose on its shape
- *  outside a region, but inside one it is inspected for a close like the
- *  other two prefixes, because the region is what decides what the two
- *  slashes are. Passing nothing leaves the shape-only reading of both, which
- *  suits a caller with no file in hand; a SCAN must pass the region, because
- *  reading live code as prose there is the violation going unreported.
+ *  Shape alone decides every case but two, and a third it decides on shape
+ *  and gets wrong, which is the first of those residuals. A leading `*` with
+ *  no close on the line is a docblock continuation and a wrapped
+ *  multiplication and a generator method, all three identical to this
+ *  predicate, so that case takes `insideRegion` from
+ *  {@link blockCommentInterior} and is prose only when a region really is
+ *  open. And a leading `//` is prose on its shape outside a region, but
+ *  inside one it is inspected for a close like the other two prefixes,
+ *  because the region is what decides what the two slashes are. Passing
+ *  nothing leaves the shape-only reading of both, which suits a caller with
+ *  no file in hand; a SCAN must pass the region, because reading live code
+ *  as prose there is the violation going unreported.
+ *
+ *  Neither residual is closed here, and not for the same reason, so each
+ *  carries its own:
+ *
+ *   - TEMPLATE PARITY never reaches this predicate. Both opener readers guard
+ *     their opener test with a template check, {@link blockCommentInterior}
+ *     and the brace walk in {@link enclosingSymbol} each refusing an opener
+ *     they believe sits inside a literal, and there is no such signal here.
+ *     `insideRegion` cannot stand in for one: inside a template literal no
+ *     block region is open, so false is the honest answer to the question
+ *     that argument asks, and the reading it licenses is the wrong one. Two
+ *     of the three prefixes are markup inside a literal rather than comment,
+ *     the two slashes of a `//` line and the opener of a CSS rule's comment,
+ *     so each is answered without one and an interpolation the markup appears
+ *     to comment out is dropped although it evaluates. This one fails
+ *     SILENT, and further than either boundary the file docblock leaves
+ *     open: those resolve to a WRONG symbol, which is at least a member the
+ *     consuming set-equality can see, while here the whole line is dropped
+ *     before {@link enclosingSymbol} runs, so no key is minted and there is
+ *     no member to weigh. That is the dangerous direction. Closing
+ *     it needs a new axis rather than a better region pass, and threading
+ *     template parity through this predicate widens the surface every
+ *     consumer shares and asks for the lexer the file docblock declines, so
+ *     it is a separate decision.
+ *   - THE CLOSE SEARCH for a block-comment prefix begins past the opener's
+ *     own two characters. A line whose first three are that opener and a
+ *     slash carries a close beginning at its second character, one position
+ *     short of where the search starts, so inside an open region the line
+ *     reads as an opener rather than as the close it carries, and the live
+ *     code behind it is dropped the same silent way. The offset is right
+ *     outside a region, where such a line really is an opener, and the shape
+ *     stays dismissed as contrived.
+ *
+ *  What licenses the first residual's silence is pinned, not incidental: the
+ *  two `legacy note` line-comment pins in the resolver's own suite fix the
+ *  shape answer for a `//` line carrying a close and a live password-state
+ *  read, at a region known closed and at a region unknown, with no literal in
+ *  the question. Closing that residual withdraws exactly the licence those
+ *  pins record, so they are the first thing it has to restate.
  *
  *  On a scan for a FORBIDDEN shape the match IS the violation, so every line
  *  skipped is a violation not reported: filter as little as possible. A line
