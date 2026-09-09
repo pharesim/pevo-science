@@ -643,3 +643,212 @@ the class is shut. It is architect-zone, so commit it separately with
 - The `POST /signup` upsert overwriting a finalized state G row is a real
   pre-existing defect in `routes/auth.ts`, filed as its own task. Out of scope
   here.
+
+## Backend re-review signal (2026-09-09, commits 6bb92bc9, 68541885, da3075d8)
+
+All twelve round-2 items landed, plus the compound-entry correction (6503571f,
+architect-zone, committed separately). Every item was verified by mutation in a
+tar-copied scratch tree with symlinked `node_modules` and a probe-only vitest
+config, red on the mutation and green on restore. `tests/eslint/` is 9 files /
+131 tests green; typecheck and lint clean apart from the pre-existing
+`author-supersession.ts` warning; the anchor gate exits 0 on every staged diff.
+
+The hold's instruction to verify by mutation is again what made this more than
+twelve fixes. Twelve prescribed-probe agents and six unscripted adversarial
+lenses ran in isolated copies with independent refutation. The probes confirmed
+the items; the lenses found that two of the round's own fixes had introduced
+defects, one of them a silent pass of exactly the class the round existed to
+close. Those are fixed and pinned in da3075d8. What the lenses found BEYOND this
+hold's scope is listed at the end for triage rather than actioned.
+
+### Bundle A
+
+1. **The dollar-quote opener takes PostgreSQL's grammar and must recur.**
+   `DOLLAR_QUOTE_RE` is now empty-tag-or-unquoted-identifier, the tag must
+   appear again later in the file (`dollarCloses`), and the `$${n}` guard is
+   kept beside both. Probes: `VALUES ($1,$2)` and `` `${prefix}$1` `` each open
+   no span and a commented write below each is still seen; a grammatical tag
+   that never recurs opens nothing; deleting the recurrence conjunct alone
+   turns the write invisible and reds two independent arms.
+
+   **Correction to the item as written.** Its probe (c) does not demonstrate
+   what it prescribes: with the loose regex restored and `dollarCloses` intact,
+   the planted write stays VISIBLE. The two halves overlap on the shape the item
+   names. The grammar is load-bearing against a shape the item does not name, a
+   placeholder pair that recurs AFTER the write, where the span opens, closes on
+   the later recurrence, and spans the write in value mode. Verified both ways.
+
+2. **`LOOKAHEAD_CAP` is gone**; `blockCloses` searches to end of file. Probe: a
+   re-introduced 60-line bound reds the literal-count fixture.
+
+   **Correction to a claim this round made.** The first docblock justified the
+   removal with "docblocks in the hundreds of lines, one of them over a
+   thousand". Measured with the canary's own reader that is 13 comments past 60
+   lines with a longest of 159; the thousand-line figure came from a naive grep
+   counting `/*` inside strings and regexes. The docblock now carries the
+   measured figures and the real causal chain: a `$1..$4` written in the prose
+   of `ipfs-shared.ts`'s 65-line docblock is what opened the phantom span in
+   item 1. Also worth recording against the item's own wording: with the cap
+   restored, all 13 sites still CATCH a planted write. The cap's error direction
+   is over-reading comment prose as source, not invisibility; what it caused was
+   item 1, not a missed writer.
+
+3. **Cap fixtures use literal counts**, 400 in both directions, and a bounded
+   lookahead re-introduced at 5, 60 or 200 reds them.
+
+   **Defect found and fixed in the fixture itself.** The `neverCloses` fixture
+   opened its `/*` inside a template, so `blockCloses` answered on the template
+   arm and never reached the no-closer-anywhere refusal the fixture's comment
+   cited. That refusal is now pinned directly, outside a template, where running
+   off the end of the file is the answer; flipping the trailing `return false`
+   to `true` reds it.
+
+4. **A dollar span opening after `AS` or `DO` is a CODE body**, comments
+   blanked; anywhere else a VALUE, copied verbatim. Both migrations carrying an
+   anonymous block wrap ordinary `accounts` DDL, and a comment-gap write planted
+   in either now reds. Audited on the real tree: the 16 newly-blanked lines
+   inside those two bodies are all `--` prose, no live SQL erased.
+
+   **Two defects this fix introduced, both found by mutation and both fixed.**
+   (a) A dollar-quoted literal NESTED inside a code body was read as more body,
+   so a `--` belonging to that literal blanked the rest of its line. A live
+   `UPDATE accounts ... updated_at = NOW()` beside one was seen by nothing: 21
+   of 21 green with a third writer present. A nested tag is now tracked and
+   copied verbatim, which PostgreSQL's differing-tag rule makes well defined.
+   (b) The body-or-value judgement read the previous line RAW. Both errors are
+   silent: a comment after the keyword hides it, so a real routine body reads as
+   a value; and SQL prose ending in `as` or `do` supplies one, so a following
+   value is blanked as code and its own `--` erases live statement text. The
+   walk now reads the blanked lines the same pass has already finished. Probes
+   for both, each red when the feature is deleted.
+
+   **Correction to the item as written.** Its clause (c) second half is false: a
+   write whose only `updated_at` token sits inside a dollar-quoted VALUE DOES
+   red, and should. Values are copied verbatim by design and `statementAt` reads
+   span contents into the statement text, so the token matches. That is the
+   documented over-match direction, a red bar on a statement that writes
+   nothing.
+
+5. **The terminal-state assertion is in place** over both real trees and names
+   the file and the span it was left holding.
+
+   **Correction to the item's stated rationale.** It would NOT have caught both
+   items at authoring time. Re-introducing the 60-line cap leaves it green,
+   structurally rather than incidentally: that cap's error is over-reading, which
+   leaves no span open. And reverting `DOLLAR_QUOTE_RE` alone leaves it green
+   too, because `dollarCloses` still refuses the phantom span; it reds against
+   the true pre-round reader, both halves removed. It caught the round's own
+   item-4 (b) defect on the first run, which is the honest evidence for it.
+
+### Bundle B
+
+6. **`assignmentIndex` returns the earlier of the two spellings.** The mixed
+   line reports two writes; end to end, column-first tallies 2 for the symbol.
+   Restoring the plain-match-first form turns the second write invisible.
+
+7. **`FOR NO KEY UPDATE` is excluded and the locking-clause tails name no
+   table.** The two lookbehinds are pinned on the pattern itself, because the
+   rejection set would otherwise answer for them and leave either deletion
+   green. The set members are pinned by a lock clause SPLIT across lines, where
+   no lookbehind can reach the `FOR` and the word after the keyword is captured;
+   deleting `skip`, `nowait` or `of` alone reds.
+
+### Bundle C
+
+8. **The upsert paragraph names the fall-through set and the structural
+   barrier.** The pre-check answers 409 for exactly two token shapes, so every
+   row carrying a random hex token falls through: state E, the branch's intended
+   target, and state G. The item named G alone; the set is both. The barrier
+   cited is now the stronger of the two available: the branch WRITES a non-NULL
+   `verify_token` and both lookups require it NULL, so a row the branch has
+   touched is invisible to both until a licensed finalize clears the token. That
+   holds whatever the fall-through set is, where the `custody` filters hold only
+   while the section 6.1 enumeration does. Both are stated, in that order.
+
+9. **`collectCompleted`'s docblock is corrected**, and the canary's docblock now
+   lists that reader among what a third writer would affect. Two further
+   corrections beyond the item, both found by tracing rather than restating: the
+   column is ALSO written by its own `DEFAULT now()` at INSERT, which is how a
+   state G row (never through signup) acquires the value this cursor reads; and
+   the query's predicate matches state G too, not only A/B/C/D as it claimed.
+   An independent sweep of `backend/src` for comments asserting the opposite
+   invariant found no others: `custody.ts` and `signup-verify.ts` both state it
+   correctly.
+
+   **A claim of mine, retracted.** The first rewrite said a repeat signup
+   re-opens an announced row and re-stamps the marker. Traced, no path does
+   that: the pre-check 409s a NULL token, `/verify` keys on a token a finalized
+   row lacks, and both stuck resumes skip the finalize UPDATE. What is
+   verifiable is the cursor's resolution, whole milliseconds read back through
+   `to_timestamp($1/1000)` against a microsecond column, so the newest row in a
+   batch stays strictly greater than the cursor derived from it. Narrowed in
+   68541885 before this signal.
+
+10. **The positional anchor is replaced** with `{@link blankLine}` and
+    `{@link statementAt}`, and the paragraph re-wrapped. A sweep of every
+    `above`/`below`/`previous`/`next` in the file against the carve-out found
+    no other rot form. Worth recording: the pre-commit gate does NOT detect the
+    shape this item fixed, since the article there sat against "reading" rather
+    than one of the enumerated structural nouns. The gate's silence was not
+    evidence the line was fine.
+
+### Bundle D
+
+11. **Both named features now red when deleted**, each pinned where it is the
+    only thing answering: `enclosingQuote`'s escape skip by an escaped backtick
+    ahead of the head, without which the read takes the following apostrophe as
+    its delimiter and stops short of the assignment; `joinedByPlus`'s
+    unterminated-read guard by a continuation line the whole-line read would
+    take for the join.
+
+    **The count claim is not restated.** What was actually checked: an
+    exhaustive one-at-a-time deletion sweep across the reader and the patterns.
+    It found roughly thirty deletions that leave the suite green. The subset
+    belonging to features this round ADDED is now pinned and each verified to
+    red: `blockCloses`'s no-closer default, `dollarCloses`, `opensCodeBody`'s
+    previous-line walk and its VALUE default, all three clauses of
+    `DOLLAR_CODE_BODY_RE`, the nested-tag branch, the `(sql || template)` gate
+    in its widening direction, and the row-assignment ordering. The remainder is
+    pre-existing dead coverage and is listed for triage below rather than
+    swept here.
+
+12. **The window bounds.** `LOCAL_DECLARATION_BEFORE` is named and pinned in
+    both directions. The forward bound is REMOVED rather than named: the
+    declaration pattern's own `\s*` admits any run of whitespace, so any fixed
+    number was either arbitrary or wrong, and `const updated_at   = ...` escaped
+    the exclusion at 2. Reading forward to the end of the text is safe because a
+    match still requires the keyword within the bound above. Re-introducing a
+    forward bound reds. One honest note: the declaration pattern's `:`
+    alternative is unreachable from this call site, since the assignment pattern
+    rejects `updated_at:` a step earlier, so no fixture here can pin it; that is
+    recorded in the comment rather than papered over with a contrived one.
+
+### [TODO Architect] Surfaced by the adversarial pass, NOT acted on
+
+Six lenses ran with no checklist against an isolated copy, each claim replayed
+by an independent refuter. Eighteen survived refutation. These are outside this
+hold and are listed for triage, not fixed:
+
+- A quoted TypeScript string is copied verbatim as a VALUE, so SQL in the
+  repo's one-line `'UPDATE accounts SET ...'` spelling is never comment-blanked
+  and the whole comment-gap class round 1 closed is open inside it. Highest
+  severity of the set; the root cause is pre-existing, not from this round.
+- A data-modifying CTE gives the fail-closed arm a REACHING non-accounts head,
+  so an unreadable `accounts` write resolves to the CTE's table rather than
+  reding.
+- `.mts` / `.cts` modules under `src/` are compiled, emitted and shipped, but
+  `sourcesUnder` filters on `.ts` and never walks them. Two lenses converged.
+- `ALTER TABLE IF EXISTS accounts` slips the ALTER pin, and the repo's own
+  mandatory idempotency house style is the bypass. Two lenses converged.
+- Migration 016's licensed back-fill is pinned by COUNT, not by value: editing
+  it to stamp `NOW()` keeps the tally at 1.
+- An `ALTER TABLE accounts` statement truncated at `LITERAL_CAP` has no
+  read-whole guard; that arm iterates the statement pattern only.
+- `targetTable`'s documented "the walk does not keep climbing" is pinned by no
+  fixture, and roughly thirty other pre-existing feature deletions leave the
+  suite green (`ALTER_ACCOUNTS_RE` entirely, the `i` flag at four call sites,
+  `statementAt`'s own escape skip, two `enclosingQuote` features).
+- Previously dismissed in round 1 and re-raised with a planted proof:
+  `backend/scripts/` outside the scan roots (it ships in the image and opens a
+  pool against `APP_DATABASE_URL`), the non-recursive migration walk reached by
+  a psql `\ir` include, and `COPY accounts` with no column list.
