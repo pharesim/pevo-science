@@ -16,6 +16,7 @@ symptoms:
   - "A comment between a column and its `=` silences every scan that shares the pattern, not one of them"
   - "A merge-blocking canary stays green for exactly the violation class it exists to catch"
   - "A glob inside a template literal is read as a block-comment opener and blanks the rest of the file"
+  - "A parameter placeholder pair or a long docblock is read as opening a span that never closes, switching comment blanking off to the end of the file"
   - "An apostrophe in prose inside a template inverts the scanner's template state for the rest of the file"
   - "Hundreds of prescribed mutation probes behave exactly as specified while unscripted adversarial search finds dozens of live evasions of the same guard"
 root_cause: incomplete_enumeration
@@ -107,23 +108,53 @@ and three live defects came from getting that backwards, each in ordinary code:
 - A block comment opener with no closer is not a comment. A Redis key namespace
   ending in a wildcard, written inside a template literal, opened a comment
   that never closed and blanked every following line of its file. `blockCloses`
-  now requires a matching closer within a bounded lookahead, and inside a
-  template requires it before the template ends.
+  now requires a matching closer, and inside a template requires it before the
+  template ends. That search runs to the end of the file. The bounded lookahead
+  this entry first recorded as the remedy was itself a defect of the same
+  family: a bound answers "not a comment" for every block comment longer than
+  it, and reads that comment's prose as live source instead. Thirteen block
+  comments in the scanned trees run past sixty lines, the longest 159, and a
+  `$1..$4` written in the prose of one of them is what opened the phantom span
+  in the third bullet below.
 - An unescaped backtick ends a template whatever else is open. An apostrophe in
   prose inside a one-line template was being read as opening a string, which
   swallowed the closing backtick and left the template state inverted for the
   rest of the file.
-- A dollar-quote opener is recognised in SQL files and inside templates, but
-  never when the characters after it are a TypeScript interpolation. The
+- A dollar-quote opener has to be an actual dollar-quote opener, and the first
+  guard written for this closed only the spelling that had been observed. The
   placeholder-builder idiom this repo writes as a SQL `$` sigil immediately
-  followed by an interpolation looks exactly like a PostgreSQL dollar-quote
-  opener. Reading it as one opened a span that ran to the next literal `$$`,
-  switching comment blanking off across the 17 files under `backend/src` that
-  contain the idiom.
+  followed by an interpolation, `` `$${n}` ``, looks exactly like an opener, and
+  reading it as one opened a span that ran to the next literal `$$`, switching
+  comment blanking off across the 17 files under `backend/src` that contain the
+  idiom. Refusing that one shape left two others live, both ordinary code: a
+  parameter placeholder pair, `VALUES ($1,$2)`, reads as a span tagged `$1,$`,
+  and `` `${prefix}$1` `` as one tagged `${prefix}$`. Neither tag ever recurs,
+  so neither span closes, and blanking was off from there to the end of the file
+  in two real modules, 717 lines of one of them. The opener now takes
+  PostgreSQL's own tag grammar (empty, or an unquoted identifier) AND requires
+  the tag to recur later in the file, the way a block comment must find a
+  closer, with the interpolation guard kept alongside both.
 
 The same asymmetry governs smaller decisions: a `--` glued to an identifier on
 either side is TypeScript's decrement operator, not a comment, and a comment
 marker inside a value is part of the value.
+
+### Assert the reader's terminal state over the real tree
+
+Two of those three defects were first "fixed" against the one spelling that had
+been seen, and reasoning about which other spellings exist is what failed both
+times. What does not fail is asking the reader itself: walk every scanned file
+and assert it ends with no span still open, no block comment, no template, no
+quoted span. A file left mid-span had every line after that point copied with
+blanking OFF, which is the one defect class that silences all of a guard's
+scans together rather than one of them, and the assertion names the file and
+the tag it was left holding rather than leaving someone to think of it.
+
+Its reach is worth stating precisely rather than overselling, because the
+temptation is to treat it as covering the whole area. It catches the class where
+a span never closes. It does NOT catch the bounded-lookahead class above, whose
+error direction is over-reading: a comment read as live source leaves no span
+open, so the end state is clean while the prose is being scanned as code.
 
 ### A prescribed probe list confirms items; only unscripted search tests closure
 
@@ -197,7 +228,8 @@ until the incident it was written to prevent.
 ## Examples
 
 The reader in the accounts-updated-at writer canary is the worked example.
-`blankLine` and `blankFile` are the shared normalization layer, `statementAt`
+`blankLine` and `blankAll` are the shared normalization layer, the second
+returning the end state the assertion above reads, `statementAt`
 reads a whole statement from a head to its terminator over the blanked text,
 `targetTable` resolves an assignment to the statement head that actually
 reaches its position and fails closed rather than borrowing a nearer
