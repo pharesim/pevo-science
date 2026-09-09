@@ -6,8 +6,9 @@ module: agent-coordination
 problem_type: convention
 component: documentation
 severity: medium
+last_updated: 2026-09-09
 applies_when:
-  - Landing a new convention via `/ce-compound` that implementer agents (backend, ui, pinner) must follow at write-time
+  - Landing a new convention via `/ce-compound` that implementer agents (backend, ui) must follow at write-time
   - A reviewer keeps finding the same anti-pattern across consecutive review rounds despite a documented convention existing
   - Deciding where to land a one-line rule vs a full rationale doc
   - Auditing whether `agents/docs/solutions/` entries are actually changing implementer behavior
@@ -18,7 +19,7 @@ tags: [agent-coordination, conventions, solutions-discoverability, startup-proto
 
 ## Context
 
-PEvO's implementer agents (backend, ui, pinner) follow a strict startup protocol from root `CLAUDE.md`:
+PEvO's implementer agents (backend and ui; a pinner role also existed when this was written and was later removed) follow a strict startup protocol from root `CLAUDE.md`:
 
 1. Read `agents/<role>/CLAUDE.md` for role rules.
 2. List `agents/docs/tasks/pending/` for assigned task files.
@@ -56,6 +57,8 @@ Reviewer-time enforcement (`/ce-code-review` catches → hold for round N+1) is 
 
 The full rationale stays in the `agents/docs/solutions/` entry — the one-liner is a hook, not a duplicate.
 
+**A hook only closes the loop when the startup file is silent on the rule.** The incident above is the silent case: neither anchor convention was mentioned anywhere in the backend or ui CLAUDE.md, so a link filled an empty slot. When the startup file instead already states the rule, and states it *wrongly*, adding a pointer beside it does not work. The agent reads the sentence that answers its question, acts on it, and never follows the link, because nothing in the text it just obeyed signals that a conflict exists; a citation parked next to a wrong sentence reads as elaboration, not as correction. There the remedy is to correct the contradicting sentence in place, in the startup file. Before adding a hook, read what the target file already says about the rule: the question is not "is this reachable from the startup path?" but "does the reachable text, read literally by someone who reads nothing else, produce the defect?" The case that established this is `agents/docs/solutions/conventions/startup-file-contradiction-outranks-convention-doc-pointer-2026-09-09.md`.
+
 ## Why This Matters
 
 The 9/15 cluster finding rate is the evidence. Two well-written conventions, archived in the canonical location, both violated three days running by the agent role they were authored to guide. Without a startup-path surface, every new convention buys exactly one task's worth of enforcement (the task that motivated it) and then decays. Each subsequent task's first new comment block is the moment the class returns.
@@ -87,12 +90,13 @@ When the architect lands a convention via `/ce-compound`, the discoverability ch
 
 > **Comment anchoring:** anchor on stable type symbols and behavioral descriptions, NOT raw line numbers or task slugs. See `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` and `task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md`.
 
-`agents/ui/CLAUDE.md` and `agents/pinner/CLAUDE.md` gain the same line. (Or, if the architect judges the rule cross-cutting, root `CLAUDE.md`'s existing comment-hygiene block gains the link.)
+`agents/ui/CLAUDE.md` gains the same line, and so does every other implementer role's file. (Or, if the architect judges the rule cross-cutting, root `CLAUDE.md`'s existing comment-hygiene block gains the link.)
 
 Backend agent reads `agents/backend/CLAUDE.md` at startup per its standard protocol. Next preamble comment describes the gate behaviorally ("the refund branch in the rate-limit middleware") and references the type symbol (`RateLimitConfig.skipFailedRequests`), not the line. Review pass finds zero citation-hygiene issues. The convention now compounds: each task that touches a commented file inherits the rule by default rather than by retrofit.
 
 ## Related conventions
 
+- `agents/docs/solutions/conventions/startup-file-contradiction-outranks-convention-doc-pointer-2026-09-09.md` — the refinement of this entry. It covers the case this one does not: a startup file that states the rule wrongly rather than omitting it, where the hook prescribed here is necessary but not sufficient and the contradicting sentence has to be corrected in place. Its worked case ran three months and six defects with a correct solutions entry, a naming pointer, and an unexecuted "keep these consistent" instruction all in place.
 - `agents/docs/solutions/conventions/hold-block-must-not-contradict-convention-docs-2026-04-22.md` — the architect-side mirror of this discoverability failure: hold blocks must consult `solutions/conventions/` BEFORE authoring envelope-shape decisions. Same root cause (`solutions/` not consulted before write), different actor (architect-hold-author vs implementer-at-write-time).
 - `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` — reviewer-side complement: a "purge X" fix must audit its own new code, not just the cited sweep sites.
 - `agents/docs/solutions/conventions/symmetric-walker-convention-application-audit-prototype-holds-2026-05-05.md` — same problem family: the convention doc text alone is one round behind the strongest version of the rule; the prototype's hold history carries the rest.

@@ -6,6 +6,7 @@ module: frontend/public/messages/STUBS.md + agents/ui/CLAUDE.md
 problem_type: convention
 component: documentation
 severity: low
+last_updated: 2026-09-09
 applies_when:
   - Rewording an i18n key's English value when the key was never translated (still pending under a STUBS.md `### Added` heading)
   - A code review flags a missing `### Updated` heading on a key already listed under `### Added`
@@ -45,6 +46,8 @@ Beyond the count invariant, the `### Updated` heading's semantic purpose is to w
 
 This is why a code-review finding of "missing `### Updated`" on a reworded key is a **false positive when the key is still pending**: the literal rule text contradicts both the rule's own rationale and the grep invariant, and the correct resolution is to keep the key under `### Added`.
 
+**Outcome (2026-09-09).** The false positive this entry was written to dismiss turned out to be the smaller half of the problem. The literal rule text was not merely a trap for reviewers; it was generating the defect. Six keys ended up double- or triple-listed before anyone traced it back to the sentence, because `agents/ui/CLAUDE.md` is loaded at startup and this entry is not, so the wrong rule won at write time every time. The Related-section instruction below to keep the two consistent went unexecuted for three months. It was finally carried out in `301ed073`, which added a never-translated carve-out to the sweep-grouping rule in `agents/ui/CLAUDE.md` itself. One of the six keys was cleared in `b1aee50f`; the remaining five are filed for a ledger sweep. The guidance in this entry needed no revision. Only its delivery did.
+
 ## When to Apply
 
 - English value reworded for a key that is **still pending** (`grep <key> STUBS.md` returns lines): keep it under `### Added`, reword in place.
@@ -64,7 +67,8 @@ This is why a code-review finding of "missing `### Updated`" on a reworded key i
 
 ## Related
 
-- `agents/ui/CLAUDE.md` §Internationalization — the authoritative source for the `### Added`/`### Updated` distinction and the per-key single-source-of-truth grep invariant. Keep that rule and this clarification consistent.
+- `agents/ui/CLAUDE.md` §Internationalization — the authoritative source for the `### Added`/`### Updated` distinction and the per-key single-source-of-truth grep invariant. That file's sweep-grouping rule contradicted this clarification until `301ed073` added the never-translated carve-out to it; the two now agree, and the carve-out is the copy an implementer actually reads.
+- `agents/docs/solutions/conventions/startup-file-contradiction-outranks-convention-doc-pointer-2026-09-09.md` — why this entry alone could not stop the recurrence, and the general rule it produced: when the startup-read protocol file states a rule wrongly, a pointer beside it is not enough, because the wrong sentence is the one that gets read. This entry is that learning's worked case.
 - `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md` — the same family of trap: a convention-enforcing edit (here, adding `### Updated`) can itself introduce a new violation (here, breaking the grep invariant). Audit the replacement, not just the flagged site.
 - `agents/docs/solutions/conventions/task-slug-citations-in-comments-go-stale-on-archive-2026-05-15.md` and `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` — anchor-rot conventions; this doc deliberately anchors on the behavioral rule (translation status) and the stable references (`STUBS.md`, the CLAUDE.md section) rather than on the originating task slug or round.
 - The Edit/Write `\uXXXX` corruption hazard for locale JSON (tracked in the agent memory store) is why in-place re-stubs use textual `fs` replacement rather than a JSON round-trip.
