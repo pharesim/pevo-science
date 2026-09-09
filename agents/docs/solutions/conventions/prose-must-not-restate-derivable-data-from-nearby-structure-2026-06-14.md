@@ -50,3 +50,7 @@ This is a fourth member of the comment-anchor family alongside line/SHA rot, tas
 ## When to Apply
 
 When writing or reviewing any comment/docblock/test-header that mentions a count, a per-item breakdown, or a value that a structure in the same file encodes. Default to referencing the structure by name and deleting the derived value. Applies in `backend/src/**`, `frontend/src/**`, test headers, and `agents/docs/solutions/**` bodies; does not apply to commit messages or transient `agents/docs/tasks/**` coordination files.
+
+## Related
+
+- `sibling-docblock-tallies-must-each-state-precisely-what-they-count-2026-09-09.md` — the no-structure case, and the boundary of this rule. This convention fires when a nearby in-file structure already encodes the value, which is what makes "reference the structure instead" a usable prescription. When two prose sites each state a count of a related set and there is no table, array, or enum for either to defer to, that prescription has nothing to name: the sibling entry governs, and its repair is to make each sentence say precisely what it counts, ideally by naming the members inline, rather than bridging the two with a third sentence. The rot class is shared; what differs is whether the file holds an authoritative structure the prose can point at.
