@@ -994,3 +994,137 @@ backend port's own back-reference task, not here.
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the re-review
 signal. Do not edit this hold block or annotate items as fixed; the commit diff is the evidence
 and the architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-09-09, commit 75458b38):
+
+All three held items landed in one commit, `75458b38`, on the machinery file
+only. The hold is documentation-only and no reader was changed: an A/B of the
+committed and edited machinery over all 86 files under `frontend/src` agrees
+on every line for all three readers (`files=86 lines=21864 regionDiff=0
+commentDiff=0 symbolDiff=0`), which is the claim a documentation-only hold
+actually wants and which no green suite establishes on its own. The suite is
+16 green and the repo's own pre-commit anchor gate over the 59 added lines
+reports zero violations against a planted control line that trips, so the run
+is not vacuous.
+
+Nothing here was written from the hold's prose. Every fact the new sentences
+assert was executed first, in scratch copies of `frontend/`, never in this
+checkout: six lenses established ground truth and twelve independent agents
+re-executed each headline on fixtures they built themselves, eighteen agents
+with no failures. Three claims in the first draft of the new prose did not
+survive that pass and were corrected before the commit; they are listed below
+because the round's own output is the thing this task has repeatedly got
+wrong.
+
+**Item 1.** The predicate's docblock now carries the template axis as a named
+residual, in the register the file docblock uses for the two comment
+boundaries it declines to close: shape, mechanism, direction in caps, then the
+consequence for the consuming assertion. It says that both opener readers
+guard their opener test with a template check and this one has no such signal;
+that `insideRegion` cannot stand in, because inside a literal no block region
+is open, so `false` is the honest answer to the question that argument asks
+and the reading it licenses is the wrong one; that two of the three prefixes
+are markup there, so an interpolation the markup appears to comment out is
+dropped although it evaluates. The direction is named SILENT and placed
+against the two boundaries the file docblock already carries: those resolve to
+a wrong symbol, which set-equality can at least see, while here the whole line
+is dropped before the resolver runs, so no key is minted and there is nothing
+to reject. That is why it is the dangerous one rather than the weaker of two.
+Why it is not closed is stated in the bullet rather than hoisted, because the
+two residuals do not share a reason: this one needs a new axis rather than a
+better region pass, and threading template parity through the predicate widens
+the shared surface and asks for the lexer the file docblock declines.
+
+Both flagged sentences are corrected. "The rule holds for all three prefixes"
+now reads "is written for all three prefixes" and says two shapes defeat it;
+"Shape alone decides every case but two" now names the third case it decides
+on shape and gets wrong. The correction is true under both readings of the
+original: exactly two arms consult the region, and a third case exists where
+shape decides and should not.
+
+The licence is named where an implementer will find it. The paragraph says the
+shape-only reading is pinned, not incidental, by the two `legacy note`
+line-comment pins in the resolver's own suite, at a region known closed and at
+a region unknown, with no literal in the question, and that closing the
+residual withdraws exactly the licence those pins record. The pin fixture
+cannot be quoted verbatim: it carries a comment close, and a literal close
+inside a block comment terminates it. The pins are named by their fixture
+phrase instead.
+
+**Item 2.** Covered inside item 1's second bullet, as a sentence, with no code
+change. It names the close search beginning past the opener's own two
+characters, the line whose close begins one position short of where the search
+starts, the resulting read of an opener rather than a close inside an open
+region, and that the offset is right outside a region where such a line really
+is an opener. The dismissal is unchanged: the shape stays dismissed as
+contrived.
+
+**Item 3.** The brace walk's parity paragraph gains the missing direction:
+inverted the other way it refuses a real opener, so a commented-out brace at
+the declaration's own indentation ends the block early and the target resolves
+outward, which fails closed. Executed both ways on a hand-built fixture:
+correct parity resolves to the declaration, one non-delimiter backtick ahead
+of the opener resolves to module scope, and module scope is in no licensed set
+in the canary, so the wrong answer is a new member.
+
+### Three claims this round wrote and then withdrew
+
+1. "For the two shapes named next no value of `insideRegion` changes the
+   verdict at all." False. A `//` line carrying a close is re-inspected when
+   the region is known open and reads as live there. The sentence now says
+   only that inside a literal the region answer is honest and the reading it
+   licenses is wrong, which holds for every shape.
+2. "Both would need this predicate to know something one line cannot carry."
+   False for the close-search residual, which is derivable from `insideRegion`
+   the predicate already receives. Writing it would have implied the shape is
+   unfixable when the hold's position is that it is not worth fixing. The
+   lead-in now says the two do not share a reason and each carries its own.
+3. The pin sentence first asserted that closing the residual must change those
+   pins. Mechanically it need not: a closing edit that adds a defaulted third
+   argument leaves them passing. It now says what is true, that the pins record
+   the licence the closing edit withdraws, so they are the first thing it has
+   to restate.
+
+### Residuals surfaced for triage, deliberately not fixed here
+
+The hold is documentation-only and says to stop and say so rather than change
+a reader, so none of these was acted on.
+
+1. **A live leading-`*` line carrying a trailing block comment is read as
+   prose, and the canary misses it.** The close search never inspects the span
+   BEFORE the close, so the docblock's own motivating live-code example is
+   skipped once a trailing comment is added to it: at a closed region the
+   wrapped-multiplication form of a password-state read followed by a short
+   block comment returns `true`, while the identical line without the trailing
+   comment returns `false`. This is a real silent miss on the live canary, not
+   a prose defect, and no sentence in the docblock covers it. It is the same
+   class as the arms this task has hardened over four rounds, on the one span
+   none of them reads.
+2. **The walk's newly documented outward direction has no probe.** Both parity
+   pins in the resolver's own suite are the inward direction, and their
+   controls are correct-parity files. The clause item 3 asked for is now
+   documented and still untested.
+3. **"Every arm closes before it is believed" is loose.** The line-comment arm
+   returns `true` on its prefix alone, without computing a close, whenever the
+   region is not known open. True where closing is meaningful, false as
+   written.
+4. **`blockCommentInterior`'s docblock is terminated early by a literal comment
+   close inside it.** The paragraph illustrating re-entry writes the close
+   literally; the file parses only because the illustration's own opener
+   immediately re-opens a comment that runs to the real terminator. Roughly the
+   last third of that docblock, the whole template-parity residual included, is
+   inside the accidental second comment, doc tooling reads the docblock as
+   ending mid-sentence, and anything carrying a close added in that span breaks
+   the file. Pre-existing.
+
+### Verification
+
+- `frontend/tests/unit/eslint/`: 16 passed (2 files), in a scratch copy.
+- A/B whole-tree equivalence, committed machinery against edited: `files=86
+  lines=21864 regionDiff=0 commentDiff=0 symbolDiff=0`.
+- Pre-commit anchor gate over the 59 added lines: zero violations, control
+  line trips.
+- Every probe and every mutation ran against copies under a scratch directory.
+  The shared checkout was never mutated and no test was run in it.
