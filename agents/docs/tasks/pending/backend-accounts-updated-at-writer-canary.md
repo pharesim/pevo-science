@@ -852,3 +852,165 @@ hold and are listed for triage, not fixed:
   `backend/scripts/` outside the scan roots (it ships in the image and opens a
   pool against `APP_DATABASE_URL`), the non-recursive migration walk reached by
   a psql `\ir` include, and `COPY accounts` with no column list.
+
+## Architect re-review (2026-09-09, round 3) — HELD PENDING FIXES:
+
+Reviewed at commits 6bb92bc9, 68541885, da3075d8 (and the architect-zone
+compound correction 6503571f) via /ce-code-review across eight lenses:
+correctness, security, adversarial, testing, maintainability, project-standards,
+learnings, and the orchestrator's own read. All four commits are ancestors of
+HEAD; no orphan SHAs. Thirteen findings survived merge, ten of them introduced
+by this round.
+
+The round-2 hold LANDED, and that was verified rather than taken from the signal
+block. The exact round-2 shape was replanted — a block comment past sixty lines
+whose prose carries `VALUES ($1,$2)`, followed by a write with a comment in the
+`updated_at`/`=` gap — and both writer walks red. Every feature this round added
+was mutation-checked to red on its own deletion. The round-2 self-referential
+pinning defect (a fixture whose filler derived from the constant it pinned) did
+not recur. The measured "thirteen block comments past sixty lines, longest 159"
+is exact, re-derived independently through the reader's own state machine.
+
+The hold is that the round introduced two NEW silent passes of the very class it
+existed to close, plus a third reader divergence that is live on today's tree.
+Both silent passes were demonstrated by mutation with red/green controls in an
+isolated copy, not reasoned about:
+
+  - A third writer planted in `routes/settings.ts` — a settings touch, the shape
+    the file's own docblock names as the most plausible third writer — whose
+    statement carries the characters `const updated_at =` inside an ordinary SQL
+    string value leaves the suite 21/21 GREEN. Deleting only that value reds two
+    walks.
+  - A migration spelling an anonymous block that EXECUTEs a nested dollar-quoted
+    literal, with a comment in the `updated_at`/`=` gap inside that literal,
+    leaves the suite 21/21 GREEN while bumping the marker on EVERY finalized
+    row. Deleting only the comment reds two walks.
+
+Verify every item by mutation in a scratch copy (red on the mutation, green on
+restore) and state the probe per item in the re-review note.
+
+### Bundle A: the reader must be sound before anything else is worth checking
+
+1. **The local-declaration exclusion must not scan forward.** Removing the
+   forward bound in `assignmentIndex` did not make the exclusion match-scoped,
+   it made it unbounded: `TYPESCRIPT_LOCAL_RE.test()` is unanchored, so the
+   pattern matches anywhere in the slice, and a `const updated_at =` occurring
+   LATER in the same text vetoes a real earlier write. The `LOCAL_DECLARATION_BEFORE`
+   docblock asserts the opposite ("a match there still requires the keyword to
+   sit within the bound above it"); that claim is false as written, and it is
+   the claim that made the removal look safe. This is the exact veto direction
+   the inline comment beside the call already forbids. Anchor the test at the
+   match rather than bounding it forward — a keyword pattern ending in `$`
+   tested against the slice that ENDS at the match position satisfies both the
+   arbitrary-whitespace case the removal was chasing and the veto case it
+   opened. Verified: that form catches the planted writer on both walks, keeps
+   this round's own multi-space fixture green with no rewrite, and leaves
+   `tests/eslint/` at 131/131 on a clean tree. Probe: plant a write whose
+   statement carries the declaration characters AFTER it; it must red. Four
+   lenses raised this independently.
+
+2. **A nested dollar-quoted value inside a code body is an open comment gap.**
+   The `dollarNested` branch added this round copies every character of a nested
+   literal through verbatim, comments included. That is correct for a value
+   PostgreSQL treats as data, but a literal the surrounding body EXECUTEs is
+   source, and the comment-gap class is fully open inside it. Decide and state
+   which it is: either blank comments inside a nested span whose body executes
+   it, or refuse such a span by reporting it as an unresolved site so it reds.
+   Either is acceptable; say which and why. Note that the KNOWN LIMITS
+   paragraph currently states this residual BACKWARDS (it claims the nested
+   value's comments ARE blanked), so the prose and the code disagree about the
+   direction of the same gap.
+
+3. **`statementAt` must make the same opener judgement `blankLine` makes.** The
+   grammar fix reached both readers because `DOLLAR_QUOTE_RE` is shared, but the
+   recurrence requirement (`dollarCloses`) and the `${` exclusion are applied
+   only in `blankLine`. `statementAt` commits to a span on a bare match. This is
+   not latent: the `$${n}` placeholder idiom occurs 151 times under `src`, and
+   `statementAt` opens a phantom span on each one. Give both call sites one
+   shared opener helper so the two readers cannot diverge again, rather than
+   copying the two guards across. Probe: delete either guard from the shared
+   helper and both readers must red.
+
+### Bundle B: three claims the code contradicts
+
+This is the same defect class as round-2 item 9, held then for the same reason:
+a docblock that tells the next author the opposite of what the code does is
+worse than no docblock, because it is what they will act on.
+
+4. **The KNOWN LIMITS bullet on the two dollar-opener judgements names two
+   residuals this same commit removed, and inverts a third.** `opensCodeBody`
+   reads `blanked[i]`, never a raw line, so the "previous non-blank line is read
+   RAW" clause describes the pre-fix code. The nested-value clause claims a
+   comment marker in that value IS blanked; it is copied verbatim, which is
+   item 2. Replace the bullet with the residuals that actually survive.
+
+5. **The barrier paragraph's premise is false.** It states that the only
+   statements clearing `verify_token` are the two finalizes. The settings
+   email-verify route clears it too, with no custody or username scoping and
+   without naming the marker. The paragraph builds its "structural, holds for
+   whatever the fall-through set turns out to be" claim on that premise, so the
+   claim does not survive it. Correct the paragraph, not the code: name the
+   third clearer and re-rank the two terms, since what actually keeps a
+   fall-through row out of both lookups is the custody filter that only a
+   finalize writes.
+
+6. **The state G announce claim in `collectCompleted`'s docblock overclaims.**
+   A state G row takes its marker from the INSERT-time default and nothing moves
+   it when the token clears, so the row becomes predicate-eligible carrying a
+   frozen timestamp. Any other completed registration announced in between
+   advances the cursor past it permanently. It is therefore NOT "announced here
+   like any other completed registration". Correct the docblock, or cursor the
+   completed class on something that moves at verification; the docblock
+   correction alone discharges this item. Two lenses raised it independently.
+
+### Bundle C: fold in
+
+7. **The dollar-value branch has no backtick escape.** The `opaque` branch this
+   round moved above it clears the span on a backtick with the rationale that a
+   value cannot contain one; the value branch never updates the template flag,
+   so a span opened inside a template desyncs it. Probe-verified as a silent
+   pass in a `src/lib` file. Guarding on the template flag leaves `.sql`
+   migrations untouched.
+
+8. **Two sibling comments state the same measurement with different numbers.**
+   One says thirteen block comments past sixty lines with a longest of 159; the
+   other says seventeen were read as live source. Thirteen is the measured
+   figure; seventeen is the stale count from the round-2 hold text, which was
+   itself derived from a naive grep. Make them agree or drop the number.
+
+9. **The `DEFAULT now()` KNOWN LIMITS bullet gives a reason the file's own state
+   G paragraph contradicts.** Its conclusion (not a hazard, not scanned for) is
+   right; "a row being inserted is neither finalized nor upgraded yet" is not the
+   reason, because a state G row reaches the finalized-looking predicate without
+   a finalize ever running. Replace the reason with the custody one.
+
+10. **Three near-duplicate fixture arrays differ only in one element.** Hoist a
+    helper so the varied axis is what a reader sees.
+
+### Dismissed, recorded here so they are not re-raised
+
+- The two positional anchors flagged at the nested-tag branch ("the body's
+  terminator was tested above") and beside the split lock-clause assertion ("the
+  keyword-tail rejection below"): dismissed. Both name what they point at, which
+  is the carve-out's durable form, not the bare positional form the rule
+  targets. Naming the constant in the second one is welcome, not required.
+- `DO LANGUAGE plpgsql $$` not being read as a code body: dismissed at this
+  round. Real, but no site in either tree spells it, and the fixture would pin a
+  shape the tree does not write. Revisit if such a body lands.
+- Extracting the reading layer into `tests/support/`: still dismissed, on the
+  round-2 grounds. Item 3 asks for ONE shared opener helper INSIDE this file,
+  which is not that extraction.
+- Adding or expanding logging anywhere in this work: out of scope per the
+  project's standing posture.
+
+### Not part of this hold
+
+- The `upgraded_at IS NULL OR upgraded_at >= updated_at` CHECK constraint
+  remains an open architect decision, unchanged since round 2. The review
+  re-confirmed it holds for every state ARCHITECTURE.md section 6.1 enumerates.
+  Do not implement it under this task.
+- `ALTER TABLE IF EXISTS accounts` slipping the ALTER pin, the scan roots
+  excluding `backend/scripts` and every non-`.ts` extension, and
+  `collectCompleted` advancing its cursor past rows an indeterminate Redis read
+  drops: all three are real and all three are pre-existing rather than
+  introduced here. Filed as their own tasks; out of scope for this hold.
