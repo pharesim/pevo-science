@@ -1,6 +1,7 @@
 ---
 title: "Multi-round task at-archive followup blindness — architect reads only the latest hold block at archive intake, missing earlier-round 'file at archive' prescriptions"
 date: 2026-05-20
+last_updated: 2026-09-09
 category: conventions
 module: process/archive-intake
 problem_type: convention
@@ -57,7 +58,7 @@ At archive intake of any task with two or more `Round-N` headings, apply this pr
 
 ## Why This Matters
 
-Agent startup protocols for architect, backend, ui, and pinner roles each direct the agent to list `tasks/pending/`, `tasks/blocked/`, and `tasks/review/`. **None** of them list `tasks-archive.md`. Prescriptions that end up only in an archive entry body are invisible to every agent startup pass. The obligation passed architect review when it was written, carried forward through multiple rounds, and then falls off the navigable surface at the moment it's most actionable.
+Agent startup protocols for the architect, backend, and ui roles each direct the agent to list `tasks/pending/`, `tasks/blocked/`, and `tasks/review/`. **None** of them list `tasks-archive.md`. Prescriptions that end up only in an archive entry body are invisible to every agent startup pass. The obligation passed architect review when it was written, carried forward through multiple rounds, and then falls off the navigable surface at the moment it's most actionable.
 
 The carry-forward back-reference pattern ("Pre-existing architect-zone followups from round-N stand") is load-bearing precisely because it's so cheap to write and so easy to miss at intake. A 5-round task file is long; the latest hold block closes it; the architect's natural attention flows bottom-up. Without a deliberate counter-protocol, earlier prescriptions disappear into the file's history.
 

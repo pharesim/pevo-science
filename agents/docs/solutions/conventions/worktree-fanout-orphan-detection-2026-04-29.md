@@ -1,6 +1,7 @@
 ---
 title: Verify task-signal-block commit SHAs are reachable from main before trusting "landed" claims
 date: 2026-04-29
+last_updated: 2026-09-09
 category: conventions
 module: agent-coordination
 problem_type: convention
@@ -64,7 +65,7 @@ When applying a doc-only fix that updates comments/JSDoc to reference a prior co
 ## When to Apply
 
 - Architect intake of any `tasks/review/` file: scan signal blocks for cited commit SHAs and verify reachability before reviewing the diff.
-- Backend/UI/pinner re-review after a hold block lands: the implementer's "Backend re-review signal" (or equivalent) cites the fix commit; verify it's on main before re-running `/ce-code-review`.
+- Backend/UI re-review after a hold block lands: the implementer's "Backend re-review signal" (or equivalent) cites the fix commit; verify it's on main before re-running `/ce-code-review`.
 - Doc-only fixes that touch comments/JSDoc tied to a refactor: verify the refactor's commit is on main before authoring the doc edit.
 - Cherry-pick recovery: after replaying an orphan SHA, run targeted vitest on the affected surface — orphan-period API drift may produce type errors or runtime failures the orphan's verification stamp couldn't have caught (it predated the drift).
 

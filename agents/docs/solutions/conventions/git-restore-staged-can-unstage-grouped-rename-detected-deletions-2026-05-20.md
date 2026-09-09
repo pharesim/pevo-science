@@ -1,6 +1,7 @@
 ---
 title: "`git restore --staged <path>` can collateral-unstage other agents' staged changes via rename-detection grouping of structurally-similar markdown task files"
 date: 2026-05-20
+last_updated: 2026-09-09
 category: conventions
 module: git-workflow
 problem_type: convention
@@ -32,7 +33,7 @@ related_components:
 
 ## Context
 
-PEvO runs architect, backend, ui, and pinner agents concurrently against one `.git`. The shared-index race discipline already documented in the repo (see Cross-References) handles the most common failure mode: a sibling agent stages a path between your `git status` and your `git commit`, and you must verify the staged set before committing. The prescribed fix, codified in root `CLAUDE.md` "Shared-index race discipline (multi-agent checkout)" item 1, is to run `git restore --staged <foreign-path>` to drop the sibling's index entry while leaving their working-tree edit intact for them to pick up.
+PEvO runs architect, backend, and ui agents concurrently against one `.git`. The shared-index race discipline already documented in the repo (see Cross-References) handles the most common failure mode: a sibling agent stages a path between your `git status` and your `git commit`, and you must verify the staged set before committing. The prescribed fix, codified in root `CLAUDE.md` "Shared-index race discipline (multi-agent checkout)" item 1, is to run `git restore --staged <foreign-path>` to drop the sibling's index entry while leaving their working-tree edit intact for them to pick up.
 
 This convention has a quiet failure mode that the existing docs do not cover. Git's content-based rename detection runs against the full set of pending index changes. When your staged deletion (`D`) and a sibling's staged addition (`A`) share enough textual similarity, git groups them into a single logical `R` (rename) operation in the index. `git restore --staged` on either side of that grouped rename restores the **entire** rename, silently unstaging the deletion you intentionally staged.
 
@@ -85,7 +86,7 @@ The cost of the extra verification step is a single `git diff --cached --stat` i
 
 This guidance applies whenever all of the following hold:
 
-- Multi-agent shared-checkout workspace (the PEvO default; architect, backend, ui, pinner sessions sharing one `.git`).
+- Multi-agent shared-checkout workspace (the PEvO default; architect, backend, and ui sessions sharing one `.git`).
 - You ran `git restore --staged <path>` to drop a foreign path that appeared in your staged set.
 - Your own staged set contained any deletions (`D`) or additions (`A`) of files structurally similar to files a sibling may have just added, deleted, or renamed — most commonly task files under `agents/docs/tasks/`, but also any markdown-skeleton corpus (solution docs, contract docs).
 

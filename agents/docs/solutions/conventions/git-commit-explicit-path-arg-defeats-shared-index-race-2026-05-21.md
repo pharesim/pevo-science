@@ -8,7 +8,7 @@ problem_type: convention
 component: development_workflow
 severity: medium
 applies_when:
-  - "Multiple agent sessions (architect + architect, architect + backend, ui + pinner, etc.) running concurrently against one shared `.git` checkout"
+  - "Multiple agent sessions (architect + architect, architect + backend, backend + ui, etc.) running concurrently against one shared `.git` checkout"
   - "About to commit narrow per-task work after a `git diff --cached --name-only` verify showed a clean staged set"
   - "Composing a sequence of hold-block commits or archive moves in quick succession (each commit re-opens the race window)"
   - "Recovering from a contaminated commit via `git reset --soft <my-sha>` + `git restore --staged <foreign-paths>` and about to recommit"
@@ -29,7 +29,7 @@ related_components:
 
 ## Context
 
-PEvO regularly runs architect, backend, ui, and pinner agent sessions concurrently against one shared `.git` checkout. The root `CLAUDE.md` "Agent Coordination Rules" preamble already pins the posture: assume another agent is active right now. The index is a shared mutable resource — sibling sessions can `git add` paths into it at any moment, including the millisecond gap between your `git diff --cached --name-only` verify and your `git commit`.
+PEvO regularly runs architect, backend, and ui agent sessions concurrently against one shared `.git` checkout. The root `CLAUDE.md` "Agent Coordination Rules" preamble already pins the posture: assume another agent is active right now. The index is a shared mutable resource — sibling sessions can `git add` paths into it at any moment, including the millisecond gap between your `git diff --cached --name-only` verify and your `git commit`.
 
 Two prior conventions cover adjacent failure modes in this hazard family:
 

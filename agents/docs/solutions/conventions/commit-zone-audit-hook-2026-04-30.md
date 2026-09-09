@@ -1,6 +1,7 @@
 ---
 title: Commit-time agent-zone audit prevents cross-agent commit-scope drift in fan-out workflows
 date: 2026-04-30
+last_updated: 2026-09-09
 category: conventions
 module: agent-coordination
 problem_type: convention
@@ -24,14 +25,15 @@ related_components:
 
 ## Context
 
-PEvO uses worktree fan-outs to parallelize implementation across worker subagents (per root `CLAUDE.md` "Worktree Cleanup" and the per-agent `agents/<role>/CLAUDE.md` "Parallel task execution" sections). Four agent roles each own a distinct zone:
+PEvO uses worktree fan-outs to parallelize implementation across worker subagents (per root `CLAUDE.md` "Worktree Cleanup" and the per-agent `agents/<role>/CLAUDE.md` "Parallel task execution" sections). Three agent roles each own a distinct zone:
 
 - **architect** — `agents/docs/`, per-agent `agents/<role>/CLAUDE.md`, root `CLAUDE.md`, `CONCEPTS.md`, `README.md`, `LICENSE`, `.gitignore`, `.dockerignore`, `.env.example`, `Dockerfile`, `docker-compose*.yml`, `deploy.sh`, `.githooks/`, `.compound-engineering/`, plus any-slug task files under `agents/docs/tasks/` (rule #8 hold-block & review→pending moves are architect-driven for any agent's tasks).
 - **backend** — `backend/`, plus `backend-<slug>` task files (own slug only, pending→review direction only).
 - **ui** — `frontend/`, plus `ui-<slug>` task files (own slug only, pending→review direction only).
-- **pinner** — `pinner/`, plus `pinner-<slug>` task files (own slug only, pending→review direction only).
 
 The runtime-authoritative zone map is `.githooks/commit-msg`'s `allowed_for_agent()` function. The narrative summary above and the architect's "Files You Own" list in `agents/architect/CLAUDE.md` are derived references; when extending the zone map, update the hook first, then sync the doc summary and the architect list.
+
+That sync is a real obligation and it was missed once in the other direction. A fourth role, `pinner`, owned a `pinner/` zone and a `pinner-<slug>` task prefix until its code and agent were extracted to a separate repository in `065d2a1f`. The hook's case list dropped with it, but this summary kept describing the zone, the staging shape, and `pinner:` as a recognized subject prefix for another three months. The reading that matters is the last one: because the hook no longer recognizes it, a `pinner:` commit would fall through to the unrecognized-prefix path and skip the audit entirely, which is the opposite of what this doc implied. Old commits and archived task files still carry the prefix; nothing in the current tree does.
 
 Cluster 1 review of `backend-bridge-paper-author-gate.md` round-2 commit `3c2a2a1` on 2026-04-30 surfaced the recurring drift pattern: a backend worker subagent's commit included three unrelated `git mv` operations of architect-driven task-file transitions (`tasks/review/` → `tasks/pending/`) bundled with the bridge-paper implementation diff. The proximate cause was `git add -A` (or `git add .`) staging — the architect's mid-flight moves were sitting in the working tree, the worker forked from that state, and the bulk-stage swept them in. A second instance (`72978a0`) crossed the boundary in the opposite direction (a backend commit edited `agents/docs/ARCHITECTURE.md`).
 
@@ -53,10 +55,6 @@ git mv  agents/docs/tasks/pending/backend-<slug>.md agents/docs/tasks/review/bac
 # ui
 git add frontend/<paths>
 git mv  agents/docs/tasks/pending/ui-<slug>.md agents/docs/tasks/review/ui-<slug>.md
-
-# pinner
-git add pinner/<paths>
-git mv  agents/docs/tasks/pending/pinner-<slug>.md agents/docs/tasks/review/pinner-<slug>.md
 
 # architect
 git add agents/docs/<paths>
@@ -82,7 +80,6 @@ Recognized subject prefixes (bare and parenthetical-scope variants):
 architect:                 architect(<scope>):
 backend:                   backend(<scope>):
 ui:                        ui(<scope>):
-pinner:                    pinner(<scope>):
 ```
 
 The hook recognizes only the bare `<role>:` and `<role>(<scope>):` forms. Conventional-commit wrappers like `fix(backend):` and `feat(architect):` are NOT recognized — they fall through to the unrecognized-prefix path and skip the audit. Per root `CLAUDE.md` "Commits and Pushes", agent commits MUST use the bare form.
@@ -99,7 +96,7 @@ Behavior:
 
 Three documented bypasses, in increasing severity:
 
-1. **Unrecognized prefix.** Any commit subject not starting with `architect:`/`backend:`/`ui:`/`pinner:` (with optional `(<scope>)`) skips the audit. This is by design — `chore:` and human-style commits don't carry agent attribution. A misuse pattern is an agent learning to use `chore:` to bypass the audit.
+1. **Unrecognized prefix.** Any commit subject not starting with `architect:`/`backend:`/`ui:` (with optional `(<scope>)`) skips the audit. This is by design — `chore:` and human-style commits don't carry agent attribution. A misuse pattern is an agent learning to use `chore:` to bypass the audit.
 2. **`[skip-zone-audit]` in subject.** Explicit per-commit exemption. Logged to stderr. Use for one-off intentional cross-agent commits.
 3. **`git commit --no-verify`.** Bypasses ALL git hooks, not just this one (per `githooks(5)`). Per root `CLAUDE.md` "Commits and Pushes", agents MUST NOT use `--no-verify` without explicit per-invocation user authorization. Prefer `[skip-zone-audit]` for legitimate cross-zone commits, since `--no-verify` also skips any future hook (e.g., a pre-push gate) the project may add.
 
@@ -112,7 +109,7 @@ Three documented bypasses, in increasing severity:
 
 ## When to Apply
 
-- Every commit by any agent (architect, backend, ui, pinner, worker subagents). Path-scoped `git add` is the always-on discipline; the hook is the always-on backstop.
+- Every commit by any agent (architect, backend, ui, worker subagents). Path-scoped `git add` is the always-on discipline; the hook is the always-on backstop.
 - Initial repo setup (or a fresh clone): run `git config core.hooksPath .githooks` once. The setting is per-clone and not git-tracked, so each new clone needs the activation step (documented in `README.md`).
 - When a hook rejection fires legitimately (a one-off cross-agent refactor): split the commit into per-zone commits. If the cross-agent shape is intentional and atomicity matters, append `[skip-zone-audit]` to the subject and proceed — the exemption is logged to stderr.
 

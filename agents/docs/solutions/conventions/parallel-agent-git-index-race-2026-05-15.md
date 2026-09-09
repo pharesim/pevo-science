@@ -1,6 +1,7 @@
 ---
 title: Parallel-agent commits race on the shared git index and silently bundle siblings' uncommitted work
 date: 2026-05-15
+last_updated: 2026-09-09
 category: conventions
 module: agent-coordination
 problem_type: convention
@@ -25,7 +26,7 @@ related_components:
 
 ## Context
 
-The architect, backend, ui, and pinner agents all share one git checkout. When multiple sessions run concurrently — common when one architect handles ui-* reviews while another handles backend-* reviews, or when a parent fans out worker subagents — the git index becomes a shared mutable resource. The "stage only the files you edited this session" rule in root `CLAUDE.md` "Commits and Pushes" and the `agents/architect/CLAUDE.md` "Architect staging" section assumes single-agent ownership of the index. That assumption breaks under concurrent operation.
+The architect, backend, and ui agents all share one git checkout. When multiple sessions run concurrently — common when one architect handles ui-* reviews while another handles backend-* reviews, or when a parent fans out worker subagents — the git index becomes a shared mutable resource. The "stage only the files you edited this session" rule in root `CLAUDE.md` "Commits and Pushes" and the `agents/architect/CLAUDE.md` "Architect staging" section assumes single-agent ownership of the index. That assumption breaks under concurrent operation.
 
 Failure mode: between your `git add` and your `git commit`, a sibling agent's `git add` lands extra paths into the same index. Your commit sweeps them in. Symmetrically, a sibling's later commit can sweep in your still-unstaged work. The commit-msg zone-audit hook at `.githooks/commit-msg` does not catch this — the hook protects against cross-AGENT-ROLE bundling (e.g., a `backend:` commit touching `agents/docs/`), not cross-TASK bundling within the same role.
 

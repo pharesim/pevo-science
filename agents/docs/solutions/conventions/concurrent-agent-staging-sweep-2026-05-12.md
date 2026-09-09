@@ -28,7 +28,7 @@ related_components:
 
 ## Context
 
-PEvO regularly runs multiple agent sessions concurrently against the same dev checkout: architect, backend, ui, and pinner agents all operate in parallel windows that share one working tree and one git index. Each role owns a zone (per root `CLAUDE.md` "Commits and Pushes" and the runtime-authoritative `.githooks/commit-msg` `allowed_for_agent()` function), and the commit-msg zone-audit hook (see `commit-zone-audit-hook-2026-04-30.md`) catches commits whose staged paths fall outside the committing role's zone. The hook is the backstop for cross-role contamination.
+PEvO regularly runs multiple agent sessions concurrently against the same dev checkout: architect, backend, and ui agents all operate in parallel windows that share one working tree and one git index. Each role owns a zone (per root `CLAUDE.md` "Commits and Pushes" and the runtime-authoritative `.githooks/commit-msg` `allowed_for_agent()` function), and the commit-msg zone-audit hook (see `commit-zone-audit-hook-2026-04-30.md`) catches commits whose staged paths fall outside the committing role's zone. The hook is the backstop for cross-role contamination.
 
 A subtler failure mode is **within-zone concurrent-session contamination**, which the zone hook cannot detect. On 2026-05-12, two architect sessions ran simultaneously:
 

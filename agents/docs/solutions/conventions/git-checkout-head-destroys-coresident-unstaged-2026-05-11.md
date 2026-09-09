@@ -1,6 +1,7 @@
 ---
 title: "git checkout HEAD -- <file> destroys co-resident unstaged content from other agents' zones"
 date: 2026-05-11
+last_updated: 2026-09-09
 category: conventions
 module: agent-coordination
 problem_type: convention
@@ -9,7 +10,7 @@ severity: high
 applies_when:
   - "Resetting your own working-tree edits on a file that another agent has unstaged content on"
   - "Architect annotates a task file (hold-block, coordination note) while implementer's re-review signal block is still unstaged"
-  - "Any role-scoped agent (architect, backend, ui, pinner) needs to discard their staged-or-unstaged edits on a multi-agent-touched path"
+  - "Any role-scoped agent (architect, backend, ui) needs to discard their staged-or-unstaged edits on a multi-agent-touched path"
   - "Reflex to clean up with `git checkout HEAD -- <path>` or `git restore <path>` before re-staging in clean stages"
 tags:
   - git
@@ -28,7 +29,7 @@ related_components:
 
 ## Context
 
-PEvO's multi-agent coordination model has agents (architect, backend, ui, pinner) communicating exclusively through files in the repo (see root `CLAUDE.md` "Agent Coordination Rules"). Task files under `agents/docs/tasks/` are routinely touched by multiple agents within a single review/hold/resolve cycle — architect appends hold blocks, implementer appends re-review signal blocks, and `git mv` operations move them between section directories. This means an agent frequently encounters a file with **co-resident unstaged content authored by another agent**. The naive instinct, when wanting to "stage only my edit," is to reset the working tree and re-edit cleanly — but `git checkout HEAD -- <file>` permanently destroys the other agent's unstaged work, because unstaged changes never enter git's object database and `reflog` / `fsck --lost-found` cannot recover them. This is reachable from every role.
+PEvO's multi-agent coordination model has agents (architect, backend, ui) communicating exclusively through files in the repo (see root `CLAUDE.md` "Agent Coordination Rules"). Task files under `agents/docs/tasks/` are routinely touched by multiple agents within a single review/hold/resolve cycle — architect appends hold blocks, implementer appends re-review signal blocks, and `git mv` operations move them between section directories. This means an agent frequently encounters a file with **co-resident unstaged content authored by another agent**. The naive instinct, when wanting to "stage only my edit," is to reset the working tree and re-edit cleanly — but `git checkout HEAD -- <file>` permanently destroys the other agent's unstaged work, because unstaged changes never enter git's object database and `reflog` / `fsck --lost-found` cannot recover them. This is reachable from every role.
 
 ## Guidance
 
