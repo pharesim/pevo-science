@@ -1,6 +1,7 @@
 ---
-title: "Re-review signal block on first pending→review move is ambiguously required — agents/backend/CLAUDE.md exempts it, implementer-self-verify-signal-block-sha convention requires it; reconcile or pick a default per cluster"
+title: "Signal block at the first pending→review move is unstandardized — the role protocol files require one, agents/docs/tasks/README.md says none is required; reconcile or pick a default per cluster"
 date: 2026-05-18
+last_updated: 2026-09-09
 category: conventions
 module: agent-coordination
 problem_type: convention
@@ -10,7 +11,7 @@ applies_when:
   - About to move a task file from `agents/docs/tasks/pending/` to `agents/docs/tasks/review/` for the FIRST time (no prior architect hold-block exists on the task)
   - Architect re-reviewing a `review/` task and noticing the file has zero content changes (rename-only) — deciding whether to flag the missing signal block as a hold item or accept it
   - Persona reviewers under `/ce-code-review` disagreeing on whether a missing signal block is a process violation (typically `project-standards` exempts, `learnings` flags)
-  - Editing either `agents/backend/CLAUDE.md` "Re-review signal" wording or `agents/docs/solutions/conventions/implementer-self-verify-signal-block-sha-2026-05-04.md` text — reconcile them in the same pass rather than touching one in isolation
+  - Editing the "Re-review signal" wording in `agents/backend/CLAUDE.md` or `agents/ui/CLAUDE.md`, or the hold-block paragraph in `agents/docs/tasks/README.md` — reconcile them in the same pass rather than touching one in isolation
 tags:
   - agent-coordination
   - signal-block
@@ -27,33 +28,21 @@ related_components:
 
 PEvO's task lifecycle has two distinct `pending/` → `review/` moves: (1) the FIRST submission, where the implementer has just landed all work against the original task body, and (2) subsequent moves following an architect hold-block, where the implementer has landed the held items and is submitting fixes for re-review.
 
-Two doc surfaces describe the implementer's responsibilities at this transition, and they disagree on whether the FIRST submission also requires a signal block.
+Nothing in the coordination docs prescribes what the implementer writes on the FIRST move, and two surfaces that speak to the transition contradict each other on whether an attestation block belongs there at all.
 
-**`agents/backend/CLAUDE.md` "Re-review signal" section** (architect-owned per `.githooks/commit-msg:138`; current text, as of 2026-05-18):
+**The role protocol files require a block, scoped to hold-fixes.** `agents/backend/CLAUDE.md` and `agents/ui/CLAUDE.md`, "Re-review signal" bullet, both say to append a `<Role> re-review signal (<date>, working tree or commit SHA):` block "after landing fixes for a held task", under the architect's hold block. Both are silent on the first move. Their Task-completion bullets ask only for the `git mv`.
 
-> When the implementer has landed the fixes, they `git mv` the file back to `tasks/review/`. Every file in `tasks/review/` with your role prefix is therefore actionable — either a first review or a re-review after a prior hold.
+**`agents/docs/tasks/README.md` says no block is required at all.** Its hold-block paragraph, directly beneath the task-file-shape fenced block, ends:
 
-This wording treats both kinds of moves as actionable for the architect's next review pass but does not require an attestation block on the first move — the move itself is the signal.
+> The commit diff and commit message are the evidence — no separate signal block is required.
 
-**Root CLAUDE.md rule #7:**
+**Root `CLAUDE.md` rule #8 sides with the README:** "the move itself is the re-review signal".
 
-> When a task is complete, the implementing agent `git mv`s the file from `pending/` to `review/`.
+So the requirement the role files state for hold-fixes is denied outright by the README and by root rule #8, and neither surface says anything about the first move. Practice has settled the hold-fix half on its own and left the first half unstandardized. Re-review blocks are uniform, because the role files name the exact heading; first-move blocks are not, because nothing does.
 
-Just the `git mv`. No signal block required.
+Both readings are textually defensible from their respective source documents. The conflict surfaces when a multi-persona `/ce-code-review` puts them side by side — one persona reads a role protocol file and exempts first-move submissions, another reads the convention store and flags any signal-block omission. Concrete incident: cluster D review of `backend-tests-typecheck-residual-drift` commit `9a6edf1` on 2026-05-18. The task file in `review/` had zero content changes — rename-only mv from `pending/`. Project-standards: not a violation. Learnings: violation per convention. Architect dismissed the specific finding (the diff was self-evidencing — 249 → 0 typecheck errors), but the docs were not reconciled.
 
-**Backend CLAUDE.md "Re-review signal":**
-
-> Append an implementer signal block when landing fixes for a held task.
-
-Scoped to "landing fixes for a held task" — i.e., the second or later move, not the first.
-
-**`agents/docs/solutions/conventions/implementer-self-verify-signal-block-sha-2026-05-04.md`:**
-
-> Before moving to review/, the implementer should append a signal block citing the on-main SHA and run `git merge-base --is-ancestor <sha> main` to confirm it.
-
-No first-vs-subsequent distinction. The convention text prescribes the signal block at every `pending/` → `review/` move.
-
-Both readings are textually defensible from their respective source documents. The conflict only surfaces when a multi-persona `/ce-code-review` puts both readings side by side — `ce-project-standards-reviewer` reads `agents/backend/CLAUDE.md` and exempts first-move submissions; `ce-learnings-researcher` reads the convention and flags any signal-block omission. Concrete incident: cluster D review of `backend-tests-typecheck-residual-drift` commit `9a6edf1` on 2026-05-18. The task file in `review/` had zero content changes — rename-only mv from `pending/`. Project-standards: not a violation. Learnings: violation per convention. Architect dismissed the specific finding (the diff was self-evidencing — 249 → 0 typecheck errors), but the docs were not reconciled.
+**Correction (2026-09-09).** As first written, this entry named the wrong pair. It quoted `agents/docs/solutions/conventions/implementer-self-verify-signal-block-sha-2026-05-04.md` as prescribing "Before moving to review/, the implementer should append a signal block…" and built the contradiction on it. That sentence is not in that entry and never was; the string appears nowhere in the repo but here. That entry is conditional throughout — its guidance opens "Before pasting any commit SHA into a re-review signal block" and its When-to-Apply defers to the role protocol files for when a block exists — so it regulates SHA accuracy given a block and never mandates writing one. It does not disagree with the role files. This entry also attributed to `agents/backend/CLAUDE.md` a passage ("Every file in `tasks/review/` with your role prefix is therefore actionable…") that lives in `agents/architect/CLAUDE.md`, in its re-review-cycle paragraph, and has never been in a backend file. The observation that survived the correction is the one above: the first-move shape is unstandardized, and the live contradiction is the role files against the README.
 
 ## Guidance
 
@@ -75,7 +64,7 @@ The deeper failure mode is that the signal block exists to break a specific clas
 
 - Architect re-review intake: every time you `ls tasks/review/` and find a file with zero content changes (rename-only mv), check the source docs against the persona-reviewer findings before dismissing or holding.
 - Reviewer disagreement: when `ce-project-standards-reviewer` and `ce-learnings-researcher` (or any equivalent cross-persona pair) split on a missing-signal-block finding, the disagreement IS the signal that the source docs need reconciliation.
-- Doc editing: any time you touch the "Re-review signal" wording in `agents/backend/CLAUDE.md` (or its sibling protocol files in `agents/ui/CLAUDE.md`, `agents/pinner/CLAUDE.md`) or the parent convention, edit both surfaces in the same architect commit. Touching one in isolation perpetuates the ambiguity.
+- Doc editing: any time you touch the "Re-review signal" wording in `agents/backend/CLAUDE.md` or `agents/ui/CLAUDE.md`, or the hold-block paragraph in `agents/docs/tasks/README.md`, edit every surface in the same architect commit. Touching one in isolation perpetuates the ambiguity.
 
 ## Examples
 
@@ -99,9 +88,14 @@ The orphan failure mode applies regardless of whether the move is first or Nth. 
 
 ## Next-step action (architect backlog)
 
-Edit one or both source docs to reconcile:
+**This deferral is itself the finding.** It was written on 2026-05-18 and sat unexecuted for roughly sixteen weeks: never filed as a task, never archived, never touched by a commit. The 2026-09-09 refresh that corrected this entry is what found it still open. That is the failure mode `agents/docs/solutions/conventions/startup-file-contradiction-outranks-convention-doc-pointer-2026-09-09.md` describes, taking the deferred path. A contradiction recorded in the convention store and left for a backlog is not scheduled work; the startup-read files keep saying what they said, and the implementers who read them keep acting on it. Reconcile in place, or accept that the drift continues.
 
-- **Option A:** Tighten the convention's wording to acknowledge the first-vs-Nth distinction and explicitly require the signal block at every move (matching the convention's intent — orphan SHAs are equally possible on first moves).
-- **Option B:** Loosen the convention's wording to scope it to "moves following an architect hold-block" (matching the backend CLAUDE.md text). Add a separate note for first-move SHA verification at the architect's intake side, where it belongs in any case.
+**Resolved 2026-09-09 (architect and user): the first move is standardized.** The alternative considered and rejected was to loosen instead, scoping the role files' requirement explicitly to hold-fix moves and making the README's sentence authoritative. It was rejected because practice had already chosen the other way, most signal headings in the tasks tree cite SHAs, and loosening would have left the orphan-SHA check unowned on first submissions while requiring in-flight tasks to be reshaped back out.
 
-Either way, edit both surfaces (`agents/backend/CLAUDE.md` "Re-review signal" section + `implementer-self-verify-signal-block-sha-2026-05-04.md`) in the same architect commit. Touching one in isolation perpetuates the ambiguity.
+Applied across three surfaces in one architect commit, per the edit-every-surface rule this entry has always carried:
+
+- The Task-completion bullets in `agents/backend/CLAUDE.md` and `agents/ui/CLAUDE.md` now ask for a `<Role> implementation signal (<date>, working tree or commit SHA):` block naming the commits, with each SHA self-verified per `agents/docs/solutions/conventions/implementer-self-verify-signal-block-sha-2026-05-04.md`. A worktree fan-out orphans SHAs on a first implementation as readily as on a hold-fix, which is the substantive argument and the one this entry got right from the start.
+- The hold-block paragraph in `agents/docs/tasks/README.md` no longer denies the block. It describes it as an index into the diff, naming the date and commits so the architect can run the orphan check, rather than as a substitute for reading the diff.
+- `agents/ui/CLAUDE.md`'s "Re-review signal" bullet said to append the block "to the task file in `tasks/review/`". Per root rule #8 a held file lives in `tasks/pending/` at that moment, which is what its backend counterpart already said. Corrected to match.
+
+The ambiguity this entry documents is therefore closed at the source. What remains useful here is the shape of the failure: a contradiction between coordination surfaces, recorded accurately and then deferred, survives for as long as nobody re-reads the surfaces themselves.

@@ -657,6 +657,22 @@ A record carried inside every authority operation naming the human roster member
 
 It is a platform-attributed claim, not an independent proof: the operation is still signed by the single signer, and the actual authorization happened at the platform's roster-and-re-auth gate, so its trustworthiness reduces to trusting the operator's platform. Auto-grants from the web-of-trust path carry a fixed system marker instead of a person, letting readers distinguish operator-driven attestations from graph-derived ones.
 
+## Task Coordination
+
+### Hold block
+
+A reviewer's dated list of the fixes a submitted task must land before it can be accepted, appended to that task's own file beneath the work it reviews.
+*Avoid:* review block, feedback block.
+
+A hold block is append-only. The implementer does not annotate it or mark its items done; the reviewer updates it at the next pass to record what is now satisfied. Appending one also returns the task to the implementer's queue, so the block and the task's change of state travel together, and a block appended without that move is invisible to the person meant to act on it. The implementer answers it with commits rather than with prose in the block, because the diff is what the reviewer re-derives from.
+
+### Signal block
+
+A short dated attestation an implementer appends to a task file when handing work back, naming the commits the work landed in.
+*Avoid:* completion note, implementation note.
+
+Its value is the commit identifiers rather than the prose. They give the reviewer something to run a reachability check against, which is the one failure a diff alone cannot reveal: work done in a throwaway worktree can be committed to a branch the parent never merges, so a named commit outside the main line of history leaves the task reading as complete while part of it exists nowhere the reviewer will look. The block indexes the evidence and does not stand in for it, so a count or a coverage claim asserted only in the block is prose rather than proof, and a reviewer re-derives it from the diff. A hand-off that answers a hold block carries one by convention.
+
 ## Internationalization
 
 ### Translation Stub

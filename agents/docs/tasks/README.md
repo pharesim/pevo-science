@@ -37,7 +37,7 @@ Examples: `ui-keychain-upgrade.md`, `backend-recover-rate-limit.md`. No date pre
 - Finding 2 ...
 ```
 
-Hold blocks are appended, never rewritten. The architect updates a hold block only during re-review (e.g., "All N items held on <date> are FIXED"). The file move itself is the re-review signal: when the architect appends a hold block, they `git mv` the file from `review/` to `pending/`; when the implementer lands the fixes, they `git mv` it back to `review/`. The commit diff and commit message are the evidence — no separate signal block is required. See `CLAUDE.md` § Agent Coordination Rules #8.
+Hold blocks are appended, never rewritten. The architect updates a hold block only during re-review (e.g., "All N items held on <date> are FIXED"). The file move itself is the re-review signal: when the architect appends a hold block, they `git mv` the file from `review/` to `pending/`; when the implementer lands the fixes, they `git mv` it back to `review/`. The commit diff and commit message are the evidence: implementers do not annotate the hold block itself. The signal block the role protocol files require is an index into that evidence, naming the date and the commits so the architect can run the orphan check against them, not a substitute for reading the diff. See `CLAUDE.md` § Agent Coordination Rules #8.
 
 ## Transitions
 

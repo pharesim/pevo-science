@@ -101,8 +101,8 @@ See root `CLAUDE.md` "Comment anchors" for the project-wide rules (task-slug cit
 
 ## Guidance for Future Work
 
-- **Task completion:** `git mv agents/docs/tasks/pending/<slug>.md agents/docs/tasks/review/` per root rule #7. Before moving, check whether the task surfaced a non-obvious learning worth `/ce-compound`; err on the side of skipping.
-- **Re-review signal:** after landing fixes for a held task, append a `UI re-review signal (<date>, working tree or commit SHA):` block to the task file in `tasks/review/`, under the architect's hold block, per root rule #8.
+- **Task completion:** `git mv agents/docs/tasks/pending/<slug>.md agents/docs/tasks/review/` per root rule #7. Before moving, append a `UI implementation signal (<date>, working tree or commit SHA):` block naming the commits the work landed in, and self-verify each SHA per `agents/docs/solutions/conventions/implementer-self-verify-signal-block-sha-2026-05-04.md`. A worktree fan-out orphans SHAs on a first implementation exactly as readily as on a hold-fix, so the first move is not exempt. Then check whether the task surfaced a non-obvious learning worth `/ce-compound`; err on the side of skipping.
+- **Re-review signal:** after landing fixes for a held task (the file lives in `tasks/pending/` after the architect's hold-block move per root rule #8), append a `UI re-review signal (<date>, working tree or commit SHA):` block to the task file, under the architect's hold block.
 - No `alert()` calls. Use the toast notification system.
 - No blockchain/crypto jargon in user-facing text (see root `CLAUDE.md`).
 
