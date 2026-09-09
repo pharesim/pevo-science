@@ -657,6 +657,22 @@ A record carried inside every authority operation naming the human roster member
 
 It is a platform-attributed claim, not an independent proof: the operation is still signed by the single signer, and the actual authorization happened at the platform's roster-and-re-auth gate, so its trustworthiness reduces to trusting the operator's platform. Auto-grants from the web-of-trust path carry a fixed system marker instead of a person, letting readers distinguish operator-driven attestations from graph-derived ones.
 
+## Internationalization
+
+### Translation Stub
+
+A user-facing string shipped in a non-English locale as the raw English text, standing in for a translation nobody has written yet.
+*Avoid:* placeholder string, untranslated key.
+
+A stub carries no marker: it is deliberately the plain English value rather than a bracketed or sentinel-prefixed one, so it renders normally to a reader of that locale instead of exposing scaffolding. The cost of that choice is that a stub is indistinguishable from a finished translation by reading the locale data alone, and comparing a locale's value against English does not recover the difference, because technical terms, product names and borrowed words are legitimately identical across locales. Pending translation work is therefore tracked in a separate ledger rather than derived from the data, one line per locale-and-key pair still awaiting a translator, and the guarantee that makes the ledger worth consulting is that a key appears in it exactly once per locale still pending. A translator deletes the line in the same change that lands the real value, so the ledger drains as work completes.
+
+### Stub Sweep
+
+The dated batch a set of stubs entered the ledger in, and the unit a translator picks work up by.
+*Avoid:* stub batch, translation round.
+
+A sweep is append-only and is never merged into an earlier one, even when two fall on the same day, because the batch boundary is what lets a translator prioritize a body of work and what lets a later audit of stale entries read as history rather than guesswork. Sweeps come in two kinds, and which kind applies turns on translation status, not on whether the key name is new: one records keys arriving as stubs for the first time, the other records keys whose English was reworded after a real translation already existed, warning translators that their translation memory for that key is now misleading. A key that has never been translated has no memory to invalidate, so rewording one leaves it in its original sweep, corrected in place. Giving it a second sweep entry instead lists it twice for every pending locale and breaks the once-per-pending-locale guarantee the ledger rests on.
+
 ## Engineering Guards
 
 ### Source-discipline canary
