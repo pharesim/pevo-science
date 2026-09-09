@@ -113,3 +113,47 @@ describe('consent-op proof cache — mismatch / expiry / clear', () => {
     expect(getCachedConsentOpProof('author_accept', 'alice', 'perm')).toBe(null);
   });
 });
+
+describe('consent-op proof cache — a token that is not a string', () => {
+  // A number and an object are the two shapes the slot can actually carry: both
+  // survive the JSON round-trip through sessionStorage and both read as truthy,
+  // which together are what let one reach the guarded call and stay cached
+  // afterwards. A Symbol is the tidier illustration and the wrong pin —
+  // JSON.stringify omits a Symbol-valued field, so the entry comes back
+  // tokenless and the falsy branch drops it whatever the type test says, which
+  // would leave a check narrowed to one member looking covered.
+  it.each([
+    { label: 'a number', token: 4242 },
+    { label: 'an object', token: { not: 'a proof' } },
+  ])('returns null and drops the slot rather than handing back $label', ({ token }) => {
+    cacheConsentOpProof(token, future(), 'author_accept', 'alice', 'perm');
+    // The write really did land, so `getCachedConsentOpProof` is refusing
+    // something rather than missing an empty slot.
+    expect(JSON.parse(sessionStorage.getItem(CONSENT_OP_PROOF_KEY)).token).toEqual(token);
+
+    expect(getCachedConsentOpProof('author_accept', 'alice', 'perm')).toBe(null);
+    expect(sessionStorage.getItem(CONSENT_OP_PROOF_KEY)).toBe(null);
+  });
+
+  it('drops such an entry even when the lookup target does not match it', () => {
+    // The drop belongs with the corruption checks, ahead of the target
+    // comparison: a token of the wrong type is unusable at every target, so a
+    // drop that waited for a match would leave it cached for the one target it
+    // does match.
+    cacheConsentOpProof(4242, future(), 'author_accept', 'alice', 'perm');
+
+    expect(getCachedConsentOpProof('change_email', 'alice', '')).toBe(null);
+    expect(sessionStorage.getItem(CONSENT_OP_PROOF_KEY)).toBe(null);
+  });
+
+  it('a mismatched STRING proof still survives the lookup that missed it', () => {
+    // The other half of that ordering. The target comparison returns null
+    // WITHOUT removing on purpose, so a proof minted for another target keeps
+    // working for the target it was minted for; the type drop must not widen
+    // into it.
+    cacheConsentOpProof('proof-other-target', future(), 'author_accept', 'alice', 'perm');
+
+    expect(getCachedConsentOpProof('change_email', 'alice', '')).toBe(null);
+    expect(getCachedConsentOpProof('author_accept', 'alice', 'perm')).toBe('proof-other-target');
+  });
+});

@@ -1233,6 +1233,43 @@ describe('orcidCallbackPage', () => {
       expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
     });
 
+    // The proof itself is held to the same standard as the target fields it
+    // travels with. A token that is not a string would be cached, matched on
+    // the target, and handed to the guarded call, and on the routes whose
+    // request schema declares the proof as a bounded string the rejection it
+    // draws is one `consentOpFreshAuthRetryGate` rethrows before reaching its
+    // `clearProofCache` hook. `getCachedConsentOpProof` drops such an entry on
+    // sight, but a drop is a cache miss and a cache miss sends the consumer off
+    // to acquire, silently, which for an ORCID-only account is this same
+    // round-trip again. Refusing the write is the surface the user can act on.
+    it.each([
+      { label: 'non-string', proof: 42 },
+      { label: 'empty-string', proof: '' },
+      { label: 'missing', proof: undefined },
+    ])(
+      'fresh_auth with a $label fresh_auth_proof: surfaces error, no cache write, no navigation',
+      async ({ proof }) => {
+        const comp = createComponent();
+        mockCompleteOrcid.mockResolvedValue({
+          data: {
+            mode: 'fresh_auth',
+            fresh_auth_proof: proof,
+            expires_at: '2099-01-01T00:00:00.000Z',
+            action: 'author_accept',
+            root_author: 'alice',
+            root_permlink: 'some-paper',
+          },
+        });
+
+        await comp._verify('code', 'state', 'fresh_auth');
+
+        expect(comp.status).toBe('error');
+        expect(comp.errorMessage).toBe('orcid.verificationFailed');
+        expect(sessionStorageData['pevo_fresh_auth_consent_op_proof']).toBeUndefined();
+        expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+      },
+    );
+
     // Per-action credit-field guard. claim/approve bind author_index (the
     // name-only slot); approve/revoke bind claimer (the subject). A dropped
     // credit-field echo would cache undefined→null while the broadcast consumer

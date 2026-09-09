@@ -379,21 +379,37 @@ export function initOrcidCallbackPage() {
 
     _handleFreshAuth(data) {
       if (!this._mounted) return;
-      // Defense-in-depth on the echoed target triple. The backend integration
-      // test pin is the primary contract guard; this guard catches a release
-      // that ships with the echo dropped between test runs. Without it the
-      // SPA would silently write `undefined` into a target field and every
-      // subsequent strict-equality lookup would miss, leaving the user
-      // re-OAuthing indefinitely with no error surface.
+      // Defense-in-depth on the echoed proof and its target triple. The
+      // backend integration test pin is the primary contract guard; this guard
+      // catches a release that ships with a field dropped or retyped between
+      // test runs. Without it the SPA would silently write `undefined` into a
+      // target field and every subsequent strict-equality lookup would miss,
+      // leaving the user re-OAuthing indefinitely with no error surface.
+      //
+      // `fresh_auth_proof` is held to the same standard as the target fields it
+      // travels with, and it is the member that most needs it. A dropped target
+      // echo strands a proof no lookup matches, which the next mint replaces;
+      // a token that is not a string is cached, matched, and handed to the
+      // guarded call, and on the routes whose request schema declares the proof
+      // as a bounded string it draws a validation rejection that
+      // `consentOpFreshAuthRetryGate` rethrows before reaching its
+      // `clearProofCache` hook. `getCachedConsentOpProof` drops such an entry
+      // on sight, which bounds the damage, but a drop is a cache miss and a
+      // cache miss is an instruction to acquire: on an account whose only
+      // factor is this round-trip that is another full-page redirect and not a
+      // word to the user. Refusing the write is what turns that into the same
+      // visible, restartable failure the target fields already earn.
       //
       // Type-check `root_permlink` rather than truthy-check it: the backend's
       // `set_password` fresh_auth echo deliberately ships `root_permlink: ''`
       // (a contract-valid empty string indicating an account-level, non-paper
       // target). A truthy check would reject that valid response. The other
-      // two fields (`action`, `root_author`) are always non-empty per the
-      // wire contract; their guards combine the typeof and truthy checks so
-      // a `null` / `undefined` / wrong-type / empty value all surface error.
+      // fields (`fresh_auth_proof`, `action`, `root_author`) are always
+      // non-empty per the wire contract; their guards combine the typeof and
+      // truthy checks so a `null` / `undefined` / wrong-type / empty value all
+      // surface error.
       if (
+        typeof data.fresh_auth_proof !== 'string' || !data.fresh_auth_proof ||
         typeof data.action !== 'string' || !data.action ||
         typeof data.root_author !== 'string' || !data.root_author ||
         typeof data.root_permlink !== 'string'

@@ -623,6 +623,45 @@ export function cacheConsentOpProof(
 // than replaying one minted for a different one. Also returns null and clears
 // the slot on TTL expiry. A pre-extension cached entry (no author_index/claimer
 // fields) reads them as undefined → null, so a triple-only lookup still hits.
+//
+// A token that is not a string is corruption, and it is dropped here with the
+// tokenless and unreadable-deadline cases rather than at either orchestrator.
+// One drop at the single reader is what both cache legs inherit —
+// `withSettingsFreshAuth` and `withAuthorshipFreshAuth` each hand whatever this
+// returns straight to their guarded call — and it is the placement
+// `evictUnnamedAcquisition` chose one slot over, for the same reason: a refusal
+// carried by each consumer refuses the value without dropping the entry behind
+// it, so the next attempt on that target re-reads it and refuses again.
+// The entry cannot outlive that refusal by way of the retry gate either:
+// `consentOpFreshAuthRetryGate` rethrows anything that is not
+// FRESH_AUTH_REQUIRED before it reaches its `clearProofCache` hook, and the
+// routes whose request schema declares the proof as a bounded string answer a
+// non-string with a validation rejection rather than a fresh-auth one — the
+// accreditation-metadata edit and the admin authority actions. On those the
+// gate's clear never runs, so nothing else would drop the entry inside its TTL.
+//
+// The drop sits with the corruption checks, BEFORE the target comparison, and
+// that ordering is load-bearing in both directions. An entry whose token is not
+// a string is unusable at every target, so waiting for a target match would
+// leave it cached for the target it does match. The comparison itself still
+// returns null WITHOUT removing, deliberately: a proof minted for another
+// target is valid for that target, and evicting it on an unrelated lookup would
+// charge the user a re-auth on a paper they were not acting on.
+//
+// Ungated, and for a stronger reason than `evictUnnamedAcquisition` had to
+// argue: the read, the type test and the removal are adjacent synchronous
+// statements in one function body. No await separates them, so a subject
+// teardown cannot land between the entry this sees and the slot it clears, and
+// the successor-pays-a-re-auth harm that gates the sibling clears in
+// `broadcastWithFreshAuth` has no shape to take here. The tokenless and TTL
+// drops it joins are ungated on the same grounds.
+//
+// The refusal a user can act on lives at the write instead, in the
+// `/orcid/callback` fresh-auth handler, which is the only producer of this slot
+// and the only place a refusal has a surface to appear on. This drop is the
+// eviction, not that refusal: a miss here reads downstream as "no proof
+// cached" and sends the consumer off to acquire one, which on an ORCID-only
+// account is a full-page round-trip and not something the user is told about.
 export function getCachedConsentOpProof(
   action, rootAuthor, rootPermlink, authorIndex, claimer,
 ) {
@@ -630,7 +669,11 @@ export function getCachedConsentOpProof(
     const raw = sessionStorage.getItem(CONSENT_OP_PROOF_KEY);
     if (!raw) return null;
     const entry = JSON.parse(raw);
-    if (!entry || !entry.token || !entry.expiresAt) {
+    // An empty-string token is falsy and was always dropped here; the typeof
+    // test widens the same branch to every other shape a JSON round-trip can
+    // carry into the slot (a number, a boolean, an object, an array), each of
+    // which is truthy and would otherwise be returned and broadcast verbatim.
+    if (!entry || !entry.token || typeof entry.token !== 'string' || !entry.expiresAt) {
       sessionStorage.removeItem(CONSENT_OP_PROOF_KEY);
       return null;
     }
