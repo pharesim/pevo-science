@@ -135,32 +135,53 @@
  *     `test-only`, and that abbreviation is the commoner write.
  *
  *   - The claim-shaped span in `LOOSE_CLAIM_SRC` gives the room BETWEEN the
- *     noun `companion` and its colon a bounded run (`{0,8}`). A label whose
- *     colon lands nine or more characters past `companion` matches neither the
- *     label nor the loose claim, so the block yields labels=0 and unparsed=0
- *     and is dropped before any class is assigned — a claim gone unaudited,
- *     the same silent-drop outcome the wrapped-qualifier fix closed. Worked
- *     escape, pinned by a boundary probe below: a seven-character gap
- *     (`companion here:`) is caught, a nine-character one is not. Any finite
- *     bound can be stepped over, and widening THIS window was measured (the
- *     corpus stays green well past `{0,8}`) and declined, because every
- *     character of extra room after the noun accuses more ordinary prose about
- *     a real code path and some unrelated companion thing, and this file is
- *     deliberately precision-biased for the same reason the pre-commit anchor
- *     gate scopes itself to known slug prefixes. The run BEFORE the noun
- *     (`{0,80}`) is bounded for the mirror reason; it is wide because a real
- *     qualifier phrase can be long, and a qualifier longer than that is simply
- *     not claim-shaped here.
+ *     noun `companion` and its colon a bounded run (`{0,8}`). A NEAR-MISS
+ *     whose colon lands nine or more characters past `companion` matches
+ *     neither the label nor the loose claim, so the block yields labels=0 and
+ *     unparsed=0 and is dropped before any class is assigned — a claim gone
+ *     unaudited, the same silent-drop outcome the wrapped-qualifier fix
+ *     closed. Both arms have to fail for that. A far colon on its own silences
+ *     nothing, because a claim whose label still parses is classified whatever
+ *     its colon does; it is the near-miss, where something in the qualifier
+ *     slot has already stopped the label, that the far colon then hides.
+ *     Worked escape, pinned by the `nearMissGap` probe: an eight-character gap
+ *     is caught, a nine-character one is not. Any finite bound can be stepped
+ *     over, and widening THIS window was measured (the corpus stays green well
+ *     past `{0,8}`, though one of this file's own prose probes does not) and
+ *     declined, because every character of extra room after the noun accuses
+ *     more ordinary prose about a real code path and some unrelated companion
+ *     thing, and this file is deliberately precision-biased for the same
+ *     reason the pre-commit anchor gate scopes itself to known slug prefixes.
+ *     The run BEFORE the noun (`{0,80}`) is bounded for the mirror reason; it
+ *     is wide because a real qualifier phrase can be long, and a qualifier
+ *     longer than that is simply not claim-shaped here.
  *
  *   - The label and loose-claim detectors read the raw and rejoined (spaced)
- *     views only, never the glued one, so a wrap falling INSIDE the noun itself
- *     (`compan` / `ion`) is invisible to them: rejoined it is `compan ion`,
- *     which is not `companion`. Only `namesATestFile` reads the glued view,
- *     because that view exists to repair a wrapped FILENAME, and gluing the
- *     label and loose detectors instead would fuse `companion` into the word
- *     the wrap put beside it (`companionfixtures`) and mangle every ordinary
- *     wrapped label rather than catch the rare noun-internal one. The noun does
- *     not wrap inside itself in this corpus; the gap is recorded, not closed.
+ *     views only, never the glued one, so a wrap falling INSIDE any of the
+ *     label's own words (`compan` / `ion`, and equally `Re` / `al-path` or
+ *     `Real-pa` / `th`) is invisible to them: rejoined, `compan ion` is not
+ *     `companion`. Only `namesATestFile` reads the glued view, because that
+ *     view exists to repair a wrapped FILENAME, and gluing the label and loose
+ *     detectors instead would fuse `companion` into the word the wrap put
+ *     beside it (`companionfixtures`) and mangle every ordinary wrapped label
+ *     rather than catch the rare word-internal one. What the corpus actually
+ *     writes is a wrap at the label's own hyphen (`Real-` / `path`), which the
+ *     dash-or-space run absorbs; no word is broken inside itself here, and the
+ *     gap is recorded, not closed.
+ *
+ *   - A near-miss whose own QUALIFIER carries an abbreviation is dropped by
+ *     the same sentence-break refusal. Written `Real-path (e.g. <a backticked
+ *     path>) companion: covered`, the span breaks at the full stop inside
+ *     `e.g.`, because a backtick follows it and a backtick is not a lower-case
+ *     letter; `(i.e. (routes/foo.test.ts))` breaks the same way before its
+ *     parenthesis. The
+ *     span stops inside the qualifier, so the block yields labels=0 and
+ *     unparsed=0 and is dropped, exactly as the far-colon escape above is.
+ *     Closing the whole family means firing the refusal only before a capital,
+ *     which was measured and declined: it accuses an honest header in the
+ *     corpus and moves a backlog pin. Recorded by the `abbrevNearMiss` probe,
+ *     which pins the gap at its current width so that widening it later is a
+ *     visible probe edit rather than a silent change of recall.
  *
  * WHY COMMENTS, MOCK BODIES AND TITLES DO NOT COUNT (arm 4). Risk-class tokens
  * appear constantly in prose, including prose that pins the OPPOSITE of the
@@ -225,17 +246,22 @@
  * naming a test file in a block that is neither the labelled one nor adjacent
  * to it, and so is a file named without `.test`/`.spec` and without a
  * `tests/<dir>/` path in front of it. Nor does the citation-shaped test reach
- * across a sentence break followed by a CAPITAL: a span whose words run
- * `real ... path. The ... companion ...:` starts a new sentence at `The` and
- * is read as two here, while a lower-case continuation (the wrapped filename
- * `ops.` / `test.ts`) is deliberately crossed. That distinction is load-bearing
- * only because `looseClaimPattern` omits the `i` flag; under `i` the refusal's
- * `(?![a-z])` folds to accept capitals too and stops firing at all. The
- * refusal, the tight room between the noun and the colon, and cutting the
- * block's own citations out before the scan are the three things that keep it
- * off ordinary technical prose, which mentions a real code path constantly. The label is
- * the only
- * anchor; recall beyond it would need an unbounded phrase list that rots. The
+ * across a sentence break, and it reads a break BROADLY: `.`, `;`, `!` or `?`
+ * followed by one whitespace ends the span unless what comes next is an ASCII
+ * lower-case letter. A capital ends it, and so do a digit, a backtick, a
+ * bracket, a dash, a quote, a second space, a letter outside ASCII, and the
+ * end of the text. So a span whose words run `real ... path. The ...
+ * companion ...:` is two sentences here and no claim, while the ONE crossed
+ * continuation, a lower-case one, is the wrapped filename `ops.` / `test.ts`
+ * rejoining as `. test.ts`. That single exception is load-bearing only because
+ * `looseClaimPattern` omits the `i` flag; under `i` the refusal's `(?![a-z])`
+ * folds to accept capitals too and the lower-case arm stops discriminating,
+ * which is why the pattern's own literal words are spelt a class per letter
+ * instead of matched under the flag. The refusal, the tight room between the
+ * noun and the colon, and cutting the block's own citations out before the
+ * scan are the three things that keep it off ordinary technical prose, which
+ * mentions a real code path constantly. The label is the only anchor; recall
+ * beyond it would need an unbounded phrase list that rots. The
  * label pattern accepts `real`, `path` and `companion(s)` joined by dashes or
  * spaces (or nothing), up to two qualifying words before the noun (a word, not
  * a stop word, not a path, optionally wrapped in brackets, quotes or
@@ -823,6 +849,18 @@ const STOP_WORDS =
  *  or emphasis, followed by whitespace or a dash. Never a path or a sentence:
  *  `.` and `/` are not word characters, so a filename cannot fill the slot.
  *
+ *  Every run inside a qualifier is bounded: the wrappers on either side, and
+ *  the word between them. Those are cost bounds rather than taste, and the
+ *  partition argument behind them is in `LABEL_SRC`'s docblock. The lengths
+ *  sit well clear of any honest spelling here, whose longest qualifier word is
+ *  ten characters and whose deepest wrapping is one bracket, so bounding them
+ *  changes what parses as a label in no case this corpus or these probes
+ *  contain. What a bound does cost is at its far side: a qualifier word longer
+ *  than the bound is not a qualifier, so a claim carrying one is no longer a
+ *  label, and if it also carries no colon within reach it is dropped rather
+ *  than counted. Every finite bound has that edge; this one is placed past
+ *  every identifier the codebase can name so that nothing honest reaches it.
+ *
  *  The stop-word refusal rejects a qualifier that IS a stop word, not one that
  *  merely begins with one: `\b` falls between the `no` and the hyphen of
  *  `no-mock`, so under a `\b` the corpus's own commonest qualifier read as the
@@ -830,7 +868,7 @@ const STOP_WORDS =
  *  \`some.test.ts\`` was neither a label nor (lacking a colon) a citation-shaped
  *  claim, so the block was dropped unaudited. Changing one word of it
  *  (`mock-free`) was caught. */
-const QUALIFIER = String.raw`(?:(?!(?:${STOP_WORDS})(?![\w-]))[(\[\x60'"*_]*[\w-]+[)\]\x60'"*_]*[\s-]{1,4})`;
+const QUALIFIER = String.raw`(?:(?!(?:${STOP_WORDS})(?![\w-]))[(\[\x60'"*_]{0,4}[\w-]{1,64}[)\]\x60'"*_]{0,4}[\s-]{1,4})`;
 
 /**
  * The label, as a pattern source shared by the label count and both citation
@@ -841,37 +879,86 @@ const QUALIFIER = String.raw`(?:(?!(?:${STOP_WORDS})(?![\w-]))[(\[\x60'"*_]*[\w-
  * (Postgres) companion`, `Real-path \`argon2\` companion`, `**Real-path**
  * companion`, `Real-path \`companion\`` and `@realPathCompanion` all count.
  *
- * Every run of dashes-or-spaces the label admits is bounded (`{0,4}` between
- * the words, `{1,4}` at a qualifier's tail, in QUALIFIER above). Unbounded
- * (`[\s-]*` / `[\s-]+`), two adjacent runs can partition the same stretch of
- * dashes in many ways, and a section underline or separator written directly
- * against `real-path` makes the label backtrack super-linearly over those
- * partitions before it fails for want of `companion` — 180 dashes cost seconds.
- * A canary slow enough to look hung gets disabled, so the runs are bounded to
- * a length no honest label spelling in this corpus exceeds. The cost is pinned
- * by a probe below.
+ * A section underline or separator written directly against `real-path`
+ * (`real-path--------...`, or the same run in underscores, asterisks or
+ * backticks) is the adversarial input here. Every way of splitting that run
+ * between the label's own quantifiers is a partition the match explores before
+ * it fails for want of `companion`, so the cost is set by how many partitions
+ * the quantifiers admit between them. EVERY run in the label is therefore
+ * bounded: `{0,4}` between the words, the emphasis run on either side of the
+ * qualifier slot, and, in QUALIFIER above, a qualifier word and its wrappers.
+ * The word's bound is `{1,64}`, comfortably clear of the longest exported
+ * symbol name in `backend/src` (42 characters), so a qualifier that names an
+ * identifier is never refused; a hyphenated compound is longer still and
+ * splits across the two qualifier slots at its own dashes.
+ *
+ * Bounding only the dash-or-space runs was measured and is not enough. With
+ * the qualifier's own word left unbounded the match stayed quadratic in the
+ * length of a dash run: 6400 dashes cost about nine seconds through
+ * `labelCount` and about nineteen through `citationsIn`, which embeds this
+ * same source. Leaving the emphasis runs or a qualifier's wrappers unbounded
+ * moves the same cost onto a run of underscores, asterisks or backticks, and
+ * makes it worse, because an underscore is both a word character and an
+ * emphasis character and two unbounded runs can split one between them: 800
+ * underscores did not finish inside a minute. Fully unbounded (`[\s-]*` /
+ * `[\s-]+`), 180 dashes already cost seconds. With every run bounded the work
+ * is constant per starting position, measured flat from 6400 to 120,000
+ * characters. A canary slow enough to look hung gets disabled, which is why
+ * the separator-run timing spec puts a run of each of those shapes through
+ * both `labelCount` and `citationsIn`, at two lengths, shortest first, so that
+ * a regression fails in seconds rather than never returning.
  */
 const LABEL_SRC =
-  String.raw`real[\s-]{0,4}path[\s-]{0,4}(?:[*_\x60]+[\s-]{0,4})?${QUALIFIER}{0,2}(?:<[a-z]+>|[*_\x60]+)?companions?(?:\(s\))?`;
+  String.raw`real[\s-]{0,4}path[\s-]{0,4}(?:[*_\x60]{1,4}[\s-]{0,4})?${QUALIFIER}{0,2}(?:<[a-z]+>|[*_\x60]{1,4})?companions?(?:\(s\))?`;
 
 /** Anything that keeps a phrase going: a comma, a bracket, the dots inside a
  *  filename. Not a sentence break, which ends the phrase and begins an
- *  unrelated one, and without which "runs on the real path. The companion
- *  suites pin it:" reads as a claim. Load-bearing now that the span is matched
- *  across the wraps of a whole block rather than within one line.
+ *  unrelated one, and without which "runs on the real path. The
+ *  companion: covered" reads as a claim. (The longer spelling, "the companion
+ *  suites pin it:", is held off by the room after the noun rather than by the
+ *  refusal, so it demonstrates the window and not this rule.) Load-bearing now
+ *  that the span is matched across the wraps of a whole block rather than
+ *  within one line.
  *
- *  A new sentence begins with a capital, so `[.;!?]\s` before a NON-lower-case
- *  letter ends the phrase; a filename the docblock wrapped at its own dot
- *  (`custody-consent-ops.` / `test.ts`) rejoins as `. test.ts`, whose
- *  lower-case continuation is NOT a sentence break, so the span crosses it and
- *  the wrapped name is still seen. That lower-case-vs-capital distinction is
- *  the whole point of the `(?![a-z])`, so the pattern this appears in
- *  (`looseClaimPattern`) is built WITHOUT the `i` flag: under `i`, `[a-z]`
- *  folds to match `A-Z` too, the lookahead can no longer tell a capital from a
- *  lower-case letter, the refusal is inert, and `real path. The companion:`
- *  is read as a claim. The literal words in `LOOSE_CLAIM_SRC` are spelt as
- *  case classes to keep case-insensitive matching without the flag. */
+ *  The refusal is a lower-case-CONTINUATION rule, not capital detection, and
+ *  it is broader than a sentence: `[.;!?]` plus one whitespace ends the phrase
+ *  unless the very next character is an ASCII lower-case letter. A capital
+ *  ends it, and so do a digit, a backtick, a bracket, a dash, a quote, a
+ *  second space, a letter outside ASCII, and the end of the text. The one
+ *  crossing is what earns the rule: a filename the docblock wrapped at its own
+ *  dot (`custody-consent-ops.` / `test.ts`) rejoins as `. test.ts`, and that
+ *  lower-case continuation is not a break, so the wrapped name is still seen.
+ *
+ *  That single exception is the whole point of the `(?![a-z])`, so the pattern
+ *  this appears in (`looseClaimPattern`) is built WITHOUT the `i` flag: under
+ *  `i`, `[a-z]` folds to match `A-Z` too, the lookahead can no longer tell a
+ *  capital from a lower-case letter, and `real path. The companion:` is read
+ *  as a claim. (The rest of the refusal survives `i`; only the letter arm
+ *  collapses.) The literal words in `LOOSE_CLAIM_SRC` are spelt a class per
+ *  letter by `anyCase` so that dropping the flag costs no casing recall.
+ *
+ *  The breadth is deliberate and is pinned in both directions by probes.
+ *  Firing only before a capital would let prose above a `(c)` clause marker
+ *  reach the claim below it, and that narrowing was measured against the
+ *  corpus: it accuses an honest header and moves a backlog pin. What the
+ *  breadth costs is the abbreviation near-miss recorded in the header's list
+ *  of gaps left open on purpose. */
 const CLAIM_SPAN = String.raw`(?:(?![.;!?]\s(?![a-z]))[^\n])`;
+
+/** A plain lower-case word as a pattern source that matches in ANY casing
+ *  without an `i` flag: one two-member class per letter, so `anyCase('real')`
+ *  is `[Rr][Ee][Aa][Ll]`. `looseClaimPattern` cannot carry the flag, because
+ *  the sentence-break refusal in `CLAIM_SPAN` needs `[a-z]` to keep meaning
+ *  lower-case, so every literal letter it matches has to spell both of its own
+ *  cases. Written out by hand only the LEADING letter of each word got a
+ *  class, which left the loose guard with less casing recall than the label
+ *  pattern it backs up: a near-miss written `REAL-PATH ... COMPANION:`, a
+ *  spelling this corpus's own clause-(c) blocks use, matched neither, so its
+ *  block yielded labels=0 and unparsed=0 and went unaudited. Building the
+ *  classes makes "every letter, both cases" mechanical instead of something a
+ *  later editor has to remember. */
+const anyCase = (word: string): string =>
+  [...word].map((letter) => `[${letter.toUpperCase()}${letter}]`).join('');
 
 /** What a reader takes for a citation even when the label does not parse: the
  *  words `real`/`path` and `companion` with a colon straight after. Every such
@@ -882,17 +969,22 @@ const CLAIM_SPAN = String.raw`(?:(?![.;!?]\s(?![a-z]))[^\n])`;
  *  ("running on the real path with a mocked companion here:") is common, and
  *  every extra character of slack there accuses more of it.
  *
- *  The literal words are case CLASSES, not `real`/`path`/`companion` under an
- *  `i` flag, because the sentence-break refusal inside `CLAIM_SPAN` needs
- *  `(?![a-z])` to mean lower-case only; see that docblock. The dash-or-space
+ *  The literal words are spelt a class per LETTER by `anyCase`, not
+ *  `real`/`path`/`companion` under an `i` flag, because the sentence-break
+ *  refusal inside `CLAIM_SPAN` needs `(?![a-z])` to mean lower-case only; see
+ *  that docblock. Every casing therefore reads here exactly as it does under
+ *  `labelPattern`'s `i`, which is the point: a guard that exists to catch what
+ *  the label pattern misses must not read fewer spellings than the label does.
+ *  Both halves of the plural need it, the `s` and the `(s)`. The dash-or-space
  *  run between the words is bounded for the same reason `LABEL_SRC`'s is. */
 const LOOSE_CLAIM_SRC =
-  String.raw`[Rr]eal[\s-]{0,4}[Pp]ath${CLAIM_SPAN}{0,80}?[Cc]ompanions?(?:\(s\))?${CLAIM_SPAN}{0,8}?:`;
+  String.raw`${anyCase('real')}[\s-]{0,4}${anyCase('path')}${CLAIM_SPAN}{0,80}?${anyCase('companion')}[Ss]?(?:\([Ss]\))?${CLAIM_SPAN}{0,8}?:`;
 
 /** Fresh objects on every call. All are `g`-flagged, and a shared instance
  *  carries `lastIndex` between calls, which silently skips matches.
- *  `looseClaimPattern` alone omits `i`: its source spells the label words as
- *  case classes so that `CLAIM_SPAN`'s `(?![a-z])` keeps meaning lower-case. */
+ *  `looseClaimPattern` alone omits `i`: its source spells every letter of the
+ *  label words as its own class (`anyCase`) so that `CLAIM_SPAN`'s `(?![a-z])`
+ *  keeps meaning lower-case. */
 const labelPattern = (): RegExp => new RegExp(LABEL_SRC, 'giu');
 const labelAt = (): RegExp => new RegExp(`^${LABEL_SRC}`, 'iu');
 const looseClaimPattern = (): RegExp => new RegExp(LOOSE_CLAIM_SRC, 'gu');
@@ -1764,8 +1856,11 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     // the same rejoined view, so widening one does not accuse the other.
     expect(unparsedClaims(block(' (c) Real-path SQL', '     companion: `backend/tests/a.test.ts` [A]'))).toHaveLength(0);
     // And prose whose sentence merely ENDS in the word `path` before an
-    // unrelated one begins is not a claim, on one line or across a wrap. This
-    // is what the widened window would otherwise start accusing.
+    // unrelated one begins is not a claim, on one line or across a wrap. The
+    // two are held off by different arms, which is why both are here: widening
+    // the room after the noun alone starts accusing the second, while the
+    // first needs the refusal AND that room removed together before it reads
+    // as a claim.
     for (const prose of [
       'runs on the real path. The companion suites above pin it: see below',
       'exercised on the real path; the companion fixtures live here: see below',
@@ -1773,18 +1868,77 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       expect(unparsedClaims(prose), prose).toHaveLength(0);
       expect(unparsedClaims(prose.replace('. ', '.\n     ').replace('; ', ';\n     ')), prose).toHaveLength(0);
     }
-    // The sentence-break refusal, in both directions. It fires on a CAPITAL
-    // after the break, so `. The companion:` is two sentences and no claim; it
-    // is deliberately crossed by a LOWER-CASE continuation (a filename the wrap
-    // broke at its own dot), so `. the companion:` is read as one claim. This
-    // is the item the refusal exists for, and it works only because
-    // `looseClaimPattern` omits the `i` flag: under `i` the `(?![a-z])` folds
-    // to accept capitals too and the first assertion below flips to 1.
+    // The sentence-break refusal, in both directions. It ends the span after a
+    // break on anything that is NOT an ASCII lower-case letter, so
+    // `. The companion:` is two sentences and no claim; the lower-case
+    // continuation is the one thing it crosses (a filename the wrap broke at
+    // its own dot), so `. the companion:` is read as one claim. That single
+    // exception works only because `looseClaimPattern` omits the `i` flag:
+    // under `i` the `(?![a-z])` folds to accept capitals too and the
+    // `. The companion:` assertion flips to 1.
     expect(unparsedClaims('runs on the real path. The companion: covered')).toHaveLength(0);
     expect(unparsedClaims('runs on the real path. the companion: covered')).toHaveLength(1);
     // The same distinction across a wrap, so it is not an artifact of one line.
     expect(unparsedClaims(block(' runs on the real path.', '     The companion: covered'))).toHaveLength(0);
     expect(unparsedClaims(block(' runs on the real path.', '     the companion: covered'))).toHaveLength(1);
+    // Dropping the flag must cost no casing recall, which is what `anyCase`
+    // buys: a class per LETTER rather than per word. With only the leading
+    // letter classed, a near-miss carrying an interior capital matched neither
+    // the label nor the loose claim, so its block yielded labels=0 and
+    // unparsed=0 and went unaudited, while `labelPattern`, which does carry
+    // `i`, read the honest spelling beside it. The shouted form is one member
+    // of that set and the corpus writes it, so the whole set is pinned.
+    for (const shout of [
+      ' (c) REAL-PATH (also routes/foo.test.ts) COMPANION: covered',
+      ' (c) REAL-PATH (also routes/foo.test.ts) COMPANIONS: covered',
+      ' (c) REAL-PATH (also routes/foo.test.ts) COMPANION(S): covered',
+      ' (c) REAL-path (also routes/foo.test.ts) companion: covered',
+      ' (c) real-PATH (also routes/foo.test.ts) companions: covered',
+    ]) {
+      expect(unparsedClaims(shout), shout).toHaveLength(1);
+      expect(labelCount(shout), shout).toBe(0);
+    }
+    expect(unparsedClaims(block(' (c) REAL-PATH (also routes/foo.test.ts)', '     COMPANION: covered'))).toHaveLength(1);
+    // The bracketed plural is a second literal and needs classing in its own
+    // right. It only shows once the room after it is spent: with `(S)` matched
+    // by the plural group the eight characters of slack still reach the colon,
+    // and with the group matching nothing they have to cover `(S)` as well and
+    // fall three short. The lower-case twin is caught either way, which is
+    // what makes this an assertion about the CASING rather than the group.
+    expect(unparsedClaims(' (c) REAL-PATH (also routes/foo.test.ts) COMPANION(S)xxxxxxxx: covered')).toHaveLength(1);
+    expect(unparsedClaims(' (c) Real-path (also routes/foo.test.ts) companion(s)xxxxxxxx: covered')).toHaveLength(1);
+    // Casing does not defeat the refusal either, which is the one thing
+    // omitting the flag buys: a capital after the stop still ends the phrase
+    // whatever the casing of the words around it.
+    expect(unparsedClaims('runs on the REAL PATH. The COMPANION: covered')).toHaveLength(0);
+    expect(unparsedClaims('runs on the REAL PATH. the COMPANION: covered')).toHaveLength(1);
+    // And the shouted label the corpus does write parses as the label, so the
+    // wider loose guard must not turn those honest headers into claims against
+    // themselves.
+    expect(unparsedClaims(block(
+      ' (c) REAL-PATH COMPANION: `custody-session-auth.test.ts` exercises the',
+      '     same route against real argon2 and real Postgres.',
+    ))).toHaveLength(0);
+    // The refusal's BREADTH, pinned so that narrowing it is a visible probe
+    // edit. It ends the span on any non-lower-case continuation and not only
+    // on a capital, which is what keeps prose above a `(c)` clause marker out
+    // of reach of the claim that follows it. Firing only before a capital
+    // (`\s\p{Lu}` in place of the negative lookahead) flips this to 1, and
+    // accuses a header in the corpus into the bargain.
+    expect(unparsedClaims('preserved real-path because every spec issues a call. (c) Real-path SQL companion: x')).toHaveLength(0);
+    // What the breadth costs, recorded rather than closed: a near-miss whose
+    // own qualifier carries an abbreviation breaks at the abbreviation's full
+    // stop, because what follows it is a backtick or a parenthesis rather than
+    // a lower-case letter, and the claim is dropped unaudited. The header
+    // lists this among the gaps left open on purpose; these two pin its
+    // current width, so widening it later cannot happen silently.
+    for (const abbrevNearMiss of [
+      ' (c) Real-path (e.g. `backend/tests/routes/foo.test.ts`) companion: covered',
+      ' (c) Real-path (i.e. (routes/foo.test.ts)) companion: covered',
+    ]) {
+      expect(unparsedClaims(abbrevNearMiss), abbrevNearMiss).toHaveLength(0);
+      expect(labelCount(abbrevNearMiss), abbrevNearMiss).toBe(0);
+    }
 
     // The room between the noun and its colon is `{0,8}`: a near-miss claim (a
     // path in the qualifier slot stops it parsing as the label) whose colon
@@ -2080,8 +2234,9 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       .toEqual([expect.stringContaining('carries no companion citation naming')]);
     // The back-link is resolved by CANONICAL path on both sides, so a back
     // citation written with a `/./` segment still answers this declaration.
-    // Reverting the filter to string equality (the shape it had before this
-    // round) would miss it and falsely accuse an honest link.
+    // Reverting the filter to string equality (dropping the
+    // `path.posix.normalize` canonicalisation) would miss it and falsely
+    // accuse an honest link.
     expect(citationViolations(citing, reverse('backend/tests/routes/mocked.test.ts'), synthetic,
       stub('/**\n * Real-path companion: `backend/tests/routes/./synthetic.test.ts` [ALPHA]\n */\nconst x = 1;')))
       .toEqual([]);
@@ -2136,21 +2291,46 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     expect(tokenReach('SESSION_INVALIDATED', sources)).toBeGreaterThan(0);
   });
 
-  it('the label pattern does not backtrack super-linearly on a run of dashes', () => {
-    // A section underline or separator written directly against `real-path`
-    // (`real-path------------...`) makes the label partition the dash run
-    // between its own `[\s-]` quantifiers and the qualifier's trailing one in
-    // many ways, and every partition is explored before the match fails for
-    // want of `companion`. Unbounded, ~180 dashes cost seconds; a canary slow
-    // enough to look hung gets disabled. The `{0,4}`/`{1,4}` bounds cap each
-    // run so the partitions are constant, not O(n). This pins the cost so it
-    // cannot regress unseen; the bound is generous (a few ms bounded,
-    // seconds-to-timeout unbounded) so machine variance cannot flake it.
-    const adversarial = `real-path${'-'.repeat(400)}x`;
-    const start = performance.now();
-    expect(labelCount(adversarial)).toBe(0);
-    const elapsed = performance.now() - start;
-    expect(elapsed, `label matching took ${elapsed.toFixed(1)}ms on a 400-dash run`).toBeLessThan(250);
+  it('the label and both citation parsers stay flat on a separator run', () => {
+    // A section underline or separator written directly against `real-path` is
+    // the adversarial input: the label partitions that run between its own
+    // quantifiers and explores every partition before it fails for want of
+    // `companion`. A 400-dash run was too short to show it. Bounding only the
+    // dash-or-space runs left the match quadratic in a DASH run (6400 dashes:
+    // about 9s through `labelCount`, about 19s through `citationsIn`), and
+    // leaving a qualifier's wrappers or the emphasis run before it unbounded
+    // moved the same cost onto UNDERSCORES, ASTERISKS and BACKTICKS, where it
+    // is worse, since an underscore is both a word character and an emphasis
+    // character. So every shape is run, and each is run at two lengths.
+    //
+    // TWO LENGTHS, SHORT FIRST, and the order is the point. These failures
+    // differ in cost by orders of magnitude, and a canary that hangs gets
+    // disabled as surely as a slow one: unbounded, a 100,000-dash run does not
+    // return at all, while 6400 costs about eight seconds and fails. The short
+    // pass therefore aborts the spec on the expensive regressions before the
+    // long pass runs, and the long pass catches the cheap ones, where an
+    // unbounded emphasis run costs about 53ms at 6400 (green under any bound
+    // this side of flaky) and about 4.4s at 100,000. Bounded, the slowest
+    // shape measures about 2ms at either length and does not grow between
+    // them, so the threshold sits two orders of magnitude clear of green.
+    // `citationsIn` is timed as well as `labelCount` because `forwardPattern`
+    // and `reversePattern` embed the same `LABEL_SRC` and run first on every
+    // block.
+    for (const runLength of [6_400, 100_000]) {
+      for (const sep of ['-', '_', '*', '`', 'a-', 'a_', '_-*`']) {
+        const adversarial = `real-path${sep.repeat(Math.ceil(runLength / sep.length))}x`;
+        for (const [name, run] of [
+          ['labelCount', (): void => expect(labelCount(adversarial)).toBe(0)],
+          ['citationsIn', (): void => expect(citationsIn(adversarial)).toHaveLength(0)],
+        ] as const) {
+          const start = performance.now();
+          run();
+          const elapsed = performance.now() - start;
+          expect(elapsed, `${name} took ${elapsed.toFixed(1)}ms on a ${runLength}-character run of ${JSON.stringify(sep)}`)
+            .toBeLessThan(250);
+        }
+      }
+    }
   });
 
   it('the ratchet classifies planted blocks correctly and the backlog reconciler names every disagreement', () => {
