@@ -43,20 +43,26 @@
  * refresh `created_at` in their `ON CONFLICT ... DO UPDATE` branches and leave
  * `updated_at` alone, which reads like an oversight to be tidied up. It is not,
  * and the reason is NOT the duplicate-email pre-check in `POST /signup`. That
- * check answers 409 only for a `verify_token` that is NULL or carries a
- * `confirmed:` prefix, and the state ARCHITECTURE.md section 6.1 enumerates as
- * G — a self-custody account that acquired a row by registering an email
- * through settings: username set, `custody` NULL, a random hex token while that
- * email is unverified — matches neither form and falls through to the
- * `DO UPDATE` branch. Two things make that overwrite inert for this invariant.
- * The branch's own column list does not name the marker, so it is not moved.
- * And both recovery lookups filter on `custody`, one for `'light'` and one for
- * `'self'`, while state G is neither, so no row the branch can still reach is a
- * row either lookup admits. Leaving `updated_at` out of the branch is the
- * defence in depth behind the second of those, and symmetrising the branch to
- * touch every column is the shape this canary exists to stop. That the upsert
- * can overwrite a finalized state G row at all is a separate defect in
- * `POST /signup`, tracked on its own; it is not what this scan guards.
+ * check answers 409 for exactly two token shapes, NULL and a `confirmed:`
+ * prefix, so every row carrying a random hex token falls through to the
+ * `DO UPDATE` branch: state E, which is the branch's intended target, and state
+ * G, which is not — a self-custody account that acquired a row by registering
+ * an email through settings, username set and `custody` NULL, carrying a hex
+ * token while that email is unverified (ARCHITECTURE.md section 6.1).
+ *
+ * Two things make that overwrite inert for this invariant. The branch's own
+ * column list does not name the marker, so it is not moved. And the branch
+ * WRITES a non-NULL `verify_token`, while both recovery lookups require
+ * `verify_token IS NULL` — so a row the branch has touched is invisible to both
+ * until some later statement clears the token, and the only statements that do
+ * are the two finalizes, which are licensed to stamp the marker at that moment.
+ * That barrier is structural: it holds for whatever the fall-through set turns
+ * out to be, where the `custody` filters on the two lookups hold only while the
+ * section 6.1 enumeration does. Leaving `updated_at` out of the branch is the
+ * defence in depth behind both, and symmetrising the branch to touch every
+ * column is the shape this canary exists to stop. That the upsert can overwrite
+ * a finalized state G row at all is a separate defect in `POST /signup`,
+ * tracked on its own; it is not what this scan guards.
  *
  * WHY A SOURCE SCAN. A CHECK of the same family as the custody-alignment
  * constraint, `upgraded_at IS NULL OR upgraded_at >= updated_at`, would pin the
@@ -179,10 +185,10 @@
  *
  *   - Detection is TEXTUAL: the comment blanking in {@link blankLine}, the
  *     statement read in {@link statementAt}, and the symbol attribution in
- *     `tests/support/enclosing-symbol.ts`. A
- *     dynamically NAMED target — `UPDATE ${table}`, an `EXECUTE format('UPDATE
- *     %I SET updated_at = now()', 'accounts')` in a migration — hides from the
- *     table-first scan, because there is no literal `accounts` to anchor on.
+ *     `tests/support/enclosing-symbol.ts`. A dynamically NAMED target —
+ *     `UPDATE ${table}`, an `EXECUTE format('UPDATE %I SET updated_at =
+ *     now()', 'accounts')` in a migration — hides from the table-first scan,
+ *     because there is no literal `accounts` to anchor on.
  *     The assignment it carries reds under the fail-closed arm instead, since
  *     no readable head reaches it, and that backstop is what the limit rests
  *     on. It holds only while the COLUMN is spelled: make both identifiers
@@ -369,13 +375,19 @@ const ROW_TARGET_LIST_RE = /\(([^()]*)\)\s*=(?![=>])/;
  *  string is untouched. */
 const TYPESCRIPT_LOCAL_RE = /\b(?:const|let|var)\s+updated_at\s*[:=]/;
 
-/** The window {@link assignmentIndex} tests for a local declaration around a
- *  match: back far enough to hold the longest declaration keyword and the
- *  whitespace after it, forward far enough to hold the `:` or `=` the pattern
- *  needs. Both are deliberately small — the window exists so the exclusion
- *  applies to the match it precedes rather than to the whole text. */
+/** How far BACK {@link assignmentIndex} looks for a declaration keyword when
+ *  deciding whether a match is a TypeScript local: far enough to hold the
+ *  longest keyword and the whitespace after it, and no farther. The bound
+ *  exists so the exclusion applies to the match it precedes rather than to the
+ *  whole text, and it is two-sided — widened, it starts dropping real writes
+ *  that merely follow the characters of a declaration inside a value.
+ *
+ *  There is deliberately no matching FORWARD bound. The pattern's own `\s*`
+ *  before the `:` or `=` admits any run of whitespace, so any fixed number is
+ *  either arbitrary or wrong, and reading forward to the end of the text costs
+ *  nothing: a match there still requires the keyword to sit within the bound
+ *  above it. */
 const LOCAL_DECLARATION_BEFORE = 12;
-const LOCAL_DECLARATION_AFTER = 2;
 
 /** Where `text` FIRST writes the column, in either spelling, or -1. The
  *  position is what lets {@link targetTable} ask which statement encloses the
@@ -401,12 +413,7 @@ function assignmentIndex(text: string): number {
     // =` appearing anywhere — in a value, in prose the blanking left alone —
     // would switch detection off for an entire line or statement, which is a
     // silent pass and the one direction this file cannot afford.
-    if (
-      TYPESCRIPT_LOCAL_RE.test(
-        text.slice(Math.max(0, at - LOCAL_DECLARATION_BEFORE), at + 'updated_at'.length + LOCAL_DECLARATION_AFTER),
-      )
-    )
-      continue;
+    if (TYPESCRIPT_LOCAL_RE.test(text.slice(Math.max(0, at - LOCAL_DECLARATION_BEFORE)))) continue;
     note(at);
     break;
   }
@@ -607,6 +614,13 @@ interface BlankState {
    *  be blanked like any other; a value is data, where a comment marker is one
    *  of its characters. */
   dollarCode: boolean;
+  /** The tag of a dollar-quoted VALUE nested inside that body, or null. A body
+   *  is source, so a literal inside it is data again, and PostgreSQL requires
+   *  the inner tag to differ from the outer one. Without this the body's own
+   *  comment handling reads a `--` belonging to the nested value as a comment
+   *  and blanks the rest of its line, which erases whatever live SQL follows —
+   *  the one direction blanking must never take. */
+  dollarNested: string | null;
 }
 
 /** A `--` glued to an identifier on either side, which is TypeScript's
@@ -662,16 +676,22 @@ const DOLLAR_CODE_BODY_RE = /\b(?:DO|AS)\s*$/i;
 
 /** Whether the span opening after `before` on `lineIndex` is a code body.
  *
- *  `before` is the current line already blanked up to the opener, so a comment
- *  ahead of the keyword cannot supply one. When the opener leads its line — the
- *  `AS` on one line and `$$` on the next — the previous non-blank line is read
- *  RAW, since its blanked form is not in hand here; that spelling appears in
- *  neither scanned tree today and the limit is recorded with the others. */
-function opensCodeBody(lines: string[], lineIndex: number, before: string): boolean {
+ *  Every line consulted is a BLANKED one: `before` is the current line already
+ *  blanked up to the opener, and when the opener leads its line — the `AS` on
+ *  one line and `$$` on the next — the walk reads back through `blanked`, the
+ *  lines this same pass has already finished. Reading either RAW gets the
+ *  judgement wrong in both directions, and both are silent. A comment sitting
+ *  after the keyword (`... AS -- see below`) hides it, so a real routine body
+ *  reads as a value and the comment-gap class reopens inside it. And SQL prose
+ *  ending in one of the keywords (`-- nothing else to do`, `-- stored exactly
+ *  as`) supplies one, so a following VALUE is blanked as code and its own `--`
+ *  erases live statement text. Migrations here write `--` prose in quantity, so
+ *  the second is the likelier of the two. */
+function opensCodeBody(blanked: string[], lineIndex: number, before: string): boolean {
   if (before.trim() !== '') return DOLLAR_CODE_BODY_RE.test(before);
   for (let i = lineIndex - 1; i >= 0; i--) {
-    if (lines[i].trim() === '') continue;
-    return DOLLAR_CODE_BODY_RE.test(lines[i]);
+    if (blanked[i] === undefined || blanked[i].trim() === '') continue;
+    return DOLLAR_CODE_BODY_RE.test(blanked[i]);
   }
   return false;
 }
@@ -686,9 +706,11 @@ function opensCodeBody(lines: string[], lineIndex: number, before: string): bool
  *
  *  The search runs to the end of the file rather than to a fixed lookahead.
  *  A bounded one answers "not a comment" for every block comment longer than
- *  the bound, which reads that comment's prose as live source — and this tree
- *  writes docblocks in the hundreds of lines, one of them over a thousand. That
- *  is how a `$` inside comment prose came to open a phantom quoted span. The
+ *  the bound, and reads that comment's prose as live source instead. Thirteen
+ *  of the block comments in the scanned trees run past sixty lines and the
+ *  longest is 159, so a sixty-line bound put all thirteen in that state — which
+ *  is how a `$1..$4` written in the prose of one of them opened a phantom
+ *  dollar-quoted span and switched blanking off for the rest of its file. The
  *  file is already in memory, so the unbounded search costs nothing, and the
  *  bound's purpose is served by the two answers that remain: no closer anywhere
  *  is not a comment, and inside a template the closer must precede the
@@ -712,10 +734,11 @@ function blankLine(
   lineIndex: number,
   state: BlankState,
   sql: boolean,
+  blanked: string[] = [],
 ): { text: string; state: BlankState } {
   const line = lines[lineIndex];
   const escapes = !sql;
-  let { block, template, dollar, dollarCode } = state;
+  let { block, template, dollar, dollarCode, dollarNested } = state;
   let opaque: string | null = null;
   let out = '';
   let i = 0;
@@ -748,11 +771,25 @@ function blankLine(
         opaque = null;
         dollar = null;
         dollarCode = false;
+        dollarNested = null;
       } else if (char === opaque) opaque = null;
       i++;
       continue;
     }
     if (dollar !== null) {
+      // A literal nested inside a code body is data again, and its characters
+      // are read before the body's own comment handling can blank one of them.
+      if (dollarNested !== null) {
+        if (line.startsWith(dollarNested, i)) {
+          out += dollarNested;
+          i += dollarNested.length;
+          dollarNested = null;
+          continue;
+        }
+        out += char;
+        i++;
+        continue;
+      }
       if (line.startsWith(dollar, i)) {
         out += dollar;
         i += dollar.length;
@@ -776,6 +813,18 @@ function blankLine(
         out += char;
         i++;
         continue;
+      }
+      if (char === '$') {
+        const inner = line.slice(i).match(DOLLAR_QUOTE_RE);
+        // PostgreSQL requires a nested tag to differ from the one that opened
+        // the body, and the body's terminator was tested above, so any opener
+        // reaching here starts a value.
+        if (inner !== null && line[i + inner[0].length] !== '{' && dollarCloses(lines, lineIndex, i, inner[0])) {
+          dollarNested = inner[0];
+          out += inner[0];
+          i += inner[0].length;
+          continue;
+        }
       }
       if (char === '-' && next === '-') {
         out += ' '.repeat(line.length - i);
@@ -821,7 +870,7 @@ function blankLine(
         dollarCloses(lines, lineIndex, i, opener[0])
       ) {
         dollar = opener[0];
-        dollarCode = opensCodeBody(lines, lineIndex, out);
+        dollarCode = opensCodeBody(blanked, lineIndex, out);
         out += opener[0];
         i += opener[0].length;
         continue;
@@ -848,7 +897,7 @@ function blankLine(
     out += char;
     i++;
   }
-  return { text: out, state: { block, template, dollar, dollarCode } };
+  return { text: out, state: { block, template, dollar, dollarCode, dollarNested } };
 }
 
 /** Every line of a file with its comments blanked, read from the top so a
@@ -862,11 +911,12 @@ function blankLine(
  *  once instead of one of them. Reading the state out is what turns that from a
  *  defect someone has to think of into a red bar. */
 function blankAll(lines: string[], sql: boolean): { code: string[]; state: BlankState } {
-  let state: BlankState = { block: false, template: false, dollar: null, dollarCode: false };
-  const code = lines.map((_line, i) => {
-    const blanked = blankLine(lines, i, state, sql);
+  let state: BlankState = { block: false, template: false, dollar: null, dollarCode: false, dollarNested: null };
+  const code: string[] = [];
+  lines.forEach((_line, i) => {
+    const blanked = blankLine(lines, i, state, sql, code);
     state = blanked.state;
-    return blanked.text;
+    code.push(blanked.text);
   });
   return { code, state };
 }
@@ -1464,6 +1514,13 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // text inside a SET list does.
     expect(assignsColumn('  const updated_at = row.updated_at;')).toBe(false);
     expect(assignsColumn('  let updated_at: Date | null = null;')).toBe(false);
+    // Each declaration keyword, and a run of whitespace before the sign — which
+    // is what the pattern's own `\s*` admits and no forward bound can put a
+    // number on. (The annotation spelling `updated_at:` is excluded a step
+    // earlier, by the assignment pattern's own `\s*=`, so no fixture here can
+    // reach the declaration pattern's `:` alternative.)
+    expect(assignsColumn('  var updated_at = 1;')).toBe(false);
+    expect(assignsColumn('  const updated_at   = row.updated_at;')).toBe(false);
     expect(assignsColumn('             signup_binding_hash = NULL, updated_at = NOW()')).toBe(true);
     // A row assignment LEFT of a plain one. The two spellings are collected and
     // the earlier returned, rather than the plain form answering first: a
@@ -2035,6 +2092,13 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     const neverCloses = asCode(['  const keys = `${prefix}:sessions/*`;', ...Array.from({ length: 400 }, () => '  filler')]);
     expect(neverCloses[1]).toBe('  filler');
     expect(neverCloses[400]).toBe('  filler');
+    // That fixture answers on the template arm — the search stops at the
+    // backtick before it can run off the end — so the no-closer-anywhere
+    // refusal itself is pinned here, outside a template, where reaching the end
+    // of the file IS the answer.
+    const filler = Array.from({ length: 400 }, () => '  filler');
+    expect(blockCloses(['  /* an opener with no closer anywhere', ...filler], 0, 2, false)).toBe(false);
+    expect(blockCloses(['  /* an opener whose closer is a long way down', ...filler, '  */'], 0, 2, false)).toBe(true);
     // A dollar tag is any identifier PostgreSQL accepts, not only an ASCII one,
     // and an identifier is what it has to be: the tag rules are the unquoted
     // identifier rules minus the dollar sign.
@@ -2070,6 +2134,48 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // And a VALUE body is still data: the same marker there is one of its
     // characters, and blanking it would erase live SQL.
     expect(scansOf(['UPDATE accounts', "   SET institution = $$Porto -- Engenharia$$, updated_at = NOW()", ' WHERE institution = $1;'], '018_probe.sql').tableFirst).toEqual([migration]);
+    // A literal NESTED inside a code body is data again. Read as more body, its
+    // own `--` is taken for a comment and blanks the rest of the line, which
+    // erases the live statement beside it — a write present in the tree and
+    // seen by nothing.
+    expect(
+      scansOf(['DO $$', 'BEGIN', "  EXECUTE $q$SELECT 1 -- ignored$q$; UPDATE accounts SET custody = 'self', updated_at = NOW();", 'END $$;'], '018_probe.sql').tableFirst,
+    ).toEqual([migration]);
+    expect(
+      scansOf(['DO $$', 'BEGIN', '  EXECUTE $q$SELECT 1', "  -- still inside the value$q$; UPDATE accounts SET custody = 'self', updated_at = NOW();", 'END $$;'], '018_probe.sql').tableFirst,
+    ).toEqual([migration]);
+    // Body or value is judged from BLANKED text, in both directions, because
+    // both errors are silent. A comment after the keyword must not hide it:
+    expect(
+      scansOf(['CREATE OR REPLACE FUNCTION f() RETURNS void AS -- see the header', '$$', 'BEGIN', '  UPDATE accounts SET custody = $1, updated_at /* stamped */ = NOW();', 'END', '$$ LANGUAGE plpgsql;'], '018_probe.sql').tableFirst,
+    ).toEqual([migration]);
+    // and SQL prose ending in one of the keywords must not supply one, or the
+    // value below it is blanked as code and its `--` erases the write:
+    expect(
+      scansOf(['UPDATE accounts SET note = -- the value is stored exactly as', '$$a -- b$$, updated_at = NOW();'], '018_probe.sql').tableFirst,
+    ).toEqual([migration]);
+    expect(
+      scansOf(['UPDATE accounts SET note = -- nothing else to do', '$$a -- b$$, updated_at = NOW();'], '018_probe.sql').tableFirst,
+    ).toEqual([migration]);
+    // A span with no keyword before it anywhere is a value: the default is what
+    // keeps every ordinary literal's characters out of the comment handling.
+    expect(asCode(['$$a -- b$$'], true)[0]).toBe('$$a -- b$$');
+    // The keyword test, clause by clause: the case fold, the word boundary that
+    // keeps `HAS` out, and the end anchor that keeps a mid-line `AS` out.
+    expect(DOLLAR_CODE_BODY_RE.test('DO ')).toBe(true);
+    expect(DOLLAR_CODE_BODY_RE.test('do ')).toBe(true);
+    expect(DOLLAR_CODE_BODY_RE.test('CREATE FUNCTION f() RETURNS void AS ')).toBe(true);
+    expect(DOLLAR_CODE_BODY_RE.test('  SET x = has ')).toBe(false);
+    expect(DOLLAR_CODE_BODY_RE.test('  SET a = 1 AS alias, b = ')).toBe(false);
+    // A dollar span is read where SQL runs, not in ordinary TypeScript: a pair
+    // of `$`-fenced identifiers in code would otherwise span the statement
+    // between them and switch its blanking off.
+    const outsideTemplate = asCode([
+      '  const tag = $body$;',
+      '  await q(`UPDATE accounts SET custody = $1, updated_at /* stamped */ = NOW()`);',
+      '  const end = $body$;',
+    ]);
+    expect(assignmentIndex(outsideTemplate[1])).toBeGreaterThan(-1);
     // Each assignment is resolved from its OWN position: two writes on one
     // line belong to the head each one sits after, not both to the first.
     expect(

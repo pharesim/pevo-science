@@ -257,18 +257,24 @@ async function collectSignupStarted(
 }
 
 /**
- * Finalized rows (states A/B/C/D per ARCHITECTURE.md section 6.1: `verify_token`
- * NULL and `username` set), cursored on `accounts.updated_at`.
+ * Finalized rows, cursored on `accounts.updated_at`. The predicate is
+ * `verify_token` NULL and `username` set, which is states A/B/C/D per
+ * ARCHITECTURE.md section 6.1 and also state G once its settings-registered
+ * email has been verified -- a self-custody account that never went through
+ * signup at all, and is announced here like any other completed registration.
  *
- * That column is NOT a general recency overlay, and reading it as one is the
- * mistake to avoid here. The only statements that write it are the two signup
- * finalizes in `routes/signup-verify.ts`; a later password, ORCID, profile or
- * settings write does not touch it, and the custody upgrade deliberately leaves
- * it alone. The closed writer set is a standing invariant -- the stuck-recovery
- * lookups in that file measure their windows against this column, so a third
- * writer would hand a finalized account a binding-free session mint -- and a
- * canary under `tests/eslint/` fails the build on one. A long-finalized account
- * therefore does not re-announce on its next profile change.
+ * The column is NOT a general recency overlay, and reading it as one is the
+ * mistake to avoid here. It is written in exactly two ways: by its own
+ * `DEFAULT now()` when the row is INSERTed (which is the value a state G row
+ * carries, since no finalize ever ran on it), and by the two signup finalizes
+ * in `routes/signup-verify.ts`. No other statement moves it -- not a later
+ * password, ORCID, profile or settings write, and not the custody upgrade,
+ * which stamps `upgraded_at` and deliberately leaves this column alone. That
+ * closed set is a standing invariant, because the stuck-recovery lookups in
+ * signup-verify measure their windows against this column and a third writer
+ * would hand a finalized account a binding-free session mint; a canary under
+ * `tests/eslint/` fails the build on one. A long-finalized account therefore
+ * does not re-announce on its next profile change.
  *
  * The `seen:accounts` set is still what makes the class report each account
  * once, and the reason is the cursor's own resolution rather than the column's
