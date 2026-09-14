@@ -261,7 +261,19 @@ async function collectSignupStarted(
  * `verify_token` NULL and `username` set, which is states A/B/C/D per
  * ARCHITECTURE.md section 6.1 and also state G once its settings-registered
  * email has been verified -- a self-custody account that never went through
- * signup at all, and is announced here like any other completed registration.
+ * signup at all.
+ *
+ * That last class is NOT announced the way the others are, and the gap is
+ * recorded rather than closed. A state G row takes its marker from the column's
+ * INSERT-time default, because no finalize ever runs on it, and the settings
+ * route that clears its token does not move the marker either. So the row
+ * becomes predicate-eligible carrying a timestamp from whenever the row was
+ * created. The cursor only advances, so any other completed registration
+ * announced between that INSERT and the email verification carries it past the
+ * state G row permanently, and the row is never seen here. Announcing the class
+ * dependably would mean cursoring it on something that moves at verification;
+ * the channel is an operator convenience and the marker's closed writer set is
+ * worth more than the announce, so this is stated rather than traded away.
  *
  * The column is NOT a general recency overlay, and reading it as one is the
  * mistake to avoid here. It is written in exactly two ways: by its own

@@ -1014,3 +1014,164 @@ worse than no docblock, because it is what they will act on.
   `collectCompleted` advancing its cursor past rows an indeterminate Redis read
   drops: all three are real and all three are pre-existing rather than
   introduced here. Filed as their own tasks; out of scope for this hold.
+
+## Backend re-review signal (2026-09-14, working tree)
+
+All ten round-3 items landed. Every item was verified by mutation in a
+tar-copied scratch tree with symlinked `node_modules`, red on the mutation and
+green on restore; sixteen feature-deletion probes ran in parallel isolated
+copies and every one of them reds. `tests/eslint/` is 9 files / 131 tests green;
+typecheck clean; lint clean apart from the pre-existing `author-supersession.ts`
+warning.
+
+Both silent passes the hold demonstrated were REPRODUCED first, as red/green
+controls, before anything was changed: the settings writer masked by a value
+carrying the declaration characters (21/21 green, and 2 walks red on deleting
+only that value), and the migration whose nested literal carries a comment in
+the marker's own token gap (21/21 green, 2 walks red on deleting only the
+comment). Both now red.
+
+The round's own adversarial pass is again what made this more than ten fixes.
+Eight unscripted lenses ran in isolated copies with independent refutation, and
+they found that this round's fixes had opened SIX new silent passes, in two
+classes, both of exactly the kind the round existed to close. Those are fixed
+and pinned. Three of the six had their refuters killed by a session rate limit;
+those were re-verified by hand rather than counted either way.
+
+### Bundle A
+
+1. **The local-declaration exclusion no longer scans forward.**
+   `TYPESCRIPT_LOCAL_RE` is now an end-anchored keyword, tested against the
+   slice that STOPS at the column. Probe: a write whose statement carries
+   `const updated_at =` in an ordinary string value AFTER it; red on both walks,
+   and pinned at the predicate and end to end. The backward bound is kept and
+   pinned separately (a declaration spaced past it reads as a write, which is a
+   red bar on a line that writes nothing).
+
+   **Beyond the item.** The whitespace class also had to exclude a NEWLINE.
+   `writesColumn` reads a statement with its lines joined, so a plain `\s+`
+   let a word ending one line veto a write opening the next; probed as
+   `UPDATE accounts SET const` / `updated_at = NOW()`, which the table-first
+   walk missed while the column-first walk still red-barred it. The two-walk
+   design held, but the veto was real and is closed.
+
+2. **A nested dollar-quoted literal is read as the source it is.** Decided and
+   stated: the body EXECUTEs the literal, so its comments are blanked like the
+   body's own. Two bounds make that safe and both are pinned - a `--` blanks
+   only to the innermost open tag, and a `/*` is a comment only if it closes
+   before that tag. Probes: the hold's own migration; the same with the gap
+   spelled `--` across a line; an unterminated opener whose `*/` sits further
+   down the file.
+
+3. **One shared opener helper.** `dollarOpenerAt` carries the grammar, the
+   interpolation exclusion and the recurrence requirement, and `statementAt`
+   and `blankLine` both ask through it. Each condition is pinned where it is
+   the only one answering; dropping any one reds a bar.
+
+   **Correction to the item as written.** Its premise does not hold. "This is
+   not latent: the `$${n}` placeholder idiom occurs 151 times under `src`, and
+   `statementAt` opens a phantom span on each one" - instrumenting the readers
+   as they are actually called, `statementAt` reaches an unquoted `$` three to
+   four times across both trees and NONE of those is a grammar match, so the
+   divergence fires zero times today. The idiom is frequent (171 raw
+   occurrences by `grep -o`), but `statementAt` only ever reads statements it is
+   pointed at: accounts statements, and heads above `updated_at` assignments.
+   The fix is kept because the shapes that produce a divergence are ordinary
+   code, and the docblock now says latent rather than live.
+
+### Bundle B
+
+4. The KNOWN LIMITS bullet on the dollar-opener judgements is replaced with the
+   residuals that survive: the blanked-text reading is stated correctly, a
+   string VALUE ending in a keyword is named as what can still supply one, and
+   `DO LANGUAGE plpgsql $$` is named as the clause that hides one. The nested
+   case has its own bullet and states the direction the code actually takes.
+
+5. The barrier paragraph is corrected rather than the code. The settings
+   email-verify route in `routes/settings.ts` is named as the third statement
+   that clears `verify_token`, the token gate is re-ranked as a delay rather
+   than a barrier, and `custody` plus the marker are named as the terms that
+   actually hold - `custody` because no INSERT names the column, so a state G
+   row carries NULL against both `= 'light'` and `= 'self'`.
+
+6. `collectCompleted`'s docblock is corrected. State G is no longer claimed to
+   be announced like any other completed registration: the row takes its marker
+   from the INSERT-time default, nothing moves it when the token clears, and the
+   cursor only advances, so any other completed registration announced in
+   between carries it past for good. The docblock correction alone, per the
+   item; the cursor is unchanged.
+
+### Bundle C
+
+7. The dollar branch honours a backslash escape and closes on an unescaped
+   backtick when the template flag is set. Probed via the flag's downstream
+   effect (an inverted flag reads an ordinary decrement as a comment and blanks
+   the write beside it), because the flag alone is not observable. The escape
+   arm needed a second fixture: the first one did not discriminate and its
+   deletion probe stayed green.
+
+8. Seventeen corrected to thirteen, re-derived independently through the
+   reader's own state machine rather than taken from the hold: 13 block comments
+   past sixty lines, longest 159, in `hafsql.ts`. The naive grep that produced
+   seventeen was reproduced too, which is what confirms which number is which.
+
+9. The `DEFAULT now()` bullet's reason is replaced with the custody one, and
+   the reason it is NOT is stated explicitly, since a state G row reaches the
+   finalized-looking predicate with no finalize behind it.
+
+10. The three near-duplicate fixture arrays are hoisted behind a helper whose
+    parameter is the varied axis.
+
+### The six silent passes this round opened, and closed
+
+Found by three independent lenses converging, each demonstrated with a
+one-character control, each re-verified before being acted on.
+
+- **A code span tracked no string quoting.** A `--` or `/*` that is a CHARACTER
+  of a string value inside an EXECUTEd literal was read as a comment, blanking
+  the live `updated_at = NOW()` beside it. The shape is an ordinary back-fill:
+  `regexp_replace(institution, '\s*--\s*', ' - ', 'g')`, or
+  `replace(institution, '/*', '')`. Closed by tracking quotes at every depth,
+  which is what the body's own branch already did.
+- **The open tags were a single tag, not a stack.** A literal nested inside the
+  nested literal reopened the same gap one level down. Closed by making the
+  state a stack; the body-versus-value judgement is still made once, at the
+  outermost opener.
+- **The interpolation exclusion was applied to migrations.** `$${...}$$` is the
+  placeholder-builder idiom in a TypeScript template and an ordinary
+  dollar-quoted literal in a migration - one whose content begins with a brace,
+  which is how an array literal is spelled and the usual reason to reach for
+  dollar quoting. Refusing it in a `.sql` file ended the statement read at a `;`
+  that was one of the literal's own characters, which hid an
+  `ALTER COLUMN updated_at TYPE ... USING` rewrite, a MERGE insert list naming
+  the column, and a plain `UPDATE ... SET updated_at = NOW()`. The exclusion is
+  now dialect-gated, and the dialect travels WITH the blanked text
+  (`BlankedCode`) rather than being passed beside it, so the two readers cannot
+  be handed different answers. That is the same defect shape as item 3, one
+  layer up: a caller that has to remember a flag is a caller that can pass the
+  wrong one.
+
+### [TODO Architect] Surfaced by the adversarial pass, NOT acted on
+
+All pre-existing, none introduced by this round, none in this hold's scope.
+Listed for triage rather than filed, per the project's review-findings rule.
+Each was demonstrated green-with-the-write in an isolated copy.
+
+- The routine/trigger arms run over `migrations` only, never over `sources`, so
+  trigger and trigger-function DDL spelled in a TypeScript file is refused by
+  nothing. Ranked highest of these: the routine arm is the sole catcher of a
+  PL/pgSQL `NEW.updated_at := now()`.
+- A trigger bound as `ON public . accounts` (spaces around the dot) evades
+  `BOUND_TO_ACCOUNTS_RE`, so the no-exemption refusal never fires.
+- `COPY accounts FROM stdin` with NO column list writes every column and is
+  read as writing none.
+- A rebuild-and-rename table swap: every write names `accounts_rebuilt` and the
+  final `RENAME TO accounts` is read by no pattern.
+- A one-line SQL statement held in an ordinary single-quoted TypeScript string
+  keeps its comments live, because values are not blanked - so a comment in the
+  column/`=` gap silences both writer scans there.
+- An unescaped backtick inside an ordinary single-quoted TypeScript string
+  toggles the reader's `template` flag.
+- Two already-filed ones re-confirmed live: `ALTER TABLE IF EXISTS accounts`
+  slipping the ALTER pin, and a back-fill in a `migrations/` SUBDIRECTORY going
+  unscanned.
