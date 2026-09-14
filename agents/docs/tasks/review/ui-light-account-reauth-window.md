@@ -984,3 +984,162 @@ untested-but-inert non-light-custody `allowRedirect`-stripping branch.
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
 re-review signal. Do not edit this hold block or annotate items as fixed; the commit
 diff is the evidence and the architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-09-14, commits 8414dd64 + 0b2ff3c3)
+
+Items 1 and 2 landed at 8414dd64; item 3 was found already landed by two
+sibling commits and is pinned here by mutation rather than re-implemented.
+A post-review fixup (0b2ff3c3) closes one defect the adversarial pass found
+in the item-2 sweep and pins one override the pass showed was untested.
+Every behavioral claim below names its own test, and every fix was probed in
+an isolated scratchpad copy with that fix alone reverted: twelve mutants,
+each observed red on exactly the named tests, plus unmutated control copies.
+
+**1. The image batch ends with the teardown.** `_handleImageUpload`'s
+already-reported branch now truncates `_imageUploadQueue` in place through
+`_abandonQueuedImageUploads` before returning, so a multi-image drop that
+tears the session down never carries the remaining images into the
+signed-out branch. Swept to the same class: the signed-out branch truncates
+too (one sign-in toast per batch, not per image), and a subject-change
+abandonment takes the same exit rather than pushing the departed subject's
+images through under the successor. Tests (`editor.test.js`): "a torn-down
+session mid-batch abandons the remaining images and adds no toast of its
+own" (four images, one upload, exactly one toast, empty queue), "a signed-out
+drop of several images says sign in once, not once per image", and the
+control "an ordinary upload failure does not abandon the rest of the batch".
+Probes: the torn-down truncation reverted fails the first; the signed-out
+truncation reverted fails the second.
+
+**2. The design call, implemented as recommended.** `holdsAttachedFiles`
+(publish: an attached PDF or supplementary file; edit: a new supplementary
+file) feeds `allowRedirect: !this.holdsAttachedFiles` in one `_windowReady`
+per page, explicit opts overriding, so a passwordless account resubmitting
+with a file attached is refused non-destructively with the re-authenticate
+toast and keeps the file. Swept one step past the letter, same class: the
+file-selection gates take the same predicate, because navigating to acquire
+for a second file discards the first exactly as the entry gate would. The
+pre-broadcast gates keep their unconditional `allowRedirect: false`. Nothing
+persisted into the draft. On "a completed CID": CIDs live in `handleSubmit`
+locals, and the reactive `cid` a supplementary entry gains on a successful
+upload only ever accompanies an attached file, which the predicate already
+covers. Tests: `pages-publish.test.js` "a passwordless account resubmitting
+with a file attached refuses without navigation and keeps the file",
+"picking a supplementary file with a PDF already attached refuses without
+navigation and keeps the PDF", "picking a PDF with a supplementary file
+already attached refuses without navigation and keeps it", and the control
+"with nothing attached, the entry gate still navigates a passwordless
+account"; `pages-edit.test.js` the resubmit twin, "picking more
+supplementary files with one already attached refuses a passwordless account
+without navigation and keeps it", and the same control. Probes:
+`allowRedirect: true` restored in the wrapper fails the resubmit and
+supplementary-with-PDF cases on publish and two on edit; the predicate
+narrowed to the PDF alone fails exactly the PDF-with-supplementary case; the
+PDF gate forced permissive fails exactly that same case.
+
+  **Fixup (0b2ff3c3), from the adversarial pass.** The sweep as first landed
+  closed the only in-page move a passwordless account had on the publish
+  page: with a PDF attached and the window lapsed, the entry gate refuses by
+  design, and re-picking the PDF was refused too because the predicate
+  counted the very slot the pick replaces. There is no remove-PDF affordance
+  (`pdfFile` has one assignment and no reset; `discardDraft` resets
+  supplementary files only), so every move was a refusal until a reload. The
+  PDF pick now passes `allowRedirect: this.supplementaryFiles.length === 0`:
+  the slot it replaces is not work a navigation costs, only held
+  supplementary files are (and those have a remove affordance). Test:
+  "re-picking the PDF with nothing else attached may still navigate: the
+  slot it replaces is not held work"; probe: the gate reverted to the bare
+  wrapper fails exactly it. The edit page needs no twin: its only held files
+  are supplementary and removable.
+
+  The same pass showed the pre-broadcast gates' explicit
+  `allowRedirect: false` was shadowed by the predicate in every existing
+  spec (a file is always held there), so a wrapper that ignored its opts
+  survived both page suites. New spec: "with nothing attached, a window
+  closing while the confirm dialog is open refuses at the pre-broadcast gate
+  without navigation" (the window is dropped inside the confirm mock); probe:
+  the wrapper's opts spread removed fails exactly it plus the re-pick spec.
+  The edit page has no awaited step between its entry and pre-broadcast
+  gates when no file is held, so the override there is not observable by a
+  unit spec; noted rather than faked.
+
+  Residual for the architect, deliberately not fixed here: a passwordless
+  account has no in-page way to re-authenticate, so the entry-gate refusal
+  is a dead end in-tab until the user leaves the page, which loses the file
+  they were just told they kept. The design call accepted being told over
+  being surprised; the toast copy (`common.reauthRequired`) does not say
+  that the way out costs the attached file. An explicit re-authenticate
+  affordance that states the cost would close it.
+
+**3. Already landed, verified by mutation.** `ensureSessionWindow` refuses a
+non-string acquisition result as `{ ready: false, failed: true }`
+(fa436034) and `acquisitionAborted` falls an unnamed result through to
+`failed` (f9b6ad8d); `cancelled` is an explicit row of
+`WINDOW_OUTCOME_BY_SENTINEL`, whose toast table records its deliberate
+silence. Probes against the tree at 8414dd64: the guard removed fails five
+specs in `lib-fresh-auth-session-window.test.js`; the fall-through removed
+fails three in `fresh-auth-401-retry.test.js`; the cancelled row removed
+fails ten across the vocabulary, retry and session-window suites.
+
+### Verification
+
+Full frontend unit suite: 85 files, 1900 tests green (up 10); the three
+unhandled `_mountEditors` errors are the documented pre-existing class.
+`npm run build` clean. Pre-commit anchor gate and zone audit green on the
+commit. Simplify pass (three reviewers): nothing applied, one low-value
+consistency suggestion skipped. Adversarial review as a workflow (four
+lenses: hold fidelity, races and regressions, test quality, project
+standards): thirteen findings; the refuter stage was cut short by the
+session rate limit (five of eighteen verdicts returned, none refuting), so
+every finding was triaged by hand against the code. One should-fix (the PDF
+re-pick dead end, fixed above), one test gap (the override, pinned above),
+one test-hygiene nit (the editor's mutable auth mock is now reset in
+`afterEach` too), and the residuals below. Dismissed: an explicit
+`allowRedirect: undefined` re-opening navigation through the opts spread
+(no caller passes one; both verdicts that ran agreed it is inert), the
+`{ ...globalThis.window }` stub spread copying no jsdom property (the
+repo-wide convention in six sibling suites; the redirect path reads only
+`window.location`), and the retention assertions in the new specs being
+documentation rather than discriminators (the no-navigation assertions are
+what the probes trip).
+
+### Residuals for the architect, deliberately not fixed here
+
+1. **The file-selection widening of item 2.** Applying the predicate at the
+   file-selection gates went one step past the hold's letter (same loss
+   class, disclosed here rather than flagged before landing). Accept or ask
+   for the entry-gate-only form.
+2. **The passwordless dead end and its copy.** `common.reauthRequired`
+   ("Please confirm your identity again, then try once more.") is shown
+   exactly to the class with no in-page way to confirm identity: the session
+   ORCID round-trip has one caller, the acquisition itself, and the window
+   is per-tab sessionStorage. With files held the ways through are: publish,
+   re-pick the PDF (navigates, per the fixup) or reload; edit, remove the
+   new supplementary files and resubmit. Neither is what the toast says. The
+   design call accepted told-over-surprised; the copy could name the cost.
+3. **Surfaces that still navigate over held work, pre-existing:** the review
+   page (body and ratings, no gate, no draft), the comment composer body,
+   and the vouch retraction reason all reach `broadcastWithFreshAuth` with
+   the permissive default. Known since round 1 for review and comment; the
+   vouch reason is the same class. A stash before the redirect or an
+   acquire-on-compose-start gate would close them.
+4. **Edit entry gate over ticked reviews.** `addressedReviews` is not in the
+   edit draft, so a passwordless account that ticks reviews, attaches
+   nothing, and submits navigates and returns with the ticks gone. Either
+   draft the ticks or add them to the predicate.
+5. **Draft debounce hole.** The permissive default's premise "the text
+   fields are drafted" has a two-second `_scheduleDraftSave` window on both
+   pages that a navigation inside it discards. Marginal; flushing the timer
+   at the gates would close it.
+
+**E2E, no regression on the covered surface.** Test-mode stack, one worker,
+database reset by global-setup: `non-consent-fresh-auth` 4 passed;
+`publish` 1 failed; `edit-paper` 7 failed. All eight failures are the
+documented `form button[type="submit"]` clash with the always-in-DOM global
+re-auth modal (six strict-mode clicks, two `toHaveCount(0)` assertions that
+receive the modal's own Confirm button), each failing at the locator before
+any changed gate runs. Run on the 8414dd64 bundle; the fixup's only
+behavior change is the passwordless PDF re-pick posture, which no E2E spec
+can drive (the E2E accounts hold a password), so it was not re-run. Dev
+routing restored afterwards.
