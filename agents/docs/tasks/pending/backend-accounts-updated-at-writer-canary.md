@@ -1183,3 +1183,197 @@ are new.
 - Two already-filed ones re-confirmed live: `ALTER TABLE IF EXISTS accounts`
   slipping the ALTER pin, and a back-fill in a `migrations/` SUBDIRECTORY going
   unscanned.
+
+## Architect re-review (2026-09-14, round 4) — HELD PENDING FIXES:
+
+Reviewed at commit 664be496 (with the task-file commits 989d5823 and 1e104f4a)
+via /ce-code-review across seven lenses: correctness, project-standards,
+security, adversarial in-process, testing, maintainability, learnings. All three
+commits are ancestors of HEAD; no orphan SHAs. Eight findings went to an
+independent validation batch and all eight validated; five more were suppressed
+at anchor 50 and two of those are dismissed below.
+
+The round-3 hold LANDED, and that was verified from the tree rather than taken
+from the signal block: each of the ten items is present as the artifact it
+names, and both silent passes the hold demonstrated were replanted and both red
+(the settings writer masked by a value carrying the declaration characters, and
+the migration whose nested literal carries a comment in the marker's own token
+gap), with the plain third writer as a red control. Fourteen of the round's
+feature deletions red on their own.
+
+The hold is that the round left one live silent pass of the class this file
+exists to close, opened a second, and left three of its own features unpinned in
+the silent direction. Every one of those was demonstrated by mutation with a
+red/green control in an isolated copy, not reasoned about. Verify every item the
+same way and state the probe per item in the re-review note.
+
+### Bundle A: a statement read must not lend a table it does not own
+
+1. **A head inside an open dollar-quoted span must not lend its table.**
+   `statementAt` tracks spans only from its own starting position: it asks
+   whether a `$` OPENS a span and never whether it CLOSES the one its head
+   already sits in, and unlike `blankLine` it carries no tag stack. So a head
+   inside `$q$...$q$` reads that literal's own closing tag as an opener (the
+   grammar matches, no brace follows, the tag recurs), swallows the `;` that
+   really ends the statement, and runs on to the next line. `targetTable` then
+   sees a statement that REACHES the write below it and hands over a plausible
+   other table, so the fail-closed arm never fires. Probe: a migration whose
+   `DO` block spells two `EXECUTE format($q$...$q$, ...)` calls sharing the tag,
+   the second naming its table with `%I` and stamping the marker on every light
+   row — 21/21 green; delete only the first EXECUTE and the resolve arm reds.
+   The same shape with a quoted identifier instead of `%I`, the same at top
+   level between two `DO` blocks, and the same inside a `.ts` template are all
+   green. KNOWN LIMITS bullet 1 is part of the fix, not a separate item: its
+   claim that such an assignment "reds under the fail-closed arm instead, since
+   no readable head reaches it, and that backstop is what the limit rests on" is
+   what this probe falsifies.
+
+   **The same invariant in the other dialect, verified separately.** Inside a
+   template `statementAt` carries its quoted-value state ACROSS lines while
+   `blankLine` resets it per line, so one unescaped quote inside a dollar value
+   or inside an interpolated expression leaves the read open past the template's
+   closing backtick and the head lends its table the same way. Probes:
+   `UPDATE sessions SET note = $$it's$$ WHERE id = $1`, and the hand-escaping
+   idiom `SET note = '${note.replace(/'/g, "''")}'`, each placed above an
+   `UPDATE "accounts" SET updated_at = NOW()` — 21/21 green, and the
+   balanced-quote control reds. Neither shape is in the tree today; both are
+   ordinary code.
+
+   The construct is the implementer's choice and the invariant is what is held:
+   a read that cannot reach its own terminator must not resolve a table. Giving
+   the read the enclosing span as a terminator and resetting value state per
+   line the way the blanking reader does is one shape; refusing any head that
+   sits inside an open span, or whose read crossed a line it could not balance,
+   as {@link UNRESOLVED_TABLE} is the other, and costs a red bar on statements
+   EXECUTEd from a literal, which is the tolerable direction. Say which and why.
+
+2. **Every backtick arm in `blankLine` must be dialect-gated.** The close added
+   this round is gated on `template`, and the inline comment says that leaves a
+   `.sql` migration untouched. It does not: the opaque branch and the main path
+   both toggle `template` on ANY backtick with no `sql` gate, so a migration
+   sets the flag from a backtick inside an ordinary quoted value. Probe: a
+   migration whose first statement writes `'tick `'` and whose second holds
+   `$$a ` -- b$$` before `updated_at = NOW()` — 21/21 green with a live writer;
+   remove the first backtick and both migration walks red. The pre-existing arm
+   has the same root and is in scope here rather than deferred, because this
+   round is what made the flag reachable from inside a span: a backtick PAIR
+   inside a `RAISE NOTICE` string clears the tag stack, `END $$` is then read as
+   an opener rather than a close, `END ` is not a body keyword so a VALUE span
+   opens, and a gapped `UPDATE accounts ... updated_at /* ... */ = NOW()`
+   between two `DO` blocks passes both walks with the end-state assertion clean
+   (21/21 green; backticks removed, 2 walks red). Gate all three arms; pin both
+   probes, each asserting the write is seen AND that the reader ends with an
+   empty stack.
+
+3. **One closer search, not two.** `blockClosesInSpan` is `blockCloses` with the
+   boundary expression swapped, and the copy already drifted: the call site it
+   replaced passed `template`, so a `/*` inside a body that sits in a template
+   used to stop at the template's backtick and now runs past it, blanking the
+   closer and every line up to whatever `*/` it finds. Give the one function a
+   boundary set — the tag, and inside a template the backtick — and delete the
+   copy. The drift is the reason the duplication is held rather than noted: the
+   precondition is doubly malformed source and no such body is in the tree, so
+   the bound alone would be a P3, but a second copy of a search this file
+   depends on is how the next one goes missing.
+
+### Bundle B: the features this round added must be pinned
+
+4. **Seven of the round's features delete green, and three of those admit an
+   ordinary writer under the mutant.** The file's own contract is that each
+   planted line answers to exactly one feature, and the signal says sixteen
+   deletion probes all red; on the committed tree 14 red and 7 do not. Pin each,
+   in the shape that passes under its mutant:
+   - the `$` end anchor of `TYPESCRIPT_LOCAL_RE` — `SET note = 'let ',
+     updated_at = NOW()` must read as a write (and end to end through both
+     walks);
+   - the `if (dollar.length === 0)` guard before `dollarCode` is cleared — a
+     gapped write in a body AFTER a nested literal closes;
+   - the tag stack, in both directions (pushing a nested tag, and popping to the
+     enclosing one) — a gapped top-level write between two `DO` blocks, with an
+     empty-stack assertion beside it;
+   - `opensCodeBody` reading the current line's BLANKED text — `DO /* anonymous
+     */ $$` with a gapped write in the body, expecting the migration key from a
+     writer walk rather than only from the routine arm;
+   - the two `blankLine` call sites of the opener helper — a `.sql` fixture with
+     a top-level non-recurring `$tag$` ahead of a gapped write, asserting the
+     write is seen and the reader ends with an empty stack.
+
+   Then re-run the deletion set and correct the count the signal states. Do not
+   restate a number you have not re-derived.
+
+### Bundle C: three claims the routes or the reader contradict
+
+This is the same class held in rounds 2 and 3, and the reason is unchanged: a
+docblock that tells the next author the opposite of what the code does is what
+they will act on.
+
+5. **The barrier paragraph's worked example is a transition no route
+   produces.** It has a finalized light account acquiring a settings-registered
+   email token and having it cleared by the third clearer, then re-entering the
+   `/confirm` window for the length of the window. That row — `custody` light,
+   `username` set, a random hex token — is not in ARCHITECTURE.md section 6.1,
+   and no route makes it: the settings add flow INSERTs only when the username
+   has NO row, so every finalized row takes the change flow, which writes
+   `pending_email_token` and never names `verify_token`; the clearer in
+   `routes/settings.ts` is keyed on `verify_token`, which a finalized light row
+   carries as NULL; and nothing puts a hex token back on a finalized row (the
+   signup upsert answers 409 on a NULL token, the resend route returns before
+   its UPDATE, the verify-link handler selects by a token the row must already
+   hold). So that clearer reaches state G alone. Five lenses raised this
+   independently. Rewrite the example around the row the statement actually
+   reaches, keep the conclusion about the upsert branch and the clearer both
+   leaving the marker alone, and apply the same correction to the matching
+   sentence in this task's implementation note.
+
+6. **The KNOWN LIMITS example for a value supplying the body keyword cannot
+   match the pattern it cites.** `SET note = 'stored exactly as'` ends in a
+   quote and the keyword test is end-anchored, so it is false on that line; only
+   the form whose quote is left open matches, which is the separate multi-line
+   value residual already listed. Fix the example or fold the clause into that
+   bullet, and add a self-test for the keyword pattern beside the clause-by-
+   clause pins so the next non-reproducing example fails instead of reading
+   well.
+
+7. **The opener helper's docblock overclaims which readers reach an opener.**
+   It says no read over either tree reaches a dollar opener today. The blanking
+   reader reaches two: migrations 007 and 017 each spell `DO $$`, and this
+   file's own fixture comment says so. What is true, and what the
+   latent-not-live conclusion rests on, is that no STATEMENT read reaches a
+   grammatical opener. Scope the sentence to that reader.
+
+### Dismissed, recorded here so they are not re-raised
+
+- Tying the multi-space declaration fixture's `' '.repeat(20)` to
+  `LOCAL_DECLARATION_BEFORE`: dismissed, and it is the shape round 2 item 3
+  forbade. A fixture whose filler derives from the constant it pins moves with
+  that constant and pins nothing; literal counts are the ratified form here.
+- "the source rules below" as a bare positional anchor: dismissed. It names what
+  it points at within its own paragraph, which is the carve-out's durable form.
+- `BlankedCode.sql` being an optional expando the type does not require: seen and
+  accepted. No derived array exists, and a required field would be welcome, not
+  required.
+- The escape and backtick-close arms now being copied three and two times across
+  `blankLine`: not held on its own. Item 2 is where the gate goes missing, so
+  collapsing the arms while landing that gate is welcome; the duplication is not
+  a separate deliverable.
+- Adding or expanding logging, and extracting the reading layer into
+  `tests/support/`: both still out of scope on the standing grounds.
+
+### Not part of this hold
+
+- The `upgraded_at IS NULL OR upgraded_at >= updated_at` CHECK constraint
+  remains an open architect decision, unchanged since round 2.
+- `routes/settings.ts` clearing `verify_token` on whatever row carries the
+  token, which lets a signup row's own token brick that row into a
+  `verify_token` NULL / `username` NULL pair section 6.1 does not enumerate:
+  real, pre-existing, and filed as its own task. Out of scope here. The canary's
+  prose may name the clearer, as item 5 requires, without waiting on that fix.
+- The `[TODO Architect]` residual list this round appended is still open triage.
+  Two of its entries have since been filed as their own tasks (the `ALTER TABLE
+  IF EXISTS` pin, now in review, and the spaced schema dot in the trigger-bind
+  clause); the rest stay listed there. Do not fold any of them into this hold.
+- Two count nits for the signal block rather than the code: the statement reader
+  reaches an unquoted `$` twice over both trees, not "three to four", and the
+  block-comment census does not state its measure (thirteen past sixty with a
+  longest of 159 by closer-minus-opener; fifteen and 160 counting inclusively).
+  Correct them when the next signal is written; neither is a code change.
