@@ -21,7 +21,7 @@
   },
   "header": {
     "tagline": "öppen vetenskap, öppen tillgång",
-    "disconnect": "Koppla från",
+    "disconnect": "Sign out",
     "installBrowserExtension": "Installera Keychain"
   },
   "home": {

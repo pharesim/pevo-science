@@ -21,7 +21,7 @@
   },
   "header": {
     "tagline": "开放科学，开放获取",
-    "disconnect": "断开连接",
+    "disconnect": "Sign out",
     "installBrowserExtension": "安装 Keychain"
   },
   "home": {

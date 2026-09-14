@@ -21,7 +21,7 @@
   },
   "header": {
     "tagline": "otevřená věda, otevřený přístup",
-    "disconnect": "Odpojit",
+    "disconnect": "Sign out",
     "installBrowserExtension": "Nainstalovat Keychain"
   },
   "home": {

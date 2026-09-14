@@ -21,7 +21,7 @@
   },
   "header": {
     "tagline": "otwarta nauka, otwarty dostęp",
-    "disconnect": "Rozłącz",
+    "disconnect": "Sign out",
     "installBrowserExtension": "Zainstaluj Keychain"
   },
   "home": {

@@ -3895,3 +3895,31 @@ pt: upgrade.sessionChangedBeforeCleanup
 sv: upgrade.sessionChangedBeforeCleanup
 tr: upgrade.sessionChangedBeforeCleanup
 zh: upgrade.sessionChangedBeforeCleanup
+
+### Updated 2026-09-14 (ui-header-disconnect-label-signout)
+
+English value of `header.disconnect` changed from "Disconnect" to "Sign out".
+"Disconnect" was wallet jargon from the Keychain-only sign-in era. The two
+recovery instructions that tell the reader to sign out
+(`upgrade.backendTimeout`, `upgrade.sessionChangedBeforeCleanup`) already used
+the verb, and the header control is the only way to end a session, so the
+label now matches them.
+
+Each locale was judged against its own sign-in label (`signIn.signInButton`).
+Six locales already rendered the matching half of a consistent sign-in /
+sign-out pair, so their translations were kept and they are not listed:
+da (Log ind / Log ud), de (Anmelden / Abmelden), fa (ورود / خروج),
+fr (Se connecter / Se déconnecter), he (התחברות / התנתקות) and
+nl (Inloggen / Afmelden). The nine locales below paired a session or login
+verb for sign-in with a connection-cutting verb for sign-out; they are
+re-stubbed and need a fresh value.
+
+ar: header.disconnect
+cs: header.disconnect
+es: header.disconnect
+it: header.disconnect
+pl: header.disconnect
+pt: header.disconnect
+sv: header.disconnect
+tr: header.disconnect
+zh: header.disconnect

@@ -21,7 +21,7 @@
   },
   "header": {
     "tagline": "العلم المفتوح، الوصول المفتوح",
-    "disconnect": "قطع الاتصال",
+    "disconnect": "Sign out",
     "installBrowserExtension": "تثبيت Keychain"
   },
   "home": {

@@ -21,7 +21,7 @@
   },
   "header": {
     "tagline": "açık bilim, açık erişim",
-    "disconnect": "Bağlantıyı Kes",
+    "disconnect": "Sign out",
     "installBrowserExtension": "Keychain Yükle"
   },
   "home": {
