@@ -700,3 +700,116 @@ the diff adds one `it.each` row and changes comment text.
    wider `typeof` form is defense in depth, since any other non-string reaches
    the same eviction, the same `failed` outcome and the same silent unwind
    either way. No test can distinguish them without asserting an internal.
+
+---
+
+## Architect re-review (2026-09-14) — HELD PENDING FIXES:
+
+Full /ce-code-review fan-out on `0dc1d69b` (correctness, security, adversarial,
+reliability, testing, julik-frontend-races, project-standards, learnings) plus an
+independent validation gate. No cross-model peer ran: the working tree had
+drifted five sibling commits past the reviewed head, so every lens inspected
+`0dc1d69b` directly and probed in private archives of that SHA, never this
+checkout.
+
+**All five round-3 hold items are FIXED, each verified independently of the
+signal block.** Item 1: the architect reproduced the mutation table row for row
+in private copies (reverting the coercion reddens exactly the null row, observed
+as `{ ready: false, redirect: true }`; reverting it and deleting the row leaves
+the suite green; narrowing the guard to symbols reddens five; deleting the
+guard's own clear reddens nothing), and five lenses traced the narrowed
+`undefined` through every reading (guard, broadcast unwinder, upload pre-flight,
+password-factor memo gate) and found the behavior change confined to the null
+case; the one collateral delta, a null wire proof now also running the
+acquisition-level drop on the broadcast leg, removes only the tokenless shell the
+next read would drop. Items 2 and 3: the failed-write mirror and deadline claims
+re-derived from `persistWindow`, `storedWindow` and `readSessionWindow`. Item 4:
+project-standards scanned every added line and found no positional anchor, slug,
+ordinal, line cite or SHA. Item 5: the ungated-clear rationale confirmed against
+the module's three `clearCachedSessionProof()` sites, one gated and inside
+`broadcastWithFreshAuth`. Suite 84 files / 1859 tests reproduced by the architect
+at the reviewed head; the build and anchor-gate claims were not re-run.
+
+Seven raw findings reconciled to three, all comment-only, all in the two changed
+files. The validator confirmed one and rejected two as defensibly true in
+context; the architect re-checked both rejections (two or more lenses converged
+on each) and overrode one. The user triaged as below. Treat items 1 and 2 as one
+pass; item 3 rides along only if it costs nothing.
+
+1. **(P3, validated, security + correctness + adversarial) The pin's header
+   counts the Symbol row among wire-producible mint answers.** The header of the
+   unregistered-result `it.each` in `lib-fresh-auth-session-window.test.js`
+   says the rows are "the class the WIRE can put in front of it: four ways a
+   mint can answer without a proof string". `mintSessionAuthProof` returns a
+   parsed JSON envelope, and JSON cannot carry a Symbol, so only three rows (a
+   missing field, a number, `null`) are wire-reachable; the fourth is the
+   harness-only stand-in for a sentinel nobody registered, which the same
+   paragraph later says "never reaches the wire either" and which the guard's
+   docblock calls "a Symbol no response can produce". Restate the count as three
+   shapes the wire can put in front of the guard plus one it cannot, and keep
+   the Symbol and null sentences that follow as they are.
+
+2. **(P3, adversarial + testing, correctness as a residual; validator rejected,
+   architect overrode) The guard docblock's "so there the clear IS the
+   eviction" credits this guard's clear with an eviction it no longer
+   performs.** The paragraph opens "What the clear removes depends on the value"
+   about the `clearCachedSessionProof()` in this guard, then says that on the
+   failed-write mirror path "the clear IS the eviction". At this head
+   `evictUnnamedAcquisition` runs `clearCachedSessionProof()` inside
+   `acquireSessionProof` on both the cache-hit leg and the settled-flight leg
+   before any consumer runs, so the guard's clear finds the mirror already empty
+   on every path, the failed-write one included; deleting it reddens nothing
+   (measured by three parties, 0 of 1855). The first paragraph of the same
+   docblock already calls this clear "a deliberate restatement" whose "second
+   drop of an already-empty slot costs nothing", so the third paragraph
+   contradicts the first. The wording is the round-3 hold's own prescription for
+   item 2, written the morning before the eviction-parity task landed the
+   acquisition-level drop, and applied verbatim that evening: a prescription
+   that expired with its premise (see
+   `solutions/conventions/hold-prescriptions-expire-with-their-premise-2026-09-01.md`;
+   the round-3 hold's closing line asked for exactly the re-audit that would have
+   caught it). Attribute the eviction to the acquisition-level drop and keep the
+   storage-versus-mirror distinction as a statement about what THAT drop
+   removes, e.g. "...keeps the raw entry, Symbol included, so there the drop in
+   `evictUnnamedAcquisition` is the eviction and this restatement finds the
+   mirror already empty; a truthy number or an object survives both paths and is
+   the case that drop is chiefly for." Audit the replacement against
+   `persistWindow`'s catch and both `evictUnnamedAcquisition` call sites before
+   it lands. The implementer's open question is resolved: the guard's clear
+   STAYS as a restatement. Removing it would reopen a decision the
+   eviction-parity task settled and change what the delete-the-producer-drop
+   mutation reddens; do not add a structural pin for the redundancy either.
+
+3. **(optional, P3, correctness + adversarial; validator rejected as literally
+   true, architect agrees) "each case in this table exercises one side of it"
+   reads distributively.** Every row reaches the guard as `undefined`, the falsy
+   side, and the header states the collapse, so the sentence is not false. If
+   items 1 and 2 are landing anyway, tighten it in the same pass, e.g. "every
+   case in this table lands on the falsy side; the seeded entry in the eviction
+   case is what drives the truthy side." Skip it if it would cost a separate
+   commit.
+
+Keep every replacement text in items 1 through 3 free of line numbers, SHAs,
+task slugs and bare positional anchors, and audit each against the code once
+more before it lands.
+
+Triage dispositions the implementer does not need to act on. FILED as
+`ui-orcid-callback-session-window-proof-type-check`: the ORCID callback's
+session-window leg (`_handleSessionAuth` in `pages/orcid-callback.js`) writes
+`data.fresh_auth_proof` into the window slot with no string check, while the
+consent-op leg in the same component refuses a non-string proof before it caches
+(adversarial residual, confirmed at HEAD; pre-existing, the slot's other writer,
+reachable only through a backend contract violation). DISMISSED: a
+broadcast-side null row (the gate-side row already reddens the reverted
+coercion; no surviving mutant); the `proof === null` narrowing being
+indistinguishable by the suite (the implementer's residual 2, a documented
+limit); the vocabulary-section sentence "resolves to a proof string or to one of
+the sentinels below" being incomplete by design (pre-existing text, untouched
+here, and already the subject of `ui-window-outcome-tally-source-sentence`);
+the learnings lens's "stale triage note" in the round-3 hold (resolved by commit
+chronology: that hold was written at 11:32 on 2026-09-08, the eviction task it
+filed landed at 19:12, and `0dc1d69b` at 21:36, so the note was accurate when
+written). The implementer's residual 1 (the mint comment's "refuses, says so,
+and evicts" while the broadcast unwinder stayed silent) is moot:
+`ui-broadcast-unnamed-refusal-speaks` has since landed and archived, and the
+unwinder now reports the unnamed class through the same `failed` outcome.
