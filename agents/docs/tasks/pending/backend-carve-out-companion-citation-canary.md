@@ -1590,3 +1590,120 @@ Unchanged and still deferred to archive: the solutions entry
 `carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02.md`
 still ends its canary section with "Do not describe this canary as existing. It
 is a proposal."
+
+## Architect re-review (2026-09-14) — HELD PENDING FIXES:
+
+All three items and all three fold-ins held on 2026-09-08 are FIXED, verified
+independently rather than from the signal block: every new probe was re-derived
+from the pattern as written; the anchor gate was re-run over all 272 added lines
+with control lines firing; all eleven mutants in the signal's sweep were re-run
+on an isolated copy and reproduced, the trailing-emphasis survivor included, and
+fourteen more were tried; the timing spec held a 9x margin under 3x CPU
+oversubscription; the census is unchanged (152 of 152 label matches across 253
+files) and the frozen maps and `LANDING_DIGEST` are untouched. The `{1,64}`
+deviation and the extra bounds are accepted as stated. The hold's `\p{Lu}`
+spelling was indeed an inversion; the signal's correction stands.
+
+What this hold is about: the separator-run timing spec, rebuilt this round so
+that a regression "fails in seconds rather than never returning", does not do
+that for two of the bounds it exists to guard, and the round's own defect class
+(a sentence asserting what the code does not do) survives in four of the new
+texts. Every item below was reproduced by execution on an isolated copy by at
+least one reviewer and once more by an independent validation pass. Anchor every
+code comment you write here on stable symbols, never on line numbers.
+
+Items 1 and 2 are one loop and should be settled together.
+
+1. Reverting `QUALIFIER`'s tail run `[\s-]{1,4}` to `[\s-]+` makes the spec's
+   FIRST timed run (6400 dashes through `labelCount`) never return: no verdict
+   in 90 s, and vitest's `testTimeout` cannot pre-empt a synchronous regex, so
+   the whole file hangs. The parent commit's 400-dash probe went red on the same
+   revert in about 2 s; raising the shortest length to 6400 turned that red into
+   the hang the docblock says gets a canary disabled. 6400 must stay (the
+   word-class revert is green at 400), so the fix is a third, shorter pass
+   before it: `for (const runLength of [400, 6_400, 100_000])`. Then reword the
+   spec comment and `LABEL_SRC`'s closing sentence from two lengths to three and
+   name the tail-separator revert as the class the shortest pass exists for.
+   Verified on an isolated copy: at 400 the committed pattern is under 1 ms on
+   every shape and the tail revert costs about 2 s.
+
+2. The `[\s-]{0,4}` inside `LABEL_SRC`'s emphasis group
+   `(?:[*_\x60]{1,4}[\s-]{0,4})?` is one of the runs the docblock lists as
+   bounded, but none of the seven separator shapes places an emphasis character
+   directly before a long separator run, so reverting it to `[\s-]*` keeps the
+   suite at 11 of 11 with the spec's worst run under 4 ms. The input that
+   reaches it, `real-path_` followed by a dash run (a section underline under an
+   emphasised label), costs about 2.3 s at 6400 under the revert and about 3 ms
+   committed. The `sep.repeat` construction cannot express "one emphasis
+   character then a run", so build the adversarial string from `[prefix, run]`
+   pairs (for example `['', '-']`, `['_', '-']`, `['*', ' ']`) or add one extra
+   literal `real-path_${'-'.repeat(runLength)}x` inside the loop, and say in
+   the spec comment which bound that shape pins.
+
+### Fold into the same round, mechanical
+
+- `LABEL_SRC`'s docblock says "EVERY run in the label is therefore bounded", and
+  the tag-name alternative `<[a-z]+>` in the same optional group is not. It is
+  linear (it sits between literal `<` and `>` and cannot partition; measured
+  flat to 1.6 M characters), so this is the sentence, not the runtime. Bound it
+  as `<[a-z]{1,16}>` so the sentence is true by construction (no HTML element
+  name is longer, and the probes spell only `em` and `strong`); the `<em>` and
+  `<strong>` parse probes and the timing spec must stay green. Raised
+  independently by three reviewers.
+- `CLAIM_SPAN`'s docblock parenthetical says the long spelling ("the companion
+  suites pin it:") "is held off by the room after the noun rather than by the
+  refusal". Traced and measured, the refusal fires first at `. T` and the room
+  is never evaluated; the string is 0 with either arm alone and 1 only with
+  both removed, which is exactly what the probe comment beside the prose loop
+  says ("needs the refusal AND that room removed together"). Reword the
+  parenthetical to say both arms hold it on their own, so it demonstrates
+  neither in isolation, which is why the short spelling is the one used.
+- The header's fourth gap entry and `CLAIM_SPAN`'s closing sentence name "the
+  abbreviation near-miss", but the refusal drops any qualifier containing `.`,
+  `;`, `!` or `?` followed by a space and a non-lower-case character. Planted
+  on an isolated copy, a two-companion list joined by a semicolon
+  (`(see \`a.test.ts\`; \`b.test.ts\`)`), a two-sentence qualifier, `(SQL; HAF)`
+  and `(mocked? No, ...)` all went unaudited while the controls were reported.
+  Reword both texts to the trigger set, and add the semicolon-joined pair of
+  backticked paths to the `abbrevNearMiss` list so the gap's width is pinned
+  at a non-abbreviation member. No corpus instance today.
+- `LOOSE_CLAIM_SRC`'s docblock says both halves of the plural need the class,
+  and only the `(s)` half is demonstrated: reverting `[Ss]?` to `s?` is 11 of
+  11 green, because `COMPANIONS:` is caught either way once the `{0,8}?` room
+  absorbs the `S`. Mirror the `(S)` slack probe: `unparsedClaims(' (c) REAL-PATH
+  (also routes/foo.test.ts) COMPANIONSxxxxxxxx: covered')` must be 1 (it is 0
+  under the revert), plus its lower-case twin.
+
+### Not held, recorded so it is not re-litigated
+
+- Reverting only the trailing wrapper bound in `QUALIFIER` is detected at about
+  a 1.1x margin at 100,000 characters; like the trailing emphasis run, it is
+  linear on its own. Record it beside that residual; not held.
+- Two further single-bound reverts survive green and are linear:
+  `real[\s-]{0,4}path` to `[\s-]*`, and `LOOSE_CLAIM_SRC`'s `[\s-]{0,4}` to
+  `[\s-]*`. Widening the `{0,80}?` pre-noun room to 400 also survives (a
+  precision loss, not a silent pass), and so does dropping `;` from the refusal
+  set. Recorded, not held.
+- The header's gap entry wraps as a two-word line ("parenthesis. The"); the
+  `LABEL_SRC` docblock's "a hyphenated compound ... splits across the two
+  qualifier slots" is imprecise for a compound whose middle exceeds 64; the
+  dash shape measures 10 to 16 ms in plain node on this host rather than
+  "about 2 ms" (still 15x clear of the threshold); the docblock's "about nine
+  seconds" and the spec comment's "about eight seconds" for 6400 dashes differ
+  within variance. Cosmetic or theoretical; not held.
+- `AFTER_LABEL`'s `[*_\x60]+` is unbounded, linear (it follows a complete label
+  and a literal), and outside this diff. `anyCase` widens on non-ASCII input it
+  is never given. Neither held.
+- Project standards clean: anchors, subject prefix, trailer, staging and zone
+  all correct; the em-dash rule does not reach code comments; the carve-out
+  clauses do not apply.
+- The cross-model adversarial pass did not run (no different-provider CLI on
+  this host); corroboration is between separate in-process reviewers and a
+  separate validation pass that reproduced every held item by execution.
+
+**[TODO Architect]** unchanged and still deferred to archive. At that time also
+fold item 1's sizing refinement (the shortest timed length must be short
+relative to the worst guarded regression class, not merely shorter than the
+long pass) into the sibling entry
+`backtracking-fix-must-bound-every-quantifier-whose-class-overlaps-2026-09-14.md`
+rather than filing a new one.
