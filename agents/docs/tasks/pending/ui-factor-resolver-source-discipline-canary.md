@@ -1128,3 +1128,118 @@ a reader, so none of these was acted on.
   line trips.
 - Every probe and every mutation ran against copies under a scratch directory.
   The shared checkout was never mutated and no test was run in it.
+
+---
+
+## Architect re-review (2026-09-14) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` scoped to `75458b38` (the machinery file only), five lenses
+(correctness, project-standards, testing, adversarial in-process, learnings) plus an independent
+validator that executed the one surviving finding on a scratch copy. The cross-model adversarial
+route was again unavailable on this host, so the adversarial lens ran in-process.
+
+**All three items held on 2026-09-08 (second pass) landed, and the documentation-only claim is
+verified independently rather than accepted.** An architect A/B of the parent and reviewed
+machinery over all 86 real files under `frontend/src` agrees on every line for all three readers
+(`files=86 lines=21864 regionDiff=0 commentDiff=0 symbolDiff=0`); the reader bodies are identical
+once comment lines are excluded; the adversarial reviewer found the esbuild output byte-identical
+between the two commits, plain and minified. Every other added or changed sentence was executed
+against fixtures and matches the code: both opener readers refuse an opener inside a literal;
+inside a literal the `//` and `/*` prefixes drop before the resolver runs while `*` lines are
+counted; the `/*/` bullet holds; the two `legacy note` pins answer prose at a region known closed
+and at a region unknown and live at a region open, exactly as the prose says; the outward parity
+sentence holds and resolves to module scope, a new member. The repo's own pre-commit anchor gate
+over the 59 added lines reports zero violations with control lines tripping, run by three
+reviewers independently.
+
+Two of the four residuals the round surfaced are NOT held, so do not act on them: the outward
+parity direction of the brace walk stays unprobed, dismissed as a fail-closed direction the
+resolver suite's own docblock already declines to pin; and the `/*/` close-search shape stays
+dismissed as contrived, unchanged from the earlier round.
+
+**This hold carries one reader change.** The previous hold declined to make the mechanical
+decision; it is made here for item 1 and only there. Items 2 to 5 are sentences. Everything runs
+in a scratch copy, never in the checkout, and the whole-tree A/B is re-run and recorded after the
+reader change lands.
+
+### Item 1 — the predicate's new enumeration omits a third silent drop, and the fix is a guard, not a fourth bullet
+
+The `*` arm of `isCommentLine` consults `insideRegion` only when NO close sits on the line. A
+leading-star line that carries a close is answered by what follows the close alone, so at a
+region known closed `* Number(cached?.hasPassword === false) /* short */` returns prose and the
+password-state scan mints no key, while the byte-identical line with no trailing comment, or with
+a trailing `// short`, mints `pages/x.js#pick`. Executed by three reviewers, the architect and
+the validator, through `occurrencesOf` with the canary's own skip. No line under `frontend/src`
+has this shape today. The round self-reported the shape in its triage list and then wrote, on the
+very sentence the previous hold asked it to correct, that the residual list is complete: "Two
+shapes defeat it, both named as residuals here" and "Shape alone decides every case but two, and
+a third it decides on shape and gets wrong". That is the convention-enforcing-fix pattern
+recurring a third time on this predicate: the fix commit's own new prose under-enumerates.
+
+Decision: close the shape in code rather than document it. A trailing comment is an ordinary
+authoring shape, the wrapped-multiplication read is the case the region threading was built for,
+and a predicate that keeps accreting documented residuals is growing the wrong thing.
+
+Fix: in `isCommentLine`, before the close search, add the guard that a star-leading line at a
+region KNOWN closed is live whatever follows it (it cannot be a continuation there):
+`if (insideRegion === false && trimmed.startsWith('*') && !trimmed.startsWith('*/')) return false;`.
+The adversarial reviewer probed exactly this line: both suites 16/16, whole-tree `isCommentLine`
+A/B against the reviewed commit over 86 files zero diffs, and the fixture then mints
+`pages/x.js#pick`. Its only behavior change is in the loud direction (a star line inside a
+refused docblock also reads live, which is the direction those already fail in). Plant a pin pair
+beside the wrapped-multiplication pins in the resolver's own suite: the trailing-block-comment
+form at region false is live, the `// w` control stays live, and the region-unknown reading of
+the same line stays shape-only as pinned today. Add one end-to-end fixture through the
+password-state scan resolving to the enclosing declaration. Then re-audit the docblock and the
+body comment against the new arm and execute every sentence you touch: the "A leading `*` with
+no close on the line ... takes `insideRegion`" sentence must now cover both sub-cases (known
+closed is live regardless; no close and region unknown or open keeps today's reading), the
+"every case but two" count must still be true as written, and the body paragraph that says the
+star prefix is searched from the start must say when the search is consulted at all.
+
+### Item 2 — replace the two ordinal pointers with the residual's name
+
+"which is the first of those residuals" and "What licenses the first residual's silence" index
+the bullet list by position from a different paragraph than the bullets. Per root `CLAUDE.md`
+"Comment anchors", a positional form is durable only when a stable name rides along in the same
+container; these rot the moment a bullet is inserted or reordered. Name the residual (TEMPLATE
+PARITY) in both places.
+
+### Item 3 — `blockCommentInterior`'s docblock is terminated early by its own illustration (pre-existing, folded in)
+
+The docblock writes the re-entry illustration with a literal close, `(\`*/ /* second\`)`, which
+ends the `/**` docblock there; the file parses only because the illustration's own second opener
+re-opens a plain block comment that runs to the real terminator. Roughly the last third of that
+docblock, the whole template-parity paragraph included, sits in an accidental second comment; doc
+tooling reads the docblock as ending mid-sentence, and any `*/` added in that span turns the
+remainder into live code (loud: `node --check` fails, both suites fail at import). Provenance
+`7bf49a6e`. Fix: describe the illustration in words (a close, a space, then a second opener); the
+brace walk's `//` comment may keep its literal. Verify with `node --check`, with
+`blockCommentInterior` over the module's own lines reporting that docblock as one region, and
+with both suites green.
+
+### Item 4 — "Every arm closes before it is believed" overstates the `//` arm (pre-existing, folded in)
+
+The `//` arm returns prose on its prefix alone whenever the region is not known open; the
+universal is loose rather than false, and the paragraph's next sentence already scopes it. Restate
+the opening so it matches the code after item 1 lands (an arm that can be inside a region closes
+before it is believed; a `//` line outside one, or with no region known, is prose on its prefix;
+a `*` line at a region known closed is live on its prefix).
+
+### Item 5 — "withdraws exactly the licence those pins record" overclaims (documentation, low priority)
+
+A closing edit that adds a template signal leaves both `legacy note` pins passing, so the licence
+is narrowed to lines outside a literal, not withdrawn; the round already withdrew the stronger
+"must change those pins" form for this reason and kept the same overclaim in softer words. Say
+that the pins become the outside-a-literal controls a closing edit keeps beside its in-literal
+sibling.
+
+### Not held, noted for the record
+
+The self-truncating-docblock hazard in item 3 matches no `agents/docs/solutions/` entry; the
+architect will weigh a `/ce-compound` entry at archive. The backend port's drift note still rides
+on the backend port's own back-reference task, not here.
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the re-review
+signal. Do not edit this hold block or annotate items as fixed; the commit diff is the evidence
+and the architect updates the block at re-review.
