@@ -94,7 +94,14 @@ describe('enclosing-symbol: the resolver, the comment predicate, the brace walk 
     // password-state scan minted no key for the read.
     expect(isCommentLine('  * Number(cached?.hasPassword === false) /* short */', false)).toBe(false);
     expect(isCommentLine('  * Number(cached?.hasPassword === false) // w', false)).toBe(false);
-    // A close-leading line is the one star shape that guard leaves alone:
+    // An opener at a region known closed is left to the search too: the
+    // reading is about a star that could have been a continuation, and an
+    // opener never was. Without the star test in it, an opener's own prose
+    // would read as live.
+    expect(isCommentLine('/* hasPassword lives in the resolver */', false)).toBe(true);
+    expect(isCommentLine('/* v8 ignore next */ const usesPassword = status.hasPassword;', false)).toBe(false);
+    // A close-leading line is the one star shape the known-closed reading
+    // leaves alone:
     // whatever the region pass believes, it ends a comment and is answered by
     // what follows its close, so trailing prose there stays prose and code
     // there stays live.

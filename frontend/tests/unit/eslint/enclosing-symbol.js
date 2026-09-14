@@ -473,8 +473,11 @@ export function sourcesUnder(root) {
  *  hide the read. Only further comment may follow the close for the line to
  *  stay prose. The rule is written for all three prefixes: inside an open
  *  region a `//` is comment text like any other, so a line that begins with
- *  one and then closes the region is live behind its close too. Two shapes
- *  defeat it, both named as residuals here.
+ *  one and then closes the region is live behind its close too. Where the
+ *  region pass is right, two shapes defeat it, both named as residuals here;
+ *  where it under-reports, each arm falls back to its shape reading, silently
+ *  for a `//` line that carries a close, loudly for a star line that does
+ *  not.
  *
  *  Shape alone decides every case but two, and a third it decides on shape
  *  and gets wrong, which is the TEMPLATE PARITY residual. A leading `*` (a
@@ -485,11 +488,13 @@ export function sourcesUnder(root) {
  *  {@link blockCommentInterior}, in two sub-cases. At a region KNOWN closed
  *  the line is live whatever follows it, a trailing comment included:
  *  nothing is open for it to continue, so the close search is not consulted
- *  at all. Where the region pass has refused an opener, that reads the
- *  refused docblock's star lines as live, which is the loud direction those
- *  already fail in. With a region open, or none known, a close on the line
- *  is what answers (code behind it is live; nothing, or further comment, is
- *  prose), and a line with no close is prose. And a leading `//` is prose on
+ *  at all. Where the region pass under-reports, an opener it refused or one
+ *  it never saw (the pass reads an opener at the start of a line, or of what
+ *  survives a close on it, and nowhere else), that reads the comment's star
+ *  lines as live, which is the loud direction those already fail in. With
+ *  a region open, or none known, a close on the line is what answers (code
+ *  behind it is live; nothing, or further comment, is prose), and a line
+ *  with no close is prose. And a leading `//` is prose on
  *  its shape outside a region, but inside one it is inspected for a close
  *  like the other two prefixes, because the region is what decides what the
  *  two slashes are. Passing nothing leaves the shape-only reading of both,
@@ -556,13 +561,15 @@ export function isCommentLine(line, insideRegion) {
   // claim a line whose comment has already ended and skip the live code
   // behind it. Two readings ARE on the prefix alone, in opposite directions:
   // a `//` line outside a region, or with none known, is prose; and a `*`
-  // line at a region KNOWN closed is live, because nothing is open for it to
-  // continue and whatever follows it, a trailing comment included, cannot
-  // make it one. The close search is consulted for the rest. An opener is
-  // searched past its own two characters, so an opener that begins with a
-  // star is not read as self-closing; a `//` inside a region, and a `*` with
-  // a region open or none known, are searched from the start, which is
-  // where a continuation's own close sits.
+  // line that is not itself a close, at a region KNOWN closed, is live,
+  // because nothing is open for it to continue and whatever follows it, a
+  // trailing comment included, cannot make it one. The close search is
+  // consulted for the rest, the close-leading line included, which is why
+  // the reading above excludes it. An opener is searched past its own two
+  // characters, so an opener that begins with a star is not read as
+  // self-closing; a `//` inside a region, a `*` with a region open or none
+  // known, and a close-leading line whatever the region, are searched from
+  // the start, which is where a continuation's own close sits.
   const opensBlock = trimmed.startsWith('/*');
   const lineComment = trimmed.startsWith('//');
   if (lineComment && insideRegion !== true) return true;
