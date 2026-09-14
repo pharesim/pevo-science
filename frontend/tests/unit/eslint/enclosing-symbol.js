@@ -210,8 +210,8 @@ function aCommentCloseFollows(lines, openIndex, lineIndex) {
  *  line is the whole silent surface: every other line consults its own
  *  shape, so a phantom region cannot hide them. Leaving a region, the code after the close is read
  *  the same way the walk reads it: a line that closes one region and opens
- *  another (`*/ /* second`) re-enters, so a continuation below it is still
- *  prose to the predicate.
+ *  another (a close, a space, then a second opener) re-enters, so a
+ *  continuation below it is still prose to the predicate.
  *
  *  TEMPLATE PARITY IS A WHOLE-FILE BACKTICK COUNT, and two things invert it.
  *  A backtick that is not a delimiter still counts: inside a regex literal,
@@ -477,17 +477,25 @@ export function sourcesUnder(root) {
  *  defeat it, both named as residuals here.
  *
  *  Shape alone decides every case but two, and a third it decides on shape
- *  and gets wrong, which is the first of those residuals. A leading `*` with
- *  no close on the line is a docblock continuation and a wrapped
- *  multiplication and a generator method, all three identical to this
- *  predicate, so that case takes `insideRegion` from
- *  {@link blockCommentInterior} and is prose only when a region really is
- *  open. And a leading `//` is prose on its shape outside a region, but
- *  inside one it is inspected for a close like the other two prefixes,
- *  because the region is what decides what the two slashes are. Passing
- *  nothing leaves the shape-only reading of both, which suits a caller with
- *  no file in hand; a SCAN must pass the region, because reading live code
- *  as prose there is the violation going unreported.
+ *  and gets wrong, which is the TEMPLATE PARITY residual. A leading `*` (a
+ *  close-leading line aside, which ends a comment whatever the region says
+ *  and is answered by what follows its close) is a docblock continuation and
+ *  a wrapped multiplication and a generator method, all three identical to
+ *  this predicate, so that case takes `insideRegion` from
+ *  {@link blockCommentInterior}, in two sub-cases. At a region KNOWN closed
+ *  the line is live whatever follows it, a trailing comment included:
+ *  nothing is open for it to continue, so the close search is not consulted
+ *  at all. Where the region pass has refused an opener, that reads the
+ *  refused docblock's star lines as live, which is the loud direction those
+ *  already fail in. With a region open, or none known, a close on the line
+ *  is what answers (code behind it is live; nothing, or further comment, is
+ *  prose), and a line with no close is prose. And a leading `//` is prose on
+ *  its shape outside a region, but inside one it is inspected for a close
+ *  like the other two prefixes, because the region is what decides what the
+ *  two slashes are. Passing nothing leaves the shape-only reading of both,
+ *  which suits a caller with no file in hand; a SCAN must pass the region,
+ *  because reading live code as prose there is the violation going
+ *  unreported.
  *
  *  Neither residual is closed here, and not for the same reason, so each
  *  carries its own:
@@ -521,12 +529,13 @@ export function sourcesUnder(root) {
  *     outside a region, where such a line really is an opener, and the shape
  *     stays dismissed as contrived.
  *
- *  What licenses the first residual's silence is pinned, not incidental: the
- *  two `legacy note` line-comment pins in the resolver's own suite fix the
- *  shape answer for a `//` line carrying a close and a live password-state
- *  read, at a region known closed and at a region unknown, with no literal in
- *  the question. Closing that residual withdraws exactly the licence those
- *  pins record, so they are the first thing it has to restate.
+ *  What licenses the TEMPLATE PARITY residual's silence is pinned, not
+ *  incidental: the two `legacy note` line-comment pins in the resolver's own
+ *  suite fix the shape answer for a `//` line carrying a close and a live
+ *  password-state read, at a region known closed and at a region unknown,
+ *  with no literal in the question. A closing edit that adds a template
+ *  signal leaves both passing: they become the outside-a-literal controls it
+ *  keeps beside its in-literal sibling.
  *
  *  On a scan for a FORBIDDEN shape the match IS the violation, so every line
  *  skipped is a violation not reported: filter as little as possible. A line
@@ -540,28 +549,42 @@ export function sourcesUnder(root) {
  *  own, re-derived, not inherited. */
 export function isCommentLine(line, insideRegion) {
   const trimmed = line.trim();
-  // Every arm closes before it is believed. A comment CLOSE begins with the
-  // same star a docblock continuation does, and inside an open region a `//`
-  // is comment text that can end the region on that same line, so an arm
-  // that answers on its prefix alone claims a line whose comment has already
-  // ended and skips the live code behind it. An opener is searched past its
-  // own two characters, so an opener that begins with a star is not read as
-  // self-closing; the other two prefixes are searched from the start, which
-  // is where a continuation's own close sits.
+  // An arm that can sit inside a region closes before it is believed. A
+  // comment CLOSE begins with the same star a docblock continuation does,
+  // and inside an open region a `//` is comment text that can end the
+  // region on that same line, so an arm answering on its prefix alone would
+  // claim a line whose comment has already ended and skip the live code
+  // behind it. Two readings ARE on the prefix alone, in opposite directions:
+  // a `//` line outside a region, or with none known, is prose; and a `*`
+  // line at a region KNOWN closed is live, because nothing is open for it to
+  // continue and whatever follows it, a trailing comment included, cannot
+  // make it one. The close search is consulted for the rest. An opener is
+  // searched past its own two characters, so an opener that begins with a
+  // star is not read as self-closing; a `//` inside a region, and a `*` with
+  // a region open or none known, are searched from the start, which is
+  // where a continuation's own close sits.
   const opensBlock = trimmed.startsWith('/*');
   const lineComment = trimmed.startsWith('//');
   if (lineComment && insideRegion !== true) return true;
   if (!opensBlock && !lineComment && !trimmed.startsWith('*')) return false;
+  // A close-leading line is the one star shape the known-closed reading
+  // leaves to the search: it ends a comment whatever the region pass
+  // believes (the pass under-reports where an opener was refused, or sat
+  // mid-line and was never seen), so it is answered by what follows its
+  // close like every other close.
+  if (insideRegion === false && trimmed.startsWith('*') && !trimmed.startsWith('*/')) return false;
   const close = trimmed.indexOf('*/', opensBlock ? 2 : 0);
   if (close === -1) {
-    // An opener with nothing after it is prose on its own evidence. A
-    // leading star is not: `* Number(cached?.hasPassword === false)` is a
-    // wrapped multiplication and `*factorHints() {` is a generator method,
-    // both shape-identical to a docblock continuation. Only the region says
-    // which, so a caller that knows passes it. `undefined` keeps the older
-    // shape-only reading for callers with no file context. A `//` reaching
-    // here is inside a region with no close on its line, so it is prose.
-    return opensBlock || insideRegion !== false;
+    // Nothing closes on this line, and every prefix reaching here is prose
+    // on that evidence: an opener with nothing after it, a `//` inside a
+    // region, and a leading star with a region open or none known. The star
+    // is the one that needed the region. `* Number(cached?.hasPassword ===
+    // false)` is a wrapped multiplication and `*factorHints() {` is a
+    // generator method, both shape-identical to a docblock continuation, and
+    // only a region KNOWN closed says live, which is answered before the
+    // search. `undefined` keeps the older shape-only reading for callers
+    // with no file context.
+    return true;
   }
   const rest = trimmed.slice(close + 2).trim();
   // Anything after a close is outside the region by construction.

@@ -86,12 +86,30 @@ describe('enclosing-symbol: the resolver, the comment predicate, the brace walk 
     expect(isCommentLine('  * (status.hasPassword === false ? 1 : 0)', false)).toBe(false);
     expect(isCommentLine('  * Number(cached?.hasPassword === false);', false)).toBe(false);
     expect(isCommentLine('*factorHints() { yield this.emailStatus.hasPassword; }', false)).toBe(false);
+    // A trailing comment on that live line changes nothing at a region known
+    // closed: nothing is open for a star-leading line to continue, so it is
+    // live whatever follows it. Without that guard the close search ran
+    // first and answered on what followed the close alone, so the block form
+    // read as prose while its `//` sibling read as live, and the
+    // password-state scan minted no key for the read.
+    expect(isCommentLine('  * Number(cached?.hasPassword === false) /* short */', false)).toBe(false);
+    expect(isCommentLine('  * Number(cached?.hasPassword === false) // w', false)).toBe(false);
+    // A close-leading line is the one star shape that guard leaves alone:
+    // whatever the region pass believes, it ends a comment and is answered by
+    // what follows its close, so trailing prose there stays prose and code
+    // there stays live.
+    expect(isCommentLine('  */ // hasPassword, prose after a close', false)).toBe(true);
+    expect(isCommentLine('  */ return status.hasPassword;', false)).toBe(false);
     // Inside one, the same shape is the docblock continuation it looks like.
     expect(isCommentLine('  * hasPassword is read once, in the resolver', true)).toBe(true);
     expect(isCommentLine('  * (status.hasPassword === false ? 1 : 0)', true)).toBe(true);
     // With no region known, the shape reading stands, which is what the
     // import-clause walk relies on.
     expect(isCommentLine('  * hasPassword is read once, in the resolver')).toBe(true);
+    // That holds for the trailing-comment line too: with no region known, or
+    // one open, its close is what answers, and nothing follows the close.
+    expect(isCommentLine('  * Number(cached?.hasPassword === false) /* short */')).toBe(true);
+    expect(isCommentLine('  * Number(cached?.hasPassword === false) /* short */', true)).toBe(true);
     // A close ends the region wherever it sits, so what follows is live even
     // when it is itself star-shaped.
     expect(isCommentLine('*/ * Number(status.hasPassword === false);', true)).toBe(false);

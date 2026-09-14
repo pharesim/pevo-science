@@ -824,6 +824,22 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
         ],
       }),
     ).toEqual(['pages/anything.js#pick']);
+    // The same live line carrying a trailing block comment. At a region
+    // known closed a star-leading line cannot be a continuation, so the read
+    // is live whatever follows it; a predicate that answered on what followed
+    // the close alone read this line as prose and the scan minted no key.
+    expect(
+      passwordStateKeys({
+        rel: 'pages/anything.js',
+        lines: [
+          'function pick(status, cached) {',
+          '  const orcidOnly = Number(cached != null)',
+          '    * Number(cached?.hasPassword === false); /* short */',
+          '  return orcidOnly;',
+          '}',
+        ],
+      }),
+    ).toEqual(['pages/anything.js#pick']);
     // The same shape inside a docblock stays prose.
     expect(
       passwordStateKeys({
