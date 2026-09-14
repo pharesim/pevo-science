@@ -1579,7 +1579,7 @@ back with no code consequence.
   `LANDING_FILELESS`, `DEFERRED_FREE_PROSE`, `DEFERRED_FILELESS` or
   `LANDING_DIGEST` appears in the diff, and the three whole-tree reconcilers are
   green, which is what proves no file moved class.
-- `.githooks/pre-commit`'s `anchor_violation()` run standalone over all 273
+- `.githooks/pre-commit`'s `anchor_violation()` run standalone over all 272
   added lines with `ALLOW_MARKER` set explicitly: zero hits, with five control
   lines (a task slug, a bare positional anchor, a line-number cite, a round
   ordinal, an AC redirect) all firing, so the harness was live.
