@@ -579,8 +579,16 @@ const COPY_COLUMNS_RE = /\bCOPY\s+(?:public\s*\.\s*)?accounts\s*\(([^)]*)\)/i;
  *  the table from an expression; a drop and re-add replaces the column
  *  outright; a rename moves another column onto the name. Each lands every row
  *  at whatever the new value is, which is exactly what the writer scans exist
- *  to refuse, and none of them is an UPDATE, an INSERT or a MERGE. */
-const ALTER_ACCOUNTS_RE = /\bALTER\s+TABLE\s+(?:ONLY\s+)?(?:public\s*\.\s*)?accounts\b/i;
+ *  to refuse, and none of them is an UPDATE, an INSERT or a MERGE.
+ *
+ *  `IF EXISTS` is admitted because PostgreSQL puts it between the keyword and
+ *  `ONLY`, and because every migration in this tree is written idempotent: it
+ *  is the spelling an author reaches for by default, so a drop or a retype of
+ *  the column carried behind it is the likeliest form of the very statement
+ *  this arm exists to see. The reverse order is a syntax error, so one
+ *  alternative in one position is the whole clause. */
+const ALTER_ACCOUNTS_RE =
+  /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(?:public\s*\.\s*)?accounts\b/i;
 
 /** Trigger, rule and stored-routine creation, in every spelling PostgreSQL
  *  accepts, capturing the kind and the name so a site can be keyed exactly. A
@@ -2242,6 +2250,20 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     expect(alterations(["ALTER TABLE accounts", "  ALTER COLUMN updated_at TYPE TIMESTAMPTZ", "  USING (updated_at AT TIME ZONE 'UTC');"])).toBe(1);
     expect(alterations(['ALTER TABLE accounts RENAME COLUMN touched_at TO updated_at;'])).toBe(1);
     expect(alterations(['ALTER TABLE accounts DROP COLUMN updated_at;'])).toBe(1);
+    // And the head under each optional clause PostgreSQL allows between the
+    // keyword and the table, one line per clause so deleting that clause alone
+    // reds its own line. `IF EXISTS` is the one this tree would actually write:
+    // the migrations here are idempotent throughout, so it is the default reach
+    // for a drop or a retype of the column.
+    expect(alterations(['ALTER TABLE IF EXISTS accounts DROP COLUMN updated_at;'])).toBe(1);
+    expect(alterations(['ALTER TABLE ONLY accounts DROP COLUMN updated_at;'])).toBe(1);
+    expect(alterations(['ALTER TABLE public.accounts DROP COLUMN updated_at;'])).toBe(1);
+    // The two of them together, which is the one spelling that answers to their
+    // ORDER rather than to either clause: PostgreSQL takes `IF EXISTS ONLY` and
+    // rejects `ONLY IF EXISTS`, so a pattern carrying the two groups the other
+    // way round still matches each clause on its own and goes blind on the
+    // combination alone.
+    expect(alterations(['ALTER TABLE IF EXISTS ONLY accounts DROP COLUMN updated_at;'])).toBe(1);
     expect(alterations(['ALTER TABLE accounts ADD COLUMN pending_email TEXT;'])).toBe(0);
     expect(alterations(['ALTER TABLE sessions ALTER COLUMN updated_at TYPE TIMESTAMPTZ;'])).toBe(0);
     // A pre-decrement is an operator, not a comment, so it blanks nothing.
