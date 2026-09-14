@@ -17,54 +17,22 @@
  *         called Keychain" — they never assert a 2xx from a verifyHiveSignature-
  *         guarded endpoint. The op SHAPE (action, target fields) is the assertion.
  *   - (c) real-path companion: the broadcast-attach + fresh-auth orchestration is
- *         unit-tested (lib-authorship-consent / lib-fresh-auth-consent-op-cache).
- *         The custody-broadcast fresh-auth path has no real-path companion:
- *         non-consent-fresh-auth.spec.js was cited for it, but it issues no
- *         custody broadcast, and its closing note records the broadcast-driving
- *         case as prototyped and removed. A follow-up is filed to add one.
+ *         unit-tested (lib-authorship-consent / lib-fresh-auth-consent-op-cache),
+ *         and consent-op-fresh-auth.spec.js drives the light-account custody
+ *         path for real: an author_accept whose target-bound proof is minted at
+ *         the real POST /custody/fresh-auth and consumed at the real
+ *         POST /custody/broadcast, with the spent-proof replay and the
+ *         session-kind kind_mismatch refusal as controls.
  */
 import { test, expect } from './fixtures/keychain.js';
-import { installPaperMocks } from './fixtures/paper-mocks.js';
+import { installPaperMocks, installAuthedBootMocks, buildPaper } from './fixtures/paper-mocks.js';
 import { seedAccreditedSession } from './fixtures/auth.js';
 
 const APP_TAG = 'pevotest';
 
-function buildPaper({ author, permlink, authors, claims = [] }) {
-  const pevoMeta = { type: 'paper', version: 1, discipline: 'Computer Science', keywords: ['testing'], authors, citations: [] };
-  return {
-    author,
-    permlink,
-    title: 'Authorship Consent Affordances Test',
-    body: '## Abstract\n\nExercises the consent/credit affordances.',
-    authors,
-    accredited_authors: authors.filter((a) => a.hive).map((a) => a.hive),
-    head_author: author,
-    head_permlink: permlink,
-    canonical_author: author,
-    canonical_permlink: permlink,
-    created: '2026-06-01T00:00:00.000Z',
-    net_votes: 0,
-    vote_strength: 'normal',
-    voters: [],
-    citation_count: 0,
-    review_count: 0,
-    json_metadata: { app: `${APP_TAG}/0.1.0`, [APP_TAG]: pevoMeta },
-    versions: [{ version_number: 1, author, permlink, created: '2026-06-01T00:00:00.000Z' }],
-    authorship_claims: claims,
-  };
-}
-
 // Keep the boot-time authed GETs quiet, and seed the pending-authorships store.
-async function mockBoot(page, { pendingConsents = [], pendingClaims = [] } = {}) {
-  await page.route('**/api/me/authorships/pending', (route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'ok', data: { pending_consents: pendingConsents, pending_claims: pendingClaims } }) }),
-  );
-  await page.route('**/api/notifications**', (route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'ok', data: { events: [], latest_block: 0, has_more: false } }) }),
-  );
-  await page.route('**/api/accreditations/**', (route) =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'ok', data: { is_accredited: true, accreditation: { name: 'Alice Researcher' } } }) }),
-  );
+function mockBoot(page, opts = {}) {
+  return installAuthedBootMocks(page, { ...opts, accreditationName: 'Alice Researcher' });
 }
 
 async function lastBroadcastPayload(page) {

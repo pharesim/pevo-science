@@ -8,7 +8,8 @@
 // would require a running backend + Hive + ORCID stack and the ability
 // to induce specific FRESH_AUTH_REQUIRED status/reason combinations
 // (401 missing/expired/malformed; 403 username_mismatch). That setup
-// belongs to the E2E layer, and no spec there drives it today. Here we
+// belongs to the E2E layer, and no spec there induces those rejections
+// (the happy path is driven there; see clause (c)). Here we
 // mock signer.broadcastOps so we can deterministically trigger each
 // error shape and assert the wrapper's branching: dropping the dead
 // window, re-authing, retrying, disconnecting, toasting.
@@ -18,23 +19,20 @@
 // upstream and reacts to backend rejections. Cryptographic verification
 // is performed server-side. No frontend auth middleware is mocked.
 //
-// Clause-c real-path companion: none exists yet for this suite's risk
-// class. `frontend/tests/e2e/non-consent-fresh-auth.spec.js` was cited
-// here, but it never calls `broadcastWithFreshAuth` and issues no
-// custody broadcast at all: it drives the `/orcid/callback` session_auth
-// handler caching an issued window, against a stubbed callback response,
-// and its closing note records the broadcast-driving case as prototyped
-// and removed. Every e2e spec that does reach a broadcast runs on a
-// self-custody account through the Keychain stub, where no window proof
-// is attached. The mint this wrapper's re-auth leg depends on is
-// exercised for real on the settings surface:
-// `frontend/tests/e2e/settings.spec.js` mints at the real POST
-// /custody/fresh-auth through the reauth modal, and
-// `frontend/tests/e2e/settings-orcid-factor.spec.js` completes a genuine
-// backend-minted proof end to end. Both mint the per-action consent-op
-// kind rather than the multi-use session window this wrapper consumes.
-// The gap that leaves is the light-account broadcast itself, and a
-// follow-up is filed to add one.
+// Clause-c real-path companion: `frontend/tests/e2e/non-consent-fresh-auth.spec.js`
+// drives `broadcastWithFreshAuth` against the real backend on the happy
+// path. A light account's vote acquires the window through the real
+// POST /custody/session-auth, and the real POST /custody/broadcast
+// carries it, passes the fresh-auth gate, and stops at the seeded
+// account's posting-key decrypt; a tampered proof through the same route
+// is refused at the gate, and the same window is accepted again on a
+// replay. The 401-retry, the username_mismatch teardown, and the
+// redirect-posture branches this suite pins have no real-path companion:
+// no e2e spec closes or corrupts a window between the mint and the
+// broadcast. The per-action mint the settings surface exercises for real
+// (`frontend/tests/e2e/settings.spec.js`,
+// `frontend/tests/e2e/settings-orcid-factor.spec.js`) is the consent-op
+// kind, not the window this wrapper consumes.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 

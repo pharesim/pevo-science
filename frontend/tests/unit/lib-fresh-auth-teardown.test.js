@@ -41,9 +41,9 @@
 //
 // Clause-c real-path companion: none exists for this suite's risk class. No
 // e2e spec changes subject while a fresh-auth acquisition is parked, and the
-// e2e follow-up filed for the sibling session-window suite (a light-account
-// broadcast or upload carrying a window proof) does not reach a scrub landing
-// mid-flight either. The scrub these cases stage by hand is composed for real
+// light-account coverage in `frontend/tests/e2e/non-consent-fresh-auth.spec.js`
+// (a broadcast and an upload carrying a window proof) does not reach a scrub
+// landing mid-flight either. The scrub these cases stage by hand is composed for real
 // only in `src/auth.js` (`_scrubSubjectBoundState`), and that store's own suite
 // stubs the in-flight abandonment the composition calls into.
 

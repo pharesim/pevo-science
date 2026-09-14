@@ -22,18 +22,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Clause-b: the mocked modules are mint transport + cache, not
 // auth-verification paths; the proof's cryptographic binding is verified
 // server-side (backend integration tests).
-// Clause-c real-path companion: no e2e spec drives this orchestrator end to
-// end on a light account, and none drives a light-account custody broadcast
-// with a proof attached (tests/e2e/non-consent-fresh-auth.spec.js covers only
-// the /orcid/callback session_auth handler caching an issued window, against
-// a stubbed callback; its closing note records the real-broadcast case as
-// prototyped and removed). The two factors this orchestrator selects between
-// are driven for real on the settings surface: tests/e2e/settings.spec.js
-// mints at the real POST /custody/fresh-auth through the reauth modal, and
+// Clause-c real-path companion: tests/e2e/consent-op-fresh-auth.spec.js drives
+// this orchestrator end to end on a light account against the real backend,
+// on the password factor: an author_accept resolves the factor against the
+// real GET /settings/email, mints the target-bound proof at the real
+// POST /custody/fresh-auth through the reauth modal, and carries it on the
+// real POST /custody/broadcast past the gated-op consume; a replay is refused
+// as spent and a session-kind proof is refused for its kind. The ORCID factor
+// and the retry gate's re-mint have no real-path companion on this surface:
 // tests/e2e/settings-orcid-factor.spec.js completes the ORCID factor's full
-// round-trip. tests/e2e/authorship-consent-actions.spec.js covers the four
-// consent and credit ops being built and handed to the Keychain stub on
-// self-custody, against route-mocked paper data, where no proof is minted.
+// round-trip on the settings surface only, and no e2e spec induces a
+// FRESH_AUTH_REQUIRED on a consent-op broadcast the SPA then retries.
+// tests/e2e/authorship-consent-actions.spec.js covers the four consent and
+// credit ops being built and handed to the Keychain stub on self-custody,
+// against route-mocked paper data, where no proof is minted.
 const mockMintAuthorshipFreshAuthProof = vi.fn();
 const mockFetchEmailStatus = vi.fn();
 vi.mock('../../src/api.js', () => ({

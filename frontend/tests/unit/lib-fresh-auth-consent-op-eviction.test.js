@@ -57,9 +57,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // start / callback / resume round-trip, and its real-backend case removes both
 // route stubs so a genuine backend-minted proof is written into this same slot
 // by the real `/orcid/callback` handler and consumed by the real settings
-// submit. The gap that remains is a light-account authorship broadcast carrying
-// a consent-op proof, which lib-authorship-consent.test.js already records as
-// uncovered; this file adds no new gap.
+// submit. tests/e2e/consent-op-fresh-auth.spec.js drives a light-account
+// authorship broadcast carrying a consent-op proof for real, on the password
+// factor, which never writes this slot; no e2e spec lands an ORCID-minted
+// consent-op proof in the slot and then broadcasts it, so the eviction of a
+// wrong-type entry on that surface is pinned here only.
 
 // Every mock handle is reached through an arrow inside its vi.mock factory: a
 // factory runs during the static-import phase, before these consts

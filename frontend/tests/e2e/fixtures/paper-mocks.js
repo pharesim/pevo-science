@@ -20,7 +20,8 @@ export function envelope(data) {
 /**
  * Install `page.route` handlers covering the three paper-related endpoints
  * the edit page reads on load (`/api/papers/:a/:p`, `/enrichment`,
- * `/invalidate`).
+ * `/invalidate`), plus the paper-detail discussion read (`/comments`) when a
+ * `comments` array is supplied.
  *
  * Why mocked paper data: the edit page reads `head_author/head_permlink`,
  * `authors[].hive`, and the existing `pevo` json_metadata block to decide
@@ -39,8 +40,22 @@ export function envelope(data) {
  * adjusting the fallback dispatch causes silent test breakage where the
  * suffix routes never reach their handler.
  */
-export async function installPaperMocks(page, { paper, reviews = [], claims = [] }) {
+export async function installPaperMocks(page, { paper, reviews = [], claims = [], comments = null }) {
   const paperPath = `/api/papers/${encodeURIComponent(paper.author)}/${encodeURIComponent(paper.permlink)}`;
+
+  // Optional discussion stub. Registered FIRST so the bare paper route below
+  // (registered last, dispatched first) reaches it through route.fallback()
+  // for `/comments` URLs; when omitted, those URLs fall through to the real
+  // backend as before.
+  if (comments !== null) {
+    await page.route(`**${paperPath}/comments**`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(envelope(comments)),
+      });
+    });
+  }
 
   await page.route(`**${paperPath}/enrichment`, async (route) => {
     await route.fulfill({
@@ -75,4 +90,78 @@ export async function installPaperMocks(page, { paper, reviews = [], claims = []
       body: JSON.stringify(envelope(paper)),
     });
   });
+}
+
+/**
+ * Build a `/api/papers/:author/:permlink` response shape for the paper-detail
+ * page: the fields the page reads to decide which authorship affordances to
+ * render (`authors[].hive` / `.consented`, `head_*`, `authorship_claims`) plus
+ * the metadata block. Shared by the specs that drive paper-detail against a
+ * deterministic authorship shape.
+ */
+export function buildPaper({
+  author,
+  permlink,
+  authors,
+  claims = [],
+  title = 'E2E Paper Detail Fixture',
+  appTag = 'pevotest',
+}) {
+  const pevoMeta = { type: 'paper', version: 1, discipline: 'Computer Science', keywords: ['testing'], authors, citations: [] };
+  return {
+    author,
+    permlink,
+    title,
+    body: '## Abstract\n\nDeterministic paper-detail fixture.',
+    authors,
+    accredited_authors: authors.filter((a) => a.hive).map((a) => a.hive),
+    head_author: author,
+    head_permlink: permlink,
+    canonical_author: author,
+    canonical_permlink: permlink,
+    created: '2026-06-01T00:00:00.000Z',
+    net_votes: 0,
+    vote_strength: 'normal',
+    voters: [],
+    citation_count: 0,
+    review_count: 0,
+    json_metadata: { app: `${appTag}/0.1.0`, [appTag]: pevoMeta },
+    versions: [{ version_number: 1, author, permlink, created: '2026-06-01T00:00:00.000Z' }],
+    authorship_claims: claims,
+  };
+}
+
+/**
+ * Keep the boot-time authed GETs a connected session fires deterministic:
+ * the pending-authorships store (which the Route-2 accept affordance gates
+ * on), the notifications poll, and the accreditation-status poll the auth
+ * store runs for the seeded username. None of these is the surface a
+ * paper-detail write spec asserts on; stubbing them keeps HAF out of the
+ * page load.
+ */
+export async function installAuthedBootMocks(
+  page,
+  { pendingConsents = [], pendingClaims = [], accreditationName = 'E2E Researcher' } = {},
+) {
+  await page.route('**/api/me/authorships/pending', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(envelope({ pending_consents: pendingConsents, pending_claims: pendingClaims })),
+    }),
+  );
+  await page.route('**/api/notifications**', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(envelope({ events: [], latest_block: 0, has_more: false })),
+    }),
+  );
+  await page.route('**/api/accreditations/**', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(envelope({ is_accredited: true, accreditation: { name: accreditationName } })),
+    }),
+  );
 }

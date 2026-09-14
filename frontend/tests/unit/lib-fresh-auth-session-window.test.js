@@ -29,24 +29,19 @@
 // server-side; these tests assert which factor the client chooses and how it
 // models the window it was handed.
 //
-// Clause-c real-path companion: none exists yet for this suite's risk class.
-// `frontend/tests/e2e/non-consent-fresh-auth.spec.js` was cited for acquisition
-// and broadcast, and drives neither. It hand-seeds the ORCID mode and return
-// path that `beginSessionAuthOrcidRedirect` would have written, so no factor is
-// selected and nothing is minted, and it stubs the callback response, so the
-// window it caches is test-authored rather than backend-issued. What it does
-// drive is that return leg's client-side cache write. It issues no broadcast.
-// `frontend/tests/e2e/publish.spec.js` was cited for the upload leg; it runs
-// self-custody, where `ensureSessionWindow` short-circuits and no window is
-// involved. The shared factor resolver is exercised for real on the settings
-// surface: `frontend/tests/e2e/settings.spec.js` resolves the password factor
-// against a real GET /settings/email and mints at the real POST
-// /custody/fresh-auth, and `frontend/tests/e2e/settings-orcid-factor.spec.js`
-// completes a genuine backend-minted proof end to end. Both mint the per-action
-// consent-op kind, so they stand in for factor selection only, not for the
-// multi-use window this suite models. What has no real-path coverage is a
-// light-account broadcast or upload carrying a window proof, and a follow-up is
-// filed to add one.
+// Clause-c real-path companion: `frontend/tests/e2e/non-consent-fresh-auth.spec.js`
+// drives acquisition and consumption against the real backend on the password
+// factor. The resolver reads the real GET /settings/email, the reauth modal's
+// password mints at the real POST /custody/session-auth, the issuance is cached
+// as the window, and that window is carried on the real POST /custody/broadcast
+// (a vote, past the fresh-auth gate to the seeded account's posting-key stop,
+// and accepted again on a replay) and on the real POST /ipfs/upload-token (a
+// publish, acquired at file selection per the acquire-before-commit rule and
+// carried through to the transfer's CID). Its ORCID test covers that factor's
+// return leg only, against a stubbed callback. What has no real-path companion
+// is the window's deadlines: no e2e spec ages a window to its idle or absolute
+// deadline, so the two-deadline model and the pre-flight margin are pinned here
+// only.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
