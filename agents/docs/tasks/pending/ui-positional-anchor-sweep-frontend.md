@@ -74,3 +74,11 @@ Five of the eight belong to tasks still open in `tasks/pending/` at filing time
 rather than racing them: if either task is mid-flight on one of these files when
 this is picked up, take the other files first and leave a note here. Items 1 and 2
 predate both and have no other owner.
+
+## Note (2026-09-14, from the light-account fresh-auth e2e task)
+
+Item 1 no longer exists: the closing note in `tests/e2e/non-consent-fresh-auth.spec.js`
+that carried "is covered by the test above" was replaced wholesale at 58ad7918, and the
+hook's positional regex returns nothing over that file, the new
+`tests/e2e/consent-op-fresh-auth.spec.js`, or `tests/e2e/fixtures/light-account.js`.
+Seven items remain.

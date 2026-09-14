@@ -103,3 +103,15 @@ Scope item 3 may turn out to be a real decision rather than an edit. If removing
 would red the suite in a normal developer environment, say so in this file and take the
 disclosure option instead; do not remove a guard that is load-bearing for people without
 the ORCID sidecar.
+
+## Note (2026-09-14, from the light-account fresh-auth e2e task)
+
+The docblock this task targets was rewritten at 58ad7918 and 306d84f4, when the spec gained
+three light-account tests against the real backend. Scope 1 is overtaken: the opening
+paragraph now names the four tests and what each drives. Scope 2 is overtaken: the clause-(c)
+sentence credits `settings-orcid-factor.spec.js` as the real ORCID round-trip (no conditional
+skip), names `orcid-link.spec.js`'s cross-user test as environment-gated by its skip, and the
+"layers atop the same proven plumbing" claim is gone. Scope 4's premise is now false: all six
+citing suites were re-swept for the new coverage. Scope 3 took the disclosure option inside
+the docblock; whether to remove the skip in `orcid-link.spec.js` remains this task's
+decision. Re-read acceptance criteria 1 to 5 against the current file before editing.
