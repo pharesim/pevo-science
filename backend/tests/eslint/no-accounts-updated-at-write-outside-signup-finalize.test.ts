@@ -266,14 +266,16 @@
  *     wherever it can: an unclosed comment opener is text, a value keeps its
  *     markers, and a decrement is an operator.
  *   - A string VALUE that spans lines is read as code from its second line
- *     on, because the value state resets at each line while the block,
- *     template and dollar states do not — in the statement read as well as in
- *     the blanking, since the two must agree about where a value ends. The
- *     reset is what keeps one unbalanced quote in prose from blanking the rest
- *     of a file, and no value in either tree spans lines. Where that shape
- *     appears, a comment marker on the continuation line blanks live SQL, so
- *     the residual is a silent one and is named here rather than left to be
- *     found. It is also the one shape that can supply the body keyword from a
+ *     on BY THE BLANKING, because the value state resets at each line while the
+ *     block, template and dollar states do not. The reset is what keeps one
+ *     unbalanced quote in prose from blanking the rest of a file, and no value
+ *     in either tree spans lines. Where that shape appears, a comment marker on
+ *     the continuation line blanks live SQL, so the residual is a silent one
+ *     and is named here rather than left to be found. The STATEMENT read
+ *     resets the same way but does not read on: a line ending mid-value stops
+ *     it with no terminator, so the statement resolves no table and is reported
+ *     by line instead. The two readers therefore diverge here on purpose, and
+ *     only here — see {@link statementAt}. It is also the one shape that can supply the body keyword from a
  *     VALUE: the keyword test is END-ANCHORED, so a closed value cannot
  *     (`SET note = 'stored exactly as'` ends in its own quote and matches
  *     nothing), but a value left OPEN at the end of a line can
@@ -322,12 +324,13 @@
  * A NOTE ON REUSE. `sourcesUnder` and `enclosingSymbol` come from the shared
  * support module. The reading does not. The joined-statement helper in the
  * custody-claim canary is tuned for TypeScript expressions and caps its join
- * at four lines, and the `/confirm` finalize puts five SET lines between
- * `UPDATE accounts` and its `updated_at` assignment, so that helper
- * structurally cannot reach the shape this canary exists to see; the reach
- * here is delimited by what an SQL statement actually ends at instead, its own
- * string quote in TypeScript and its semicolon in a migration, with string
- * state carried across lines so a semicolon inside a value ends nothing. The
+ * at four lines, and the `/confirm` finalize spreads its SET list over four
+ * lines with the `updated_at` assignment on the LAST of them, so the shape this
+ * canary exists to see sits exactly at that helper's bound rather than inside
+ * it; the reach here is delimited by what an SQL statement actually ends at
+ * instead, its own string quote in TypeScript and its semicolon in a migration,
+ * with dollar-quoted spans carried across lines so a semicolon inside one ends
+ * nothing. The
  * comment handling is local for a related reason: the shared shape-only
  * predicate answers about a whole LINE, which both skips a head tagged for an
  * editor (`/* sql *\/ \`UPDATE accounts`) and, more seriously, would skip a
@@ -679,9 +682,10 @@ const LITERAL_CAP = 40;
  * comments are comments and a marker between two tokens silences a pattern
  * exactly as it does outside. Anywhere else it is a string constant whose
  * characters are data. Copying a body through verbatim reopens the whole
- * comment-gap class inside it, and both migrations that carry a `DO` block wrap
- * ordinary `accounts` DDL, so the distinction is made at the opener from the
- * keyword the span follows.
+ * comment-gap class inside it, and both migrations that carry a `DO` block hold
+ * real PL/pgSQL over this table — 007 a duplicate-ORCID guard that aggregates
+ * `accounts` and raises, 017 a custody-alignment repair — so the distinction is
+ * made at the opener from the keyword the span follows.
  *
  * The distinction is made ONCE, at the outermost opener, and then applies all
  * the way down. A body spells a literal of its own to carry SQL it EXECUTEs,
@@ -959,6 +963,27 @@ function blankLine(
     // comment handling cannot blank a marker that is one of the value's own
     // characters.
     if (opaque !== null) {
+      // A VALUE inside a dollar-quoted literal cannot outlive the literal, so
+      // the innermost tag closes one whatever the quoting says — the same bound
+      // the `--` arm below already carries, and needed for the same reason one
+      // level up. Dollar quoting exists so a value need not escape its quotes,
+      // so an unpaired apostrophe inside one (`$d$ 016's back-fill $d$`) is
+      // ordinary, correct SQL rather than a mistake. Consumed as an open value,
+      // it swallows the literal's own closing tag: no CLOSE is recorded, every
+      // line after it is registered one level too deep, and {@link statementAt}
+      // replays that depth and suppresses the terminator of whatever statement
+      // comes next. The blanking's own damage stops at the line, because
+      // `opaque` resets; the mis-recorded span does not.
+      if (dollar.length > 0 && line.startsWith(dollar[dollar.length - 1], i)) {
+        const tag = dollar[dollar.length - 1];
+        out += tag;
+        spans.push({ col: i, width: tag.length, tag, open: false });
+        i += tag.length;
+        dollar = dollar.slice(0, -1);
+        if (dollar.length === 0) dollarCode = false;
+        opaque = null;
+        continue;
+      }
       if (escapes && char === '\\' && next !== undefined) {
         out += char + next;
         i += 2;
@@ -1153,26 +1178,26 @@ function blankAll(
   return { code, state, entry, spans };
 }
 
-/** A file's lines with their comments blanked, carrying the DIALECT they were
- *  read in. The flag rides on the text rather than being passed beside it
- *  because both readers have to answer the same way at a dollar opener, and a
- *  caller that has to remember to pass the dialect is a caller that can pass
- *  the wrong one — which is the divergence {@link dollarOpenerAt} exists to
- *  close. The two dialects genuinely disagree there: `${` is a template
- *  interpolation in TypeScript and an ordinary pair of characters in a
- *  migration, so `$${...}$$` opens no span in a `.ts` template and opens an
- *  ordinary dollar-quoted literal in a `.sql` file, and each answer is right in
- *  its own file. */
+/** A file's lines with their comments blanked, carrying what the blanking
+ *  reader DECIDED about them.
+ *
+ *  It used to carry the DIALECT instead, so that both readers would answer the
+ *  same way at a dollar opener. That is no longer the shape of the problem:
+ *  {@link statementAt} does not judge openers at all now, it replays the ones
+ *  recorded here, so there is no second dialect answer to keep aligned and the
+ *  flag has no reader. A field nothing reads is a field the next author has to
+ *  decide about, so it is gone rather than kept for symmetry; the dialect still
+ *  travels as `blankLine`'s own `sql` parameter, where it is used.
+ *
+ *  What rides on the text instead is the record: the tag stack each line STARTS
+ *  in, and every span opened or closed on it in column order. Together they
+ *  give any position in the file its stack, which is what {@link statementAt}
+ *  needs and could not derive on its own — a reader beginning mid-file with an
+ *  empty stack has no tag to close against, so it reads a literal's terminator
+ *  as an opener. These ride on the text for the reason the flag used to: a
+ *  caller that has to remember to pass them is a caller that can pass the wrong
+ *  ones. */
 interface BlankedCode extends Array<string> {
-  sql?: boolean;
-  /** The dollar-quote tag stack each line STARTS in, and every span the
-   *  blanking reader opened or closed on it, in column order. Together they
-   *  give any position in the file its stack, which is what {@link statementAt}
-   *  needs and could not derive on its own: a reader that begins mid-file with
-   *  an empty stack has no tag to close against, so it reads a literal's
-   *  terminator as an opener. Carried on the text for the same reason `sql` is
-   *  — a caller that has to remember to pass them is a caller that can pass the
-   *  wrong ones. */
   entry?: string[][];
   spans?: SpanEvent[][];
 }
@@ -1180,7 +1205,6 @@ interface BlankedCode extends Array<string> {
 function blankFile(lines: string[], sql: boolean): BlankedCode {
   const blanked = blankAll(lines, sql);
   const code: BlankedCode = blanked.code;
-  code.sql = sql;
   code.entry = blanked.entry;
   code.spans = blanked.spans;
   return code;
@@ -1214,15 +1238,43 @@ function readable(files: ScannedSource[]): Readable[] {
   return files.map((file) => ({ ...file, code: blankFile(file.lines, file.rel.endsWith('.sql')) }));
 }
 
-/** The string enclosing `index` on an already-blanked line, and where it
- *  opens, or null when the position sits in no string. Only the same character
- *  closes a string, so a `'light'` inside a backticked template does not end
- *  it, and a literal that opens and closes AHEAD of the position is not
- *  mistaken for the one that encloses it. */
-function enclosingQuote(line: string, index: number): { char: string; at: number } | null {
+/** The string enclosing `index` on an already-blanked line, and where it opens,
+ *  or null when the position sits in no string. Only the same character closes
+ *  a string, so a `'light'` inside a backticked template does not end it, and a
+ *  literal that opens and closes AHEAD of the position is not mistaken for the
+ *  one that encloses it.
+ *
+ *  IT SKIPS DOLLAR-QUOTED SPANS, for the reason every reader here ends up
+ *  needing: a character's meaning depends on where it sits, and a quote
+ *  character inside a dollar-quoted value is data. Read flat, the apostrophe in
+ *  `$$don't reuse this$$` and the backtick in ``$$don`t reuse this$$`` each
+ *  open a string that never closes before the head, so the head's statement is
+ *  delimited by a quote instead of by its semicolon, runs on past its own end,
+ *  and lends its table to the write below it — the same silent direction
+ *  {@link statementAt} closes one layer up, reached through the delimiter
+ *  rather than through the span. Both spellings are ordinary migration prose.
+ *
+ *  The spans it skips are the blanking reader's own, replayed from
+ *  {@link SpanEvent} rather than re-derived, so this reader cannot disagree with
+ *  the other two about where a value begins. That also removes the need for a
+ *  dialect flag here: a backtick is only ever a delimiter where the blanking
+ *  reader already treated it as one. */
+function enclosingQuote(
+  code: BlankedCode,
+  lineIndex: number,
+  index: number,
+): { char: string; at: number } | null {
+  const line = code[lineIndex];
+  const events = code.spans?.[lineIndex] ?? [];
+  let depth = (code.entry?.[lineIndex] ?? []).length;
+  let seen = 0;
   let quote: string | null = null;
   let at = -1;
   for (let i = 0; i < index; i++) {
+    while (seen < events.length && events[seen].col === i) {
+      depth += events[seen++].open ? 1 : -1;
+    }
+    if (depth > 0) continue;
     const char = line[i];
     if (quote !== null) {
       if (char === '\\') i++;
@@ -1282,10 +1334,12 @@ function targetTable(code: BlankedCode, lineIndex: number, position?: number): s
     // Reaching the assignment's LINE is not enough when the statement ends on
     // that line: one that closed to the left of the assignment is a sibling
     // query, not its owner, and lending its table is the misattribution the
-    // fail-closed arm exists to refuse.
+    // fail-closed arm exists to refuse. A read that GAVE UP reaches nothing at
+    // all, whatever line it stopped on — see {@link SqlStatement.stopped}.
     const reaches =
-      reach.lastLine > lineIndex ||
-      (reach.lastLine === lineIndex && (reach.closedAt === -1 || reach.closedAt > at));
+      !reach.stopped &&
+      (reach.lastLine > lineIndex ||
+        (reach.lastLine === lineIndex && (reach.closedAt === -1 || reach.closedAt > at)));
     return reaches ? head.table : UNRESOLVED_TABLE;
   }
   return UNRESOLVED_TABLE;
@@ -1308,6 +1362,16 @@ interface SqlStatement {
   lastLine: number;
   closedAt: number;
   quoteAt: number;
+  /** Whether the read GAVE UP rather than ran out of room.
+   *
+   *  Both answers report `closedAt: -1`, and they mean opposite things to
+   *  {@link targetTable}. Hitting the cap or the end of the file means the
+   *  statement runs on past everything below it, so it does reach a write there.
+   *  Giving up — the span carrying the head closed first, or a line ended inside
+   *  a value — means its extent is UNKNOWN, and a statement of unknown extent
+   *  must lend its table to nothing. Reading the one flag for both is how a
+   *  fail-closed answer gets spent as a reaching one. */
+  stopped: boolean;
 }
 
 /**
@@ -1349,18 +1413,28 @@ interface SqlStatement {
  * SHALLOWER means the span carrying the head closed before the statement ended:
  * the read stops there reporting no terminator, which is the fail-closed answer.
  *
- * VALUE STATE RESETS PER LINE, the way {@link blankLine} resets it. The two
- * readers disagreeing about that is the same defect one layer down: one
- * unescaped quote — in prose, in a `$$it''s$$` value, in the hand-escaping
- * `replace(/'/g, "''")` idiom — left this read inside a value for the rest of
- * the file, so the template's own closing backtick stopped ending it. What the
- * reset costs is the residual the blanking reader already carries and the KNOWN
- * LIMITS already name: a value genuinely spanning lines is read as code from
- * its second line on. Dollar-quoted spans DO span lines, because those are the
- * blanking reader's own and are replayed rather than re-derived.
+ * VALUE STATE RESETS PER LINE, and a line that ends mid-value STOPS the read.
+ * Those are one decision, not two, because either half alone is silent in its
+ * own direction. Carried across lines, one unescaped quote — in prose, in a
+ * `$$it's$$` value, in the hand-escaping `replace(/'/g, "''")` idiom — leaves
+ * this read inside a value for the rest of the file, so the template's own
+ * closing backtick stops ending it and the head reaches writes below it. Reset
+ * and allowed to continue, the second line of a value that genuinely spans
+ * lines is read as code and its own semicolon truncates the statement, which
+ * drops a MERGE's insert column list — the one writer shape carrying no
+ * assignment for the fail-closed arm to catch. So the read stops with no
+ * terminator instead, resolving no table and reporting the statement to the
+ * every-statement-readable arm by line.
+ *
+ * This is the ONE place the two readers deliberately answer differently, and
+ * the difference is a refusal rather than a divergence: the blanking reads on,
+ * because blanking a whole file is not optional, while the statement read gives
+ * up on a statement it cannot bound. Dollar-quoted spans are not affected —
+ * they DO span lines, because those are the blanking reader's own decisions,
+ * replayed rather than re-derived.
  */
 function statementAt(code: BlankedCode, lineIndex: number, matchIndex: number): SqlStatement {
-  const opener = enclosingQuote(code[lineIndex], matchIndex);
+  const opener = enclosingQuote(code, lineIndex, matchIndex);
   const quote = opener?.char ?? null;
   let text = '';
   let dollar = spanStackAt(code, lineIndex, matchIndex);
@@ -1424,7 +1498,9 @@ function statementAt(code: BlankedCode, lineIndex: number, matchIndex: number): 
     }
     text += i === lineIndex ? out : '\n' + out;
     lastLine = i;
-    if (closedAt !== -1) return { text, lastLine: i, closedAt, quoteAt: opener?.at ?? -1 };
+    if (closedAt !== -1) {
+      return { text, lastLine: i, closedAt, quoteAt: opener?.at ?? -1, stopped: false };
+    }
     // A line that ended with a VALUE still open is a line the read could not
     // balance, and carrying on is wrong in both directions. Carried, one
     // unescaped quote keeps the read inside a value past the template's own
@@ -1436,10 +1512,10 @@ function statementAt(code: BlankedCode, lineIndex: number, matchIndex: number): 
     // reports no terminator, which resolves no table and puts the statement in
     // front of the every-statement-readable arm as a red bar naming its line.
     if (escaped || opaque !== null) {
-      return { text, lastLine: i, closedAt: -1, quoteAt: opener?.at ?? -1 };
+      return { text, lastLine: i, closedAt: -1, quoteAt: opener?.at ?? -1, stopped: true };
     }
   }
-  return { text, lastLine, closedAt: -1, quoteAt: opener?.at ?? -1 };
+  return { text, lastLine, closedAt: -1, quoteAt: opener?.at ?? -1, stopped: false };
 }
 
 /** Whether an `accounts` statement writes the column: an assignment anywhere in
@@ -2118,7 +2194,7 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // the apostrophe after it, and the read then stops at the next value in the
     // SET list — short of the assignment, which is a silent pass.
     const escapedDelimiter = asCode(["  await q(`SET note = 'a\\`b'; UPDATE accounts SET custody = 'x', updated_at = NOW()`);"]);
-    expect(enclosingQuote(escapedDelimiter[0], escapedDelimiter[0].indexOf('UPDATE accounts'))?.char).toBe('`');
+    expect(enclosingQuote(escapedDelimiter, 0, escapedDelimiter[0].indexOf('UPDATE accounts'))?.char).toBe('`');
     expect(writesColumn(statementAt(escapedDelimiter, 0, escapedDelimiter[0].indexOf('UPDATE accounts')).text)).toBe(true);
     // The comment blank, in both dialects and in neither direction too far:
     // a marker inside a value is left alone, and a decrement is not a comment.
@@ -2147,7 +2223,24 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     const shared = asCode(sharedTag, true);
     const insideLiteral = statementAt(shared, 2, sharedTag[2].indexOf('UPDATE pending_recovery'));
     expect(insideLiteral.closedAt).toBe(-1);
+    expect(insideLiteral.stopped).toBe(true);
     expect(insideLiteral.lastLine).toBe(2);
+    // GIVING UP AND RUNNING OUT OF ROOM report the same `closedAt` and mean
+    // opposite things, so the flag is what separates them. Read as one answer,
+    // a write on the very line the read stopped on is lent the head's table —
+    // the fail-closed answer spent as a reaching one. The shape is the same
+    // shared-tag literal with the write pulled up onto the closing-tag line.
+    const stopLineWrite = [
+      'DO $$',
+      'BEGIN',
+      '  EXECUTE format($q$',
+      '    UPDATE sessions SET seen = NOW() WHERE id = %L',
+      '  $q$, 1); UPDATE "accounts" SET updated_at = NOW() WHERE id = 1;',
+      'END $$;',
+    ];
+    expect(unresolvedIn(stopLineWrite, '018_probe.sql')).toHaveLength(1);
+    const runaway = ['UPDATE accounts', ...Array.from({ length: 60 }, (_, n) => `   SET c${n} = ${n},`)];
+    expect(statementAt(asCode(runaway, true), 0, 0).stopped).toBe(false);
     expect(targetTable(shared, 3, assignmentIndex(shared[3]))).toBe(UNRESOLVED_TABLE);
     expect(unresolvedIn(sharedTag, '018_probe.sql')).toHaveLength(1);
     // The same shape with the table spelled as a quoted identifier, which the
@@ -2306,8 +2399,23 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     const auditThenMerge = [
       "INSERT INTO audit_log (msg) VALUES ('accounts touched'); MERGE INTO accounts a USING (SELECT 'light'::text AS custody, 'i@x.pt'::text AS email) s ON s.email = a.email WHEN NOT MATCHED THEN INSERT (email, custody, updated_at) VALUES (s.email, s.custody, NOW());",
     ];
-    expect(enclosingQuote(auditThenMerge[0], auditThenMerge[0].indexOf('MERGE INTO'))).toBeNull();
+    expect(enclosingQuote(asCode(auditThenMerge, true), 0, auditThenMerge[0].indexOf('MERGE INTO'))).toBeNull();
     expect(scansOf(auditThenMerge, '018_probe.sql').tableFirst).toEqual([migration]);
+    // THE DOLLAR-SPAN SKIP in the same reader. A quote character inside a
+    // dollar-quoted VALUE is data, and read flat it opens a string that never
+    // closes before the head — so the head is delimited by that quote instead
+    // of by its semicolon, runs past its own end, and lends its table to the
+    // write below. Both spellings are ordinary migration prose, and the
+    // apostrophe one is the likelier by far.
+    for (const note of ["$$don't reuse this$$", '$$don`t reuse this$$']) {
+      const spanned = [
+        `WITH stale AS (SELECT id FROM ops_notes WHERE body = ${note}) UPDATE audit_log SET seen = NOW() WHERE id IN (SELECT id FROM stale);`,
+        'UPDATE "accounts" SET updated_at = NOW() WHERE id = 2;',
+      ];
+      const spannedCode = asCode(spanned, true);
+      expect(enclosingQuote(spannedCode, 0, spanned[0].indexOf('UPDATE audit_log')), note).toBeNull();
+      expect(unresolvedIn(spanned, '018_probe.sql'), note).toHaveLength(1);
+    }
     // THE FAIL-CLOSED STOP on a line that ended mid-value. Carrying the value
     // on lends a table below; resetting silently truncates at the continuation
     // line's own `;`, which drops a MERGE insert list — the one writer shape
@@ -2396,6 +2504,14 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // what let this one through: the walker-health arm cannot be what catches a
     // stack cleared and re-balanced inside the same file.
     expect(blankAll(notice, true).state.dollar).toEqual([]);
+    // The TOP-LEVEL arm's gate, pinned at the state rather than through a
+    // writer: a bare backtick outside every value in a migration is malformed
+    // SQL, so there is no plausible writer fixture that reaches it, and the
+    // observable the gate governs is the flag it would otherwise set for the
+    // rest of the file.
+    expect(blankAll(['SELECT `a`;'], true).state.template).toBe(false);
+    expect(blankAll(['const a = `x`;'], false).state.template).toBe(false);
+    expect(blankAll(['const a = `x;'], false).state.template).toBe(true);
     // And the arms still do their job in TypeScript, where a backtick really
     // does delimit: the template opens, and a `--` inside it is a comment
     // however it is spelled.
@@ -2543,19 +2659,32 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     const unread: string[] = [];
     for (const { rel, lines, code } of [...sources, ...migrations]) {
       code.forEach((line, i) => {
-        for (const match of line.matchAll(new RegExp(ACCOUNTS_STATEMENT_RE.source, 'gi'))) {
-          if (statementAt(code, i, match.index ?? 0).closedAt === -1) {
-            unread.push(`${rel}:${i + 1} — ${lines[i].trim()}`);
+        // EVERY head a scan reads from, not only the DML ones. Each scan asks a
+        // question about a statement's TEXT, and each can only answer it for a
+        // statement read to the end — so a head this arm does not cover is a
+        // truncated read nothing reports. The ALTER head is the one that most
+        // needs saying: `accountsColumnAlterations` is the ONLY arm that sees a
+        // rewrite carrying no assignment and no column list, so a truncated
+        // ALTER is a silent pass with no second walk behind it. A wrapped
+        // DEFAULT string in the ADD COLUMN clause ahead of the
+        // `ALTER COLUMN updated_at TYPE ... USING` is all it takes.
+        for (const pattern of [ACCOUNTS_STATEMENT_RE, ALTER_ACCOUNTS_RE]) {
+          for (const match of line.matchAll(new RegExp(pattern.source, 'gi'))) {
+            if (statementAt(code, i, match.index ?? 0).closedAt === -1) {
+              unread.push(`${rel}:${i + 1} — ${lines[i].trim()}`);
+            }
           }
         }
       });
     }
     expect(
       unread,
-      'an accounts statement whose text runs past the read cap without reaching a terminator. ' +
-        'The table-first scan asks whether the statement writes the column, and it can only ' +
-        'answer for a statement it read to the end: a column list that closes beyond the cap ' +
-        'reads as writing nothing. Shorten the statement, or raise the cap deliberately. ' +
+      'an accounts statement whose text stops without reaching a terminator, because it ran ' +
+        'past the read cap or ended a line inside an unbalanced value. Every scan asks whether ' +
+        'the statement text carries something — a column in a SET list, a column list, an ' +
+        'ALTER naming the column — and can only answer for text it read to the end: a clause ' +
+        'that closes beyond the stop reads as carrying nothing. Close the value on its own ' +
+        'line, shorten the statement, or raise the cap deliberately. ' +
         `Why it matters: ${ORDERING_RATIONALE}\n${unread.join('\n')}`,
     ).toEqual([]);
   });
@@ -2847,6 +2976,27 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     expect(
       scansOf(['DO $$', 'BEGIN', '  EXECUTE $q$', '    UPDATE accounts', "       SET institution = replace(institution, '/*', ''),", '           updated_at = NOW()', "     WHERE institution LIKE '%*/%'$q$;", 'END $$;'], '018_probe.sql').tableFirst,
     ).toEqual([migration]);
+    // A VALUE inside a nested literal is bounded by the literal's own tag.
+    // Dollar quoting exists so a value need not escape its quotes, so an
+    // unpaired apostrophe inside one is correct SQL and routine in operator
+    // prose. Read as an open value it swallows the literal's closing tag, and
+    // what that costs is not the line it sits on — the blanking recovers at the
+    // next line — but the SPAN RECORD: every line after it registers one level
+    // too deep, and the statement read replays that depth and suppresses the
+    // terminator of the next statement for the length of its cap.
+    const quotedInNested = [
+      'DO $$',
+      'BEGIN',
+      '  INSERT INTO custody_audit_log (event, detail)',
+      "  VALUES ('started', $d$ 016's back-fill skipped rows with a NULL marker $d$);",
+      '  UPDATE "accounts"',
+      '     SET updated_at = NOW()',
+      "   WHERE custody = 'light';",
+      'END $$;',
+    ];
+    expect(blankAll(quotedInNested, true).state.dollar).toEqual([]);
+    expect(asCode(quotedInNested, true).entry?.[4]).toEqual(['$$']);
+    expect(unresolvedIn(quotedInNested, '018_probe.sql')).toHaveLength(1);
     // And a literal nested inside the nested one: the depth is a stack, not a
     // single tag, because PostgreSQL lets a body's literal carry one of its own.
     expect(
