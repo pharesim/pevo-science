@@ -9,9 +9,11 @@
  *
  * This is a distinct mechanism from the session window
  * `non-consent-fresh-auth.spec.js` drives, not a variant of it. The consent-op
- * kind is single-use and target-bound, is minted by `mintAuthorshipFreshAuthProof`
- * and cached under `CONSENT_OP_PROOF_KEY`, and a session-kind proof is refused
- * on this surface with `kind_mismatch` (ARCHITECTURE.md 6.4.1). The controls
+ * kind is single-use and target-bound; on the password factor this spec
+ * drives, `mintAuthorshipFreshAuthProof` hands it straight to the broadcast,
+ * and only the ORCID return leg writes it into `CONSENT_OP_PROOF_KEY` (not
+ * driven here). A session-kind proof is refused on this surface with
+ * `kind_mismatch` (ARCHITECTURE.md 6.4.1). The controls
  * at the end pin both halves: a replay of the accepted bundle is refused
  * because the consume spent the proof, and the same bundle carrying a freshly
  * minted session-kind proof is refused for its kind.
@@ -24,19 +26,25 @@
  * doubles as the gate control: the identical bundle that just passed is
  * refused AT the gate once its proof is gone.
  *
- * Carve-out clause (a): the paper-detail READ routes are stubbed
- * (fixtures/paper-mocks.js) so the accept affordance renders against a
- * deterministic authorship shape (an anchored slot for the signer, still
- * unconsented, plus the matching pending-consent row), and the JWT is seeded
- * via `mintSessionJwt`. The mint and every consume run real.
+ * Carve-out clause (a): the paper-detail READ routes and the boot-time authed
+ * GETs are stubbed (fixtures/paper-mocks.js) so the accept affordance renders
+ * against a deterministic authorship shape (an anchored slot for the signer,
+ * still unconsented, plus the matching pending-consent row); that includes
+ * the accreditation-status poll answering accredited for the seeded
+ * username, which the affordance gates on and HAF does not index. The stub
+ * affects rendering only: the broadcast handler performs no accreditation
+ * check. The JWT is seeded via `mintSessionJwt`. The mint and every consume
+ * run real.
  * Clause (b): no auth middleware is mocked and no cryptographic verification
  * is bypassed. `verifyHiveSignature` runs real on the Bearer path, the
  * password is argon2-verified server-side, and the proof is backend-issued.
  * Clause (c): this spec is the real-path companion for the light-account
- * consent-op orchestration the mocked suites pin
- * (`lib-authorship-consent.test.js`, `lib-fresh-auth-consent-op-cache.test.js`)
- * and for `authorship-consent-actions.spec.js`, whose Keychain (self-custody)
- * path stops at the op shape because the Keychain stub cannot sign.
+ * consent-op orchestration `lib-authorship-consent.test.js` pins, and for
+ * `authorship-consent-actions.spec.js`, whose Keychain (self-custody) path
+ * stops at the op shape because the Keychain stub cannot sign. For
+ * `lib-fresh-auth-consent-op-cache.test.js` it covers only the cold-page
+ * lookup miss ahead of the mint; the keyed reuse that suite pins has no
+ * real-path companion.
  */
 
 import { test, expect } from './fixtures/keychain.js';
@@ -46,6 +54,7 @@ import { installPaperMocks, installAuthedBootMocks, buildPaper } from './fixture
 import {
   TEST_PASSWORD,
   bearer,
+  postTo,
   seedLightAccount,
   answerReauthPrompt,
   expectPostGateStop,
@@ -58,11 +67,6 @@ test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 
 const APP_TAG = 'pevotest';
 const FULL_NAME = 'E2E Fresh Auth Consenter';
-
-const postTo = (path) => ({
-  request: (req) => req.url().endsWith(path) && req.method() === 'POST',
-  response: (resp) => resp.url().endsWith(path) && resp.request().method() === 'POST',
-});
 
 test.describe('light-account consent op against the real backend', () => {
   let pool;

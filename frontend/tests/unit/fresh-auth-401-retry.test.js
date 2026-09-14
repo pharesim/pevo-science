@@ -9,7 +9,9 @@
 // to induce specific FRESH_AUTH_REQUIRED status/reason combinations
 // (401 missing/expired/malformed; 403 username_mismatch). That setup
 // belongs to the E2E layer, and no spec there induces those rejections
-// (the happy path is driven there; see clause (c)). Here we
+// against broadcastWithFreshAuth itself (the e2e controls induce a 401
+// refusal and a 403 kind_mismatch through Playwright's request fixture,
+// outside the SPA; username_mismatch is induced nowhere). Here we
 // mock signer.broadcastOps so we can deterministically trigger each
 // error shape and assert the wrapper's branching: dropping the dead
 // window, re-authing, retrying, disconnecting, toasting.
@@ -28,8 +30,10 @@
 // is refused at the gate, and the same window is accepted again on a
 // replay. The 401-retry, the username_mismatch teardown, and the
 // redirect-posture branches this suite pins have no real-path companion:
-// no e2e spec closes or corrupts a window between the mint and the
-// broadcast. The per-action mint the settings surface exercises for real
+// no e2e spec closes or corrupts a window on a broadcast the SPA itself
+// issues (the controls go through Playwright's request fixture, so this
+// wrapper's branching never runs). The per-action mint the settings
+// surface exercises for real
 // (`frontend/tests/e2e/settings.spec.js`,
 // `frontend/tests/e2e/settings-orcid-factor.spec.js`) is the consent-op
 // kind, not the window this wrapper consumes.

@@ -37,8 +37,10 @@
 // (a vote, past the fresh-auth gate to the seeded account's posting-key stop,
 // and accepted again on a replay) and on the real POST /ipfs/upload-token (a
 // publish, acquired at file selection per the acquire-before-commit rule and
-// carried through to the transfer's CID). Its ORCID test covers that factor's
-// return leg only, against a stubbed callback. What has no real-path companion
+// carried through to the transfer's CID; that test skips itself when HAF
+// indexes no accredited researcher, so it is environment-gated). Its ORCID
+// test covers that factor's return leg only, against a stubbed callback. What
+// has no real-path companion
 // is the window's deadlines: no e2e spec ages a window to its idle or absolute
 // deadline, so the two-deadline model and the pre-flight margin are pinned here
 // only.

@@ -24,7 +24,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // POST /custody/session-auth, then asserts that the real
 // POST /ipfs/upload-token pre-flight carried that window proof and minted an
 // upload token, and that the real POST /ipfs/upload transfer returned a CID.
-// The window-rejected-mid-flight retry and the teardown-gated slide are
+// That test skips itself when HAF indexes no accredited researcher, so the
+// companion is environment-gated. The window-rejected-mid-flight retry and
+// the teardown-gated slide are
 // pinned here only: no e2e spec closes a window between the pre-flight and
 // the transfer.
 const mockUploadFileToIpfs = vi.fn();

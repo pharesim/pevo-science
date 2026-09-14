@@ -22,42 +22,54 @@
  * consumes the window and mints an upload token, and the transfer pins the
  * bytes for real.
  *
- * One defect this coverage surfaced, pinned here as a Playwright expected
- * failure so the suite flips the day it is fixed: the custody broadcast
- * allowlist admits `comment`, `vote`, and `custom_json`, while every post
- * the SPA builds (the comment composer, the publish page, the review page)
- * bundles a `comment_options` op alongside the `comment` for the rewards
- * policy. The handler refuses that bundle BEFORE the fresh-auth gate with a
- * 403 FORBIDDEN naming the op, so a light account's comment, review, or
- * publish never reaches the gate today. The vote is a single allowed op and
- * is what carries the session window through the gate; the comment test
- * asserts the correct post-gate stop under `test.fail`, and the publish test
- * asserts the broadcast REQUEST it builds (proof and CID) without pinning
- * the refused response.
+ * One defect this coverage surfaced, pinned here so the suite reddens the
+ * day it is fixed: the custody broadcast allowlist admits `comment`, `vote`,
+ * and `custom_json`, while every NEW post the SPA builds (the comment
+ * composer, the publish page, the review page, and the edit page's
+ * continuation post) bundles a `comment_options` op alongside the `comment`
+ * for the rewards policy; only the edit page's same-author native edit, a
+ * lone `comment` op, is admitted. The handler refuses the bundle BEFORE the
+ * fresh-auth gate with a 403 FORBIDDEN naming the op, so a light account's
+ * comment, review, or publish never reaches the gate today. The vote is a
+ * single allowed op and is what carries the session window through the
+ * gate. The comment test asserts the request it builds unmasked and pins
+ * today's refusal as a positive assertion marked as a known defect; once
+ * the allowlist admits the op that pin reddens and is replaced by the
+ * post-gate stop. The publish test asserts the broadcast REQUEST it builds
+ * (proof and CID) without pinning the refused response.
  *
  * Carve-out clause (a): the ORCID test stubs `/api/orcid/callback` (no real
- * ORCID OAuth handshake is possible in Playwright). The vote and comment
- * tests stub the paper-detail READ routes they mount against and the
- * boot-time authed GETs (fixtures/paper-mocks.js) so HAF stays out of the
- * page load; the publish test stubs nothing. Every test seeds the JWT via
- * `mintSessionJwt`, and every fresh-auth mint and consume runs real.
+ * ORCID OAuth handshake is possible in Playwright), so the window it caches
+ * is test-authored and it covers the return leg's cache write only. The
+ * vote and comment tests stub the paper-detail READ routes they mount
+ * against and the boot-time authed GETs (fixtures/paper-mocks.js), including
+ * the accreditation-status poll, so HAF stays out of the page load; the
+ * publish test stubs nothing. Every test seeds the JWT via `mintSessionJwt`.
+ * On the password factor, which the vote, comment, and publish tests drive,
+ * every mint and consume runs real.
  * Clause (b): no auth middleware is mocked and no cryptographic verification
  * is bypassed. `verifyHiveSignature` runs real on the Bearer path, the
- * password is argon2-verified server-side, and every proof is backend-issued.
+ * password is argon2-verified server-side, and every proof the vote,
+ * comment, and publish tests carry is backend-issued.
  * Clause (c): this spec is the real-path companion the mocked fresh-auth
  * unit suites cite (`fresh-auth-401-retry.test.js`,
  * `lib-fresh-auth-session-window.test.js`, `lib-ipfs-upload.test.js`,
- * `lib-fresh-auth-outcome-dispatch.test.js`). The orcid-link and
- * orcid-no-password specs cover the `/api/orcid/start` and
- * `/api/orcid/callback` real-path edges for the sibling modes
- * (signup/login/link); the ORCID test here layers the session_auth mode
- * atop that same proven plumbing.
+ * `lib-fresh-auth-outcome-dispatch.test.js`); the publish test skips itself
+ * when HAF indexes no accredited researcher, so that leg is
+ * environment-gated. No e2e spec completes a session_auth round-trip
+ * against the real `/api/orcid/callback`. The real `/api/orcid/start` and
+ * `/api/orcid/callback` are driven for sibling modes elsewhere:
+ * `settings-orcid-factor.spec.js` completes a fresh_auth-mode round-trip
+ * through the in-network ORCID stub with no conditional skip, and
+ * `orcid-link.spec.js` posts to both routes for a cross-user link-mode
+ * refusal but skips itself when `/api/orcid/start` is not configured, so
+ * that companion is environment-gated.
  */
 
 import { test, expect } from './fixtures/keychain.js';
 import {
-  mintSessionJwt,
   seedAccreditedSession,
+  seedUnaccreditedSession,
   pickAccreditedResearcher,
   minimalPdfBuffer,
 } from './fixtures/auth.js';
@@ -65,6 +77,7 @@ import { openAppPool } from './fixtures/db.js';
 import { installPaperMocks, installAuthedBootMocks, buildPaper } from './fixtures/paper-mocks.js';
 import {
   bearer,
+  postTo,
   seedLightAccount,
   deleteLightAccount,
   answerReauthPrompt,
@@ -82,31 +95,15 @@ const LIGHT_USERNAME = 'e2e-fresh-auth-user';
 const PROOF_KEY = 'pevo_fresh_auth_session_proof';
 const RETURN_PATH_KEY = 'pevo_fresh_auth_return_to';
 
-function seedLightSession(page) {
-  const { token, expiresAt } = mintSessionJwt(LIGHT_USERNAME, { custody: 'light' });
-  return page.addInitScript(
-    ({ session }) => {
-      window.localStorage.setItem('pevo_session', JSON.stringify(session));
-    },
-    {
-      session: {
-        token,
-        username: LIGHT_USERNAME,
-        expiresAt,
-        isAccredited: false,
-        accreditation: null,
-        custody: 'light',
-      },
-    },
-  );
-}
-
 test('orcid-callback session_auth caches the issued proof in sessionStorage', async ({ page }) => {
-  await seedLightSession(page);
+  // A light session with no accounts row: the callback response is stubbed,
+  // so nothing here reads the account.
+  await seedUnaccreditedSession(page, { username: LIGHT_USERNAME, custody: 'light' });
 
   const issuedProof = 'stub-issued-proof-XYZ999';
   // Both window deadlines: the sliding idle deadline and the absolute cap.
-  const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
+  const IDLE_MS = 15 * 60_000;
+  const expiresAt = new Date(Date.now() + IDLE_MS).toISOString();
   const absoluteExpiresAt = new Date(Date.now() + 120 * 60_000).toISOString();
 
   await page.route('**/api/orcid/callback', async (route) => {
@@ -158,16 +155,18 @@ test('orcid-callback session_auth caches the issued proof in sessionStorage', as
   // extends, and dropping the learned idle period would break the slide.
   //
   // Both deadlines are re-anchored to the CLIENT clock at issuance, so they
-  // land near the server's values rather than on them: the server's timestamps
-  // are in the server's clock, and comparing those to `Date.now()` would fold
-  // any offset between the two straight into the window's length. A minute of
-  // tolerance covers the round-trip without admitting a skew-sized error.
+  // land near the server's values rather than on them. The stub and the
+  // browser share one clock here, so this test observes the window's LENGTH
+  // (each deadline within a minute of the issued one, and the learned idle
+  // period equal to the issued span within the same tolerance), not the
+  // anchoring itself; lib-fresh-auth-session-window.test.js covers issuance
+  // deadlines that disagree with the client clock.
   const TOLERANCE_MS = 60_000;
   const nearly = (actual, expected) =>
     Math.abs(new Date(actual).getTime() - new Date(expected).getTime()) < TOLERANCE_MS;
-  expect(nearly(parsed.expiresAt, expiresAt), 'idle deadline is client-anchored near the issued one').toBe(true);
-  expect(nearly(parsed.absoluteExpiresAt, absoluteExpiresAt), 'absolute cap is client-anchored near the issued one').toBe(true);
-  expect(Number.isFinite(parsed.idlePeriodMs)).toBe(true);
+  expect(nearly(parsed.expiresAt, expiresAt), 'idle deadline lands near the issued one').toBe(true);
+  expect(nearly(parsed.absoluteExpiresAt, absoluteExpiresAt), 'absolute cap lands near the issued one').toBe(true);
+  expect(Math.abs(parsed.idlePeriodMs - IDLE_MS), 'idle period is learned from the issuance').toBeLessThan(TOLERANCE_MS);
 
   // Mode + return path are cleared after the handler runs (both now in
   // sessionStorage after the 2026-05-17 cross-tab-interference migration).
@@ -180,12 +179,6 @@ test('orcid-callback session_auth caches the issued proof in sessionStorage', as
   );
   expect(cleared.mode).toBeNull();
   expect(cleared.returnPath).toBeNull();
-});
-
-// A POST to `path` matcher pair for waitForRequest / waitForResponse.
-const postTo = (path) => ({
-  request: (req) => req.url().endsWith(path) && req.method() === 'POST',
-  response: (resp) => resp.url().endsWith(path) && resp.request().method() === 'POST',
 });
 
 test.describe('light account against the real backend', () => {
@@ -316,15 +309,15 @@ test.describe('light account against the real backend', () => {
   });
 
   test('a comment broadcast carries the session window minted at the real session-auth route', async ({ page }) => {
-    // Expected to fail until the custody broadcast allowlist admits the
-    // `comment_options` op the composer bundles with every comment (see the
-    // file docblock): the handler refuses the bundle before the fresh-auth
-    // gate with 403 FORBIDDEN, so the post-gate stop asserted at the end is
-    // not reached. Playwright reports an unexpected pass once it is, which
-    // is the signal to drop this annotation. Until then the assertions ahead
-    // of the stop are masked by it; the vote test covers the same
-    // acquisition and carry on this surface unmasked.
-    test.fail(true, 'custody broadcast allowlist refuses the comment_options op every light-account post carries');
+    // Known defect, pinned positively at the end of this test: the custody
+    // broadcast allowlist refuses the `comment_options` op the composer
+    // bundles with every comment (see the file docblock). The request the
+    // composer builds is asserted unmasked; only the response is today's
+    // pre-gate refusal rather than the post-gate stop the vote test pins.
+    test.info().annotations.push({
+      type: 'known-defect',
+      description: 'custody broadcast allowlist refuses the comment_options op every new light-account post carries',
+    });
 
     const { paper } = await mountPaperDetail(page, {
       permlink: `e2e-fa-comment-${RUN_SUFFIX}`,
@@ -359,10 +352,20 @@ test.describe('light account against the real backend', () => {
       body: commentBody,
     });
     expect(JSON.parse(commentOp[1].json_metadata).app.startsWith(`${APP_TAG}/`)).toBe(true);
+    // The rewards policy rides with every post: all Hive Power, no HBD.
+    const optionsOp = body.operations.find((op) => op[0] === 'comment_options');
+    expect(optionsOp, 'the bundle carries the comment_options op').toBeTruthy();
+    expect(optionsOp[1]).toMatchObject({ author: SEEDED_USERNAME, permlink: commentOp[1].permlink, percent_hbd: 0 });
 
-    // The correct outcome for this bundle: past the gate, stopped at the
-    // seeded account's posting-key decrypt.
-    await expectPostGateStop(await broadcastResponsePromise);
+    // Today's outcome, pinned so the fix is visible: the handler refuses the
+    // bundle at its op allowlist, before the fresh-auth gate, naming the op.
+    // When the allowlist admits comment_options this assertion reddens;
+    // replace it with `expectPostGateStop(resp)`, the stop the vote test pins.
+    const resp = await broadcastResponsePromise;
+    const refusal = await resp.json();
+    expect(resp.status(), JSON.stringify(refusal)).toBe(403);
+    expect(refusal.error?.code).toBe('FORBIDDEN');
+    expect(refusal.error?.message).toMatch(/comment_options/);
   });
 
   test('a publish with a PDF carries the session window through the real upload pre-flight, the transfer, and the broadcast', async ({ page, request }) => {
@@ -383,7 +386,7 @@ test.describe('light account against the real backend', () => {
       fullName: researcher.accreditation?.name || 'E2E Author',
     });
 
-    await seedAccreditedSession(page, {
+    const { token } = await seedAccreditedSession(page, {
       username: researcher.username,
       accreditation: researcher.accreditation,
       custody: 'light',
@@ -459,6 +462,14 @@ test.describe('light account against the real backend', () => {
     const tokenResp = await tokenResponsePromise;
     expect(tokenResp.status(), await tokenResp.text()).toBe(200);
     expect(typeof (await tokenResp.json()).data.upload_token).toBe('string');
+    // Control: the same pre-flight with a tampered proof is refused AT the
+    // gate, so the 200 above is the gate accepting this window rather than
+    // a route that never checks.
+    const tamperedPreflight = await request.post('/api/ipfs/upload-token', {
+      headers: bearer(token),
+      data: { ...tokenBody, fresh_auth_proof: `${tokenBody.fresh_auth_proof}x` },
+    });
+    await expectGateRefusal(tamperedPreflight, { status: 401, reasons: ['missing', 'expired', 'malformed'] });
 
     // Transfer: the token-gated multipart upload pins the bytes for real.
     const uploadResp = await uploadResponsePromise;
@@ -470,9 +481,9 @@ test.describe('light account against the real backend', () => {
     // post) rides on the paper op that carries the CID just pinned. The
     // response is not pinned here: this bundle carries the `comment_options`
     // op the allowlist refuses before the gate (see the file docblock), and
-    // the comment test pins that under `test.fail`. The gate's acceptance of
-    // this same window is pinned by the pre-flight's 200 above and by the
-    // vote test's post-gate stop.
+    // the comment test pins that refusal. The gate's acceptance of this same
+    // window is pinned by the pre-flight's 200 and its tampered-proof control
+    // above.
     const broadcastReq = await broadcastRequestPromise;
     const body = broadcastReq.postDataJSON();
     expect(body.fresh_auth_proof).toBe(issued.fresh_auth_proof);
@@ -481,6 +492,9 @@ test.describe('light account against the real backend', () => {
     expect(commentOp[1]).toMatchObject({ author: researcher.username, parent_author: '', parent_permlink: APP_TAG, title: TITLE });
     const meta = JSON.parse(commentOp[1].json_metadata);
     expect(meta[APP_TAG].ipfs_cid).toBe(cid);
+    const optionsOp = body.operations.find((op) => op[0] === 'comment_options');
+    expect(optionsOp, 'the bundle carries the comment_options op').toBeTruthy();
+    expect(optionsOp[1]).toMatchObject({ author: researcher.username, permlink: commentOp[1].permlink, percent_hbd: 0 });
 
     // The page reports the failed publish and keeps the form (no navigation,
     // no draft cleared): the end state for a refused broadcast, whether it is

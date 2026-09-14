@@ -29,8 +29,8 @@
 // these outcomes describe against the real backend on its ready path: a real
 // mint, and a window carried on a real broadcast and a real upload pre-flight.
 // No e2e spec reaches a non-ready outcome. Every member of this vocabulary is
-// a refusal, and none is induced there, so the dispatch itself is pinned here
-// only.
+// a non-ready outcome (four refusals and the ORCID navigation), and none is
+// induced there, so the dispatch itself is pinned here only.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 

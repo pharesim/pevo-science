@@ -8,8 +8,9 @@
  * `POST /api/custody/session-auth` and `POST /api/custody/fresh-auth`, and
  * deliberately NO encrypted posting key. That absence is what lets a spec
  * reach the real `POST /api/custody/broadcast` without anything being
- * signed or reaching a Hive node: the handler consumes the proof, then hits
- * the posting-key decrypt as its first post-gate step and refuses with the
+ * signed or reaching a Hive node: the handler consumes the proof, reads the
+ * row (a missing row would 401, an upgrade stamp would 403, and the seed
+ * clears both), then hits the posting-key decrypt and refuses with the
  * posting-key-unavailable envelope. `expectPostGateStop` pins that exact
  * envelope, which is how a spec proves a request PASSED the fresh-auth gate
  * (the gate itself answers FRESH_AUTH_REQUIRED, and a bundle the handler
@@ -35,6 +36,12 @@ export const TEST_PASSWORD = 'E2eFreshAuthPass1';
 export function bearer(token) {
   return { Authorization: `Bearer ${token}` };
 }
+
+// waitForRequest / waitForResponse matchers for a POST to `path`.
+export const postTo = (path) => ({
+  request: (req) => req.url().endsWith(path) && req.method() === 'POST',
+  response: (resp) => resp.url().endsWith(path) && resp.request().method() === 'POST',
+});
 
 /**
  * Insert (or refresh) the seeded light-account row described in the module
@@ -108,9 +115,12 @@ export async function expectPostGateStop(response) {
 }
 
 /**
- * Assert a `POST /api/custody/broadcast` response is a refusal AT the
- * fresh-auth gate with one of the no-valid-proof reasons (401 branch of the
- * wire contract in `agents/docs/api-contracts/custody.md`).
+ * Assert a response is a FRESH_AUTH_REQUIRED refusal AT the fresh-auth gate
+ * with the given status and one of the given `details.reason` values: the
+ * 401 no-valid-proof branch (missing, expired, malformed) or the 403
+ * binding-violation branch (kind_mismatch, target_mismatch,
+ * username_mismatch) of the wire contract in
+ * `agents/docs/api-contracts/custody.md`, which the upload pre-flight mirrors.
  */
 export async function expectGateRefusal(response, { status, reasons }) {
   const body = await response.json();
