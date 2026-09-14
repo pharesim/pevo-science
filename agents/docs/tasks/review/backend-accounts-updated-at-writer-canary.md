@@ -1015,7 +1015,7 @@ worse than no docblock, because it is what they will act on.
   drops: all three are real and all three are pre-existing rather than
   introduced here. Filed as their own tasks; out of scope for this hold.
 
-## Backend re-review signal (2026-09-14, working tree)
+## Backend re-review signal (2026-09-14, commit 664be496)
 
 All ten round-3 items landed. Every item was verified by mutation in a
 tar-copied scratch tree with symlinked `node_modules`, red on the mutation and
