@@ -163,3 +163,130 @@ ordinary table on this PostgreSQL, so the keyword anchor is not the only way
 in; `COPY BINARY accounts (...)` evades both COPY arms; and the ALTER arm has
 no read-whole backstop, so a head whose terminator falls past `LITERAL_CAP`
 is dropped silently where an `ACCOUNTS_STATEMENT_RE` head would red.
+
+## Architect review (2026-09-14, round 1) — HELD PENDING FIXES:
+
+Reviewed at commit 6e02acf9 via `/ce-code-review` across five lenses — correctness,
+project-standards, testing, adversarial, learnings — plus the architect's own
+mutation run and an independent validator pass on the two surviving findings.
+6e02acf9 is an ancestor of `main`; no orphan SHA. The cross-model adversarial pass
+did not run (no different-provider CLI installed on this host), so the in-process
+adversarial reviewer held that lens; noted because it means the lens had no
+independent-family corroboration this round.
+
+**The signal block's claims were re-verified by execution, not read.** In an
+isolated scratchpad copy of `backend/`: clean tree 21/21 and `typecheck:tests`
+clean; the AC1 spelling planted in `002_nullable_email.sql` reds the
+column-alteration test with the expected `002_nullable_email.sql#<module>: 1`
+against an empty entry; deleting the `IF EXISTS` alternative reds the IF EXISTS
+fixture, deleting `ONLY` reds the ONLY fixture, deleting `public.` reds the
+`public.` fixture, and swapping the two keyword clauses reds the combined fixture,
+each mutant failing one test; a fourth alteration planted inside the allowed `016`
+symbol raises its tally 3 -> 4 and reds; controls naming another column or another
+table stay green. Scope 3 was re-enumerated from the code rather than taken from
+the note: nine files under `tests/eslint/`, exactly one defining SQL regexes, no
+sibling ALTER pattern, and `backend/eslint.config.mjs` carries none either. Every
+other `ALTER` hit under `backend/tests` is executed fixture DDL, not a detection
+pattern. All three acceptance criteria hold.
+
+The hold is that the round pinned one of the three pairwise orders among the
+pattern's three optional groups, and left a comment that claims more than its line
+delivers. Neither costs a red bar today; both are the same class this task exists
+to close — an alternative that no fixture answers for, and a docblock a future
+author would act on. Verify each item by mutation in a scratch copy (red on the
+mutation, green on restore) and state the probe per item when moving back to
+`review/`.
+
+### Item 1 (required). The schema-qualifier group's position is pinned by nothing.
+
+`ALTER_ACCOUNTS_RE` carries three optional groups, so there are three pairwise
+orders. The combined fixture pins `IF EXISTS` before `ONLY`. Nothing pins
+`public.` after either. Demonstrated: with `(?:public\s*\.\s*)?` hoisted to the
+front of the pattern, all four new fixtures still match and the suite is 21/21
+green, while `ALTER TABLE IF EXISTS public.accounts DROP COLUMN updated_at;`
+planted in a migration is not counted at all. The same plant reds under the
+committed pattern, so the arm reads the head correctly today and only the pin is
+missing. Two further reorderings (`ONLY` before `public.`, `IF EXISTS` before
+`public.`) have the same shape.
+
+One line closes all three at once, because it is the only spelling that carries
+every group in grammar order:
+
+```
+expect(alterations(['ALTER TABLE IF EXISTS ONLY public.accounts DROP COLUMN updated_at;'])).toBe(1);
+```
+
+Confirmed by regex matrix and by suite run: it matches the committed pattern and
+misses under each of the three reorderings, and the clean tree stays green because
+no migration in the tree spells the qualifier. Probe: hoist the qualifier group and
+show this line reds while the other four stay green.
+
+### Item 2 (required). The combined fixture's comment claims a property the line does not have.
+
+The comment above the `IF EXISTS ONLY accounts` fixture says that line "answers to
+their ORDER rather than to either clause". It needs both clauses to match, so
+deleting either one stops it matching too: it reds under three mutations, not one.
+What survives is weaker and worth saying plainly — the swap reds that line alone,
+and each single deletion reds the clause's own dedicated fixture first, so the set
+still names the clause even though the line does not. Reword the comment to say the
+line pins the order in addition to needing both clauses, and drop "rather than to
+either clause". Do not split the assertion; the attribution comes from the set.
+
+Note the consequence for the signal block's own reasoning: the argument used there
+to reject a combined `IF EXISTS ONLY public.accounts` line ("reding under all three
+deletions, naming none of them") applies equally to the two-clause line that was
+kept. Item 1 adopts that line anyway, on the ground that a group whose position no
+fixture answers for is the worse gap.
+
+### Item 3 (optional). The docblock's house-style premise is a prediction stated as an observation.
+
+The new paragraph says `IF EXISTS` "is the spelling an author reaches for by
+default". Every `ALTER TABLE` head in `backend/migrations` is bare — seventeen
+heads, zero `IF EXISTS` — and idempotency in this tree is spelled at the column
+(`ADD COLUMN IF NOT EXISTS`) or inside a `DO` block. The widening is right
+regardless, and the rationale survives a smaller claim: the idempotent house style
+invites the spelling, so the arm should see it before one lands. Soften the clause
+or leave it; if left, say in the task note that the premise is forward-looking.
+
+### Item 4 (optional). The parenthesised `ONLY (accounts)` target on the ALTER head.
+
+Pre-existing, unchanged by this round, and already surfaced in the task's own
+`[TODO Architect]` block — carried here because the fix is one character class and
+one fixture, and because this round rewrote the line the gap lives on. PostgreSQL's
+`relation_expr` admits `ONLY ( name )`, and `ALTER TABLE ONLY (accounts) DROP
+COLUMN updated_at;` planted in a migration leaves the suite green. The file already
+admits the paren form on its UPDATE, MERGE and COPY heads and pins it for MERGE, so
+the ALTER arm is the one head family blind to it. Mirror the sibling spelling
+(`(?:ONLY\s+\(?\s*)?`) and pin it with one positive, or decline and add a KNOWN
+LIMITS bullet saying a parenthesised ALTER target is not read. Leaving it recorded
+nowhere is the one option that should not stand.
+
+### Dismissed this round, recorded so they are not re-raised
+
+- A quoted `"accounts"` on the ALTER head: dismissed. Quoted identifiers are an
+  accepted textual-scan limit for this file, already named in its KNOWN LIMITS and
+  ratified in the writer canary's round-2 triage. Same posture here.
+- `ALTER MATERIALIZED VIEW accounts RENAME COLUMN`: dismissed. A deliberate-evasion
+  spelling, not a default reach, and only the RENAME form reaches an ordinary table
+  that way. A KNOWN LIMITS bullet is welcome, not required.
+- `COPY BINARY accounts (...)`: dismissed on the same ground. It is the pre-7.3
+  spelling; no author in this tree writes it by accident.
+- The ALTER arm's missing read-whole backstop past `LITERAL_CAP`: no action on this
+  task. It is recorded twice already on the writer-canary task in `review/` (accepted
+  as a limit in its round-2 triage, re-raised in round 3); triaging it here would
+  split one decision across two files.
+- The trigger-binding qualifier spacing: out of scope here, already filed as its own
+  backend task in `pending/`.
+
+### Residual risks recorded, no action asked
+
+A head split across lines (`ALTER TABLE IF EXISTS` on one line, the table on the
+next) stays green because every head pattern in the file is matched per line; this
+is an existing KNOWN LIMIT and all seventeen migration ALTERs keep the table on the
+ALTER line, but the widening puts a third optional clause on that line. Dynamic SQL
+through `EXECUTE format` is unseen, also recorded. A rename-swap around the table is
+deliberate-evasion class and outside the stated threat model. PostgreSQL's
+acceptance of `ONLY ( name )` was reasoned from the documented grammar, not a live
+server. The four head-clause positives share one `it`, so a mutation that reds two
+of them reports only the first; that is diagnostics, not coverage. No super-linear
+behaviour: the committed pattern scans a 1,000,700-character adversarial line in 1 ms.
