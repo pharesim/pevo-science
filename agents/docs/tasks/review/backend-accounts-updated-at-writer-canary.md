@@ -1157,6 +1157,14 @@ All pre-existing, none introduced by this round, none in this hold's scope.
 Listed for triage rather than filed, per the project's review-findings rule.
 Each was demonstrated green-with-the-write in an isolated copy.
 
+FOUR OF THESE RE-DISCOVER ENTRIES THAT ARE STILL OPEN in the earlier
+`[TODO Architect]` list in this same file, found again by lenses that had no
+sight of it. Triage them together rather than twice: the one-line quoted-string
+spelling, `COPY accounts` with no column list, `ALTER TABLE IF EXISTS accounts`,
+and the unscanned migration subdirectory. That two independent passes reached
+the same four is evidence about severity, not new findings. The other four below
+are new.
+
 - The routine/trigger arms run over `migrations` only, never over `sources`, so
   trigger and trigger-function DDL spelled in a TypeScript file is refused by
   nothing. Ranked highest of these: the routine arm is the sole catcher of a
