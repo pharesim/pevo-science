@@ -466,7 +466,12 @@ describe('PevoEditor image-upload queue', () => {
       mockAuth.username = 'alice';
       warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     });
-    afterEach(() => { warnSpy.mockRestore(); });
+    afterEach(() => {
+      warnSpy.mockRestore();
+      // Plain-object state is outside restoreMocks; put the signed-in default
+      // back so no later block depends on which spec ran last.
+      mockAuth.username = 'alice';
+    });
 
     it('a torn-down session mid-batch abandons the remaining images and adds no toast of its own', async () => {
       // uploadFile's teardown has already disconnected (nulling the username

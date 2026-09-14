@@ -979,6 +979,63 @@ describe('publishPage', () => {
         'error',
       );
     });
+
+    it('re-picking the PDF with nothing else attached may still navigate: the slot it replaces is not held work', async () => {
+      // The entry gate refuses over a held PDF and the PDF has no remove
+      // affordance, so re-picking it is a passwordless account's one in-page
+      // way through once the window has lapsed. The PDF being replaced is
+      // lost to the pick either way; only held supplementary files would be
+      // lost to a navigation, and none are held here.
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+      mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+      vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/publish' } });
+      try {
+        const comp = lightComponent();
+        comp.pdfFile = { name: 'paper.pdf', size: 1024 };
+        const target = { files: [{ name: 'paper-v2.pdf', size: 2048 }], value: 'C:\\fakepath\\paper-v2.pdf' };
+
+        await comp.handlePdfChange({ target });
+
+        expect(mockStartOrcid).toHaveBeenCalledTimes(1);
+        expect(window.location.href).toBe('https://orcid.org/oauth/authorize?x=1');
+        expect(target.value).toBe('');
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('with nothing attached, a window closing while the confirm dialog is open refuses at the pre-broadcast gate without navigation', async () => {
+      // The entry gate passed on a live window with no file held, so the
+      // posture the predicate computes would allow navigation. The
+      // pre-broadcast gate overrides it unconditionally: past the confirm a
+      // round-trip buys nothing, and a long dwell on the dialog is exactly how
+      // a window closes between the two gates. With a file held the predicate
+      // alone would refuse, so this is the one arrangement that pins the
+      // override itself.
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+      mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+      sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify({
+        token: 'live-window',
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
+        absoluteExpiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+        idlePeriodMs: 900_000,
+      }));
+      mockStores.broadcastConfirm.request.mockImplementationOnce(async () => {
+        sessionStorage.removeItem('pevo_fresh_auth_session_proof');
+        return true;
+      });
+
+      const comp = lightComponent();
+      await comp.handleSubmit();
+
+      expect(mockStartOrcid).not.toHaveBeenCalled();
+      expect(broadcastOps).not.toHaveBeenCalled();
+      expect(comp.step).toBe('idle');
+      expect(mockStores.toast.show).toHaveBeenCalledWith(
+        'Please confirm your identity again, then try once more.',
+        'error',
+      );
+    });
   });
 
   describe('_mergeCitationCollection', () => {

@@ -727,13 +727,15 @@ export function initPublishPage() {
     // here once rather than at each call site. The navigating factor is
     // allowed only while nothing is attached: the worst case is then
     // re-picking the one file being chosen, and the text fields are drafted.
-    // Once a file is held, no gate may navigate. Files live in component state
-    // the draft does not carry, so a round-trip fired to acquire for a resubmit,
-    // or for a second file, would discard the first; a passwordless account is
-    // refused non-destructively and told to re-authenticate instead. `opts`
-    // overrides the decision: the pre-broadcast gate passes
-    // `allowRedirect: false` unconditionally, because by then the uploads are
-    // paid for and their CIDs live in handleSubmit locals.
+    // Once a file is held, no gate may navigate over it. Files live in
+    // component state the draft does not carry, so a round-trip fired to
+    // acquire for a resubmit, or for a further file, would discard what is
+    // held; a passwordless account is refused non-destructively and told to
+    // re-authenticate instead. `opts` overrides the decision in two places:
+    // the pre-broadcast gate passes `allowRedirect: false` unconditionally,
+    // because by then the uploads are paid for and their CIDs live in
+    // handleSubmit locals, and the PDF pick leaves the slot it replaces out of
+    // the posture (see `handlePdfChange`).
     async _windowReady(opts = {}) {
       if (!this.isAccredited) return true;
       return freshAuthWindowReady({ allowRedirect: !this.holdsAttachedFiles, ...opts });
@@ -749,7 +751,13 @@ export function initPublishPage() {
     async handlePdfChange(e) {
       const file = e.target.files?.[0];
       if (!file) return;
-      if (!await this._windowReady()) {
+      // The PDF slot is what this pick replaces, so it is not work a
+      // navigation here would cost; only held supplementary files are. The
+      // exception is also the in-page way through for a passwordless account
+      // whose window lapsed with a PDF attached: the entry gate refuses over
+      // the held file, supplementary files can be removed but the PDF cannot,
+      // so re-picking the PDF is the one move that may still navigate.
+      if (!await this._windowReady({ allowRedirect: this.supplementaryFiles.length === 0 })) {
         // Clear the input alongside the refusal. A browser fires no `change`
         // for an unchanged selection, so leaving the refused file in the input
         // makes the one file the user wants unpickable: the UI shows nothing
