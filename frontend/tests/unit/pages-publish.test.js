@@ -885,6 +885,100 @@ describe('publishPage', () => {
         'error',
       );
     });
+
+    // Whether the form holds a file decides whether a gate may navigate. Files
+    // live in component state, never in the draft, so a full-page ORCID
+    // round-trip discards them. A gate reached while nothing is attached keeps
+    // the navigating factor (the worst case is re-picking the one file being
+    // chosen); once a file is held, every gate refuses a passwordless account
+    // non-destructively and says so.
+    it('a passwordless account resubmitting with a file attached refuses without navigation and keeps the file', async () => {
+      // The suppressed pre-broadcast refusal sent the user back to Submit with
+      // the window already cleared. The entry gate must not fire the
+      // navigation that wipes the attached file: refuse, tell them, and leave
+      // the form as it is.
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+      mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+      const comp = lightComponent();
+      const file = { name: 'paper.pdf', size: 1024 };
+      comp.pdfFile = file;
+
+      await comp.handleSubmit();
+
+      expect(mockStartOrcid).not.toHaveBeenCalled();
+      expect(mockSessionUpload).not.toHaveBeenCalled();
+      expect(broadcastOps).not.toHaveBeenCalled();
+      expect(comp.pdfFile).toBe(file);
+      expect(comp.step).toBe('idle');
+      expect(mockStores.toast.show).toHaveBeenCalledWith(
+        'Please confirm your identity again, then try once more.',
+        'error',
+      );
+    });
+
+    it('with nothing attached, the entry gate still navigates a passwordless account', async () => {
+      // The permissive default is deliberate where nothing would be lost: the
+      // text fields are drafted, so the round-trip costs the user nothing.
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+      mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+      vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/publish' } });
+      try {
+        const comp = lightComponent();
+
+        await comp.handleSubmit();
+
+        expect(mockStartOrcid).toHaveBeenCalledTimes(1);
+        expect(window.location.href).toBe('https://orcid.org/oauth/authorize?x=1');
+        expect(mockSessionUpload).not.toHaveBeenCalled();
+        expect(broadcastOps).not.toHaveBeenCalled();
+        expect(comp.step).toBe('idle');
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('picking a supplementary file with a PDF already attached refuses without navigation and keeps the PDF', async () => {
+      // The file-selection gate is permissive only while nothing is attached:
+      // with a PDF held, navigating to acquire for the second file would
+      // discard the first.
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+      mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+      const comp = lightComponent();
+      const pdf = { name: 'paper.pdf', size: 1024 };
+      comp.pdfFile = pdf;
+      const target = { files: [{ name: 'data.csv', size: 10 }], value: 'C:\\fakepath\\data.csv' };
+
+      await comp.handleSupplementaryFiles({ target });
+
+      expect(mockStartOrcid).not.toHaveBeenCalled();
+      expect(comp.pdfFile).toBe(pdf);
+      expect(comp.supplementaryFiles).toEqual([]);
+      expect(target.value).toBe('');
+      expect(mockStores.toast.show).toHaveBeenCalledWith(
+        'Please confirm your identity again, then try once more.',
+        'error',
+      );
+    });
+
+    it('picking a PDF with a supplementary file already attached refuses without navigation and keeps it', async () => {
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+      mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+      const comp = lightComponent();
+      const attached = { file: { name: 'data.csv', size: 10 }, fileName: 'data.csv', description: '', uploading: false, cid: null, error: null };
+      comp.supplementaryFiles = [attached];
+      const target = { files: [{ name: 'paper.pdf', size: 1024 }], value: 'C:\\fakepath\\paper.pdf' };
+
+      await comp.handlePdfChange({ target });
+
+      expect(mockStartOrcid).not.toHaveBeenCalled();
+      expect(comp.pdfFile).toBeNull();
+      expect(comp.supplementaryFiles).toEqual([attached]);
+      expect(target.value).toBe('');
+      expect(mockStores.toast.show).toHaveBeenCalledWith(
+        'Please confirm your identity again, then try once more.',
+        'error',
+      );
+    });
   });
 
   describe('_mergeCitationCollection', () => {

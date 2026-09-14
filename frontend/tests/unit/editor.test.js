@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // editor.js uploads inline images via the single-shot helper in the upload lib.
 const mockUploadFile = vi.fn();
@@ -16,11 +16,16 @@ vi.mock('../../src/lib/ipfs-upload.js', () => ({
 
 // Minimal Alpine mock used by PevoEditor._handleImageUpload's dynamic import.
 const toastShow = vi.fn();
+// One mutable auth store rather than a fresh literal per read, so a test can
+// stand in for the session teardown that nulls the username mid-batch (the
+// real `handleSessionInconsistency` disconnects synchronously, before its
+// toast).
+const mockAuth = { username: 'alice' };
 vi.mock('alpinejs', () => ({
   default: {
     store: vi.fn((name) => {
       if (name === 'toast') return { show: toastShow };
-      if (name === 'auth') return { username: 'alice' };
+      if (name === 'auth') return mockAuth;
       if (name === 'i18n') return { t: (k) => k };
       return null;
     }),
@@ -348,6 +353,9 @@ describe('PevoEditor._handleImageUpload error sanitization', () => {
     stub.isUploading = false;
     stub._els = { toolbar: { querySelector: () => null } };
     stub._t = (key) => key;
+    // The already-reported branch also abandons whatever is queued behind
+    // this image, so the stub carries the queue the real instance has.
+    stub._imageUploadQueue = [];
 
     await stub._handleImageUpload({ type: 'image/png', name: 'x.png' });
 
@@ -436,5 +444,87 @@ describe('PevoEditor image-upload queue', () => {
     expect(seen).toEqual(['a.png']); // b.png never processed
     expect(stub._handleImageUpload).toHaveBeenCalledTimes(1);
     expect(stub._imageUploadDraining).toBe(false); // flag reset even on early break
+  });
+
+  // These cases drive the REAL _handleImageUpload through the queue: they
+  // are about what the batch does after one image's outcome, which a recorder
+  // standing in for the method cannot show. The stub carries the members the
+  // real method touches; `uploadFile` itself stays mocked.
+  describe('a session that can serve none of the remaining images', () => {
+    function makeRealUploadStub() {
+      const stub = makeQueueStub();
+      stub.isUploading = false;
+      stub._els = { toolbar: { querySelector: () => null } };
+      stub._t = (key) => key;
+      stub._cmd = () => ({ setImage: () => ({ run: () => {} }) });
+      return stub;
+    }
+
+    let warnSpy;
+    beforeEach(() => {
+      vi.clearAllMocks();
+      mockAuth.username = 'alice';
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+    afterEach(() => { warnSpy.mockRestore(); });
+
+    it('a torn-down session mid-batch abandons the remaining images and adds no toast of its own', async () => {
+      // uploadFile's teardown has already disconnected (nulling the username
+      // synchronously) and shown its re-login toast when the already-reported
+      // rejection reaches the editor. Draining on would carry every remaining
+      // image into the signed-out branch, one sign-in toast each, and the
+      // toast store keeps three with FIFO eviction: a drop of four would evict
+      // the teardown's own message. The batch must end with the teardown.
+      mockUploadFile.mockImplementation(async () => {
+        mockAuth.username = null;
+        toastShow('Session inconsistency detected. Please sign in again.', 'error');
+        throw Object.assign(new Error('Session torn down. Sign in again.'), {
+          code: 'UPLOAD_SESSION_TORN_DOWN',
+        });
+      });
+      const stub = makeRealUploadStub();
+
+      stub._imageUploadQueue.push(img('a.png'), img('b.png'), img('c.png'), img('d.png'));
+      await stub._drainImageUploadQueue();
+
+      expect(mockUploadFile).toHaveBeenCalledTimes(1);
+      expect(toastShow).toHaveBeenCalledTimes(1);
+      expect(toastShow).toHaveBeenCalledWith('Session inconsistency detected. Please sign in again.', 'error');
+      expect(stub._imageUploadQueue).toEqual([]);
+      expect(stub._imageUploadDraining).toBe(false);
+    });
+
+    it('a signed-out drop of several images says sign in once, not once per image', async () => {
+      // Same shape without a teardown: nothing behind the first image can
+      // succeed either, so one message covers the batch.
+      mockAuth.username = null;
+      const stub = makeRealUploadStub();
+
+      stub._imageUploadQueue.push(img('a.png'), img('b.png'), img('c.png'));
+      await stub._drainImageUploadQueue();
+
+      expect(mockUploadFile).not.toHaveBeenCalled();
+      expect(toastShow).toHaveBeenCalledTimes(1);
+      expect(toastShow).toHaveBeenCalledWith('signIn.signInToContinue', 'error');
+      expect(stub._imageUploadQueue).toEqual([]);
+    });
+
+    it('an ordinary upload failure does not abandon the rest of the batch', async () => {
+      // The flush is for a session that can serve none of the rest. One
+      // image's transport failure says nothing about the next, so the batch
+      // drains on and each outcome is reported for itself.
+      mockUploadFile
+        .mockRejectedValueOnce(new Error('ipfs hiccup'))
+        .mockResolvedValue({ data: { cid: 'bafy' } });
+      const stub = makeRealUploadStub();
+
+      stub._imageUploadQueue.push(img('a.png'), img('b.png'), img('c.png'));
+      await stub._drainImageUploadQueue();
+
+      expect(mockUploadFile).toHaveBeenCalledTimes(3);
+      expect(toastShow).toHaveBeenCalledTimes(1);
+      expect(toastShow).toHaveBeenCalledWith('imageUploadFailed', 'error');
+      expect(stub._imageUploadQueue).toEqual([]);
+    });
   });
 });

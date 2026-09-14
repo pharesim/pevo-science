@@ -1975,5 +1975,73 @@ describe('editPage re-auth window ordering', () => {
       'error',
     );
   });
+
+  // Whether the form holds a new file decides whether a gate may navigate:
+  // new supplementary files live in component state, never in the draft, so
+  // a full-page ORCID round-trip discards them. Same rule as the publish page.
+  it('a passwordless account resubmitting with a supplementary file attached refuses without navigation and keeps the file', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+    const comp = unchangedLightComponent();
+    const attached = {
+      file: { name: 'data.pdf', size: 10, type: 'application/pdf' },
+      fileName: 'data.pdf',
+      description: '',
+      cid: null,
+      error: null,
+      uploading: false,
+    };
+    comp.supplementaryFiles = [attached];
+
+    await comp.handleSubmit();
+
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+    expect(mockSessionUpload).not.toHaveBeenCalled();
+    expect(broadcastOps).not.toHaveBeenCalled();
+    expect(comp.supplementaryFiles).toEqual([attached]);
+    expect(comp.step).toBe('idle');
+    expect(mockStores.toast.show).toHaveBeenCalledWith(
+      'Please confirm your identity again, then try once more.',
+      'error',
+    );
+  });
+
+  it('with nothing attached, the entry gate still navigates a passwordless account', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+    vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/edit/alice/p1' } });
+    try {
+      const comp = unchangedLightComponent();
+      comp.title = 'A New Title';
+
+      await comp.handleSubmit();
+
+      expect(mockStartOrcid).toHaveBeenCalledTimes(1);
+      expect(window.location.href).toBe('https://orcid.org/oauth/authorize?x=1');
+      expect(broadcastOps).not.toHaveBeenCalled();
+      expect(comp.step).toBe('idle');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('picking more supplementary files with one already attached refuses a passwordless account without navigation and keeps it', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+    const comp = unchangedLightComponent();
+    const attached = { file: { name: 'data.pdf', size: 10 }, fileName: 'data.pdf', description: '', cid: null, error: null, uploading: false };
+    comp.supplementaryFiles = [attached];
+    const target = { files: [{ name: 'more.csv', size: 10 }], value: 'C:\\fakepath\\more.csv' };
+
+    await comp.handleSupplementaryFiles({ target });
+
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+    expect(comp.supplementaryFiles).toEqual([attached]);
+    expect(target.value).toBe('');
+    expect(mockStores.toast.show).toHaveBeenCalledWith(
+      'Please confirm your identity again, then try once more.',
+      'error',
+    );
+  });
 });
 

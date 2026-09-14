@@ -723,14 +723,27 @@ export function initPublishPage() {
     // fill it in, but never submit it, so making them re-authenticate to attach
     // a file would buy nothing and cost a passwordless one a round-trip.
     //
-    // `opts` passes through to the gate. The file-selection and submit-entry
-    // gates allow the navigating factor — nothing has been paid for yet, so
-    // the worst case is re-picking a file. The pre-broadcast gate must not:
-    // by then the uploads are paid for, and their CIDs live in handleSubmit
-    // locals the draft does not carry.
-    async _windowReady(opts) {
+    // Whether a gate may navigate follows from what the form holds, decided
+    // here once rather than at each call site. The navigating factor is
+    // allowed only while nothing is attached: the worst case is then
+    // re-picking the one file being chosen, and the text fields are drafted.
+    // Once a file is held, no gate may navigate. Files live in component state
+    // the draft does not carry, so a round-trip fired to acquire for a resubmit,
+    // or for a second file, would discard the first; a passwordless account is
+    // refused non-destructively and told to re-authenticate instead. `opts`
+    // overrides the decision: the pre-broadcast gate passes
+    // `allowRedirect: false` unconditionally, because by then the uploads are
+    // paid for and their CIDs live in handleSubmit locals.
+    async _windowReady(opts = {}) {
       if (!this.isAccredited) return true;
-      return freshAuthWindowReady(opts);
+      return freshAuthWindowReady({ allowRedirect: !this.holdsAttachedFiles, ...opts });
+    },
+
+    // An attached PDF or supplementary file, whichever is held. Neither
+    // survives a full-page navigation, which is what makes this the
+    // discriminator for `_windowReady`'s redirect posture.
+    get holdsAttachedFiles() {
+      return !!this.pdfFile || this.supplementaryFiles.length > 0;
     },
 
     async handlePdfChange(e) {

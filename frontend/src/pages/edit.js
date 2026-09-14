@@ -833,15 +833,40 @@ export function initEditPage() {
       applyAccreditedPrefill(this.newCoAuthors, this.accreditedDirectory);
     },
 
-    // Supplementary files
     // Acquire-before-commit (ARCHITECTURE.md § 6.4.1). A light account needs a
     // re-auth window before work whose loss would cost the user, and for a
     // passwordless account acquiring one is a full-page navigation. Doing it at
     // file-selection time means the worst case is re-picking a file, instead of
     // discarding an attached file and a completed IPFS upload at broadcast time.
+    //
+    // Whether a gate may navigate follows from what the form holds, decided
+    // here once rather than at each call site (the publish page carries the
+    // same rule). The navigating factor is allowed only while no new file is
+    // attached: the worst case is then re-picking the one file being chosen,
+    // and the text fields are drafted. Once a file is held, no gate may
+    // navigate. New supplementary files live in component state the draft does
+    // not carry, so a round-trip fired to acquire for a resubmit, or for a
+    // further file, would discard what is attached; a passwordless account is
+    // refused non-destructively and told to re-authenticate instead. `opts`
+    // overrides the decision: the pre-broadcast gates pass
+    // `allowRedirect: false` unconditionally, because by then the uploads are
+    // paid for and their CIDs live in handleSubmit locals.
+    async _windowReady(opts = {}) {
+      return freshAuthWindowReady({ allowRedirect: !this.holdsAttachedFiles, ...opts });
+    },
+
+    // A new supplementary file waiting to be uploaded. Files already on chain
+    // (`existingSupplementaryFiles`) survive a navigation; these do not, which
+    // is what makes this the discriminator for `_windowReady`'s redirect
+    // posture.
+    get holdsAttachedFiles() {
+      return this.supplementaryFiles.length > 0;
+    },
+
+    // Supplementary files
     async handleSupplementaryFiles(event) {
       const files = Array.from(event.target.files || []);
-      if (files.length > 0 && !await freshAuthWindowReady()) {
+      if (files.length > 0 && !await this._windowReady()) {
         event.target.value = '';
         return;
       }
@@ -1082,7 +1107,7 @@ export function initEditPage() {
         // with enough of it left that an upload + broadcast run does not race
         // the closing deadline. Discovering the window closed after the upload
         // has been paid for is exactly the loss this ordering prevents.
-        if (!await freshAuthWindowReady()) { this.step = 'idle'; return; }
+        if (!await this._windowReady()) { this.step = 'idle'; return; }
         if (!this._mounted) return;
 
         this.step = 'diffing';
@@ -1158,7 +1183,7 @@ export function initEditPage() {
           // navigation that would discard the completed pins, so it is
           // suppressed and a passwordless account gets a re-authenticate toast
           // with the form intact instead.
-          if (!await freshAuthWindowReady({ allowRedirect: false })) { this.step = 'idle'; return; }
+          if (!await this._windowReady({ allowRedirect: false })) { this.step = 'idle'; return; }
           if (!this._mounted) return;
 
           this.step = 'broadcasting';
@@ -1249,7 +1274,7 @@ export function initEditPage() {
           // See the continuation branch: the margin belongs at the gates, the
           // broadcast is the last one, and past the uploads the navigating
           // factor is suppressed so completed pins are never discarded.
-          if (!await freshAuthWindowReady({ allowRedirect: false })) { this.step = 'idle'; return; }
+          if (!await this._windowReady({ allowRedirect: false })) { this.step = 'idle'; return; }
           if (!this._mounted) return;
 
           this.step = 'broadcasting';

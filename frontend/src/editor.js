@@ -1194,6 +1194,18 @@ export class PevoEditor {
     }
   }
 
+  // Drop the images still queued behind the one in flight, for a session that
+  // can serve none of them: a signed-out store, or a teardown that has already
+  // spoken. Left to drain, each remaining image would land in the signed-out
+  // branch and fire its own sign-in toast; the toast store keeps three with
+  // FIFO eviction, so a drop of four or more images would evict the teardown's
+  // own message, the one the already-reported contract exists to protect. The
+  // drain loop reads the queue's length each turn, so truncating in place ends
+  // it after the current image.
+  _abandonQueuedImageUploads() {
+    this._imageUploadQueue.length = 0;
+  }
+
   async _handleImageUpload(file) {
     if (!this.editor || !isImageFile(file)) return;
 
@@ -1209,7 +1221,10 @@ export class PevoEditor {
 
       if (!auth?.username) {
         // Cannot upload without authentication — show error instead of embedding
-        // base64 data URLs which would exceed the Hive transaction size limit
+        // base64 data URLs which would exceed the Hive transaction size limit.
+        // Said once for the batch: nothing queued behind this image can
+        // succeed either.
+        this._abandonQueuedImageUploads();
         try {
           const Alpine = (await import('alpinejs')).default;
           Alpine.store('toast')?.show(Alpine.store('i18n')?.t('signIn.signInToContinue') || 'Sign in to continue', 'error');
@@ -1227,9 +1242,15 @@ export class PevoEditor {
       console.warn('[editor image upload]', err);
       // A null key is an already-reported failure (a torn-down session, a
       // subject change abandoning the upload): its own toast has spoken, and
-      // an image-upload-failed toast on top would double-report.
+      // an image-upload-failed toast on top would double-report. The rest of
+      // the batch goes with it: a torn-down session serves none of the
+      // remaining images, and a subject change would push the departed
+      // subject's images through under whoever the tab now represents.
       const key = describeUploadError(err);
-      if (key === null) return;
+      if (key === null) {
+        this._abandonQueuedImageUploads();
+        return;
+      }
       try {
         const Alpine = (await import('alpinejs')).default;
         const msg = key === 'common.uploadFailed'
