@@ -1243,3 +1243,154 @@ on the backend port's own back-reference task, not here.
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the re-review
 signal. Do not edit this hold block or annotate items as fixed; the commit diff is the evidence
 and the architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-09-14, commits 126e7ae2 + 126b2fba):
+
+All five held items landed in `126e7ae2`, on the three canary files. A review
+pass over that commit's own output then found five more defects in it, four
+of which are fixed in `126b2fba`; the fifth is a disclosure, below. Every
+reader change was preceded by a probe observed red on the tree it was fixing,
+and every fact the new prose asserts was executed before it was written.
+Everything ran in scratch copies; no test was run and no file was mutated in
+the shared checkout, because sibling sessions were active throughout.
+
+**Item 1.** The guard sits before the close search, as prescribed: a
+star-leading line at a region known closed is live whatever follows it,
+unless it leads with a close, which still ends a comment whatever the region
+pass believes and is answered by what follows its close. Red first: the
+trailing-block form at region false and the end-to-end fixture, exactly those
+two, with the `// w` control and the region-unknown reading already passing.
+Green after. The pins sit beside the wrapped-multiplication pins in the
+resolver's own suite: the trailing-block form at region false is live, the
+`// w` control stays live, the same line at a region unknown and at a region
+open keeps the close reading, and the close-leading line keeps it at every
+region value. The end-to-end fixture in the canary runs the read through the
+password-state scan and resolves to `pages/anything.js#pick`.
+
+One consequence the hold did not spell out, taken deliberately and disclosed
+rather than buried: with the region decision answered ahead of the search,
+every line reaching the no-close branch is prose on that evidence, so that
+branch's `opensBlock || insideRegion !== false` had a region test nothing
+could reach with a value that changed the answer. It now returns a constant.
+Equivalence executed two ways: a 672-case synthetic enumeration over every
+prefix, tail and region value, and the whole-tree A/B, both zero. Restoring
+the old expression leaves every pin passing, and so does dropping its
+`opensBlock` disjunct alone, which is what says it had become two decisions
+no probe could redden. Leaving it would have been the shape this task has
+been held on twice. If the architect wants the "one reader change" sentence
+honoured to the letter, restoring the expression is a one-line revert that
+stays green and A/B-identical.
+
+The docblock's star-arm sentence now covers both sub-cases (known closed is
+live regardless, the close search not consulted; open or unknown keeps the
+close reading, and no close is prose), names the close-leading line as the
+shape it sets aside, and says where the loud direction goes. "Every case but
+two" is still true as written: only the `*` and `//` prefixes answer
+differently across region values, executed over fixtures for the opener
+prefix and for plain code as controls. The body comment says when the star
+search is consulted at all.
+
+**Item 2.** Both ordinal pointers name TEMPLATE PARITY.
+
+**Item 3.** The re-entry illustration is described in words (a close, a
+space, then a second opener). `node --check` passes; a real parser reads
+twelve block comments in the module where it read thirteen, with the
+region-pass docblock as one comment from its opener to its real close; the
+region pass over the module's own lines reports it as one run.
+
+**Item 4.** The opening is scoped: an arm that can sit inside a region closes
+before it is believed; a `//` line outside one, or with none known, is prose
+on its prefix; a `*` line at a region known closed is live on its prefix.
+
+**Item 5.** The pins paragraph says a closing edit that adds a template
+signal leaves both `legacy note` pins passing, and that they become the
+outside-a-literal controls it keeps beside its in-literal sibling.
+
+Neither NOT-held residual was acted on: the walk's outward parity direction
+stays unprobed, and the `/*/` close-search shape stays dismissed with no code
+change.
+
+### Five defects in this round's own output, four fixed here
+
+Six executing lenses probed `126e7ae2` in their own scratch copies, then
+three refuters per finding. The refuters all died on a session rate limit, so
+the run's own "no survivors" line is vacuous and every finding was triaged by
+hand instead. Seven raised, five unique, all documentation or probe coverage;
+no lens found a silent miss, and the evasion lens argued the negative by
+exhaustive check (about a million line-and-region combinations, zero cases
+where the guard turns live into prose).
+
+1. **The sentence that scoped the guard needed scoping itself.** Two lenses
+   found this independently. The body comment's new reading said a star line
+   at a region known closed is live "whatever follows it", while the guard it
+   describes exempts a close-leading line. The docblock had written the
+   exception in and the body comment had not, so one predicate had two
+   descriptions that disagreed, and the searched-from-the-start list left the
+   close-leading line out of both buckets. This is the shape the hold's own
+   item 4 named, written fresh in the sentence that replaced it.
+2. **The guard's loud reach was attributed to a refused opener alone.** The
+   region pass under-reports for a second reason the guard's own comment
+   already named, an opener it never saw. Executed: a comment opened mid-line,
+   and one opened after code on a line that closed another, each mint a key
+   the pre-guard reader did not. The sentence now says where the pass looks
+   for an opener, which makes both one statement rather than a list.
+3. **The residual count held only where the region pass is right** (pre-
+   existing, folded in because the paragraph was open). Where it under-
+   reports, each arm falls back to its shape reading, silently for a line
+   comment carrying a close and loudly for a star line that does not. Both
+   directions executed. No code change: the previous hold left the line-
+   comment arm's shape reading outside a region deliberately, and that silent
+   case remains the architect's call.
+4. **The guard's star conjunct had no probe of its own.** Its only cover was
+   the pre-existing double-comment pins reaching it through the post-close
+   recursion, which were written for a different rule, so the file's
+   one-probe-per-decision claim was not true of it. An opener at a known-
+   closed region is now pinned in both directions.
+5. **A demonstrative pointed at a mechanism the container never named.** The
+   test comment read "that guard" where the file uses the word for at least
+   four different mechanisms and the antecedent sat in a different comment
+   block. It now uses the module's own name for it.
+
+The fifth finding is the constant return, disclosed under item 1 rather than
+reverted.
+
+### Verification
+
+- Both suites 16 green (12 canary, 4 machinery); full frontend unit suite 85
+  files, 1902 tests green (the three editor-mounting rejections are
+  pre-existing), in a scratch copy with the backend tree linked beside it so
+  the one cross-tree import resolves.
+- A/B of the pre-guard machinery against the final one over all 86 files
+  under `frontend/src`: `files=86 lines=21931 regionDiff=0 commentDiff=0
+  commentUndefDiff=0 symbolDiff=0`, and the same zero between the two
+  commits, so the second is comment-and-pin only. A control mutation of the
+  head module flips 16802 lines, so the comparison is not vacuous. The guard
+  itself flips nothing in this tree, which a census explains rather than
+  excuses: of 328 star-leading lines under `frontend/src`, every one sits
+  inside a region the pass reports, so the surface the guard governs is empty
+  today and the pins, not the tree, carry its evidence.
+- Whole-tree pins unchanged at 1/1 and 8/1/2.
+- Mutation matrix, evaluated per pin rather than per suite, because vitest
+  reports only the first failing assertion in a case and these pins share
+  one: each of the guard's three conjuncts, the no-close branch, and the
+  line-comment arm reddens a pin written for it, and the pre-fix reader
+  reddens exactly the two probes this round added for it.
+- Seventy-three executed claims across the two commits, covering every
+  sentence added or changed, run against the pre-guard, reviewed and final
+  modules.
+- Pre-commit anchor gate over the added lines of both commits: zero hits,
+  control lines trip.
+- The star-line census the paragraph above rests on was re-derived by hand
+  rather than taken from the pass that first reported it, with a planted
+  fixture as its control.
+- `ce-simplify-code`, three reviewers in their own scratch copies: no
+  findings. The quality reviewer re-proved the constant return by exhausting
+  the reachable states at that branch and then by execution over twenty
+  shapes at every region value, zero divergence, which is the third
+  independent derivation of that equivalence. The reuse reviewer traced each
+  new fixture to the mutation it discriminates and found no duplicate of an
+  existing one. The efficiency reviewer found the guard's cost negligible at
+  this scale and declined the one micro-optimization available, a shared
+  prefix test, as a clarity loss.
