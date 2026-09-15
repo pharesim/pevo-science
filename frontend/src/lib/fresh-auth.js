@@ -896,9 +896,11 @@ export async function beginSessionAuthOrcidRedirect(isStale) {
 // returns via /orcid/callback), FRESH_AUTH_CANCELLED when the password modal
 // was dismissed, FRESH_AUTH_MINT_FAILED when re-auth could not be completed, or
 // FRESH_AUTH_PROMPT_BUSY when another action already owns the modal. It also
-// returns `undefined` when the mint answered without a proof string: that is
-// deliberately NOT a vocabulary member, so every consumer refuses it as an
-// unnamed result rather than reading it as an outcome anyone registered.
+// returns values the outcome vocabulary does not name: `undefined` when the
+// mint answered without a proof string, which the mint callback's narrowing
+// picks deliberately, and a truthy non-string when the cache leg hands back
+// what the window slot was holding. Every consumer refuses either as an unnamed
+// result rather than reading it as an outcome anyone registered.
 // Throws on transport / config errors.
 //
 // `allowRedirect: false` suppresses the navigating factor: callers already
@@ -976,9 +978,15 @@ export function abandonInFlightAcquisitions() {
 // tallies who acts on an outcome, which the page gate and the upload pre-flight
 // both do, not who reads the raw result.
 //
-// The value travels on unchanged: refusing is still each consumer's own, and
-// swallowing an unnamed result into a falsy one would read downstream as the
-// self-custody no-window case and reopen the quiet direction the guard closes.
+// The value travels on unchanged: refusing is still each consumer's own, and a
+// swallow would have to pick the value to swallow into. Every falsy candidate
+// but `''` and `null` is a non-string the guard and `acquisitionAborted`
+// already refuse, and the user is already told re-authentication failed, so
+// swallowing into one of those buys nothing. `''` is falsy AND a string, so it
+// clears both string tests and arrives as a ready window, where the page gate
+// says yes and the upload pre-flight takes the unproofed branch self-custody
+// uses. `null` is the registered redirect member, so a swallow into it would
+// manufacture the misread the mint callback's narrowing exists to prevent.
 //
 // Ungated, unlike the sibling clears in `broadcastWithFreshAuth`. Those hold a
 // real round-trip between the window they read and the clear they run, so a
@@ -1074,7 +1082,7 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
         // no response can produce, which is why this is the only coercion the
         // wire needs. Narrowing to `undefined` lands a null token where the
         // other malformed ones already land, in the fail-closed guard that
-        // refuses, says so, and evicts. The `cacheSessionProof` call keeps
+        // refuses; its consumers say so. The `cacheSessionProof` call keeps
         // the raw value deliberately: a null token reads as tokenless and is
         // dropped whenever the entry is next read, and
         // `evictUnnamedAcquisition` removes it before then anyway.
