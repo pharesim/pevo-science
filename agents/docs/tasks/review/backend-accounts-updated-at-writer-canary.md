@@ -1755,3 +1755,47 @@ All pre-existing, none opened this round, none in this hold's scope.
 - A trigger on `accounts` installed from a TypeScript file is invisible, which
   is the same entry already at the top of the earlier residual list, re-found
   independently. That two passes reached it is evidence about severity.
+
+### Addendum (2026-09-15, commit adee3890): the adversarial run read clean and was not
+
+The run summarised above finished after the signal was first written, and its
+summary is misleading in a way worth recording rather than quietly fixing. The
+session rate limit killed 14 of its 60 refuter agents, and the majority rule
+scores a finding whose refuters never voted as REFUTED. Four findings therefore
+came back "refuted" with zero evidence behind them. The run's own
+`agents_error: 14` is the only thing that says so; the survivor list does not.
+
+Recovered by hand from `journal.jsonl` rather than from the summary. Three of the
+four were docblock corrections already landed in a28b3a69. The fourth was not,
+and it inverts a claim this file has carried since its first round:
+
+- **The reuse rationale was wrong in both halves, and the true version is the
+  more alarming one.** It said the custody-claim canary's joined-statement
+  helper "structurally cannot reach" the shape this canary exists to see, with
+  five SET lines as the reason. Run against the real heads, that helper's
+  four-line join REACHES the `updated_at` assignment in BOTH finalizes: each
+  spreads its SET list over four lines with the marker on the fourth, so the
+  join lands on the assignment exactly at its cap, with zero margin. One more
+  SET line, or a reordering that moves the marker down, puts the shape out of
+  range — silently, because a join that stops short reports a statement writing
+  nothing. Corrected in adee3890 to say that, and to name the comment handling
+  as the half that could not be shared at any bound.
+
+Two further checks the same pass prompted, both run in isolated copies against
+the committed tree:
+
+- The refuter that survived confirmed the `targetTable` finding independently,
+  with its own driver trace, and added a scope probe the lens had not: the
+  quoted-identifier ROW-ASSIGNMENT form (`UPDATE "accounts" SET (custody,
+  updated_at) = (...)`) sharing the stop line was silent before the fix. Re-run
+  against the committed tree, it REDS on the resolve arm. The
+  `SqlStatement.stopped` fix covers that spelling too.
+- That refuter also noted the pre-fix behaviour falsified the KNOWN LIMITS
+  sentence "the SET-list form of the same shape is not hidden, because its
+  assignment reds by resolution instead". With the fix landed the sentence is
+  true again, and it is true for the row-assignment spelling as well.
+
+**For triage, not acted on:** this is the second time a rate-limited review run
+has reported clean because dead voters score as refutations. It is a property of
+the harness rather than of this task, and worth a convention note somewhere the
+next agent running a refuter fan-out will see it.
