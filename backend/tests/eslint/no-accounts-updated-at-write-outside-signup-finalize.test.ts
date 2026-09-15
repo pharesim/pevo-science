@@ -623,6 +623,14 @@ const COPY_COLUMNS_RE = /\bCOPY\s+(?:public\s*\.\s*)?accounts\s*\(([^)]*)\)/i;
 const ALTER_ACCOUNTS_RE =
   /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(?:public\s*\.\s*)?accounts\b/i;
 
+/** Every head a scan reads a statement FROM, and so every head whose statement
+ *  has to be readable to a terminator. Named once and consumed by both the arm
+ *  that reports unreadable statements and the fixture helper that mirrors it,
+ *  because the two drifted apart the last time the set widened: the arm learned
+ *  about the ALTER head and its mirror did not, which is a fixture that comes
+ *  back green for a shape the arm would have caught. */
+const READ_FROM_HEADS = [ACCOUNTS_STATEMENT_RE, ALTER_ACCOUNTS_RE];
+
 /** Trigger, rule and stored-routine creation, in every spelling PostgreSQL
  *  accepts, capturing the kind and the name so a site can be keyed exactly. A
  *  rule is in scope for the same reason a trigger is: it rewrites a statement
@@ -808,24 +816,27 @@ function dollarCloses(lines: string[], lineIndex: number, from: number, tag: str
 /** The tag of the dollar-quoted span opening at `at` on `lineIndex`, or null
  *  when nothing opens there.
  *
- *  BOTH readers ask through this one helper. {@link blankLine} and
- *  {@link statementAt} each track dollar-quoted spans, for different reasons —
- *  one to decide what is a comment, the other to decide where a statement ends
- *  — and an opener one of them believes in while the other does not is a
- *  divergence that reads green. A span only `statementAt` opens carries that
- *  statement's read past its own terminator, which lends its table to a write
- *  below it that no readable head reaches: the write resolves to a plausible
- *  other table instead of tripping the fail-closed arm. No STATEMENT read over
- *  either tree reaches a grammatical opener today, which is what makes that
- *  divergence latent rather than live; the BLANKING reader reaches two, the
- *  `DO $$` in migrations 007 and 017, and answers both correctly. It is closed
- *  here because the shapes that produce a divergence — the placeholder-builder
- *  idiom, a tag spelled once — are ordinary code that a migration or a
- *  multi-line template could carry at any time. Sharing the judgement is what
- *  keeps the two readers from drifting apart again; copying the conditions
- *  across would not. What sharing this judgement does NOT settle is a read that
- *  begins INSIDE a span, where the question to ask is not whether one opens:
- *  see {@link SpanEvent}.
+ *  ONE reader asks this, and that is the point rather than an accident.
+ *  {@link blankLine} is the only caller; {@link statementAt} used to be the
+ *  second, and an opener one of them believed in while the other did not was a
+ *  divergence that read green. A span only the statement read opened carried it
+ *  past its own terminator and lent its table to a write below it, which
+ *  resolved to a plausible other table instead of tripping the fail-closed arm.
+ *  Sharing this helper closed that, and then stopped being enough: the question
+ *  it answers is "does a span OPEN here", and a read starting inside a literal
+ *  needs to know it is inside one, which no opener test can tell it. So the
+ *  statement read no longer judges openers at all. It REPLAYS the decisions
+ *  this helper made for the blanking reader, through {@link SpanEvent} — the
+ *  stronger form of the same fix, since two readers consuming one record cannot
+ *  disagree the way two readers running one function still could.
+ *
+ *  The judgement still has to be right, because everything downstream now
+ *  inherits it. No STATEMENT read over either tree reaches a grammatical opener
+ *  today; the BLANKING reader reaches two, the `DO $$` in migrations 007 and
+ *  017, and answers both correctly. The conditions below stay load-bearing
+ *  because the shapes that break them — the placeholder-builder idiom, a tag
+ *  spelled once — are ordinary code a migration or a multi-line template could
+ *  carry at any time.
  *
  *  Three conditions, all of them load-bearing. The tag is PostgreSQL's own
  *  grammar ({@link DOLLAR_QUOTE_RE}). The characters after it must not be a
@@ -2637,8 +2648,14 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     const [file] = readable([{ rel, lines }]);
     const out: string[] = [];
     file.code.forEach((line, i) => {
-      for (const match of line.matchAll(new RegExp(ACCOUNTS_STATEMENT_RE.source, 'gi'))) {
-        if (statementAt(file.code, i, match.index ?? 0).closedAt === -1) out.push(`${rel}:${i + 1}`);
+      // The SAME head patterns the arm enumerates. A fixture helper that mirrors
+      // an arm is a second copy of that arm's enumeration, and a copy updated in
+      // one place is how a fixture comes back green for a shape the arm would
+      // have caught.
+      for (const pattern of READ_FROM_HEADS) {
+        for (const match of line.matchAll(new RegExp(pattern.source, 'gi'))) {
+          if (statementAt(file.code, i, match.index ?? 0).closedAt === -1) out.push(`${rel}:${i + 1}`);
+        }
       }
     });
     return out;
@@ -2672,7 +2689,7 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
         // ALTER is a silent pass with no second walk behind it. A wrapped
         // DEFAULT string in the ADD COLUMN clause ahead of the
         // `ALTER COLUMN updated_at TYPE ... USING` is all it takes.
-        for (const pattern of [ACCOUNTS_STATEMENT_RE, ALTER_ACCOUNTS_RE]) {
+        for (const pattern of READ_FROM_HEADS) {
           for (const match of line.matchAll(new RegExp(pattern.source, 'gi'))) {
             if (statementAt(code, i, match.index ?? 0).closedAt === -1) {
               unread.push(`${rel}:${i + 1} — ${lines[i].trim()}`);
