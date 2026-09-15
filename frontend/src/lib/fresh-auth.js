@@ -1266,18 +1266,19 @@ export async function ensureSessionWindow({
   // reached. It is the same argument `evictUnnamedAcquisition` makes for the
   // drop this one restates.
   //
-  // What the clear removes depends on the value. A Symbol never reaches
-  // storage (`JSON.stringify` omits the field, leaving a deadline-only shell
-  // the next read drops as tokenless), but the in-memory mirror `persistWindow`
-  // falls back to on a failed write keeps the raw entry, Symbol included, so
-  // there the clear IS the eviction; a truthy number or an object survives both
-  // paths and is the case the clear is chiefly for. Left in place, an entry
-  // this module wrote is bounded by its IDLE deadline (`cacheSessionProof`
-  // always anchors idle nearer than the cap, and every consume site refuses
-  // before it reaches `slideSessionWindow`), while an entry written by
-  // anything else is bounded only by the deadlines it carries, which
-  // `readSessionWindow` still enforces but which need not sit inside the
-  // module's periods.
+  // What the drop in `evictUnnamedAcquisition` removes depends on the value,
+  // and this clear restates it. A Symbol never reaches storage
+  // (`JSON.stringify` omits the field, leaving a deadline-only shell that
+  // reads as tokenless), but the in-memory mirror `persistWindow` falls back
+  // to on a failed write keeps the raw entry, Symbol included, and a Symbol
+  // token reads back live, so a Symbol needs that drop only there; a truthy
+  // number or an object survives both paths and is the case that drop is
+  // chiefly for. Left in place, an entry this module wrote is bounded by its
+  // IDLE deadline (`cacheSessionProof` always anchors idle nearer than the
+  // cap, and every consume site refuses before it reaches
+  // `slideSessionWindow`), while an entry written by anything else is bounded
+  // only by the deadlines it carries, which `readSessionWindow` still
+  // enforces but which need not sit inside the module's periods.
   //
   // The direction this guard exists to close is the quiet one. Read as a ready
   // window, an unregistered result travels on AS the proof, and how it fails

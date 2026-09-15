@@ -785,12 +785,15 @@ describe('the gate never fails open into silence', () => {
     expect(mockToastStore.show).toHaveBeenCalledWith(expect.any(String), 'error');
   });
 
-  // The guard names the whole non-string class, and these rows drive the class
-  // the WIRE can put in front of it: four ways a mint can answer without a
-  // proof string. The mint callback narrows all four to `undefined` before the
-  // guard reads them, so a row proves its own response shape is refused, not
+  // The guard names the whole non-string class, and these rows drive values
+  // from that class through the mint response. `vi.mock` replaces the api
+  // module here, so all four rows reach the mint callback the same way; only
+  // three stand for responses a backend could send. `mintSessionAuthProof`
+  // reads its answer out of a parsed JSON body, and a JSON body cannot carry
+  // a Symbol. The mint callback narrows all four to `undefined` before the
+  // guard reads them, so a row proves the shape it stands for is refused, not
   // that the guard tells four types apart; the cached entry the eviction case
-  // seeds is what drives the guard's predicate from the other leg.
+  // seeds is what drives the guard's predicate from the cache leg.
   // A Symbol is the least consequential member:
   // `JSON.stringify` omits a Symbol-valued field, so it never reaches the
   // sessionStorage entry (only the in-memory mirror `persistWindow` falls back
@@ -815,8 +818,9 @@ describe('the gate never fails open into silence', () => {
     // window, an unclassified result travels on AS the proof and dead-ends
     // downstream with nothing the user can answer. Which way it dead-ends
     // depends on its truthiness; the split itself is spelled out at
-    // `ensureSessionWindow`'s fail-closed guard, and each case in this table
-    // exercises one side of it. Refusing costs one re-auth act and says so.
+    // `ensureSessionWindow`'s fail-closed guard, which refuses before an
+    // unclassified result can take either route. Refusing costs one re-auth
+    // act and says so.
     mockMintSessionAuthProof.mockImplementation(async () => ({
       ...issuance('window-proof'),
       fresh_auth_proof: value,
