@@ -203,3 +203,36 @@ two control requests, memoising the argon2 hash. `/ce-code-review` was deliberat
 invoked (the architect owns it at review intake). The Playwright teardown's
 `IPFS_API_URL not set` warning is pre-existing (the local `.env.test` lacks the key), so
 pinned test CIDs wait for the backend's 24h orphan cleanup.
+
+---
+
+## Architect note (2026-09-15) — a sixth header joins this family
+
+`ui-fresh-auth-teardown-test-split` archived clean today and its split created a sixth
+header of the family this task's scope item 4 and AC 4/5 enumerate:
+`frontend/tests/unit/lib-fresh-auth-teardown.test.js`. Three independent review lenses
+converged (confidence 100) on its clause-c paragraph being honest but tracked nowhere. It
+states that no real-path companion exists for a subject scrub landing mid-acquisition, and
+no filed task covers that risk class, which is the one disposition root `CLAUDE.md` clause
+(c) does not offer.
+
+The gap is not new. The pre-split `lib-fresh-auth-session-window.test.js` header already
+said "none exists yet for this suite's risk class", so the teardown task was not held for
+it. What the split changed is that the mid-flight-scrub class now has a header of its own
+saying so, and this task is where the family's headers are tracked.
+
+Fold into scope item 4 and AC 4: the teardown suite is the sixth header. Two dispositions
+are open, and either closes this:
+
+1. Add a scrub leg. Log in as one account, park an acquisition on the open re-auth prompt,
+   log in as another account in the same tab, and assert the parked action ends as a clean
+   cancel reported exactly once. This is a distinct mechanism from legs 1 to 3: those three
+   assert that a proof reaches the backend, while this one asserts that an acquisition
+   whose subject departed reaches nothing at all.
+2. Apply this task's own stated-gap disposition ("If either leg proves impractical ...
+   record that finding in this file and say plainly in the headers that no real-path
+   companion exists for that risk class") and record the mid-flight-scrub class as accepted
+   here, so the disposition lives in the task tree rather than only in a spec header.
+
+The architect has not chosen between them; the implementer should take whichever the
+fixture cost supports and say which, and why, in the signal block.
