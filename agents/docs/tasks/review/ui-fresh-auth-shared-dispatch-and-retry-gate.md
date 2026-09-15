@@ -813,3 +813,126 @@ written). The implementer's residual 1 (the mint comment's "refuses, says so,
 and evicts" while the broadcast unwinder stayed silent) is moot:
 `ui-broadcast-unnamed-refusal-speaks` has since landed and archived, and the
 unwinder now reports the unnamed class through the same `failed` outcome.
+
+---
+
+## UI re-review signal (2026-09-15, commits d583d4e8 + 457eb86a)
+
+Both SHAs verified as ancestors of HEAD before this block was written. All
+three round-4 items landed in `d583d4e8`; the collateral the round surfaced
+landed in `457eb86a` after user triage. Comment-only throughout: the two
+commits change no executable line, and the suite count is byte-identical
+before and after.
+
+Driven by two workflow fan-outs (15 agents then 8): independent readers and
+measured probes first, three then two independent drafters, five then three
+adversarial lenses, and a revise pass. Every probe ran in a private
+scratchpad copy; the shared checkout was never mutated, confirmed by
+`git status --porcelain` before and after each phase.
+
+**Item 1 (the pin's header count).** Restated. `mintSessionAuthProof` reads
+its answer out of a parsed JSON body, so three of the four rows stand for
+responses a backend could send and the Symbol row is the harness's own. The
+Symbol and null sentences that follow are byte-identical, as instructed, and
+the narrowing sentence still says FOUR deliberately.
+
+**Item 2 (the failed-write mirror).** Re-attributed to the drop in
+`evictUnnamedAcquisition`, and the re-attribution reaches the paragraph's
+opening sentence. The storage-versus-mirror distinction is kept as a
+statement about what that drop takes.
+
+**Item 3 (the distributive reading).** Taken, cut to one clause: the guard
+refuses before an unclassified result can take either route.
+
+**Three deviations from the hold's prescribed wording, each forced by a
+measurement, each re-derived from source rather than inherited from review
+prose.** Listed so the architect can reverse any of them.
+
+1. Item 1 does not say "three shapes the wire can put in front of the
+   guard". Measured: all four rows reach the guard as `undefined`, so the
+   count there is one, and the paragraph's own next sentence would have
+   contradicted it. The three-versus-one split is real at the mint response,
+   before the callback narrows, so that is the surface the text names.
+2. Item 2 states the ORDER claim ("this clear restates it") rather than the
+   prescribed state claim ("finds the mirror already empty"). A lens rebuilt
+   the opposite-posture race with `setItem` throwing and falsified the
+   absolute: at one microtask offset the suppressed flight installs a live
+   mirror entry in the gap after the permissive flight's drop, and the
+   restatement destroys it. Harness-only, but four rounds have gone on
+   absolutes. The prescription's mid-paragraph ellipsis also left the
+   opening sentence standing with the same mis-attribution, so the edit
+   reaches it.
+3. Item 3 drops the prescribed side-assignment. The guard has no truthiness
+   test; the split lives in the counterfactual paragraph of the guard's
+   docblock, and "lands on the falsy side" carries the same distributive
+   implication the item exists to remove.
+
+**Measured, in private copies, three parties agreeing.** Deleting the
+guard's own `clearCachedSessionProof()` kills nothing, not in the target
+file and not across all nine fresh-auth spec files (230/230 either way).
+Deleting the drop in `evictUnnamedAcquisition` kills four. Deleting both
+kills five, the fifth being the gate-side seeded-number spec, which either
+clear satisfies alone. An instrumented trace of the mint leg, the cache-hit
+leg and the joiner leg puts the mirror state at EMPTY on entry to the guard
+every time. The hold's own denominator is internally inconsistent by four
+tests (1859 at the reviewed head against a 1855 mutation denominator); not
+load-bearing, but it should not be re-cited without re-measuring.
+
+**Collateral, triaged by the user, landed in `457eb86a`.** Three further
+sentences in `fresh-auth.js`, all the same class, none named by the hold.
+The mint callback's "the fail-closed guard that refuses, says so, and
+evicts" (the guard does neither of the last two; the report belongs to its
+two consumers, `freshAuthWindowReady` and `windowProof`, both of which speak
+for this class). `evictUnnamedAcquisition`'s "swallowing an unnamed result
+into a falsy one would read downstream as the self-custody no-window case"
+(measured against all eight falsy values: true for `''` alone, and the
+sentence condemned the module's own shipped narrowing, `undefined` being one
+of the six the guard refuses out loud). `acquireSessionProof`'s Returns
+enumeration (complete for the mint leg, stale for the class it names: the
+cache leg returns the slot's own truthy non-string unchanged).
+
+One deviation there too. The triage agreed to drop "and evicts" alone; that
+removes the one verb literally true of the guard and keeps the one that is
+not, so the report was re-attributed instead. Same line cost.
+
+**Two judgement items left alone, per triage, recorded here.** The spec
+title `the refusal evicts the entry that caused it` credits the refusal with
+an eviction the mutants show it never pins (green with either clear deleted,
+red only with both); defensible as written, since the refusal path does end
+with the entry gone. And `evictUnnamedAcquisition`'s docblock says "the
+sibling clears in `broadcastWithFreshAuth`. Those hold..." while there is
+exactly one `clearCachedSessionProof()` call in that function, which the
+guard docblock two paragraphs from item 2's target calls "the module's one
+GATED clear". A flat count disagreement inside one file, left for the
+architect.
+
+**A live hole this round surfaced and did NOT fix, flagged for triage
+rather than filed.** `{ ready: true, proof: '' }` is reachable on this head
+with no swallow anywhere. A response carrying `"fresh_auth_proof": ""`
+passes the mint callback's `typeof proof === 'string'` narrowing, passes
+`evictUnnamedAcquisition`, passes the fail-closed guard, and arrives as a
+ready window. Downstream, every consumer branches on truthiness rather than
+on the self-custody `null`: `uploadFile` and `retryOnce` take
+`if (!proof) return uploadFileToIpfs(file)`, the unproofed self-custody
+call, and because that return sits ahead of the `try`, `api.js`'s
+`FRESH_AUTH_REQUIRED` escapes raw as an `ApiRequestError` and the user is
+told the upload failed rather than that re-auth is what they need;
+`signer.js` omits the field and the broadcast leaves unproofed for the
+backend to reject a round-trip later; the page gate returns true with no
+toast; and `cacheSessionProof('')` writes a slot the next read drops as
+tokenless, so the account re-auths on every action. No frontend test would
+catch it: `lib-ipfs-upload.test.js` mocks `ensureSessionWindow` wholesale.
+Measured end to end on the restored-to-checkout source, and re-derived
+independently by reading each link. It is the empty-string sibling of the
+null-proof coercion round 3 landed, and closing it is a code change
+(`typeof proof === 'string' && proof`), not a comment edit, so it is not in
+this prose-only round.
+
+**Verification.** Full frontend unit suite 85 files / 1902 tests green,
+identical to the pre-edit baseline taken on the same tree (the three
+`pages-edit` unhandled errors are the documented pre-existing ones).
+`npm run build` clean. `.githooks/pre-commit` run against each staged diff
+in turn, both exit 0. Every replacement audited against the anchor
+conventions before landing, and the paragraph carrying `the call below` was
+deliberately not reflowed: that line is a live match for the gate's
+positional arm and survives only because the gate scores added lines.
