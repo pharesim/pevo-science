@@ -1394,3 +1394,105 @@ reverted.
   existing one. The efficiency reviewer found the guard's cost negligible at
   this scale and declined the one micro-optimization available, a shared
   prefix test, as a clarity loss.
+
+---
+
+## Architect re-review (2026-09-15) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` scoped to `126e7ae2` + `126b2fba`, five lenses (correctness,
+adversarial in-process, testing, project-standards, learnings) plus an independent validator batch
+over every surviving finding. The cross-model adversarial route was again unavailable on this host
+(no different-provider CLI installed), so the adversarial lens ran in-process.
+
+**All five items held on 2026-09-14 landed, and the round's engineering is sound.** The load-bearing
+claims were re-derived rather than accepted from the signal block. The guard moves behaviour only in
+the loud direction: an architect enumeration over prefix, tail and region triples found every
+divergence in the prose-to-live direction and none the other way, and the adversarial lens reached
+the same result independently over 124,110 cases (12,248 answers changed, zero live-to-prose). The
+collapse of the no-close branch to a constant is exactly equivalent given the guard, established
+four independent ways: two separate exhaustive enumerations, a revert mutant that leaves both suites
+green, and the whole-tree A/B. The architect's own A/B over all 86 files under `frontend/src`
+reproduces the signal block's numbers exactly (`files=86 lines=21931 regionDiff=0`) and agrees line
+for line across the parent, the reviewed and the final module. A lexer oracle over the same 86 files
+finds no line where the predicate answers prose and a real lexer sees live code. Item 3's fix is
+confirmed by a real parser reading the region-pass docblock as one comment from its opener to its
+real close; `node --check` passes on all three files; the repo's pre-commit anchor gate reports zero
+hits over the added lines of both commits, with control lines tripping.
+
+**Nothing held here is a detection defect.** Three items: two sentences and one pin. The disclosed
+constant return is accepted as landed, not reverted; its equivalence is now derived by more
+independent routes than the round claimed, and item 3 below pins the one decision it left uncovered.
+
+### Item 1 — the residual-fallback sentence under-enumerates in two directions
+
+The sentence in `isCommentLine`'s docblock beginning "Where the region pass is right, two shapes
+defeat it" is wrong in two separate ways, and the second is the silent direction.
+
+First, "loudly for a star line that does not" scopes the loud fallback to a star line carrying no
+close. The guard keys on `!trimmed.startsWith('*/')`, not on whether a close sits on the line, so a
+star line that carries a bare close flips too: `isCommentLine(' * trailing prose */', false)` is
+prose before the guard and live after it, the same flip the sentence reserves for the no-close form.
+Executed by the architect, by the correctness lens and by the validator.
+
+Second, the sentence's case frame offers only two states, the pass being right and the pass
+under-reporting. The over-report direction is absent, and it is the one that costs a violation:
+where the pass reports a region that is not open, a star-leading live line answers prose and the
+password-state scan mints no key. Executed: `isCommentLine('  * Number(cached?.hasPassword ===
+false);', true)` returns prose.
+
+Fix: restate as a three-way enumeration, with the guard's own condition (a star line that is not
+itself a close) in the loud clause, and the over-report direction named as the arm's remaining
+silent surface. Execute every clause before you write it, and check the replacement against the
+anchor conventions before you commit it: this predicate has now been held four times for a fix
+commit whose own new prose under-enumerates, and item 2 is the same commit doing it again in a
+different rot class.
+
+### Item 2 — "the reading above" is a bare positional anchor, newly introduced
+
+`126b2fba` added "which is why the reading above excludes it" to the body comment of
+`isCommentLine`. The phrase occurs zero times at `126e7ae2^` and zero times at `126e7ae2`, so the
+prose-precision commit introduced it. Measured against the three criteria in
+`agents/docs/solutions/conventions/positional-anchor-stable-named-container-carve-out-2026-05-20.md`
+it fails two: there is no stable behavioural name riding along (this is the `the helper above` shape
+the entry names as not qualifying), and the same paragraph enumerates TWO readings, so the citation
+is ambiguous already, before any insertion displaces anything. The carve-out does not cover it.
+
+The repo's pre-commit anchor gate does not see it either: its positional arm keys on a curated list
+of structural nouns that does not contain "reading". The round's zero-hit gate report is therefore
+accurate and is not evidence this line is clean, which is exactly the judgment the hook's own header
+defers to review.
+
+Fix: name what is pointed at. The file already carries the stable name for it in the docblock's
+star-arm sentence and in the resolver suite's close-leading pin comment; reuse that name rather than
+inventing a third. Audit the replacement against the same conventions.
+
+### Item 3 — the collapsed constant left one decision with no probe
+
+Mutating the no-close branch's constant to `return insideRegion !== false` leaves both suites 16/16
+green, run by the adversarial lens, by the validator and by the architect independently. The
+surviving decision is an opener at a region known closed: the constant answers prose, the mutant
+answers live, and no assertion discriminates them. The round's own claim that it added one probe per
+decision it introduced does not hold for this one.
+
+Fix: pin the region-known-closed reading of an opener whose comment does not close on its line,
+beside the region-unknown form the machinery suite already carries. Verified to discriminate:
+`expect(isCommentLine('  /* an opener whose comment runs on', false)).toBe(true);` passes on head
+and reddens the mutant.
+
+### Not held, noted for the record
+
+Two findings were raised and are NOT held; do not act on either. The region pass accepts a
+line-start opener inside a backslash-continued string literal, which is the same phantom-region
+shape as TEMPLATE PARITY from a source the backtick count cannot see: pre-existing, untouched by
+this round, and dismissed on the module's standing refusal to grow a lexer. And "Without that guard"
+in the machinery suite's trailing-comment pin comment was rejected at validation as ordinary
+intra-comment anaphora, its referent being the sentence immediately before it in the same comment
+block, unlike the cross-block demonstrative this round already fixed.
+
+The self-truncating-docblock hazard closed by item 3 of the previous hold is confirmed absent from
+`agents/docs/solutions/` by an independent search of the whole corpus. The architect will write it
+via `/ce-compound` at archive.
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the re-review
+signal. Do not edit this hold block or annotate items as fixed; the commit diff is the evidence and
+the architect updates the block at re-review.
