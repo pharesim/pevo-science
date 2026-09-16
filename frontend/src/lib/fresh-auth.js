@@ -899,8 +899,8 @@ export async function beginSessionAuthOrcidRedirect(isStale) {
 // returns values the outcome vocabulary does not name: `undefined` when the
 // mint answered without a usable proof string, which the mint callback's
 // narrowing picks deliberately, and a truthy non-string when the cache leg
-// hands back what the window slot was holding. Every consumer refuses either as an unnamed
-// result rather than reading it as an outcome anyone registered.
+// hands back what the window slot was holding. Every consumer refuses either
+// as an unnamed result rather than reading it as an outcome anyone registered.
 // Throws on transport / config errors.
 //
 // `allowRedirect: false` suppresses the navigating factor: callers already

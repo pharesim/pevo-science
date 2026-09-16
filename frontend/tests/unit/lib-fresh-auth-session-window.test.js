@@ -836,22 +836,25 @@ describe('the gate never fails open into silence', () => {
   });
 
   it('an empty-string proof is refused rather than delivered as a ready window', async () => {
-    // Its own case rather than a fifth row in the non-string `it.each`,
-    // because it is not a member of the class those rows drive: `''` is a
-    // STRING, so every narrowing in the path passes it through. The mint callback's return test, the eviction
-    // predicate in `evictUnnamedAcquisition`, and this gate's fail-closed guard
-    // each ask what the value IS, never whether it can be used, and a proof
-    // nobody can use is the one falsy value that clears all three.
+    // Its own case rather than a fifth row in the non-string `it.each`, because
+    // it is not a member of the class those rows drive: `''` is a STRING. Every
+    // narrowing this path had asked what the value WAS, never whether it could
+    // be used, so the one falsy value that is also a string satisfied all of
+    // them. Two still ask only that, the eviction predicate in
+    // `evictUnnamedAcquisition` and this gate's fail-closed guard, and both stay
+    // that way deliberately: the mint callback's return test is the two-part one
+    // now, and `readSessionWindow` drops a falsy token on sight, so neither leg
+    // into those two can carry an empty proof.
     //
-    // Delivered as ready it is indistinguishable from the self-custody `null`
-    // that means "this account needs no proof", which is what no consumer
+    // Delivered as ready it would be indistinguishable from the self-custody
+    // `null` that means "this account needs no proof", which is what no consumer
     // compares against: the page gate returns true with no toast and the work
     // starts, the upload pre-flight takes the unproofed branch self-custody
     // uses, and the broadcast leaves with `fresh_auth_proof` absent for the
-    // backend to refuse a round-trip later. `_handleFreshAuth`, the consent-op
-    // leg in pages/orcid-callback.js, already refuses an empty proof with the
-    // two-part predicate this pins; the session-kind path applied only the type
-    // half of it.
+    // backend to refuse a round-trip later. `_handleFreshAuth`, the ORCID
+    // callback's consent-op leg, already held its echoed proof to the two-part
+    // standard this pins; the session-kind mint callback applied only the type
+    // half.
     mockMintSessionAuthProof.mockImplementation(async () => ({
       ...issuance('window-proof'),
       fresh_auth_proof: '',
@@ -946,6 +949,27 @@ describe('the broadcast path leaves no poisoned window behind', () => {
     // refusal of the same entry.
     await broadcastWithFreshAuth('alice', [['vote', {}]]);
     expect(mockBroadcastOps.mock.calls[0][2]).toMatchObject({ freshAuthProof: 'window-proof' });
+  });
+
+  it('a mint that answers with an empty proof never reaches the broadcast', async () => {
+    // The third symptom an empty proof produced, and the only one that turns on
+    // WHERE the refusal lives. This path never consults `ensureSessionWindow`:
+    // it reads the raw acquisition result through `acquisitionAborted`, whose
+    // own test `''` satisfies. So a refusal installed in that gate instead would
+    // still let `signer.js` broadcast, with the field omitted by its own
+    // truthiness test, for the backend to refuse a round-trip later. Narrowing
+    // at the mint is what closes all three readings at once, and this case is
+    // what tells the two placements apart.
+    mockMintSessionAuthProof.mockImplementationOnce(async () => ({
+      ...issuance('window-proof'),
+      fresh_auth_proof: '',
+    }));
+
+    expect(await broadcastWithFreshAuth('alice', [['vote', {}]])).toBeNull();
+    expect(mockBroadcastOps).not.toHaveBeenCalled();
+    expect(cached()).toBeNull();
+    // Not a silent abort either: the unnamed class falls through to `failed`.
+    expect(mockToastStore.show).toHaveBeenCalledWith(expect.any(String), 'error');
   });
 
   it.each([
