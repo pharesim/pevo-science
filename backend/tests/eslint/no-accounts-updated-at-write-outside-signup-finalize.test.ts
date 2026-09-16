@@ -240,8 +240,11 @@
  *     `INSERT INTO accounts VALUES (...)` with no column list, an
  *     auto-updatable view over the table, a keyword and its table split across
  *     lines. A quoted identifier hides an INSERT that names the column, since
- *     that shape carries no assignment token; the SET-list form of the same
- *     shape is not hidden, because its assignment reds by resolution instead.
+ *     that shape carries no assignment token. The SET-list form of the same
+ *     shape reds by resolution instead, but only where no readable head opens
+ *     earlier in the same template: a template's statement read ends at its
+ *     backtick rather than at a `;`, so a sibling statement read from that head
+ *     reaches the assignment and lends it its own table, silently.
  *     The reverse error is the tolerable one and is not chased:
  *     a line inside a block comment that carries no leading `*`, or an odd
  *     quote in a line of prose, is read as live SQL and can only cost a red
@@ -271,14 +274,21 @@
  *     ARCHITECTURE.md section 6.1, and what refuses that row is the custody
  *     filter too.
  *   - Text that only LOOKS like a comment or a value to the reader, where the
- *     shape is not one this tree writes: a block-comment opener inside a
- *     regex character class that finds a real closer further down, a
- *     backslash escape inside an
+ *     shape is not one this tree writes: a backslash escape inside an
  *     `E'...'` string, a `--` glued on both sides in TypeScript code outside a
  *     template. Each blanks a span that was live, so each is a silent miss
  *     rather than a red bar, which is why the reader errs toward reading
  *     wherever it can: an unclosed comment opener is text, a value keeps its
  *     markers, and a decrement is an operator.
+ *   - A regex literal is told from a division by the character before its
+ *     slash ({@link regexLiteralEnd}): after a name, a number, `)` or `]` the
+ *     slash divides, and after anything else, or after `return`, it opens a
+ *     pattern that must end on its own line. Two spellings are misjudged. A
+ *     division after a postfix `++` or `--`, a `}` or a string's closing quote
+ *     reads as a pattern when a second slash follows on its line, and the text
+ *     between is copied as a value. A pattern after any other keyword
+ *     (`yield`, `case`, `typeof`) reads as a division, and a quote inside it
+ *     then opens a value that is not there. Neither tree spells either.
  *   - A string VALUE that spans lines is read as code from its second line
  *     on BY THE BLANKING, because the value state resets at each line while the
  *     block, template and dollar states do not. The reset is what keeps one
@@ -289,8 +299,9 @@
  *     resets the same way but does not read on: a line ending mid-value stops
  *     it with no terminator, so the statement resolves no table and is reported
  *     by line instead. The two readers therefore diverge here on purpose, and
- *     only here — see {@link statementAt}. It is also the one shape that can supply the body keyword from a
- *     VALUE: the keyword test is END-ANCHORED, so a closed value cannot
+ *     only here — see {@link statementAt}. It is also the one shape that can
+ *     supply the body keyword from a VALUE: the keyword test is END-ANCHORED,
+ *     so a closed value cannot
  *     (`SET note = 'stored exactly as'` ends in its own quote and matches
  *     nothing), but a value left OPEN at the end of a line can
  *     (`SET note = 'stored exactly as`), and a span on the next line then reads
@@ -326,9 +337,10 @@
  *     the placeholder-builder idiom and opens nothing; in a migration the same
  *     characters are an ordinary dollar-quoted literal whose content begins
  *     with a brace, which is how an array literal is written and the usual
- *     reason to reach for dollar quoting at all. The dialect therefore travels
- *     with the blanked text ({@link BlankedCode}) rather than being passed
- *     beside it, so the two readers cannot answer differently. What is NOT
+ *     reason to reach for dollar quoting at all. The dialect is the blanking
+ *     reader's own `sql` argument, and the statement read replays the spans
+ *     that reader recorded rather than judging openers again, so the two
+ *     readers cannot answer differently. What is NOT
  *     covered is SQL held in a `.ts` file that spells a brace-leading literal:
  *     the TypeScript answer wins there, and it is the right one, since the
  *     interpolation would have run before PostgreSQL ever saw the text.
@@ -680,11 +692,10 @@ const ALTER_ACCOUNTS_RE =
   /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\b\s*\(\s*|ONLY\s+)?(?:public\s*\.\s*)?accounts\b/i;
 
 /** Every head a scan reads a statement FROM, and so every head whose statement
- *  has to be readable to a terminator. Named once and consumed by both the arm
- *  that reports unreadable statements and the fixture helper that mirrors it,
- *  because the two drifted apart the last time the set widened: the arm learned
- *  about the ALTER head and its mirror did not, which is a fixture that comes
- *  back green for a shape the arm would have caught. */
+ *  has to be readable to a terminator. Read by {@link unreadableStatements},
+ *  which the arm and its fixtures both call. The arm once kept its own loop and
+ *  a fixture helper kept a copy, and the two drifted apart the last time the
+ *  set widened: the arm learned about the ALTER head and the copy did not. */
 const READ_FROM_HEADS = [ACCOUNTS_STATEMENT_RE, ALTER_ACCOUNTS_RE];
 
 /** Trigger, rule and stored-routine creation, in every spelling PostgreSQL
@@ -833,6 +844,55 @@ const DECREMENT_RE = /[\w$]/;
 
 function isDecrement(line: string, at: number): boolean {
   return DECREMENT_RE.test(line[at - 1] ?? ' ') || DECREMENT_RE.test(line[at + 2] ?? ' ');
+}
+
+/** The character before a `/` that makes it a DIVISION: the end of an operand,
+ *  which is a name or a number, a closing `)` or a closing `]`. Before anything
+ *  else a slash in TypeScript code opens a regex literal. */
+const OPERAND_END_RE = /[\w$)\]]$/;
+
+/** The one keyword a regex literal follows in ordinary code. It ends in a name
+ *  character, so without this it reads as an operand and the pattern after it
+ *  as a division. */
+const PATTERN_KEYWORD_RE = /\breturn$/;
+
+/** The end, exclusive, of the regex literal whose opening slash is at `at`, or
+ *  -1 when that slash is a division.
+ *
+ *  A quote inside a pattern is one of its characters, and this repo writes such
+ *  patterns in ordinary code: the hand-escaping `v.replace(/'/g, "''")`, and the
+ *  `"`-matching patterns of HTML scraping. Read as a quote it opens a VALUE that
+ *  is not there, and every decision after it on the line is made from inside
+ *  that phantom: a template's backtick is declined as a character of a value, a
+ *  `/*` inside a real string is taken for a comment, a `//` inside a SQL
+ *  literal blanks the rest of the line. Each hides an ordinary write.
+ *
+ *  Where it STARTS is judged from `before`, the line as blanked up to the slash,
+ *  so a comment in between neither supplies an operand nor hides one: after an
+ *  operand the slash divides, and after anything else, or after `return`, it
+ *  opens a pattern. Where it ENDS is the next slash that is neither escaped nor
+ *  inside a character class, on the same line, since a regex literal cannot
+ *  span lines. A slash with no such end opens no pattern and is read as the
+ *  division it then has to be. */
+function regexLiteralEnd(line: string, at: number, before: string): number {
+  const prior = before.trimEnd();
+  if (OPERAND_END_RE.test(prior) && !PATTERN_KEYWORD_RE.test(prior)) return -1;
+  let inClass = false;
+  for (let j = at + 1; j < line.length; j++) {
+    const c = line[j];
+    if (c === '\\') {
+      j++;
+      continue;
+    }
+    if (inClass) {
+      if (c === ']') inClass = false;
+    } else if (c === '[') {
+      inClass = true;
+    } else if (c === '/') {
+      return j + 1;
+    }
+  }
+  return -1;
 }
 
 /** The opener of a dollar-quoted string, `$$` or `$tag$`, in PostgreSQL's own
@@ -995,29 +1055,13 @@ function blockCloses(
 
 /** `line` with its comment spans blanked, and the state the next line starts
  *  in. `sql` marks a file that is SQL throughout rather than TypeScript
- *  carrying SQL in templates.
- *
- *  `ticksInValues` marks the SECOND read of a line the first read left inside
- *  a value. A quoted TypeScript string closes on its own line, so TypeScript
- *  code outside a template that ends inside one held a quote that opened no
- *  string, and an apostrophe in a regex literal like `/'/g` is the ordinary
- *  way to write one. A SQL value may span lines, in a migration or a template,
- *  which is why the second read has to leave those lines as it found them.
- *  The decision
- *  that misreading can turn silent is a backtick declined inside the phantom
- *  value while no template is open: right for a real string that holds a
- *  backtick, wrong when the backtick opens a template, which is then read as a
- *  value with the comments in its token gaps left live. The second read
- *  trusts such a backtick as a delimiter instead. Only a line holding one
- *  reads differently; every other line, a SQL line included, reads the same
- *  both ways. */
+ *  carrying SQL in templates. */
 function blankLine(
   lines: string[],
   lineIndex: number,
   state: BlankState,
   sql: boolean,
   blanked: string[] = [],
-  ticksInValues = false,
 ): { text: string; state: BlankState; spans: SpanEvent[] } {
   const line = lines[lineIndex];
   const escapes = !sql;
@@ -1087,18 +1131,16 @@ function blankLine(
       // quoted string is one of that string's characters, and ending the VALUE
       // there hands the rest of the string to the code rules, where a `/*`
       // opens a comment that blanks every line up to the next `*/`. In SQL it
-      // is an ordinary character of the value.
+      // is an ordinary character of the value. The gate trusts the value to be
+      // real, which holds because a quote inside a regex literal opens none:
+      // see {@link regexLiteralEnd}, and without it this arm declines the
+      // backtick of every template on a line after `v.replace(/'/g, "''")`.
       if (ticks && template && char === '`') {
         template = false;
         opaque = null;
         for (const open of dollar) spans.push({ col: i, width: 1, tag: open, open: false });
         dollar = [];
         dollarCode = false;
-      } else if (ticksInValues && ticks && char === '`') {
-        // The second read: the value was a phantom, and this backtick opens
-        // the template the first read declined.
-        template = true;
-        opaque = null;
       } else if (char === opaque) opaque = null;
       i++;
       continue;
@@ -1225,6 +1267,18 @@ function blankLine(
         continue;
       }
     }
+    // A regex literal is a VALUE to its closing slash: its quotes, markers and
+    // backticks are characters of the pattern (see {@link regexLiteralEnd}).
+    // TypeScript code alone, since SQL writes a slash as an operator, `|/` for
+    // a square root, and that includes the SQL a template holds.
+    if (char === '/' && next !== '/' && next !== '*' && !sql && !template) {
+      const end = regexLiteralEnd(line, i, out);
+      if (end !== -1) {
+        out += line.slice(i, end);
+        i = end;
+        continue;
+      }
+    }
     if (char === '/' && next === '/' && !sql && !template) {
       out += ' '.repeat(line.length - i);
       break;
@@ -1246,10 +1300,6 @@ function blankLine(
     out += char;
     i++;
   }
-  // A line left inside a value is read once more, trusting a backtick in a
-  // value as a delimiter. Once: the second read is the last opinion there is,
-  // and a line holding no such backtick comes back from it unchanged.
-  if (opaque !== null && !ticksInValues) return blankLine(lines, lineIndex, state, sql, blanked, true);
   return { text: out, state: { block, template, dollar, dollarCode }, spans };
 }
 
@@ -1782,6 +1832,37 @@ function accountsColumnAlterations(files: Readable[]): Occurrence[] {
       for (const match of line.matchAll(new RegExp(ALTER_ACCOUNTS_RE.source, 'gi'))) {
         const statement = statementAt(code, i, match.index ?? 0);
         if (/\bupdated_at\b/.test(statement.text)) found.push(occurrenceAt(rel, lines, i));
+      }
+    });
+  }
+  return found;
+}
+
+/** Every `accounts` statement, read from every head in {@link READ_FROM_HEADS},
+ *  whose read stops without reaching a terminator.
+ *
+ *  EVERY head a scan reads from, not only the DML ones. Each scan asks a
+ *  question about a statement's TEXT, and each can only answer it for a
+ *  statement read to the end, so a head this scan does not cover is a truncated
+ *  read nothing reports. The ALTER head is the one that most needs saying:
+ *  `accountsColumnAlterations` is the ONLY arm that sees a rewrite carrying no
+ *  assignment and no column list, so a truncated ALTER is a silent pass with no
+ *  second walk behind it. A wrapped DEFAULT string in the ADD COLUMN clause
+ *  ahead of the `ALTER COLUMN updated_at TYPE ... USING` is all it takes.
+ *
+ *  A named scan rather than a loop written into the arm, like every other arm
+ *  here, so that a fixture calls the arm's own enumeration. A loop kept in the
+ *  arm with a copy of it in a fixture helper lets the arm drift from the copy:
+ *  its head list, its match flags and its stop test each read green when
+ *  changed in the arm alone. */
+function unreadableStatements(files: Readable[]): Occurrence[] {
+  const found: Occurrence[] = [];
+  for (const { rel, lines, code } of files) {
+    code.forEach((line, i) => {
+      for (const pattern of READ_FROM_HEADS) {
+        for (const match of line.matchAll(new RegExp(pattern.source, 'gi'))) {
+          if (statementAt(code, i, match.index ?? 0).closedAt === -1) found.push(occurrenceAt(rel, lines, i));
+        }
       }
     });
   }
@@ -2430,6 +2511,18 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     const inBody = statementAt(asCode(bodyForceClosed), 0, bodyForceClosed[0].indexOf('UPDATE sessions'));
     expect(inBody.stopped).toBe(true);
     expect(unresolvedIn(bodyForceClosed)).toHaveLength(1);
+    // And the read ENDS at that backtick rather than recording it and reading
+    // on. Past it, the next backtick is another template's opener wherever
+    // templates sit side by side in one expression, and a quoted-identifier
+    // write between the two is then lent this statement's table.
+    expect(
+      unresolvedIn([
+        'async function touch(id: number) {',
+        "  await tx([`UPDATE sessions SET note = $tag$x`, 'UPDATE \"accounts\" SET updated_at = NOW() WHERE id = $1', `SELECT 1`]);",
+        '  const sigil = `$tag$`;',
+        '}',
+      ]),
+    ).toHaveLength(1);
   });
 
   it('each reader feature is the only thing answering its own fixture', () => {
@@ -2599,6 +2692,19 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     ];
     expect(unreadableIn(oneLineDefault, '018_probe.sql')).toEqual([]);
     expect(accountsColumnAlterations(readable([{ rel: '018_probe.sql', lines: oneLineDefault }]))).toHaveLength(1);
+    // The scan's case fold, since the heads are matched under flags the scan
+    // sets rather than the ones the patterns carry.
+    expect(unreadableIn(wrappedDefault.map((l) => l.toLowerCase()), '018_probe.sql')).toHaveLength(1);
+    // And a statement that runs past the read cap is reported as well as one
+    // that stops mid-value. The two report the same missing terminator for
+    // different reasons, and only the terminator is what the scan tests.
+    const overlong = [
+      'ALTER TABLE accounts',
+      ...Array.from({ length: LITERAL_CAP + 2 }, (_, n) => `  ADD COLUMN IF NOT EXISTS pref_${n} TEXT,`),
+      '  ALTER COLUMN updated_at TYPE TIMESTAMPTZ USING NOW();',
+    ];
+    expect(statementAt(asCode(overlong, true), 0, 0).stopped).toBe(false);
+    expect(unreadableIn(overlong, '018_probe.sql')).toHaveLength(1);
     // THE SPAN-STACK CLEAR on the backtick that ends a template. Ending the
     // template without clearing the tags leaves the reader in value-passthrough
     // for the lines after it, so the next statement's comment gap survives. The
@@ -2681,10 +2787,6 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // is the gate the other two arms lean on: they test the flag, and it is
     // this arm alone that could set the flag in a `.sql` file.
     expect(blankAll(['SELECT `a;'], true).state.template).toBe(false);
-    // The same gate on the second read of a line ending inside a value, which
-    // trusts a backtick in a value as a delimiter. A wrapped SQL string is an
-    // ordinary way for a migration line to end inside one.
-    expect(blankAll(["UPDATE audit_log SET note = 'wrapped ` tick"], true).state.template).toBe(false);
     expect(blankAll(['const a = `x`;'], false).state.template).toBe(false);
     expect(blankAll(['const a = `x;'], false).state.template).toBe(true);
     // And the arms still do their job in TypeScript, where a backtick really
@@ -2708,26 +2810,83 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     ];
     expect(scansOf(quotedTicks).tableFirst).toEqual(['x.ts#touch']);
     expect(scansOf(quotedTicks).columnFirst).toEqual(['x.ts#touch']);
-    // And the flag half's own failure, which is why a line ending inside a
-    // value is read a second time. An apostrophe that opens no string at all,
-    // the one in a regex literal like `/'/g`, leaves the reader believing it is
-    // inside a value, and a template opened later on that line then meets a
-    // gate that declines its backtick. The template is read as a value, a
-    // comment in one of its token gaps stays live, and the write goes unseen,
-    // whether or not the template carries quotes of its own. A quoted string
-    // cannot end its line open, so the line that does is read again trusting
-    // the backtick; `quotedTicks` is the line that must NOT be, since its
-    // string closes.
-    for (const set of ['updated_at', "custody = 'light', updated_at"]) {
-      const regexThenTemplate = [
-        'async function touch(v: string, id: number) {',
-        `  const safe = v.replace(/'/g, "''"); await q(\`UPDATE accounts SET ${set} /* stamped */ = NOW() WHERE id = $1\`, [id]);`,
-        '}',
-      ];
-      expect(assignmentIndex(asCode(regexThenTemplate)[1]), set).toBeGreaterThan(-1);
-      const seen = [...columnAssignments(readable([{ rel: 'x.ts', lines: regexThenTemplate }])).values()].flat();
-      expect(seen, set).toHaveLength(1);
+  });
+
+  it('a regex literal is read whole, so a quote or a marker inside one opens nothing', () => {
+    // A quote inside a regex literal is one of the pattern's characters, and
+    // this repo spells such patterns in ordinary code: the hand-escaping idiom
+    // `v.replace(/'/g, "''")`, and the `"`-matching patterns the bridge's HTML
+    // scraping uses. Read as a quote, it opens a VALUE that is not there, and
+    // the rest of the line is judged from inside it. A template on that line is
+    // then read as a value, so the comments in its token gaps stay live; a `/*`
+    // inside a real string is read as code and blanks the lines below it to the
+    // next `*/`; a `//` or `--` inside a SQL literal is read as code and blanks
+    // the rest of the line. Each hides an ordinary write, and the flag gate on
+    // a backtick met inside a value makes the first of them certain.
+    //
+    // A write counts as CAUGHT when it lands where a red bar reads it: on
+    // accounts, or unresolved for the fail-closed arm. Any other table is
+    // silence.
+    const caught = (...body: string[]): number => {
+      const found = columnAssignments(
+        readable([{ rel: 'x.ts', lines: ['async function touch(v: string, w: string, id: number) {', ...body, '}'] }]),
+      );
+      return (found.get('accounts') ?? []).length + (found.get(UNRESOLVED_TABLE) ?? []).length;
+    };
+    const gap = 'await q(`UPDATE accounts SET updated_at /* stamped */ = NOW() WHERE id = $1`, [id]);';
+    // A template on the pattern's line, bare and holding a quoted literal of its own.
+    expect(caught(`  const safe = v.replace(/'/g, "''"); ${gap}`)).toBe(1);
+    expect(caught("  const safe = v.replace(/'/g, \"''\"); await q(`UPDATE accounts SET custody = 'light', updated_at /* stamped */ = NOW() WHERE id = $1`, [id]);")).toBe(1);
+    // An even count of phantom quotes, which leaves the line looking balanced:
+    // an apostrophe in a trailing comment, and a second hand-escape on the line.
+    expect(caught(`  const safe = v.replace(/'/g, "''"); ${gap} // don't retry`)).toBe(1);
+    expect(caught("  const a = v.replace(/'/g, \"''\"); await q(`UPDATE accounts SET updated_at /* stamped */ = NOW() WHERE id = $1`, [id, w.replace(/'/g, \"''\")]);")).toBe(1);
+    // The double-quote pattern, which is the spelling this tree already writes.
+    expect(caught(`  const bare = v.replace(/"/g, ''); ${gap} log("touched");`)).toBe(1);
+    // A line-comment marker inside a SQL literal, read as code and blanking the
+    // assignment after it.
+    expect(caught("  const safe = v.replace(/'/g, \"''\"); await q(`UPDATE accounts SET avatar = 'https://example.org/a.png', updated_at = NOW() WHERE id = $1`, [id]);")).toBe(1);
+    expect(caught("  const safe = v.replace(/'/g, \"''\"); await q(`UPDATE accounts SET bio = '-- none --', updated_at = NOW() WHERE id = $1`, [id]);")).toBe(1);
+    // A block-comment opener inside a string, in a template and in a plain
+    // string, blanking a write on the NEXT line down to a later closer.
+    const below = ["  await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);", '  /** a later doc comment */'];
+    expect(caught("  const safe = v.replace(/'/g, \"''\"); const images = await q(`SELECT id FROM uploads WHERE mime LIKE 'image/*'`, []);", ...below)).toBe(1);
+    expect(caught("  const safe = v.replace(/'/g, \"''\"); const images = 'image/*';", ...below)).toBe(1);
+    //
+    // Where a pattern ENDS. An escaped slash does not end it, and neither does
+    // a slash inside a character class; each, taken as the end, leaves the
+    // quote after it outside the pattern.
+    expect(caught(`  const safe = v.replace(/\\/'/g, ''); ${gap}`)).toBe(1);
+    expect(caught(`  const safe = v.replace(/[/']/g, ''); ${gap}`)).toBe(1);
+    //
+    // Where a pattern STARTS, which is told from a division by the character
+    // before the slash. After `return` a slash opens a pattern ...
+    expect(caught("  return /'/.test(v) ? q(`UPDATE accounts SET updated_at /* stamped */ = NOW() WHERE id = $1`, [id]) : null;")).toBe(1);
+    // ... and after an operand it divides, so a comment after the division is
+    // still a comment. Read as a pattern, the division swallows the comment's
+    // opener and leaves its text live. One line per kind of operand end; a name
+    // that only ENDS in the keyword, and the keyword before a name rather than
+    // before the slash, each of which is a division too; and a comment between
+    // the operand and the slash, which is judged from the blanked line and so
+    // does not stand in for the operand it follows.
+    for (const line of [
+      '  const half = total / 2 /* note */;',
+      '  const half = (total) / 2 /* note */;',
+      '  const half = xs[0] / 2 /* note */;',
+      '  const half = total$ / 2 /* note */;',
+      '  const half = noreturn / 2 /* note */;',
+      '  return total / 2 /* note */;',
+      '  const half = total /* c */ / 2 /* note */;',
+    ]) {
+      expect(scanned(line), line).toBe(line.replace(/\/\* [a-z]+ \*\//g, (c) => ' '.repeat(c.length)));
     }
+    // Patterns are TypeScript. PostgreSQL has a prefix operator spelled with a
+    // slash, `|/` for a square root, so a slash after a bar is an operator in a
+    // migration and in the SQL a template holds, and read as a pattern there it
+    // swallows the comment between two of them.
+    const rooted = 'UPDATE accounts SET score = |/ score, updated_at /* c */ = |/ 4.0 WHERE id = 1';
+    expect(scansOf([`${rooted};`], '018_probe.sql').tableFirst).toEqual(['018_probe.sql#<module>']);
+    expect(scansOf(['async function touch(id: number) {', `  await q(\`${rooted}\`, [id]);`, '}']).tableFirst).toEqual(['x.ts#touch']);
   });
 
   it('the table-first read sees the column in a SET list, an INSERT list and both MERGE branches', () => {
@@ -2840,22 +2999,9 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
   ];
 
   /** The `accounts` statements in a fixture file that cannot be read to a
-   *  terminator, which is what the every-statement-readable arm reports. */
+   *  terminator, through the same scan the every-statement-readable arm runs. */
   function unreadableIn(lines: string[], rel = 'x.ts'): string[] {
-    const [file] = readable([{ rel, lines }]);
-    const out: string[] = [];
-    file.code.forEach((line, i) => {
-      // The SAME head patterns the arm enumerates. A fixture helper that mirrors
-      // an arm is a second copy of that arm's enumeration, and a copy updated in
-      // one place is how a fixture comes back green for a shape the arm would
-      // have caught.
-      for (const pattern of READ_FROM_HEADS) {
-        for (const match of line.matchAll(new RegExp(pattern.source, 'gi'))) {
-          if (statementAt(file.code, i, match.index ?? 0).closedAt === -1) out.push(`${rel}:${i + 1}`);
-        }
-      }
-    });
-    return out;
+    return unreadableStatements(readable([{ rel, lines }])).map((o) => o.site);
   }
 
   /** The assignments in a fixture file that no readable head reaches, which is
@@ -2874,27 +3020,7 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
   }
 
   it('every accounts statement can be read whole', () => {
-    const unread: string[] = [];
-    for (const { rel, lines, code } of [...sources, ...migrations]) {
-      code.forEach((line, i) => {
-        // EVERY head a scan reads from, not only the DML ones. Each scan asks a
-        // question about a statement's TEXT, and each can only answer it for a
-        // statement read to the end — so a head this arm does not cover is a
-        // truncated read nothing reports. The ALTER head is the one that most
-        // needs saying: `accountsColumnAlterations` is the ONLY arm that sees a
-        // rewrite carrying no assignment and no column list, so a truncated
-        // ALTER is a silent pass with no second walk behind it. A wrapped
-        // DEFAULT string in the ADD COLUMN clause ahead of the
-        // `ALTER COLUMN updated_at TYPE ... USING` is all it takes.
-        for (const pattern of READ_FROM_HEADS) {
-          for (const match of line.matchAll(new RegExp(pattern.source, 'gi'))) {
-            if (statementAt(code, i, match.index ?? 0).closedAt === -1) {
-              unread.push(`${rel}:${i + 1} — ${lines[i].trim()}`);
-            }
-          }
-        }
-      });
-    }
+    const unread = unreadableStatements([...sources, ...migrations]);
     expect(
       unread,
       'an accounts statement whose text stops without reaching a terminator, because it ran ' +
@@ -2903,7 +3029,7 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
         'ALTER naming the column — and can only answer for text it read to the end: a clause ' +
         'that closes beyond the stop reads as carrying nothing. Close the value on its own ' +
         'line, shorten the statement, or raise the cap deliberately. ' +
-        `Why it matters: ${ORDERING_RATIONALE}\n${unread.join('\n')}`,
+        `Why it matters: ${ORDERING_RATIONALE}\n${sitesOf(unread)}`,
     ).toEqual([]);
   });
 
