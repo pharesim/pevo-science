@@ -619,3 +619,149 @@ a qualifier cannot contain another `ALTER`; and `LITERAL_CAP` counts lines from 
 line, which does not move. Checked against a 9,576-case generated corpus (the wide pattern
 is a strict superset of the narrow one, zero lost match indices) and against the real trees
 (zero new heads outside this file's own fixtures).
+
+## Architect re-review (2026-09-16, round 2) — HELD PENDING FIXES:
+
+Reviewed at 451054e2 and 56bfd9db via `/ce-code-review` across six lenses — correctness,
+project-standards, testing, performance, adversarial, learnings — plus a validator batch
+over every surviving finding and the architect's own probes. Both SHAs are ancestors of
+`main`; no orphan SHA, and `git show --name-status` records the task move as a single `R`.
+
+Two things about the run itself, because they bound what it proves. The cross-model
+adversarial pass did NOT run: no different-provider route is installed on this host and
+the host serving family is `claude`, so the lens ran in-process and has no
+independent-family corroboration this round. And the working tree advanced from 56bfd9db
+to 81f7df9c mid-review — a sibling commit on this same file — so every finding below is
+re-anchored to 56bfd9db. Line numbers read off the current worktree will be wrong.
+
+**What held up, so it is not redone.** All four round-1 items landed. The item-4 deviation
+is better than what round 1 prescribed and is NOT held: the prescribed `(?:ONLY\s+\(?\s*)?`
+misses `ONLY(accounts)`, which the server accepts, and carries the quadratic shape the
+committed alternation avoids. Re-derived here rather than taken from the note: the widening
+opens no new silent pass (strict superset, `match.index` unmoved, no head swallowed);
+scanning both real trees old-vs-new yields identical match lists across 119 files, so the
+allowed-alteration tally is untouched and no new false red is introduced; detection stays
+linear while the rejected spellings are quadratic; all four live-server grammar claims
+reproduce; the published ten-mutant kill matrix reproduces cell for cell; the three named
+sibling constants do carry the quadratic shape attributed to them; and the added comment
+prose violates no anchor convention.
+
+The hold is that three claims added THIS round assert more than the fixture set delivers.
+That is the same class round-1 item 2 existed to close, which is why it is held rather than
+recorded. Verify each item by mutation in a scratch copy and state the probe per item when
+moving back to `review/`.
+
+### Item 1 (required). The cited short form drops the word boundary, so its equivalence claim is false.
+
+The docblock explains why the `ONLY` group is spelled as two alternatives rather than as a
+shorter optional-paren form, and prints that rejected form as `ONLY\s*\(?\s*` — with no
+`\b` — then claims "the two admit exactly the same statements". Without the boundary that
+spelling also matches `ALTER TABLE onlyaccounts DROP COLUMN updated_at;`, a head naming a
+DIFFERENT table, which the committed pattern rejects. Four head strings diverge. The claim
+is false for the spelling actually printed.
+
+What makes this more than a typo is that the round's own adversarial pass recorded this
+exact lens finding as refuted, under "Refuted, recorded so it is not re-raised". That
+refutation tested `ONLY\b\s*\(?\s*`, WITH the boundary. It refuted a different string from
+the one the docblock prints, so the record is wrong and a later round consulting it would
+skip the re-check.
+
+Two resolutions, both acceptable; pick one and say which:
+
+- Add the boundary to the citation (`ONLY\b\s*\(?\s*`). The sentence becomes true, the
+  prose names the spelling that was actually measured and mutated, and the timing table's
+  own header agrees with it.
+- Keep the boundary-free citation and change the claim with it — the reason then is grammar
+  AND cost, not cost alone — and land the negative fixture
+  `expect(alterations(['ALTER TABLE onlyaccounts DROP COLUMN updated_at;'])).toBe(0);`.
+  That line converts the one mutant the round recorded as killing nothing into a killed one.
+
+Probe: build both spellings and show which head strings diverge, then show the chosen
+resolution makes the committed sentence true.
+
+### Item 2 (required). The reordering prose overclaims, in two different sentences.
+
+Both are about coverage the fixture set genuinely HAS. Only the description is wrong, so no
+assertion changes and nothing is split.
+
+- The docblock calls the new all-three-groups fixture "the only spelling a reordering can be
+  caught by". Measured over all six permutations of the three optional groups, the
+  `IF EXISTS ONLY` fixture already kills three of the five non-identity reorderings on its
+  own. The all-three line is the only one that answers for EVERY reordering — say that
+  instead, which is both true and the stronger claim.
+- The fixture comment says "three optional groups admit three pairwise orders". Three groups
+  admit six orderings, five besides grammar order: three pairwise swaps and two rotations.
+  The comment's own worked example, hoisting the qualifier to the front, is a rotation, not
+  a pairwise swap, so the sentence contradicts its own illustration.
+
+When rewording, do not reach for a bare positional anchor to point at the other fixture.
+Name it by what it spells (`the IF EXISTS ONLY fixture`), per the anchor convention.
+
+Probe: the permutation matrix — which fixture stops being counted under each of the six
+orderings — pasted into the signal block.
+
+### Item 3 (required). The paren branch's trailing whitespace atom is pinned by nothing.
+
+The committed first alternative carries two whitespace atoms. The leading one, between
+`ONLY` and the paren, is pinned by the `ONLY (accounts)` fixture. The trailing one, after
+the paren, is pinned by nothing: delete it and every fixture in the file still matches, so
+the suite stays green.
+
+The spelling that catches it is `ALTER TABLE ONLY ( accounts ) DROP COLUMN updated_at;` — a
+space after the open paren. PostgreSQL accepts it, the committed pattern admits it, and the
+docblock ITSELF writes that exact form when it explains that `ONLY ( accounts )` is the whole
+of what the server accepts there. So the round names the spelling as canonical in prose and
+asserts it nowhere. One line closes it:
+
+```
+expect(alterations(['ALTER TABLE ONLY ( accounts ) DROP COLUMN updated_at;'])).toBe(1);
+```
+
+Reword the fixture comment to name both gaps around the paren rather than only the one after
+`ONLY`.
+
+Probe: delete the trailing `\s*` and show this line reds while the other ALTER fixtures stay
+green.
+
+### Item 4 (required). Correct this task file's own record.
+
+Two claims in the round-2 signal block are wrong and will mislead a later round:
+
+- The "Refuted, recorded so it is not re-raised" entry, per item 1. It refuted a spelling the
+  docblock does not print. Rewrite it to say what was actually established, or strike it.
+- Under item 1's matrix, "Before this round each of them killed nothing and the suite stayed
+  green" is wrong for one of the three named orders. The matrix published in the same block
+  shows the `IFEX+ONLY` row RED under the swap-`IF EXISTS`-with-qualifier column, so that
+  order was already killed by a fixture round 1 added. The matrix is right; the prose above
+  it contradicts its own cell.
+
+### Dismissed this round, recorded so they are not re-raised
+
+- No assertion holds the linear-time property down, so a revert to the short spelling passes
+  every fixture and silently restores the quadratic curve. Dismissed: preemptive hardening
+  whose failure mode is theoretical here, since the scanner reads static repo text and no
+  line in either tree can reach the quadratic case. The docblock already says so outright.
+- `ALTER TABLE ONLY ( public . accounts )` is pinned by a probe transcript rather than by the
+  suite. Dismissed as low value: the qualifier group is shared and already pinned by the
+  `public.` and all-three lines.
+- No negative fixture asserts the `ALTER MATERIALIZED VIEW` / `ALTER VIEW` /
+  `ALTER FOREIGN TABLE` bypass class stays unmatched. Dismissed: the new KNOWN LIMITS bullet
+  records it as deliberate-evasion class, which is what round 1 asked for.
+- The KNOWN LIMITS universal that every OTHER form of those three keywords is refused for the
+  wrong relkind could not be re-derived without creating relations of the wrong relkind. Left
+  as recorded; the bullet's conclusion does not depend on it.
+- The docblock's list of where idempotency is spelled in this tree omits
+  `CREATE INDEX IF NOT EXISTS`, `CREATE TABLE IF NOT EXISTS` and `DROP TABLE IF EXISTS`. Its
+  load-bearing half — seventeen ALTER heads, every one bare — is correct and re-derived.
+  Widen the list if you are in the paragraph anyway; not required.
+- `COPY accounts FROM STDIN;` with no column list loads every column including the marker and
+  is unseen, where the analogous positional INSERT is recorded in KNOWN LIMITS. Out of this
+  task's scope; noted so a later COPY-arm round has it.
+
+### Routed out rather than held
+
+`assembledWrites` reads its heads from `ACCOUNTS_STATEMENT_RE` alone where the two sibling
+arms iterate the shared head set, so an interpolated ALTER head against `accounts` is not
+reported as an assembled write. `accountsColumnWriters` carries the same single-head walk.
+Pre-existing, untouched by this round, and a file-wide decision rather than an ALTER-arm one.
+Filed as `backend-assembled-writes-misses-alter-head` in `pending/`.
