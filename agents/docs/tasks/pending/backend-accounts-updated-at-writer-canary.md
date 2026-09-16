@@ -1799,3 +1799,207 @@ the committed tree:
 has reported clean because dead voters score as refutations. It is a property of
 the harness rather than of this task, and worth a convention note somewhere the
 next agent running a refuter fan-out will see it.
+
+## Architect re-review (2026-09-16, round 5) — HELD PENDING FIXES:
+
+Reviewed at `73349ef1` via `/ce-code-review` across six lenses — correctness,
+adversarial, testing, maintainability, project-standards, learnings — followed by
+an independent validator batch that took all four surviving findings and rejected
+none. All five in-scope commits are ancestors of `main`; no orphan SHAs. The
+cross-model adversarial pass did NOT run: no allowlisted different-provider CLI is
+installed on this host, so the lens ran in-process and has no independent-family
+corroboration this round. Recorded because it is the same gap named in the round-1
+hold on the sibling ALTER task.
+
+**The round's claims were re-verified by execution, not read.** In isolated
+tar-copied trees with `node_modules` and the repo-root `.env` symlinked, never in
+the shared checkout: the canary is 24 tests green and `tests/eslint/` is 9 files /
+134 tests green, both exactly as claimed. Bundle A landed and was confirmed from
+the tree rather than the note — `blockClosesInSpan` is gone and `blockCloses` takes
+a boundary set with both call sites passing one; `ticks = !sql` gates all three
+backtick arms, and those three are the only sites that mutate `template`, so the
+flag cannot become true in a `.sql` file, which `blankAll(['SELECT `a`;'], true)`
+pins. Bundle C item 5 was checked against the routes rather than the signal: the
+add flow INSERTs only on `existing.length === 0`, the change flow never names
+`verify_token`, the clearer selects on a column a finalized light row carries NULL,
+and both the signup upsert and the resend route return before their writes. That
+paragraph is accurate.
+
+**The scope of this round is five commits, not the three the signal names.** The
+signal block names `b901abe7` and `a28b3a69`, the addendum names `adee3890`.
+`a9becb99` (the shared `READ_FROM_HEADS` enumeration, and the `dollarOpenerAt`
+docblock that still claimed two callers) and `73349ef1` (the third revision of the
+reuse rationale, with the per-head measurement) are named nowhere in the task.
+Both carry real behaviour and prose changes, and item 3 below lives in the first of
+them. Name every commit the next signal covers.
+
+The hold is that the round opened one silent pass of the class this file exists to
+close, left a second live in an arm it half-fixed, and shipped a third feature that
+no fixture answers for — after a signal block asserting that nothing here is
+fixed-but-unpinned and that the backtick-in-a-quoted-string class could not be
+reproduced. Every item below was demonstrated by mutation with a one-token flipping
+control, in an isolated copy, by the architect. Verify each the same way and state
+the probe per item when moving back to `review/`.
+
+### Item 1 (required). A read must not consume its own terminator as span machinery.
+
+This round OPENED this, and it is the invariant round 4's Bundle A item 1 was
+written to restore. In `statementAt`, the span-event branch runs first in the
+column loop and `continue`s past the terminator test, so a column carrying a span
+event is never tested as a delimiter. `blankLine` records a template's force-close
+of a still-open dollar span AT the template's own closing-backtick column, which is
+exactly that statement's delimiter. The `dollar.length < enclosing` guard does not
+catch it: a head at top level in the template has `enclosing` of 0 and the stack
+returns to 0, so the comparison is false. The read then runs out of the template
+into the code below and lends its table to the write there.
+
+Probe, four lines of ordinary TypeScript in a scanned source file:
+
+```ts
+const a = `UPDATE sessions SET note = $tag$x`;
+const b = 1;
+await run('UPDATE "accounts" SET updated_at = NOW()');
+const t = `$tag$`;
+```
+
+24/24 GREEN at `73349ef1` with that live writer present. Delete the one token
+`$tag$` and the fail-closed arm reds, naming the write. Close the span before the
+backtick and it reds the same way. The bare `$$` spelling reproduces identically.
+**The same fixture REDS at the base of this round, `d0e993b4`**, whose reader gated
+its opener judgement on `quote === null` and so never opened a span inside a
+template. That base-versus-head pair is what makes this a regression rather than a
+limit.
+
+The hidden writer needs an unmatchable head, which the KNOWN LIMITS already concede
+— but the backstop those limits rest on is stated there as "it reds under the
+fail-closed arm instead", and that is the backstop this removes.
+
+Two shapes are defensible and the choice is the implementer's: honour the
+terminator when the consumed column IS the delimiter, capturing the character
+before the events are applied; or treat a span the template had to force-close as
+malformed source and return `stopped: true`, which costs a red bar on that shape
+alone. Say which and why. Pin it in both tag spellings.
+
+### Item 2 (required). The opaque-branch backtick arm got the dialect gate and not the flag gate.
+
+The arm reads `if (ticks && char === '`')` and its body clears `opaque`. Its
+sibling one branch up reads `if (ticks && template && char === '`')`. This round
+added `ticks` to both and the flag conjunct to only one, so a raw backtick inside
+an ordinary single-quoted TypeScript string drops the reader out of the value and
+exposes the rest of that string to code rules. A `/*` later in the same string then
+opens a block comment that blanks every line to the next `*/`.
+
+Probe, a scanned source file:
+
+```ts
+const pattern = 'cache `sessions` /* legacy';
+await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);
+const closer = 'end */';
+```
+
+24/24 GREEN with that writer live. Remove the two backticks and BOTH writer walks
+red. Note what is hidden here: not a quoted identifier, not dynamic SQL, but a
+plain `UPDATE accounts SET updated_at = NOW()`.
+
+Behaviourally this is pre-existing — the same fixture is green at `d0e993b4` — and
+it is held rather than deferred for the reason round 4 gave for the same arm: this
+round is what touched the line. What makes it required rather than a residual is
+that the round's own `[TODO Architect]` list records this class as re-checked and
+NOT reproducible. The re-check chased the `template` flag; the damage is the
+`opaque = null` on the same arm. Correct that entry as part of the fix, naming the
+mechanism.
+
+Add the missing conjunct, then pin the FLAG half the way the round pinned the
+dialect half: deleting `template &&` must red a new fixture, and deleting `ticks &&`
+must still red the existing migration probes.
+
+### Item 3 (required). The ALTER head's membership in READ_FROM_HEADS is answered for by nothing.
+
+`a9becb99` unified the every-statement-readable arm and its fixture mirror onto one
+constant, with a docblock naming the drift it prevents. The unification works: the
+two consumers can no longer disagree with each other. What no fixture answers for
+is the SET losing a member. `unreadableIn` is called exactly once, with a DML
+shape. The live arm only ever reports against the real trees, which carry no
+unreadable ALTER today. The nearest ALTER fixture asserts through
+`accountsColumnAlterations`, which matches `ALTER_ACCOUNTS_RE` directly and is
+unaffected by the constant.
+
+Probe: plant in a migration an `ADD COLUMN` whose `DEFAULT` string wraps onto a
+continuation line, ahead of an `ALTER COLUMN updated_at TYPE ... USING`. With the
+ALTER head in the set, `every accounts statement can be read whole` REDS and names
+the line. Drop `ALTER_ACCOUNTS_RE` from the set and the whole suite is 24/24 GREEN
+with the same planted migration in place.
+
+So the widening is live and unpinned, which is what the signal's own sentence — each
+fix "was then DELETED individually and confirmed to red its own pin, so nothing here
+is fixed-but-unpinned" — asserts is not the case. The probe the signal describes for
+its adversarial item 2 was run and never committed; commit it, asserted through
+`unreadableIn` so the mirror is what carries the pin, plus the single-line control
+the signal names.
+
+The stronger form, if you want it: an assertion that every head pattern a
+`statementAt` call site reads from appears in the set. That closes the class rather
+than this instance.
+
+### Item 4 (required). A test-body comment states the architecture the round removed.
+
+The comment above the recurrence-condition fixtures opens "BOTH readers make the
+opener judgement, through one helper", and goes on to describe the statement read
+reaching for a span of its own. `a9becb99` rewrote the analogous claim at
+`dollarOpenerAt`'s own docblock to say the opposite: one caller, and the statement
+read "used to be the second". The two now contradict each other about the current
+design, and the stale one sits directly above the fixtures a future author would
+read to understand what those conditions are for.
+
+The line is unmodified context in the diff, so it is the round's edit ELSEWHERE that
+made it false — the same shape as round 4's Bundle C, and the third round running
+in which a docblock outlived the code it described. Rewrite the lead sentence to
+describe the replay mechanism. The recurrence and interpolation-exclusion sentences
+after it still describe `dollarOpenerAt` correctly and can stay.
+
+### Dismissed this round, recorded so they are not re-raised
+
+- A 143-character line in the `SpanEvent` docblock splicing two sentences, and the
+  reuse-note paragraph repeating its topic sentence back to back. Both real, both
+  single-lens P3 prose, neither with a contract behind it. Fix them if you are in
+  the area; they are not deliverables.
+- `BlankedCode.entry` and `.spans` as optional expandos. Same shape as `.sql`,
+  which was ratified in round 4, one producer, every reader defends with `?? []`.
+  Seen and accepted again.
+- `enclosingQuote` tracking depth as an integer rather than sharing `spanStackAt`'s
+  tag-stack replay. Different return shape, and sharing would trade a length check
+  for a per-character call in a hot loop. Not a duplicate.
+- The fourth backtick-dependent site, the main-path block-comment boundary spelled
+  `template ? ['`'] : []` without a `ticks` conjunct. Inert, because items above
+  establish that `template` cannot be true in a `.sql` file. The hold asked for
+  three arms and three arms landed.
+- Extracting the reading layer into `tests/support/`, and the file's length. Both
+  still out of scope on the standing grounds.
+
+### Not part of this hold
+
+- The `upgraded_at IS NULL OR upgraded_at >= updated_at` CHECK constraint remains an
+  open architect decision, unchanged since round 2.
+- The eight unpinned reader features and the three adversarial-pass shapes the round
+  appended under `[TODO Architect]` stay open triage, except where item 2 corrects
+  one of them. Do not fold the rest into this hold.
+- `enclosingQuote`'s replay pointer stalling when an escape skip steps over an event
+  column, and `statementAt` ignoring span events while `opaque !== null`. Both
+  surfaced by this round's review, both traced to fail-closed on every shape either
+  lens could build, neither reproducible as a silent pass today. Recorded as
+  residual risks rather than items. Changing the replay condition to `<=` removes
+  the first class if you are in that code for item 1 anyway.
+- `routineSites` deciding `boundToAccounts` from statement text while routine heads
+  are absent from `READ_FROM_HEADS`. Latent while the exemption list is empty.
+  Related to item 3 but a separate surface; leave it for triage.
+
+### A note on how this round's own claims were produced
+
+Three independent lenses here found defects that the round's own adversarial pass
+reported as closed, and two of the round's written claims about its own coverage are
+falsified above. The learnings pass surfaced a convention entry written the same day
+documenting this exact failure mode: a rate-limited fan-out scores findings whose
+refuters never voted as refuted, so the summary reads clean. If the "four further
+silent passes found and closed" work came out of a Workflow fan-out, reconcile its
+dispatched-versus-returned agent counts before carrying that claim forward. This is
+about the evidence, not about the fixes, which are real and landed.
