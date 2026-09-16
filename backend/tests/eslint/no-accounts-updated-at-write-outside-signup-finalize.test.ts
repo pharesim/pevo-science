@@ -324,13 +324,17 @@
  * A NOTE ON REUSE. `sourcesUnder` and `enclosingSymbol` come from the shared
  * support module. The reading does not. The joined-statement helper in the
  * custody-claim canary is tuned for TypeScript expressions and caps its join
- * at four lines. That helper DOES reach both finalizes today, and the margin is
- * zero: each spreads its SET list over four lines with the `updated_at`
- * assignment on the fourth, so the join lands on the assignment with nothing to
- * spare. One more SET line, or a reordering that moves the marker down, puts
- * the shape this canary exists to see out of its range — silently, since a join
- * that stops short reports a statement that writes nothing. A bound that
- * happens to fit is not a bound that holds, and the reach here is delimited by
+ * at four lines, and what that bound does here depends on which head a scan
+ * anchors on. Measured over every candidate head rather than reasoned about:
+ * from the `/confirm` handler's `await pool.query(` the marker is not reached at
+ * all, one line past the cap; from that statement's own template head it lands
+ * on the FOURTH and last joined line, zero slack; the `/link` heads reach it
+ * with one and two lines to spare. So the helper reaches the shape from three of
+ * four heads, and the tightest of those has nothing left. One more SET line, or
+ * a reordering that moves the marker down, puts that head out of range —
+ * silently, since a join that stops short reports a statement that writes
+ * nothing. A bound that happens to fit is not a bound that holds, and the reach
+ * here is delimited by
  * what an SQL statement actually ends at instead, its own string quote in
  * TypeScript and its semicolon in a migration, with dollar-quoted spans carried
  * across lines so a semicolon inside one ends nothing. The comment handling is
