@@ -664,7 +664,16 @@ const COPY_COLUMNS_RE = /\bCOPY\s+(?:public\s*\.\s*)?accounts\s*\(([^)]*)\)/i;
  *  thousand spaces, against under a millisecond at four hundred thousand under
  *  this one. No line in either tree looks like that, so this is headroom and
  *  not a live cost, and no assertion holds the timing down: this paragraph is
- *  what keeps the shape from being tidied back into the short form. */
+ *  what keeps the shape from being tidied back into the short form.
+ *
+ *  Which needs saying plainly, because three sibling heads DO carry the short
+ *  form and its cost: `ACCOUNTS_STATEMENT_RE`, `UPDATE_TARGET_RE` and
+ *  `MERGE_TARGET_RE` each measure the same quadratic curve on the same input
+ *  shape. They are left alone here because the widening that made the question
+ *  live is this head's, and because the cost is headroom for them exactly as it
+ *  is for this one. They are named so a reader comparing the heads reads this
+ *  one as the deliberate exception rather than as the odd one out to tidy away,
+ *  which is the reading that would undo the paragraph. */
 const ALTER_ACCOUNTS_RE =
   /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\b\s*\(\s*|ONLY\s+)?(?:public\s*\.\s*)?accounts\b/i;
 

@@ -578,6 +578,37 @@ are surfaced and triaged rather than silently fixed or silently filed.
    and differ only in cost. A timing assertion would pin it but is the preemptive
    hardening this project usually declines, and no line in either tree can reach the
    quadratic case. Recorded as a deliberate gap rather than decided.
-5. **`BOUND_TO_ACCOUNTS_RE` still spells the schema qualifier `(?:public\.)?`** where
+5. **One backslash in an earlier literal on the same line truncates the ALTER read,
+   silently.** `blankLine` gates backslash-as-escape on the dialect (`const escapes =
+   !sql`), because PostgreSQL runs with `standard_conforming_strings = on` and a
+   backslash in an ordinary literal is data — confirmed on the server, `'c:\'` is a
+   closed three-character value. `enclosingQuote` and `statementAt` do NOT gate it, so
+   they read that literal's closing quote as an escape and take everything after it to
+   be inside a string. Planted in a migration, `INSERT INTO audit_log (note) VALUES
+   ('c:\'); ALTER TABLE accounts ADD COLUMN note text DEFAULT 'n', ALTER COLUMN
+   updated_at TYPE timestamptz;` leaves the suite green; the identical line with the
+   backslash removed reds. The every-statement-readable arm does not catch it either,
+   because the truncated read still reports a terminator. A one-character difference
+   between a red bar and a silent pass, and the character is one a Windows path or an
+   escape in a note field carries by accident.
+6. **Three sibling heads carry the short `\(?\s*` spelling and its quadratic cost.**
+   `ACCOUNTS_STATEMENT_RE`, `UPDATE_TARGET_RE` and `MERGE_TARGET_RE` each measure
+   ~0.8 s against a fifty-thousand-space input, on the same shape the ALTER docblock
+   now rejects; `COPY_COLUMNS_RE` and the committed ALTER head are flat. Not fixed here
+   because the widening that made the question live is the ALTER head's, and the cost is
+   headroom for them as much as for it. The ALTER docblock now names them, so a reader
+   comparing the heads does not read the long form as the anomaly and tidy it away — but
+   whether the siblings should simply be brought to the same spelling is a triage call.
+7. **`BOUND_TO_ACCOUNTS_RE` still spells the schema qualifier `(?:public\.)?`** where
    its siblings spell `(?:public\s*\.\s*)?`. Unchanged this round, already filed as its
    own pending backend task; carried here only so the list is complete.
+
+Cleared rather than found, so a later round does not re-spend a lens on it: the widening
+introduces no offset shift, no swallowed head, no cap change and no ReDoS. `match.index`
+is unchanged because everything the widening consumes sits BETWEEN `ALTER TABLE` and the
+table name, so the match START does not move and the match length is never read; a longer
+match cannot swallow a following head, since whitespace, `IF EXISTS`, `ONLY`, a paren and
+a qualifier cannot contain another `ALTER`; and `LITERAL_CAP` counts lines from the head's
+line, which does not move. Checked against a 9,576-case generated corpus (the wide pattern
+is a strict superset of the narrow one, zero lost match indices) and against the real trees
+(zero new heads outside this file's own fixtures).
