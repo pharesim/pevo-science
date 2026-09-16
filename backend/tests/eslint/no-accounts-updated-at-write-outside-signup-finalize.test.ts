@@ -223,7 +223,8 @@
  *     inside a dollar-quoted literal, and a read that derived its spans from
  *     its own starting position took that literal's closing tag for an opener,
  *     ran past the statement's semicolon, and lent the write below it a
- *     plausible other table. {@link SpanEvent} is what holds the backstop up. It holds only while the COLUMN is spelled: make both identifiers
+ *     plausible other table. {@link SpanEvent} is what holds the backstop up.
+ *     It holds only while the COLUMN is spelled: make both identifiers
  *     dynamic (a second `%I`, a `quote_ident` concatenation) and there is no
  *     `updated_at =` token either, so nothing fires at all. The same is true
  *     of a join spelled away from the statement's own lines (a fragment pushed
@@ -240,7 +241,8 @@
  *     auto-updatable view over the table, a keyword and its table split across
  *     lines. A quoted identifier hides an INSERT that names the column, since
  *     that shape carries no assignment token; the SET-list form of the same
- *     shape is not hidden, because its assignment reds by resolution instead. The reverse error is the tolerable one and is not chased:
+ *     shape is not hidden, because its assignment reds by resolution instead.
+ *     The reverse error is the tolerable one and is not chased:
  *     a line inside a block comment that carries no leading `*`, or an odd
  *     quote in a line of prose, is read as live SQL and can only cost a red
  *     bar on a statement that was never live.
@@ -1004,14 +1006,16 @@ function blankLine(
   const line = lines[lineIndex];
   const escapes = !sql;
   // A backtick delimits a template in TypeScript and is an ordinary character
-  // everywhere in SQL, so EVERY arm that acts on one is gated on the dialect
-  // rather than on the template FLAG. Gating on the flag alone reads safe and
-  // is not: the flag starts false in a `.sql` file but nothing kept it there,
+  // everywhere in SQL, so EVERY arm that acts on one is gated on the dialect.
+  // The template FLAG is no substitute for that gate, however safe it reads:
+  // the flag starts false in a `.sql` file but nothing kept it there,
   // so one unpaired backtick inside an ordinary quoted value — an audit note,
   // a quoted shell fragment — switched a migration into template mode for the
   // rest of the file, and a backtick PAIR inside a `RAISE NOTICE` string
   // cleared the open tag stack mid-body, after which the block's own `END $$`
-  // read as an opener instead of a close.
+  // read as an opener instead of a close. The two arms that only END a
+  // template test the flag as well as the dialect, since in TypeScript a
+  // backtick ends nothing where no template is open.
   const ticks = !sql;
   let { block, template, dollar, dollarCode } = state;
   let opaque: string | null = null;
@@ -1062,9 +1066,14 @@ function blankLine(
       // An unescaped backtick ends the template whatever else is open: a value
       // cannot contain one, so an apostrophe in prose earlier on the line must
       // not swallow it and leave the template flag inverted for the rest of
-      // the file. In SQL it is an ordinary character of the value.
-      if (ticks && char === '`') {
-        template = !template;
+      // the file. Only where a template IS open, though, which the dialect
+      // alone does not say. In TypeScript a backtick inside an ordinary
+      // quoted string is one of that string's characters, and ending the VALUE
+      // there hands the rest of the string to the code rules, where a `/*`
+      // opens a comment that blanks every line up to the next `*/`. In SQL it
+      // is an ordinary character of the value.
+      if (ticks && template && char === '`') {
+        template = false;
         opaque = null;
         for (const open of dollar) spans.push({ col: i, width: 1, tag: open, open: false });
         dollar = [];
@@ -1521,11 +1530,24 @@ function statementAt(code: BlankedCode, lineIndex: number, matchIndex: number): 
       const events = spanEventsAt(code, i, col);
       if (events.length > 0 && opaque === null) {
         for (const event of events) dollar = event.open ? [...dollar, event.tag] : dollar.slice(0, -1);
-        out += line.slice(col, col + events[0].width);
-        col += events[0].width;
         // The span the head sits in closed before the statement did, so the
         // statement has no terminator this read can reach.
-        if (dollar.length < enclosing) {
+        const shallower = dollar.length < enclosing;
+        // A column spent on span machinery can still be this statement's
+        // delimiter. A template's closing backtick force-closes every span open
+        // inside it and the blanking reader records those closes AT the
+        // backtick, so a read that only replays the events there runs out of
+        // the template and lends its table to a write in the code after it.
+        // Tested after the depth, not before: a head whose own span closed at
+        // this column reached no terminator inside that span, and taking the
+        // backtick for one would lend its table to a sibling statement instead.
+        if (!shallower && char === quote) {
+          closedAt = col;
+          break;
+        }
+        out += line.slice(col, col + events[0].width);
+        col += events[0].width;
+        if (shallower) {
           escaped = true;
           break;
         }
@@ -2351,6 +2373,38 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     expect(statementAt(balanced, 0, balanced[0].indexOf('UPDATE')).closedAt).toBe(balanced[0].lastIndexOf('`'));
     const unbalanced = asCode([apostrophe[0]]);
     expect(statementAt(unbalanced, 0, unbalanced[0].indexOf('UPDATE')).closedAt).toBe(unbalanced[0].lastIndexOf('`'));
+    // A TEMPLATE'S CLOSING BACKTICK STILL ENDS ITS STATEMENT when the blanking
+    // reader spends that same column force-closing a span. A tag recurring
+    // anywhere later in the file opens a span inside the template, the backtick
+    // ending the template closes it, and the close is recorded AT the backtick.
+    // Consumed as span machinery and never tested as a delimiter, it let the
+    // read run out of the template and lend its table to a write in the code
+    // after it. The depth test cannot see this: the head sits at the template's
+    // top level, so the stack returns to exactly the depth it started at.
+    for (const tag of ['$tag$', '$$']) {
+      const forceClosed = [
+        `const a = \`UPDATE sessions SET note = ${tag}x\`;`,
+        'const b = 1;',
+        "await run('UPDATE \"accounts\" SET updated_at = NOW()');",
+        `const t = \`${tag}\`;`,
+      ];
+      const read = statementAt(asCode(forceClosed), 0, forceClosed[0].indexOf('UPDATE'));
+      expect(read.closedAt, tag).toBe(forceClosed[0].lastIndexOf('`'));
+      expect(read.stopped, tag).toBe(false);
+      expect(unresolvedIn(forceClosed), tag).toHaveLength(1);
+    }
+    // And the depth test still comes FIRST. A head INSIDE the span that
+    // backtick force-closes had its text end with that span, so it reached no
+    // terminator of its own and must still give up there. Taking the backtick
+    // as its terminator instead lends the head's table to a sibling statement
+    // the same body spells after it.
+    const bodyForceClosed = [
+      'const body = `DO $$ BEGIN UPDATE sessions SET seen = NOW(); UPDATE "accounts" SET updated_at = NOW();`;',
+      'const end = `$$`;',
+    ];
+    const inBody = statementAt(asCode(bodyForceClosed), 0, bodyForceClosed[0].indexOf('UPDATE sessions'));
+    expect(inBody.stopped).toBe(true);
+    expect(unresolvedIn(bodyForceClosed)).toHaveLength(1);
   });
 
   it('each reader feature is the only thing answering its own fixture', () => {
@@ -2500,6 +2554,26 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     expect(truncated.closedAt).toBe(-1);
     expect(truncated.lastLine).toBe(1);
     expect(unreadableIn(valueAcrossLines, '018_probe.sql')).toHaveLength(1);
+    // The same stop reached from the ALTER head, which is what holds that head
+    // in READ_FROM_HEADS. A DEFAULT string wrapped ahead of the retype stops the
+    // read on the value's own line, and `accountsColumnAlterations` is the only
+    // scan that sees a rewrite carrying no assignment and no column list, so it
+    // reads the truncated text as naming nothing. The readable arm is then the
+    // one bar left, and this goes through its mirror because the mirror reads
+    // the set the arm reads. The single-line control is the same rewrite with
+    // the value closed on its line: nothing to report as unreadable, and the
+    // ALTER pin sees the column itself, which is the arm meant for that shape.
+    const wrappedDefault = [
+      "ALTER TABLE accounts ADD COLUMN note TEXT DEFAULT 'wrapped",
+      "value', ALTER COLUMN updated_at TYPE TIMESTAMPTZ USING NOW();",
+    ];
+    expect(unreadableIn(wrappedDefault, '018_probe.sql')).toHaveLength(1);
+    expect(accountsColumnAlterations(readable([{ rel: '018_probe.sql', lines: wrappedDefault }]))).toHaveLength(0);
+    const oneLineDefault = [
+      "ALTER TABLE accounts ADD COLUMN note TEXT DEFAULT 'one line', ALTER COLUMN updated_at TYPE TIMESTAMPTZ USING NOW();",
+    ];
+    expect(unreadableIn(oneLineDefault, '018_probe.sql')).toEqual([]);
+    expect(accountsColumnAlterations(readable([{ rel: '018_probe.sql', lines: oneLineDefault }]))).toHaveLength(1);
     // THE SPAN-STACK CLEAR on the backtick that ends a template. Ending the
     // template without clearing the tags leaves the reader in value-passthrough
     // for the lines after it, so the next statement's comment gap survives. The
@@ -2577,14 +2651,34 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // writer: a bare backtick outside every value in a migration is malformed
     // SQL, so there is no plausible writer fixture that reaches it, and the
     // observable the gate governs is the flag it would otherwise set for the
-    // rest of the file.
-    expect(blankAll(['SELECT `a`;'], true).state.template).toBe(false);
+    // rest of the file. An ODD count, because a pair toggles the flag on and
+    // back off and ends the line in the same state with the gate deleted. This
+    // is the gate the other two arms lean on: they test the flag, and it is
+    // this arm alone that could set the flag in a `.sql` file.
+    expect(blankAll(['SELECT `a;'], true).state.template).toBe(false);
     expect(blankAll(['const a = `x`;'], false).state.template).toBe(false);
     expect(blankAll(['const a = `x;'], false).state.template).toBe(true);
     // And the arms still do their job in TypeScript, where a backtick really
     // does delimit: the template opens, and a `--` inside it is a comment
     // however it is spelled.
     expect(scanned("  await q(`UPDATE accounts SET a = 1--x`);").trimEnd()).toBe('  await q(`UPDATE accounts SET a = 1');
+    // The FLAG half, which the dialect gate does not supply. In TypeScript a
+    // backtick ends a template only where one is open; inside an ordinary
+    // single-quoted string it is one of the string's characters. The arm that
+    // meets a backtick inside a VALUE acted on the dialect alone, so it ended
+    // the value there and handed the rest of the string to the code rules,
+    // where a `/*` opened a block comment running to the next `*/` and blanked
+    // the plain write between them. Not a quoted identifier, not dynamic SQL:
+    // an ordinary `UPDATE accounts SET updated_at = NOW()`.
+    const quotedTicks = [
+      'async function touch(id: number) {',
+      "  const pattern = 'cache `sessions` /* legacy';",
+      "  await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);",
+      "  const closer = 'end */';",
+      '}',
+    ];
+    expect(scansOf(quotedTicks).tableFirst).toEqual(['x.ts#touch']);
+    expect(scansOf(quotedTicks).columnFirst).toEqual(['x.ts#touch']);
   });
 
   it('the table-first read sees the column in a SET list, an INSERT list and both MERGE branches', () => {
@@ -3182,9 +3276,11 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
       '  const end = $body$;',
     ]);
     expect(assignmentIndex(outsideTemplate[1])).toBeGreaterThan(-1);
-    // BOTH readers make the opener judgement, through one helper. The statement
-    // read reaches for a span too, and one it opens where the blanking would
-    // not carries the read past its own terminator — which lends that
+    // ONE reader makes the opener judgement: the blanking reader, through
+    // `dollarOpenerAt`. The statement read judges no openers of its own; it
+    // replays the spans the blanking reader recorded. So a wrong judgement is
+    // inherited rather than contradicted, and a span opened where none exists
+    // carries the statement read past its own terminator — which lends that
     // statement's table to a write below it that no readable head reaches, so
     // the write resolves to a plausible other table instead of tripping the
     // fail-closed arm. Each condition is pinned where it is the ONLY one
