@@ -291,10 +291,16 @@ server. The four head-clause positives share one `it`, so a mutation that reds t
 of them reports only the first; that is diagnostics, not coverage. No super-linear
 behaviour: the committed pattern scans a 1,000,700-character adversarial line in 1 ms.
 
-## Backend re-review signal (2026-09-16, working tree)
+## Backend re-review signal (2026-09-16, commit 451054e2)
 
+`backend(canary): the clause order needed a third fixture, and the paren a cheaper
+spelling` — one file,
 `backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`,
-one file. All four hold items landed, items 1 and 2 as prescribed, items 3 and 4
+plus this task file's move. Self-verified: `git merge-base --is-ancestor 451054e2 main`
+passes, and `git show --name-status` records the move as a single `R` with both the
+source delete and the destination add, so there is no orphan SHA and no half-applied
+rename. Only this heading and the SHA line land in a follow-up commit, for the obvious
+reason that a block cannot name the commit that carries it. All four hold items landed, items 1 and 2 as prescribed, items 3 and 4
 with one named deviation each. The round also found and fixed a defect it had
 introduced itself, described under "Self-found" below.
 
