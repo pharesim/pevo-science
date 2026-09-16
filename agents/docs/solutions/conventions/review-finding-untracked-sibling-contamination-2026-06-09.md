@@ -154,3 +154,7 @@ stale. Hold the task and have the implementer update the docblock.
   reality rather than trusting a coordination artifact at face value.
 - [[concurrent-agent-staging-sweep]] — the commit-time variant of the same "sibling in-flight work
   contaminates my operation" hazard (the index instead of a review finding).
+- [[relocated-content-is-not-new-read-base-ref-before-scoring-review-severity]] — the third axis of the
+  same intake-trust chain. Reachability asks whether the cited SHA is on main; supersession asks what
+  landed after; this asks whether a claim the diff appears to introduce was already true at the base ref.
+  They share one root: a persona scores a finding against an incomplete reference point.
