@@ -11,14 +11,13 @@ applies_when:
   - "Writing or reviewing a source-discipline canary whose detection is textual (regex over lines) rather than a parse"
   - "The canary's patterns need two tokens adjacent (a column and its `=`, a target list's `)` and its `=`, a keyword and its table) and a comment may sit in that gap"
   - "Several scans in one canary share the same patterns, so one silencing gap disables all of them together"
-  - "Deciding whether a guard verified by a prescribed list of mutation probes has been shown to be closed, or authoring or reading a multi-agent run that scores findings by vote over verifier agents that can die mid-flight"
+  - "Deciding whether a guard verified by a prescribed list of mutation probes has been shown to be closed"
   - "Reviewing a scanner that decides what is a comment, a string, or a template, where a wrong decision blanks live code"
 symptoms:
   - "A comment between a column and its `=` silences every scan that shares the pattern, not one of them"
   - "A merge-blocking canary stays green for exactly the violation class it exists to catch"
   - "A glob inside a template literal is read as a block-comment opener and blanks the rest of the file"
-  - "A parameter placeholder pair or a long docblock is read as opening a span that never closes, switching comment blanking off to the end of the file"
-  - "An apostrophe in prose inside a template inverts the scanner's template state for the rest of the file"
+  - "A parameter placeholder pair, a long docblock, or an apostrophe in template prose puts the scanner into a span or template state it never leaves, switching comment blanking off to the end of the file"
   - "Hundreds of prescribed mutation probes behave exactly as specified while unscripted adversarial search finds dozens of live evasions of the same guard"
 root_cause: incomplete_enumeration
 resolution_type: workflow_improvement
@@ -33,7 +32,6 @@ tags:
   - silently-disarmed-guards
   - evasion-enumeration
   - adversarial-review
-  - vote-aggregation
 ---
 
 # A source-scanning canary must normalize comments before it matches, and a prescribed mutation-probe list can only confirm the items it names
@@ -186,59 +184,19 @@ checklist does not become a proof by getting longer.
 
 ### Check a verification run's summary against its raw record
 
-When refuter agents in one round were killed mid-flight by a rate limit, a
-majority rule scored a finding with zero returned votes as refuted. The run's
-own summary read "N raised, N refuted, 0 survivors", which is what a clean run
-looks like, while the per-agent journal still held the unreplayed findings.
-"Nobody voted" and "everybody voted no" produce the same aggregate under a
-naive majority. Read the raw per-agent record before believing a clean summary,
-especially after any interruption.
+A multi-agent verification run can report "N raised, N refuted, 0 survivors"
+because its verifier agents died before voting, not because the findings were
+examined and cleared. "Nobody voted" and "everybody voted no" produce the same
+aggregate under a naive majority, so the summary of a damaged run is
+indistinguishable from a clean one. This was first recorded here, and it has
+since recurred often enough, and grown enough remedy, to have its own entry:
+see `rate-limited-fanout-reports-clean-and-the-fix-cannot-live-in-the-script-2026-09-16.md`
+for the recurrence record, why a written reading-discipline does not close it,
+and the two shapes that do.
 
-**That reading discipline has not held, and the reason is worth more than the
-rule.** The failure has recurred at least twice since this entry first recorded
-it, six times in twelve days across five sessions: runs losing 21 of 142 agents,
-56 of 75, 27 of 38, that round's re-run rate-limited again, 36 of 87 including
-every refuter of one entire lens, and one where all 78 refuters died. The deaths
-are always in the tail phase, because lenses dispatch first and verifiers last,
-and the parent's own budget draws on the same limit. Small fan-outs in the same
-sessions were unaffected: this is a width problem, not a technique problem.
-
-The reason a reading discipline cannot close it is that the aggregation is
-AUTHORED FRESH EVERY RUN. There is no file to patch, no module to import, no
-test that can go red. The next session writes a new script, reaches for the same
-idiomatic majority rule, and reproduces the defect exactly. Recognition is not
-prevention, and the gap between them is not carelessness: the most recent
-occurrence was authored by someone with a standing note describing this exact
-failure in front of them. The note made the diagnosis instant and did nothing to
-stop the typing. A rule only closes this if it is present at the moment the
-predicate is written, which is what authoring guidance is and what an
-after-the-fact note is not.
-
-Two shapes make the difference, and the second is the one experience corrects:
-
-- **Name the unjudged case as a third outcome.** Any reduce that filters dead
-  agents out before counting has already merged "judged and cleared" with "never
-  judged". `live.length > 0 && kills < Math.ceil(live.length / 2)` fails toward
-  refuted in BOTH conjuncts when nobody voted: the second evaluates `0 < 0`.
-  Decide the unjudged policy explicitly rather than letting it emerge from a
-  filter and a ceiling. This generalizes past refuters to graders, critics, and
-  any voter population whose job is to remove items from a list.
-- **Put the count at the SUMMARY level, not per finding.** Per-finding
-  denominators (`0/3` beside `2/3`) are necessary and demonstrably insufficient.
-  The most recent run emitted them on every row and the false-clean landed
-  anyway, because the returned object was truncated at delivery and the array
-  carrying them was in the part that got cut. What a reader receives is the top
-  of the payload. An `unjudged: N` beside the raised and distinct counts cannot
-  be truncated away or scrolled past; a per-row field can be both. That run's
-  own progress line compounded it by reporting every unjudged finding as judged.
-
-The dead-agent count is visible somewhere in every run's output, and
-historically it, rather than any error field, is what caught this: by the second
-occurrence the reader was predicting the false-clean from the agent count before
-reading a single finding. Reconcile dispatched against returned before believing
-a verdict summary. One recovery note: a resume of the killed agents has never
-actually been tried across any of these occurrences, so treat that path as
-unproven rather than as a known remedy.
+The rule to carry from here: reconcile dispatched voters against returned ones
+before believing any verdict summary, and read the raw per-agent record after
+any interruption.
 
 ## Why This Matters
 
@@ -304,12 +262,9 @@ on a finalized row.
   is the same family on a narrower axis. It shows a probe can prove a mechanism
   exists without covering its branches; this entry shows a whole list of probes
   can pass while the guard stays open.
-- `await-is-not-a-teardown-boundary-unless-it-yields-to-a-macrotask-2026-09-03.md`
-  is the same aggregation step failing in the opposite direction: there the
-  findings merge treated two personas' agreement as independent corroboration
-  and promoted a claim the source refutes. Read as a pair, the two establish the
-  merge-and-score step as an unaudited component that can both erase a true
-  finding and manufacture a false one.
+- `rate-limited-fanout-reports-clean-and-the-fix-cannot-live-in-the-script-2026-09-16.md`
+  carries the vote-aggregation material this entry first recorded, promoted out
+  so it is findable from the direction a damaged review summary is met from.
 - `new-fail-closed-outcome-must-not-reuse-an-existing-sentinel-2026-09-15.md`
   came out of the very run whose summary is described above. It explains why the
   author's own probes could not find the defect; this entry explains why the pass
