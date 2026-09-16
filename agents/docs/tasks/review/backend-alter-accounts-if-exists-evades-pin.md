@@ -290,3 +290,274 @@ acceptance of `ONLY ( name )` was reasoned from the documented grammar, not a li
 server. The four head-clause positives share one `it`, so a mutation that reds two
 of them reports only the first; that is diagnostics, not coverage. No super-linear
 behaviour: the committed pattern scans a 1,000,700-character adversarial line in 1 ms.
+
+## Backend re-review signal (2026-09-16, working tree)
+
+`backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`,
+one file. All four hold items landed, items 1 and 2 as prescribed, items 3 and 4
+with one named deviation each. The round also found and fixed a defect it had
+introduced itself, described under "Self-found" below.
+
+The pattern now reads
+
+```
+/\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\b\s*\(\s*|ONLY\s+)?(?:public\s*\.\s*)?accounts\b/i
+```
+
+### The grammar was read off a live server this round, not reasoned about
+
+The round-1 hold recorded that "PostgreSQL's acceptance of `ONLY ( name )` was
+reasoned from the documented grammar, not a live server". It has now been read
+off one. Every head spelling below was aimed at a relation that does not exist
+on the dev PostgreSQL 16, so `syntax error` versus `does not exist` separates
+what the grammar accepts from what it rejects with no DDL ever executing:
+
+| spelling | verdict |
+|---|---|
+| `ALTER TABLE IF EXISTS ONLY public.accounts ...` | parses |
+| `ALTER TABLE ONLY IF EXISTS accounts ...` | **syntax error** |
+| `ALTER TABLE ONLY (accounts) ...` | parses |
+| `ALTER TABLE ONLY(accounts) ...` | parses |
+| `ALTER TABLE ONLY ( public . accounts ) ...` | parses |
+| `ALTER TABLE (accounts) ...` | **syntax error** |
+| `ALTER TABLE accounts * ...` | parses (already matched; `\b` ends before the `*`) |
+
+So the docblock's clause-order claim is now observed rather than asserted, the
+paren gap is real, and the bare-paren form the hold offered as a sibling-mirror
+spelling turns out not to be a legal statement at all.
+
+### Item 1 (required) — the qualifier's position is now pinned
+
+Landed exactly as prescribed, one line:
+
+```
+expect(alterations(['ALTER TABLE IF EXISTS ONLY public.accounts DROP COLUMN updated_at;'])).toBe(1);
+```
+
+Probe: a mutant per reordering, each run in its own scratchpad copy of `backend/`.
+The table is which fixture stops being counted under each mutation. `.` = still
+counted, `RED` = the mutation kills that line.
+
+| fixture | drop IF EXISTS | drop ONLY | drop `public.` | swap IFEX/ONLY | **hoist `public.` to front** | **swap ONLY/`public.`** | **swap IFEX/`public.`** | drop paren alt | hold's `ONLY\s+` | tidy to short form |
+|---|---|---|---|---|---|---|---|---|---|---|
+| bare | . | . | . | . | . | . | . | . | . | . |
+| `IF EXISTS` | RED | . | . | . | . | . | . | . | . | . |
+| `ONLY` | . | RED | . | . | . | . | . | . | . | . |
+| `public.` | . | . | RED | . | . | . | . | . | . | . |
+| `IFEX+ONLY` | RED | RED | . | RED | . | . | RED | . | . | . |
+| **`IFEX+ONLY+public`** (new) | RED | RED | RED | RED | **RED** | **RED** | **RED** | . | . | . |
+| **`ONLY (paren)`** (new) | . | RED | . | . | . | . | . | **RED** | . | . |
+| **`ONLY(paren)`** (new) | . | RED | . | . | . | . | . | **RED** | **RED** | . |
+
+The three bolded columns are the three pairwise orders the hold named. Before this
+round each of them killed nothing and the suite stayed green; the new line is the
+only fixture that answers for any of them, and it answers for all three. Each of
+the ten mutants was also run through vitest in its own copy: nine red exactly one
+test, and the tenth is discussed under "Self-found".
+
+### Item 2 (required) — the combined fixture's comment no longer overclaims
+
+Reworded. The line now says it needs BOTH clauses, that deleting either reds it
+alongside that clause's own single-clause line, that what it ADDS is the order,
+and that the per-clause attribution comes from the set rather than from that line.
+"rather than to either clause" is gone. The assertion was not split.
+
+The matrix confirms the hold's reading: `IFEX+ONLY` dies under four mutations, not
+one, while `IF EXISTS` and `ONLY` each still die first at their own dedicated line.
+
+### Item 3 (optional) — the house-style premise, softened and grounded
+
+The premise was checked and the hold is right. Across both trees the canary scans:
+seventeen `ALTER TABLE` heads in `backend/migrations`, zero in `backend/src`, and
+every one of the seventeen bare. Idempotency in this tree is spelled at the column
+(`ADD COLUMN IF NOT EXISTS`), at the constraint (`DROP CONSTRAINT IF EXISTS`), at
+`DROP TABLE IF EXISTS`, and inside a `DO` block. So `IF EXISTS` on the table head
+is a form this tree has not written yet.
+
+The docblock now says the reason for admitting the clause is forward-looking
+rather than observed, and keeps the rationale that survives that: the idempotent
+house style invites the clause, so the arm should see it when the first one lands
+rather than one migration later.
+
+Deviation, small: the hold scoped this to the docblock. The FIXTURE comment carried
+the same overclaim ("the migrations here are idempotent throughout, so it is the
+default reach"), so it was audited too, per the convention that a fix for one rot
+class checks its own replacement rather than leaving a second copy standing.
+
+### Item 4 (optional) — the paren target admitted and pinned, with a deviation
+
+Taken rather than declined, so no KNOWN LIMITS bullet was needed for it.
+
+Deviation from the prescribed spelling, and the reason. The hold offered
+`(?:ONLY\s+\(?\s*)?` as the sibling mirror. Two live-server facts argue against
+copying it literally:
+
+1. `ALTER TABLE (accounts)` is a syntax error, so the DML heads' placement of
+   `\(?\s*` OUTSIDE the `ONLY` group admits a statement no server runs. Keeping the
+   paren inside the group matches the grammar exactly. This is not a criticism of
+   the DML heads: over-admission on a head pattern is a widening that loses
+   nothing, and the docblock says so, so nothing here forbids a later unification.
+2. `ALTER TABLE ONLY(accounts)` — no space — parses. Both `ONLY\s+\(?\s*` and a
+   bare sibling-mirror require that space, so both stay blind to it.
+
+The committed group is therefore `(?:ONLY\b\s*\(\s*|ONLY\s+)?`, which admits every
+spelling the server accepts and none it rejects. Pinned by two lines: `ONLY (accounts)`
+answers for the paren, `ONLY(accounts)` answers for the optional space. The matrix
+shows the attribution is clean — dropping the paren alternative kills both, and the
+hold's own `ONLY\s+` spelling kills only the no-space line, which is exactly the one
+statement the deviation buys.
+
+### Self-found: the paren admission introduced quadratic backtracking, in either spelling
+
+Admitting an optional paren between two unbounded whitespace runs (`ONLY\s*\(?\s*`)
+lets the engine split those runs every possible way before failing. Measured against
+a line carrying `ALTER TABLE ONLY` and then whitespace that never reaches a table:
+
+| spaces after `ONLY` | pre-round pattern | hold's `ONLY\s+\(?\s*` | short `ONLY\b\s*\(?\s*` | committed alternation |
+|---|---|---|---|---|
+| 10,000 | 0.0 ms | 33 ms | 32 ms | 0.2 ms |
+| 100,000 | 0.1 ms | 2,935 ms | 3,295 ms | 0.1 ms |
+| 400,000 | — | — | 53,144 ms | 0.8 ms |
+
+This is not a consequence of the deviation: the hold's own suggested spelling has
+it too, and it is why the committed group spells the paren as a REQUIRED alternative
+rather than an optional one. The two forms were checked equivalent over 21 head
+spellings, valid and invalid, before the swap; they agree on all 21.
+
+It matters because the round-1 residual-risks note recorded "no super-linear
+behaviour" as a property of this arm, and the straightforward reading of item 4
+would have falsified it silently.
+
+### Acceptance criteria
+
+1. **Met.** `ALTER TABLE IF EXISTS accounts DROP COLUMN updated_at;` planted in
+   `002_nullable_email.sql` reds the column-alteration test. Nine further plants
+   were run in isolated copies, five red and four green:
+
+   | planted in a migration | result |
+   |---|---|
+   | `ALTER TABLE IF EXISTS ONLY public.accounts DROP COLUMN updated_at;` | red |
+   | `ALTER TABLE ONLY (accounts) DROP COLUMN updated_at;` | red |
+   | `ALTER TABLE ONLY(accounts) RENAME COLUMN touched_at TO updated_at;` | red |
+   | `ALTER TABLE ONLY ( public . accounts ) ALTER COLUMN updated_at TYPE ... USING NOW();` | red |
+   | `ALTER TABLE IF EXISTS ONLY (public.accounts) DROP COLUMN updated_at;` | red |
+   | `ALTER TABLE ONLY (sessions) DROP COLUMN updated_at;` | green (other table) |
+   | `ALTER TABLE ONLY (accounts) DROP COLUMN pending_email;` | green (other column) |
+   | `ALTER TABLE hafsql.accounts DROP COLUMN updated_at;` | green (the read-only view stays out) |
+   | `ALTER TABLE (accounts) DROP COLUMN updated_at;` | green (not a legal statement) |
+
+   And inside the allowed symbol rather than against the key set: a further
+   `ALTER TABLE ONLY(accounts) DROP COLUMN updated_at;` planted in
+   `016_accounts_updated_at.sql` raises its tally from 3 to 4 and reds.
+2. **Met.** Clean tree green: the file's own 24 tests, and all 9 files / 134 tests
+   under `tests/eslint/` including the standing anchor canary on the new comments.
+   `npm run typecheck` clean. `npm run lint` unchanged (the one pre-existing warning
+   in `src/lib/author-supersession.ts`, untouched). Both git hooks' self-tests pass
+   (pre-commit 37/37, commit-msg 49/49).
+3. **Met.** Deleting the `IF EXISTS` alternative reds exactly one test, and the
+   matrix shows which line. The same holds for every other admitted alternative and
+   for every reordering — ten mutants, nine of which red, each attributable.
+
+### Scope 3 re-enumerated from the code, not carried over
+
+Still nine files under `tests/eslint/`; no sibling task added a tenth. Six of the
+nine define regex constants, and five of those six are TypeScript identifiers, JWT
+and object-literal shapes, comment prose and file paths — checked by reading their
+constants, not by trusting the round-1 note. Exactly one file defines SQL patterns:
+this one. No sibling carries an ALTER pattern, and `backend/eslint.config.mjs` carries
+none. Every other `ALTER` under `backend/tests` is executed fixture DDL through
+`pool.query`, not a detection pattern.
+
+### KNOWN LIMITS gained one bullet, verified live
+
+The ALTER arm anchors on the keyword `TABLE`, and `TABLE` is not the only keyword
+that reaches an ordinary table. On the dev PostgreSQL 16, against a temp table
+inside a rolled-back transaction: `ALTER MATERIALIZED VIEW`, `ALTER VIEW` and
+`ALTER FOREIGN TABLE` all accept `RENAME COLUMN` on an ordinary table, while every
+other form of those three is refused for the wrong relkind (`DROP COLUMN` under all
+three, `ALTER COLUMN ... TYPE` under `FOREIGN TABLE`). So `RENAME COLUMN` is the
+single form that reaches, and it is exactly the form that moves another column onto
+the name. The hold dismissed this as deliberate-evasion class and asked only that it
+not go unrecorded; it is recorded, not admitted. The dismissal note said "only the
+RENAME form reaches an ordinary table that way", which is right, and the bullet adds
+that it does so under three different object keywords rather than one.
+
+### Blast radius
+
+The file is self-contained: it exports nothing and nothing imports it. The only
+tests its edit can affect are the ones under `tests/eslint/`, which were run whole
+and are green. The full backend suite was not run for this change; it carries known
+pre-existing failures and load-induced flakiness, so it would have added noise and
+no signal here.
+
+### Adversarial pass this round
+
+Four lenses ran against the widened arm in isolated copies of `backend/` — PostgreSQL
+grammar, non-ALTER DDL, the reader's own machinery, and comment conventions — each
+followed by two independent refuters. Everything below was then re-verified by hand
+against the live server and by planting in a probe copy, because a lens's confidence
+is not evidence. One lens claim did not survive that check and is recorded as refuted.
+
+**Refuted, recorded so it is not re-raised.** The convention lens held that the
+docblock's "the two admit exactly the same statements" is false, offering
+`ALTER TABLE onlyaccounts DROP COLUMN updated_at;` as the counter-example. Both
+spellings reject that string identically — the `\b` after `ONLY` blocks it in each —
+and an exhaustive differential over 1,220,700 constructed head strings finds zero
+divergence between them. The claim stands as written. The same lens reported that
+every other falsifiable claim in the diff reproduces and that the anchor gate fires
+on none of the added lines, which matches the checks run here.
+
+**Gate control, because a green gate proves nothing on its own.** The pre-commit
+anchor gate passes on this diff, and it was shown to fire on this exact file by
+staging a deliberately rotten line (a task slug, a round ordinal and a bare
+positional anchor) into a throwaway index and watching the hook reject it. The
+working tree was never touched: the violating blob went into the index only.
+
+### [TODO Architect] for triage, nothing applied
+
+Ranked. Each was verified here by hand, not taken from the lens that raised it. None
+is in this task's scope and none was touched, per the repo's rule that review findings
+are surfaced and triaged rather than silently fixed or silently filed.
+
+1. **A catalog-qualified three-part name evades every arm in the file, with no
+   backstop.** `ALTER TABLE pevo_app.public.accounts DROP COLUMN updated_at;` parses
+   on the dev server and names the same relation (PostgreSQL resolves the catalog part
+   away when it is the current database; a genuinely cross-database name is rejected).
+   Every head pattern in the file carries exactly one qualifier group, `(?:public\s*\.\s*)?`,
+   so none of them matches. Planted in a migration, the suite stays green. So do
+   `UPDATE pevo_app.public.accounts SET updated_at = NOW();` and the INSERT form, while
+   the two-part `public.accounts` control reds — so this is not the fail-closed arm
+   catching it, it is a silent pass. This is the one finding that worries me: it is not
+   a deliberate-evasion spelling, it is what a tool or an author reaching for an
+   unambiguous name writes, and the ALTER form carries no assignment token for any
+   other arm to resolve. Pre-existing and shared by all five head patterns, so it is a
+   file-wide decision rather than an ALTER-arm one.
+2. **The trigger, rule and routine arms scan `migrations` only, while the ALTER arm
+   next to them scans both trees.** Wired as `routineSites(migrations)` at both call
+   sites, against `accountsColumnAlterations([...sources, ...migrations])`. Verified:
+   a `CREATE TRIGGER ... ON accounts` with a `NEW.updated_at := now()` body, planted in
+   a `src/*.ts` file as a `pool.query` template, leaves the suite green; the identical
+   text in a migration reds two tests. The file's own docblock argues the opposite of
+   this scoping — it calls the routine arm "the ONLY catcher" of the PL/pgSQL assignment
+   shape — so the narrow wiring looks unintended rather than decided.
+3. **The table-rebuild-and-rename idiom is invisible to every arm.**
+   `CREATE TABLE accounts_rebuilt (LIKE accounts INCLUDING ALL); INSERT INTO
+   accounts_rebuilt (...) SELECT ... FROM accounts; DROP TABLE accounts; ALTER TABLE
+   accounts_rebuilt RENAME TO accounts;` — planted as a new migration, the suite stays
+   green. `LIKE accounts INCLUDING ALL` copies the column's `DEFAULT now()` and its
+   `NOT NULL` (confirmed live against a temp table in a rolled-back transaction), so an
+   INSERT whose column list omits the marker stamps every copied row at migration time,
+   which is the outcome the whole file exists to refuse. The round-1 hold dismissed
+   "a rename-swap around the table" as deliberate-evasion class; that dismissal is worth
+   revisiting on the narrower ground that this particular shape is a standard rebuild
+   idiom rather than an evasion, and that the arm reads `accounts` only as the SUBJECT
+   of an ALTER and never as a rename TARGET.
+4. **The linear-time shape of the `ONLY` group is held by a docblock paragraph and by
+   nothing else.** The tenth mutant in the matrix, tidying the alternation back to the
+   short form, kills no fixture — correctly, since the two are behaviourally identical
+   and differ only in cost. A timing assertion would pin it but is the preemptive
+   hardening this project usually declines, and no line in either tree can reach the
+   quadratic case. Recorded as a deliberate gap rather than decided.
+5. **`BOUND_TO_ACCOUNTS_RE` still spells the schema qualifier `(?:public\.)?`** where
+   its siblings spell `(?:public\s*\.\s*)?`. Unchanged this round, already filed as its
+   own pending backend task; carried here only so the list is complete.

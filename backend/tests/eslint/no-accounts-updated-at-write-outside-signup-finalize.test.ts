@@ -244,6 +244,18 @@
  *     a line inside a block comment that carries no leading `*`, or an odd
  *     quote in a line of prose, is read as live SQL and can only cost a red
  *     bar on a statement that was never live.
+ *   - The ALTER head anchors on the keyword `TABLE`, and that is not the only
+ *     keyword reaching an ordinary table. `ALTER MATERIALIZED VIEW accounts
+ *     RENAME COLUMN touched_at TO updated_at`, and the same statement spelled
+ *     `ALTER VIEW` or `ALTER FOREIGN TABLE`, are each accepted against an
+ *     ordinary table on PostgreSQL 16. Every OTHER form of those three is
+ *     refused for the wrong relkind — `DROP COLUMN` under all three, and
+ *     `ALTER COLUMN ... TYPE` under `FOREIGN TABLE` — so `RENAME COLUMN` is the
+ *     single form that reaches, and it is exactly the one that moves another
+ *     column onto the name. None is a spelling an author reaches for by
+ *     accident, so the keyword stays narrow and the shape is recorded here
+ *     rather than admitted: it is deliberate-evasion class, which this file's
+ *     threat model does not chase.
  *   - The column carries a `DEFAULT now()`, so every INSERT stamps it without
  *     naming it. That is not a hazard and is not scanned for, but the reason is
  *     `custody` rather than anything about the marker: each lookup conjoins a
@@ -618,14 +630,43 @@ const COPY_COLUMNS_RE = /\bCOPY\s+(?:public\s*\.\s*)?accounts\s*\(([^)]*)\)/i;
  *  at whatever the new value is, which is exactly what the writer scans exist
  *  to refuse, and none of them is an UPDATE, an INSERT or a MERGE.
  *
- *  `IF EXISTS` is admitted because PostgreSQL puts it between the keyword and
- *  `ONLY`, and because every migration in this tree is written idempotent: it
- *  is the spelling an author reaches for by default, so a drop or a retype of
- *  the column carried behind it is the likeliest form of the very statement
- *  this arm exists to see. The reverse order is a syntax error, so one
- *  alternative in one position is the whole clause. */
+ *  The head carries three optional groups, spelled in the order PostgreSQL's
+ *  own grammar puts them: `IF EXISTS`, then `ONLY`, then the schema qualifier.
+ *  Those positions were read off a live server rather than reasoned about:
+ *  `ALTER TABLE ONLY IF EXISTS accounts` is rejected as a syntax error, and so
+ *  is `ALTER TABLE (accounts)`. What makes the positions PINS rather than
+ *  claims is the fixture set: one line per group, plus one carrying all three
+ *  at once, which is the only spelling a reordering can be caught by.
+ *
+ *  `IF EXISTS` is admitted because a drop or a retype of the column carried
+ *  behind it is the very statement this arm exists to refuse. No ALTER head in
+ *  this tree spells it: every one is bare, and idempotency here is written at
+ *  the column (`ADD COLUMN IF NOT EXISTS`), at the constraint (`DROP
+ *  CONSTRAINT IF EXISTS`) or inside a `DO` block. The reason for admitting it
+ *  is therefore forward-looking rather than observed. The idempotent house
+ *  style invites the clause, and the arm should already see it when the first
+ *  one lands rather than start seeing it one migration later.
+ *
+ *  The parenthesised target rides INSIDE the `ONLY` group, where the DML heads
+ *  keep it outside their own, because `ONLY ( accounts )` is the whole of what
+ *  PostgreSQL accepts here: a bare `ALTER TABLE (accounts)` does not parse.
+ *  Hoisting it out would admit a statement no server runs, which is a widening
+ *  that loses nothing, so nothing pins it in. The space after `ONLY` is
+ *  optional because `ONLY(accounts)` parses too.
+ *
+ *  That group is spelled as two alternatives with the paren REQUIRED in one of
+ *  them, rather than as the shorter `ONLY\s*\(?\s*` with an optional one, and
+ *  the reason is cost rather than grammar: the two admit exactly the same
+ *  statements, but an optional paren sitting between two unbounded whitespace
+ *  runs lets the engine split those runs every possible way before giving up.
+ *  A line carrying `ALTER TABLE ONLY` and then whitespace that never reaches a
+ *  table costs quadratic time under the short spelling — seconds at a hundred
+ *  thousand spaces, against under a millisecond at four hundred thousand under
+ *  this one. No line in either tree looks like that, so this is headroom and
+ *  not a live cost, and no assertion holds the timing down: this paragraph is
+ *  what keeps the shape from being tidied back into the short form. */
 const ALTER_ACCOUNTS_RE =
-  /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(?:public\s*\.\s*)?accounts\b/i;
+  /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\b\s*\(\s*|ONLY\s+)?(?:public\s*\.\s*)?accounts\b/i;
 
 /** Every head a scan reads a statement FROM, and so every head whose statement
  *  has to be readable to a terminator. Named once and consumed by both the arm
@@ -2864,18 +2905,36 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     expect(alterations(['ALTER TABLE accounts DROP COLUMN updated_at;'])).toBe(1);
     // And the head under each optional clause PostgreSQL allows between the
     // keyword and the table, one line per clause so deleting that clause alone
-    // reds its own line. `IF EXISTS` is the one this tree would actually write:
-    // the migrations here are idempotent throughout, so it is the default reach
-    // for a drop or a retype of the column.
+    // reds its own line. `IF EXISTS` is the clause this tree has yet to write
+    // and would reach for first: every ALTER head here is bare today, while
+    // idempotency is spelled at the column and at the constraint, so the clause
+    // is one migration away rather than already in front of us.
     expect(alterations(['ALTER TABLE IF EXISTS accounts DROP COLUMN updated_at;'])).toBe(1);
     expect(alterations(['ALTER TABLE ONLY accounts DROP COLUMN updated_at;'])).toBe(1);
     expect(alterations(['ALTER TABLE public.accounts DROP COLUMN updated_at;'])).toBe(1);
-    // The two of them together, which is the one spelling that answers to their
-    // ORDER rather than to either clause: PostgreSQL takes `IF EXISTS ONLY` and
-    // rejects `ONLY IF EXISTS`, so a pattern carrying the two groups the other
-    // way round still matches each clause on its own and goes blind on the
-    // combination alone.
+    // Two clauses together. This line needs BOTH of them to match, so deleting
+    // either one reds it alongside that clause's own single-clause line; what
+    // it ADDS is their order. PostgreSQL takes `IF EXISTS ONLY` and rejects
+    // `ONLY IF EXISTS`, so a pattern carrying the two groups the other way
+    // round still matches each clause on its own and goes blind on the
+    // combination alone. The per-clause attribution comes from the set of
+    // single-clause lines, not from this one.
     expect(alterations(['ALTER TABLE IF EXISTS ONLY accounts DROP COLUMN updated_at;'])).toBe(1);
+    // All three groups at once, in grammar order. This is the only spelling
+    // that carries every one of them, and so the only one that answers for the
+    // qualifier's POSITION: three optional groups admit three pairwise orders,
+    // and the single-clause lines answer for none of them. Hoist the qualifier
+    // to the front of the pattern and every other line here still matches while
+    // `ALTER TABLE IF EXISTS public.accounts` stops being counted at all. This
+    // line misses under every reordering of the three.
+    expect(alterations(['ALTER TABLE IF EXISTS ONLY public.accounts DROP COLUMN updated_at;'])).toBe(1);
+    // A parenthesised target, which PostgreSQL admits under `ONLY` and nowhere
+    // else: a bare `ALTER TABLE (accounts)` is a syntax error, which is why the
+    // paren rides inside the `ONLY` group here rather than outside it as the
+    // DML heads spell it. The gap after `ONLY` is optional because the closed-up
+    // spelling parses too, and the `ONLY(accounts)` fixture is what pins it so.
+    expect(alterations(['ALTER TABLE ONLY (accounts) DROP COLUMN updated_at;'])).toBe(1);
+    expect(alterations(['ALTER TABLE ONLY(accounts) DROP COLUMN updated_at;'])).toBe(1);
     expect(alterations(['ALTER TABLE accounts ADD COLUMN pending_email TEXT;'])).toBe(0);
     expect(alterations(['ALTER TABLE sessions ALTER COLUMN updated_at TYPE TIMESTAMPTZ;'])).toBe(0);
     // A pre-decrement is an operator, not a comment, so it blanks nothing.
