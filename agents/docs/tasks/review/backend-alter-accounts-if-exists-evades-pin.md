@@ -538,6 +538,20 @@ are surfaced and triaged rather than silently fixed or silently filed.
    unambiguous name writes, and the ALTER form carries no assignment token for any
    other arm to resolve. Pre-existing and shared by all five head patterns, so it is a
    file-wide decision rather than an ALTER-arm one.
+
+   The mechanism is worth stating exactly, because it is not simply "the head
+   patterns miss it". `QUALIFIED_NAME` is deliberately multi-part, so `UPDATE_TARGET_RE`
+   captures `pevo_app.public.accounts` happily; `bareTable` then strips only a leading
+   `public.`, so that name normalises to itself rather than to `accounts`. The
+   column-first scan therefore resolves the assignment to a plausible OTHER table — not
+   to `accounts`, and not to `UNRESOLVED_TABLE`. The fail-closed arm is SATISFIED rather
+   than tripped, which is precisely the failure the file's own docblock calls the silent
+   direction. Every backstop the KNOWN LIMITS lean on rests on that arm firing.
+
+   Six qualifier sites carry the assumption: the four head and column patterns spell
+   `(?:public\s*\.\s*)?`, `BOUND_TO_ACCOUNTS_RE` spells `(?:public\.)?`, and `bareTable`
+   spells `^public\.`. No other canary under `tests/eslint/` carries a schema qualifier
+   at all, so the blast radius is this file.
 2. **The trigger, rule and routine arms scan `migrations` only, while the ALTER arm
    next to them scans both trees.** Wired as `routineSites(migrations)` at both call
    sites, against `accountsColumnAlterations([...sources, ...migrations])`. Verified:
