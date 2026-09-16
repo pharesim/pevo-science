@@ -552,6 +552,13 @@ are surfaced and triaged rather than silently fixed or silently filed.
    `(?:public\s*\.\s*)?`, `BOUND_TO_ACCOUNTS_RE` spells `(?:public\.)?`, and `bareTable`
    spells `^public\.`. No other canary under `tests/eslint/` carries a schema qualifier
    at all, so the blast radius is this file.
+
+   If it is fixed rather than recorded, the fix is bounded: admit an optional leading
+   catalog identifier ahead of the qualifier group, keeping `public` required as the
+   middle part. That cannot over-match into another database, because PostgreSQL refuses
+   a foreign catalog outright rather than resolving it — `ALTER TABLE otherdb.public.x`
+   answers `cross-database references are not implemented`, checked on the server. So the
+   only names the widening newly admits are names for this same relation.
 2. **The trigger, rule and routine arms scan `migrations` only, while the ALTER arm
    next to them scans both trees.** Wired as `routineSites(migrations)` at both call
    sites, against `accountsColumnAlterations([...sources, ...migrations])`. Verified:
