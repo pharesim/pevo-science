@@ -835,6 +835,43 @@ describe('the gate never fails open into silence', () => {
     expect(mockToastStore.show).toHaveBeenCalledWith(expect.any(String), 'error');
   });
 
+  it('an empty-string proof is refused rather than delivered as a ready window', async () => {
+    // Its own case rather than a fifth row in the non-string `it.each`,
+    // because it is not a member of the class those rows drive: `''` is a
+    // STRING, so every narrowing in the path passes it through. The mint callback's return test, the eviction
+    // predicate in `evictUnnamedAcquisition`, and this gate's fail-closed guard
+    // each ask what the value IS, never whether it can be used, and a proof
+    // nobody can use is the one falsy value that clears all three.
+    //
+    // Delivered as ready it is indistinguishable from the self-custody `null`
+    // that means "this account needs no proof", which is what no consumer
+    // compares against: the page gate returns true with no toast and the work
+    // starts, the upload pre-flight takes the unproofed branch self-custody
+    // uses, and the broadcast leaves with `fresh_auth_proof` absent for the
+    // backend to refuse a round-trip later. `_handleFreshAuth`, the consent-op
+    // leg in pages/orcid-callback.js, already refuses an empty proof with the
+    // two-part predicate this pins; the session-kind path applied only the type
+    // half of it.
+    mockMintSessionAuthProof.mockImplementation(async () => ({
+      ...issuance('window-proof'),
+      fresh_auth_proof: '',
+    }));
+
+    expect(await ensureSessionWindow()).toEqual({ ready: false, failed: true });
+    // The mint writes its response value into the slot before the callback
+    // narrows what it hands back, so the refusal owes the same eviction every
+    // other malformed proof earns — otherwise the entry outlives the
+    // acquisition that produced it.
+    expect(cached()).toBeNull();
+
+    // And the refusal is spoken. A ready-but-empty window is precisely the
+    // silence this block is named for: the page gate would answer yes and show
+    // nothing at all.
+    mockToastStore.show.mockClear();
+    expect(await freshAuthWindowReady()).toBe(false);
+    expect(mockToastStore.show).toHaveBeenCalledWith(expect.any(String), 'error');
+  });
+
   it('the refusal evicts the entry that caused it', async () => {
     // Both legs that can produce a non-string run through the window slot, and
     // neither type-checks what goes through it: the cache read passes back any

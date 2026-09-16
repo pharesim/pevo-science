@@ -897,9 +897,9 @@ export async function beginSessionAuthOrcidRedirect(isStale) {
 // was dismissed, FRESH_AUTH_MINT_FAILED when re-auth could not be completed, or
 // FRESH_AUTH_PROMPT_BUSY when another action already owns the modal. It also
 // returns values the outcome vocabulary does not name: `undefined` when the
-// mint answered without a proof string, which the mint callback's narrowing
-// picks deliberately, and a truthy non-string when the cache leg hands back
-// what the window slot was holding. Every consumer refuses either as an unnamed
+// mint answered without a usable proof string, which the mint callback's
+// narrowing picks deliberately, and a truthy non-string when the cache leg
+// hands back what the window slot was holding. Every consumer refuses either as an unnamed
 // result rather than reading it as an outcome anyone registered.
 // Throws on transport / config errors.
 //
@@ -1069,24 +1069,48 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
         if (guard.tornDown()) return FRESH_AUTH_CANCELLED;
         const proof = issued.fresh_auth_proof;
         cacheSessionProof(proof, issued.expires_at, issued.absolute_expires_at);
-        // Hand back a string or nothing, never the response value verbatim.
-        // The window vocabulary's redirect member IS `null`, the one sentinel
-        // a JSON body can reproduce, so a response carrying
-        // `"fresh_auth_proof": null` returned as it stands would classify as
-        // an ORCID round-trip already in flight, with no navigation behind it:
-        // the page gate and the broadcast unwinder say nothing (the toast
-        // table keeps the redirect row silent, since a page that is leaving
-        // needs no message) and the upload pre-flight raises its cancel code,
-        // so the user is either told nothing or told they cancelled, and
-        // neither is something they can act on. Every other member is a Symbol
-        // no response can produce, which is why this is the only coercion the
-        // wire needs. Narrowing to `undefined` lands a null token where the
-        // other malformed ones already land, in the fail-closed guard that
-        // refuses; its consumers say so. The `cacheSessionProof` call keeps
-        // the raw value deliberately: a null token reads as tokenless and is
-        // dropped whenever the entry is next read, and
+        // Hand back a USABLE string or nothing, never the response value
+        // verbatim. Two holes let the wire past a narrowing that only asked
+        // what the value was, and the two halves of this one close one each.
+        //
+        // The type half keeps a response out of the vocabulary's SENTINEL
+        // space. The redirect member IS `null`, the one sentinel a JSON body
+        // can reproduce, so a response carrying `"fresh_auth_proof": null`
+        // returned as it stands would classify as an ORCID round-trip already
+        // in flight, with no navigation behind it: the page gate and the
+        // broadcast unwinder say nothing (the toast table keeps the redirect
+        // row silent, since a page that is leaving needs no message) and the
+        // upload pre-flight raises its cancel code, so the user is either told
+        // nothing or told they cancelled, and neither is something they can act
+        // on. Every other member is a Symbol no response can produce, which is
+        // why `null` is the only value the wire can land in that space.
+        //
+        // The truthiness half keeps a response out of the READY space, and `''`
+        // is the only value that needs it: falsy AND a string, so it satisfies
+        // every narrowing that follows. `evictUnnamedAcquisition` opens on a
+        // type test and short-circuits without clearing; the fail-closed guard
+        // in `ensureSessionWindow` is a type test and returns the value as a
+        // ready window; and past there no consumer compares against the
+        // self-custody `null` that means "this account needs no proof" — they
+        // test truthiness, which makes an empty proof indistinguishable from
+        // it. The page gate would answer yes with no toast and the work would
+        // start, the upload pre-flight would take the unproofed branch
+        // self-custody uses, and the broadcast would leave with the field
+        // absent for the backend to refuse a round-trip later. `_handleFreshAuth`,
+        // the ORCID callback's consent-op leg, already holds its echoed proof
+        // to this same two-part standard.
+        //
+        // Both halves narrow to `undefined`, where every other malformed answer
+        // already lands: the fail-closed guard refuses it and its consumers say
+        // so. Refusing the empty one HERE rather than widening that guard is
+        // what keeps the guard's class the non-string one it documents, and it
+        // costs no coverage, because the slot is the only other way into that
+        // guard and `readSessionWindow` drops a FALSY token on sight — so no
+        // cache hit can hand an empty proof on. The `cacheSessionProof` call
+        // keeps the raw value deliberately: a null or empty token reads as
+        // tokenless and is dropped whenever the entry is next read, and
         // `evictUnnamedAcquisition` removes it before then anyway.
-        return typeof proof === 'string' ? proof : undefined;
+        return typeof proof === 'string' && proof ? proof : undefined;
       },
       { message: passwordPromptMessage(), assumed: factor.assumed },
     );
