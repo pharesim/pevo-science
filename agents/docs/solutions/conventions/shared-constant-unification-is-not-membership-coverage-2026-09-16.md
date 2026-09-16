@@ -70,10 +70,10 @@ Verify membership by mutation, in an isolated copy, never the shared checkout:
 3. Drop `ALTER_ACCOUNTS_RE` from the constant, leaving the planted migration in place. All 24 tests
    pass. The truncated ALTER is invisible.
 
-Three things have to hold at once for that gap, and all three do:
+Three things had to hold at once for that gap, and all three did:
 
-- `unreadableIn` is called once, with a fixture matching `ACCOUNTS_STATEMENT_RE` and never
-  `ALTER_ACCOUNTS_RE`. No fixture is positioned to hit a hole in the ALTER coverage.
+- `unreadableIn` was called once, with a fixture matching `ACCOUNTS_STATEMENT_RE` and never
+  `ALTER_ACCOUNTS_RE`. No fixture was positioned to hit a hole in the ALTER coverage.
 - The live arm runs only against the real trees, which carry no unreadable ALTER, so it reports an
   empty list either way. An arm that scans a clean tree cannot witness the completeness of the set
   it scans with.
@@ -82,9 +82,14 @@ Three things have to hold at once for that gap, and all three do:
   constant, so it cannot stand as a witness for it.
 
 The instance fix is a fixture pinning the ALTER head through `unreadableIn`, so dropping the member
-reds by construction. The class fix is an assertion that every head pattern a `statementAt` call site
-reads from is a member of the set, so widening the readers reaches the assertion without anyone
-remembering to widen the constant too.
+reds by construction. That landed: a wrapped-`DEFAULT` ALTER asserted through the mirror, with the
+single-line spelling as its control, and dropping the member now reds. The class fix, still open, is
+an assertion that every head pattern a `statementAt` call site reads from is a member of the set, so
+widening the readers reaches the assertion without anyone remembering to widen the constant too.
+
+The gap is therefore closed for this constant and this member. What is recorded here is the shape,
+which outlives the instance: the sharing that removed the drift is the same act that removed the
+instrument, and only a fixture planted against the set itself put one back.
 
 ## Why This Matters
 
@@ -106,8 +111,10 @@ constant states a mutation probe as evidence:
 Session history confirms a probe was run at the time and reported exactly that. It does not
 reproduce against the committed tree. Dropping the member leaves the whole suite green, and the
 wrapped-DEFAULT fixture asserts through `accountsColumnAlterations`, which never consumes the
-constant, so it is green under both spellings and cannot red on that mutation at all. The claim is
-not reproducible as written, whatever was actually executed.
+constant, so it was green under both spellings and could not red on that mutation at all. The claim
+was not reproducible as written, whatever was actually executed. (The fixture that does pin the
+member, added later, asserts through `unreadableIn` instead, which is the helper that reads the
+constant.)
 
 That makes this the second self-reported "verified load-bearing" claim on this file to fail
 re-execution, alongside a reuse-margin measurement in the same docblock that a later refresh found
@@ -136,7 +143,8 @@ for the next reader, a sentence in a commit message does not.
   one works an enumerated set, where the fix is a completeness assertion tied to what reads from it.
 - `new-fail-closed-outcome-must-not-reuse-an-existing-sentinel-2026-09-15.md` recorded the
   `unreadableIn` drift as an open residual. The shared constant closed that residual, and closing it
-  is what exposed the gap documented here. That entry's residual paragraph is stale.
+  is what exposed the gap documented here. That entry's residual paragraph has been updated to point
+  back at this one.
 - `composite-mutation-probe-does-not-cover-its-constituent-branches-2026-09-06.md` is the same
   principle one construct over: deleting a whole mechanism proves it is load-bearing, not that each
   branch is covered. Dropping one member while the array survives is the membership analogue.

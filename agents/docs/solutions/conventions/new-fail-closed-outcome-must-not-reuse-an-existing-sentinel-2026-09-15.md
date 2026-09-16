@@ -268,7 +268,7 @@ ALTER TABLE accounts
 
 Green before the fix. After extending the arm to both head patterns it reds on the readable arm, and the single-line-`DEFAULT` control reds on the ALTER pin instead. Each shape reds the arm that is supposed to own it, which is what makes the pair a pin rather than a coincidence.
 
-One residual to check when next in this file: the fixture helper `unreadableIn` in the test's own helper block still iterates `ACCOUNTS_STATEMENT_RE` alone, while the live arm iterates both head patterns. That may be deliberate (its current callers pass DML fixtures), but a helper that mirrors an arm is exactly the kind of second copy that goes stale when the arm's enumeration widens, and it is worth a decision rather than a drift.
+That residual is closed, and closing it is worth following. The helper and the arm now read one shared constant, so neither can widen without the other. What the shared constant did NOT buy is any check that its own contents are right: for a while afterwards, dropping a member left the whole suite green, because the only instrument that would have noticed was the comparison between helper and arm that the sharing had just made vacuous. That is a distinct defect from the one this entry documents, and it has its own entry, `conventions/shared-constant-unification-is-not-membership-coverage-2026-09-16.md`. Both the sharing and the membership pin are in place now.
 
 ### The transferable shape
 
