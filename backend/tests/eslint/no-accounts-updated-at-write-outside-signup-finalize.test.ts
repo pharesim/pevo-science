@@ -995,13 +995,29 @@ function blockCloses(
 
 /** `line` with its comment spans blanked, and the state the next line starts
  *  in. `sql` marks a file that is SQL throughout rather than TypeScript
- *  carrying SQL in templates. */
+ *  carrying SQL in templates.
+ *
+ *  `ticksInValues` marks the SECOND read of a line the first read left inside
+ *  a value. A quoted TypeScript string closes on its own line, so TypeScript
+ *  code outside a template that ends inside one held a quote that opened no
+ *  string, and an apostrophe in a regex literal like `/'/g` is the ordinary
+ *  way to write one. A SQL value may span lines, in a migration or a template,
+ *  which is why the second read has to leave those lines as it found them.
+ *  The decision
+ *  that misreading can turn silent is a backtick declined inside the phantom
+ *  value while no template is open: right for a real string that holds a
+ *  backtick, wrong when the backtick opens a template, which is then read as a
+ *  value with the comments in its token gaps left live. The second read
+ *  trusts such a backtick as a delimiter instead. Only a line holding one
+ *  reads differently; every other line, a SQL line included, reads the same
+ *  both ways. */
 function blankLine(
   lines: string[],
   lineIndex: number,
   state: BlankState,
   sql: boolean,
   blanked: string[] = [],
+  ticksInValues = false,
 ): { text: string; state: BlankState; spans: SpanEvent[] } {
   const line = lines[lineIndex];
   const escapes = !sql;
@@ -1078,6 +1094,11 @@ function blankLine(
         for (const open of dollar) spans.push({ col: i, width: 1, tag: open, open: false });
         dollar = [];
         dollarCode = false;
+      } else if (ticksInValues && ticks && char === '`') {
+        // The second read: the value was a phantom, and this backtick opens
+        // the template the first read declined.
+        template = true;
+        opaque = null;
       } else if (char === opaque) opaque = null;
       i++;
       continue;
@@ -1225,6 +1246,10 @@ function blankLine(
     out += char;
     i++;
   }
+  // A line left inside a value is read once more, trusting a backtick in a
+  // value as a delimiter. Once: the second read is the last opinion there is,
+  // and a line holding no such backtick comes back from it unchanged.
+  if (opaque !== null && !ticksInValues) return blankLine(lines, lineIndex, state, sql, blanked, true);
   return { text: out, state: { block, template, dollar, dollarCode }, spans };
 }
 
@@ -2656,6 +2681,10 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // is the gate the other two arms lean on: they test the flag, and it is
     // this arm alone that could set the flag in a `.sql` file.
     expect(blankAll(['SELECT `a;'], true).state.template).toBe(false);
+    // The same gate on the second read of a line ending inside a value, which
+    // trusts a backtick in a value as a delimiter. A wrapped SQL string is an
+    // ordinary way for a migration line to end inside one.
+    expect(blankAll(["UPDATE audit_log SET note = 'wrapped ` tick"], true).state.template).toBe(false);
     expect(blankAll(['const a = `x`;'], false).state.template).toBe(false);
     expect(blankAll(['const a = `x;'], false).state.template).toBe(true);
     // And the arms still do their job in TypeScript, where a backtick really
@@ -2679,6 +2708,26 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     ];
     expect(scansOf(quotedTicks).tableFirst).toEqual(['x.ts#touch']);
     expect(scansOf(quotedTicks).columnFirst).toEqual(['x.ts#touch']);
+    // And the flag half's own failure, which is why a line ending inside a
+    // value is read a second time. An apostrophe that opens no string at all,
+    // the one in a regex literal like `/'/g`, leaves the reader believing it is
+    // inside a value, and a template opened later on that line then meets a
+    // gate that declines its backtick. The template is read as a value, a
+    // comment in one of its token gaps stays live, and the write goes unseen,
+    // whether or not the template carries quotes of its own. A quoted string
+    // cannot end its line open, so the line that does is read again trusting
+    // the backtick; `quotedTicks` is the line that must NOT be, since its
+    // string closes.
+    for (const set of ['updated_at', "custody = 'light', updated_at"]) {
+      const regexThenTemplate = [
+        'async function touch(v: string, id: number) {',
+        `  const safe = v.replace(/'/g, "''"); await q(\`UPDATE accounts SET ${set} /* stamped */ = NOW() WHERE id = $1\`, [id]);`,
+        '}',
+      ];
+      expect(assignmentIndex(asCode(regexThenTemplate)[1]), set).toBeGreaterThan(-1);
+      const seen = [...columnAssignments(readable([{ rel: 'x.ts', lines: regexThenTemplate }])).values()].flat();
+      expect(seen, set).toHaveLength(1);
+    }
   });
 
   it('the table-first read sees the column in a SET list, an INSERT list and both MERGE branches', () => {
