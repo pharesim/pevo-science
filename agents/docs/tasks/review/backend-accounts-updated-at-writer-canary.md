@@ -2003,3 +2003,211 @@ refuters never voted as refuted, so the summary reads clean. If the "four furthe
 silent passes found and closed" work came out of a Workflow fan-out, reconcile its
 dispatched-versus-returned agent counts before carrying that claim forward. This is
 about the evidence, not about the fixes, which are real and landed.
+
+## Backend re-review signal (2026-09-18, commits 81f7df9c, fde7f6ed, 143ae89e, 597255bd, db7f23ab)
+
+Five commits, each verified an ancestor of `main` by SHA. `a9becb99` and `73349ef1`,
+which the hold named as uncovered by the previous signal, belong to the round it reviewed
+and are not re-signalled here.
+
+All four items landed, and the round did not stop there. The conjunct item 2 asks for
+opened a silent pass of its own; the first patch for that opened another; the reader now
+models TypeScript regex literals and `${...}` interpolations because that is where the
+class actually lives. The commits are listed in the order it happened, because three of
+them exist only to close what the one before them opened.
+
+Every probe ran in an isolated `git archive` copy with `node_modules` and the repo-root
+`.env` symlinked. The shared checkout was never mutated; its `git status` stayed at the
+sibling's `CONCEPTS.md` throughout. Each hold probe was reproduced BEFORE its fix. A
+fixture for a DEFECT was shown red before the code that greens it; a fixture that PINS
+behaviour the reader already had is green either way, so each of those was shown red under
+a mutation that removes the behaviour, with a planted ordinary writer going unseen under
+that same mutant.
+
+### Item 1. The template's closing backtick ends its statement. (81f7df9c)
+
+Reproduced at the pre-round base first: the hold's four-line probe was 24/24 GREEN with
+the live writer, and deleting `$tag$` redded the resolve arm. The bare `$$` spelling
+behaved the same.
+
+**Shape chosen: honour the terminator**, because the backtick is where the template's text
+ends. That is a fact about the source rather than a judgement the read has to hedge, and
+refusing would resolve nothing for the head that owns the template.
+
+**The ordering the hold did not ask about, and which turned out to matter.** The depth
+test runs FIRST. A head INSIDE the span the backtick force-closes reached no terminator of
+its own, so taking the backtick as one lends its table to a sibling statement the same
+unterminated body spells after it. Probes: the arm deleted reds the new `closedAt`
+assertion and the planted writer goes green again in that copy; the delimiter test moved
+ahead of the depth test reds the ordering pin. Two later passes added what the first three
+fixtures could not tell apart: the read ENDING at that backtick rather than recording it
+and reading on (a mutant dropping the `break` reopened the original silent pass), and the
+force-closing backtick sitting on a LATER line than the head.
+
+### Item 2. The flag conjunct, and the three silent passes closing it opened.
+
+`ticks && template` gates the opaque-branch arm (81f7df9c). The hold's probe reproduced
+first; `quotedTicks` was red before the fix and reds again when `template &&` is deleted,
+with the planted writer unseen under that mutant.
+
+**The corrected `[TODO Architect]` entry.** The earlier re-check chased the `template`
+flag, which a backtick PAIR toggles on and back off, so it balanced and looked harmless.
+The damage is `opaque = null` on the same arm: the first backtick ended the VALUE, the rest
+of the single-quoted string was read as code, and a `/*` there opened a block comment that
+ran to a `*/` on a later line. The class is reproducible; that entry was wrong and is closed.
+
+**What the conjunct opened, three times.** The gate trusts that the value it is inside is
+real, and three shapes make the reader wrong about that.
+
+1. **A quote inside a REGEX LITERAL.** `v.replace(/'/g, "''")` and the `"`-matching
+   patterns `bridge.ts` and `app.ts` already spell open a phantom value; a template opened
+   later on that line then has its backtick declined and is read as a value, with the
+   comments in its token gaps left live. Five shapes, four red at base: a `//` or `--`
+   inside a SQL literal, a `/*` inside a literal (which blanks the lines below), an even
+   phantom-quote count from a trailing `// don't`, and the same with a quoted literal
+   inside the template, which was 24/24 GREEN.
+2. **A division misread as a pattern.** The first operand list was too narrow, so `x! / y`
+   (TypeScript's non-null assertion), a postfix `++` or `--`, a `}`, a string's closing
+   quote, a template backtick or a non-ASCII identifier each opened a pattern. It runs to
+   the next slash, routinely the opener of a trailing `//`, after which the comment's own
+   prose is read as code and a path glob in it (`/api/papers/*`) opens a block comment
+   over the lines below, writer included. A 272k-shape fuzz put the family at 8,254
+   spellings; a division leading a continuation line had no operand on its own line at all.
+3. **A nested template inside a `${...}` interpolation.** Its OPENING backtick read as the
+   outer template's closing one, so the flag said no template was open while one still was.
+   The gate then declined the next backtick met inside a value and the rest of the line
+   became one value, swallowing the write's template, its backticks and its comment gap.
+   Red at base, 25/25 green before `db7f23ab`. It needs no regex: a nested template in an
+   interpolation and an ordinary write on the same line is the whole shape.
+
+**The first patch (fde7f6ed) and why it is gone.** It read a line a second time when the
+line ended inside a value. It closed two shapes and missed the rest, because a line can end
+balanced and still be wrong, and a pass found five of its internals unpinned. It is deleted.
+
+**What stands (143ae89e, 597255bd, db7f23ab).** A regex literal is a value to its closing
+slash, told from a division by the code before it: after an OPERAND the slash divides,
+after a keyword or anything else it opens a pattern that must end on its own line, skipping
+escapes and character classes. An operand ends in a name character (Unicode), a digit, or a
+closing `)`, `]`, `}`, quote or backtick, and may carry a postfix `!`, `++` or `--`,
+admitted only where an operand precedes it, so the PREFIX `!` of `!/re/.test(v)` still opens
+a pattern. A slash leading its line is judged from the previous line carrying code, as the
+language judges it. And an interpolation is copied whole, so nothing inside one is a
+delimiter, a comment marker or a quote for any arm outside it.
+
+**A guard that was tried and removed, stated because it reads like an improvement.**
+Rejecting a closing slash followed by `/` or `*` caps the damage of any misjudged division.
+It also MASKS the operand pins: with it in place, nine operand and keyword mutants stayed
+green, because the mutant's misjudged pattern closed on a comment opener and the guard
+rescued it. It is gone, and every condition is pinned instead.
+
+**The hold's second clause, measured rather than assumed.** Deleting `ticks &&` from the
+opaque arm alone reds nothing, and cannot: once the arm also tests `template`, `ticks` is
+dominated, because the flag cannot be true in a `.sql` read. Instrumented rather than
+argued: a throw on `sql && template` never fires over both trees and all fixtures, and DOES
+fire when the top-level gate is deleted. Deleting both conjuncts reds the existing migration
+probes and the end-state arm.
+
+**And the pin that argument rests on was vacuous.** The top-level arm's gate was pinned by
+`blankAll(['SELECT `a`;'], true)`, which this hold cites. A PAIR toggles the flag on and
+back off, so with `ticks &&` deleted the suite was 24/24 green. It is an odd count now, and
+the same deletion reds it. The reconciliation below shows the previous round's adversarial
+pass had found exactly this, and a dead refuter vote scored it refuted.
+
+### Item 3. The ALTER head's membership is pinned through the mirror. (81f7df9c, 143ae89e)
+
+Reproduced at base: the wrapped-DEFAULT migration redded the readable arm, and with
+`ALTER_ACCOUNTS_RE` dropped from `READ_FROM_HEADS` the suite was 24/24 green. The fixture
+asserts through `unreadableIn`, with the ALTER pin's own blindness on the wrapped shape and
+the single-line control.
+
+**The stronger form was not taken.** As stated ("every head pattern a `statementAt` call
+site reads from appears in the set") it is false on the clean tree for two call-site
+families: `targetTable` reads the any-table `HEAD_PATTERNS` by design, and `routineSites`
+reads `ROUTINE_CREATION_RE`, the surface the hold routes to triage. The assertion would
+either red today or encode a decision the hold reserves.
+
+**What replaced it.** A pass showed the pin reached only the fixture mirror: the arm kept
+its own copy of the loop, so mutating the arm's head list, match flags or stop test left the
+suite green. The loop is now a named scan, `unreadableStatements`, which the arm and the
+fixtures both call, as the writer and ALTER arms do. Its case fold, cap-overrun report, head
+column, per-line loop, blanked-line match and TypeScript path are each pinned. Its FILE list
+is not, and cannot be by a fixture; the docblock says so rather than implying otherwise.
+
+### Item 4. The comment describes replay. (81f7df9c)
+
+The lead now says ONE reader makes the opener judgement, the blanking reader through
+`dollarOpenerAt`, and the statement read replays what it recorded, so a wrong judgement is
+inherited rather than contradicted. The recurrence and interpolation-exclusion sentences are
+unchanged.
+
+### The adversarial passes, which are what made this more than four items
+
+Three Workflow runs. Dispatched versus returned, since the hold asks for that: pass 1, 4
+hunters and 17 reproducers; pass 2, 4 and 24; pass 3, 2 and 9. All returned; no agent died
+in any run, so no verdict here rests on a dead vote. Every finding was reproduced by an
+independent agent that rebuilt its own copies at base and head, and each one acted on was
+re-measured by hand before being acted on.
+
+Pass 1 confirmed 17 and rejected 0. Pass 2 confirmed 23 and rejected 1. Pass 3 confirmed 9
+and rejected 0, over 20,441 fuzz fixtures and 48 mutants of the new code, of which 45 were
+already killed by the fixtures. The counts are not the evidence: what they show is that each
+pass found the previous pass's fix incomplete, which is why there were three.
+
+### Reconciling the previous round's counts, per the hold's closing note
+
+From that run's `journal.jsonl` (`wf_90759732-4c6`):
+- **Hunt: 6 dispatched, 6 returned, 0 died**, raising 20 findings, 20 distinct. The "four
+  silent passes found and closed" came from this stage, which returned whole, and each was
+  hand-reproduced. That claim stands on its evidence.
+- **Refute: 60 dispatched, 46 returned, 14 died.** Findings 16 to 19 lost all three votes:
+  those are the four the addendum recovered.
+- **A fifth was scored refuted with no evidence behind the verdict, and the addendum missed
+  it.** Finding 10 had one standing vote, one refuting vote and a DEAD third, which
+  `kills < ceil(live/2)` scores as refuted on a 1-1 split. Its claim was that two of the
+  three arms that round gated on `ticks` are unpinned: the top-level arm (mutant green) and
+  the dollar-branch arm (dead rather than unpinned). Both surviving refuters had reproduced
+  it. It was right: it is the vacuous pair pin under item 2, measured here independently
+  before the journal was read. Both that signal's "both are pinned" and this hold's citation
+  of the pair descend from that lost vote.
+
+### Verification
+
+- The canary is 25 tests (was 24), green. `tests/eslint/` is 9 files / 135 tests green.
+- `npm run typecheck` exits 0. `npm run lint` shows only the pre-existing unused-disable
+  warning in `src/lib/author-supersession.ts`.
+- The pre-commit anchor gate finds zero hits across all five commits' added lines, run
+  standalone with `ALLOW_MARKER` set and control lines that fire. It caught three shapes
+  during the work: a fixture string reading as a `file:line` cite, and two rounds of bare
+  positional anchors. All were rewritten rather than exempted.
+- **The reader is a no-op on today's trees.** Every blanked line and span event of all 119
+  scanned files, 44,232 lines, is byte-identical between the pre-round base and head, at
+  each of the three reader commits. The regex arm judges 106 slashes in TypeScript code
+  across both trees, 92 patterns and 14 divisions, every one correctly (instrumented and
+  listed; an independent pass counted 107/93/14 on a different counting boundary and agreed
+  on every judgement).
+
+### [TODO Architect] Surfaced by the passes, not acted on
+
+- A multi-statement template lends a readable sibling head's table to an unreadable
+  `accounts` write after a `;`. KNOWN LIMITS said that shape "reds by resolution"; it is
+  silent at base whenever a readable head opens earlier in the same quoted text, template or
+  ordinary string, and the sentence now says so. The mechanism is wider than the
+  quoted-identifier case that named it.
+- `enclosingQuote` does its own flat quote scan of the head's line, so a quote inside a
+  regex before a head becomes that head's delimiter. The blanking reader now reads the regex
+  whole, which makes the two readers disagree there; the delimiter consequence is the
+  recorded one, and base reached it by its own route.
+- The end-state arm still builds its list inline, which is the shape item 3's fix removed
+  from the readable arm, and its stop test can be changed with the suite green.
+- The `assembledWrites` half of the ALTER-head question is already filed as its own task
+  (`backend-assembled-writes-misses-alter-head`), so it is named here rather than re-filed.
+
+### Residuals, recorded rather than chased
+
+- The regex rule misjudges two shapes, neither spelled in either tree: a pattern that OPENS
+  a statement after a closing paren (`if (ready) /x/.test(v)`) or after a keyword the list
+  does not carry, read as a division; and a division after an operand spelling the list does
+  not carry, read as a pattern. KNOWN LIMITS names both and says which one costs.
+- An interpolation that SPANS LINES is not recognised and is read flat, as before. A write
+  spelled inside an interpolation is copied rather than read. The brace-depth half of the
+  interpolation close is not discriminable by any shape tried; the quoting half is pinned.
