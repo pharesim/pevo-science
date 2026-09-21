@@ -141,3 +141,56 @@ task and the null coercion both had when they were closed.
 - Comment text must stay free of line numbers, SHAs, task slugs and bare
   positional anchors; the pre-commit gate catches the article-against-noun form
   ("the case below") but not every variant.
+
+---
+
+**UI implementation signal (2026-09-21, commit `e86d03bb`):**
+
+Both mint callbacks now read
+`typeof proof === 'string' && proof ? proof : FRESH_AUTH_MINT_FAILED`
+(`frontend/src/lib/settings-fresh-auth.js`, `frontend/src/lib/authorship-consent.js`).
+Four new cases landed, one initial-leg and one retry-leg per suite, each using a
+module-scope `refusesFalsyProof` so `run` rejects `FRESH_AUTH_REQUIRED` /
+`missing` on a falsy proof the way the real consumers do. The docblocks above
+both `mintViaPassword` functions and the explanation inside each suite's
+non-string `it.each` were rewritten in the same commit.
+
+Evidence per acceptance criterion:
+
+1. Observed RED before the fix. The settings initial-leg case failed on
+   `expect(run).not.toHaveBeenCalled()` with the spy recording two calls, both
+   `[""]`; the authorship twin recorded the same. Prompts 2, mints 2. After the
+   fix: prompts 1, mints 1, `run` never called, `{ freshAuthFailed: true }`.
+2. Retry-leg cases green on both surfaces with `run` called exactly once.
+3. Measured in private scratchpad copies, never in this checkout. Reverting
+   `&& proof` on settings alone: 2 failed / 91 passed, both failures the two new
+   settings cases. On authorship alone: 2 failed / 91 passed, both the two new
+   authorship cases. Neither surface cross-covers the other. Two further
+   mutants for context: dropping the type half instead reddens the pre-existing
+   numeric row while the empty-string cases stay green, so both halves are
+   independently pinned; and landing on `undefined` rather than
+   FRESH_AUTH_MINT_FAILED reddens six settings cases, so the sentinel choice in
+   scope item 1 is pinned rather than incidental.
+4. Prose audited. A verification pass caught two defects in the first draft and
+   both were corrected before this commit: the retry-leg comments had inherited
+   the null case's "the leg with more to lose" framing, which is backwards for
+   an empty proof (measured pre-fix, the initial leg spends two prompts and two
+   refused writes, the retry leg one), and the settings docblock quoted the
+   api.js spread in ES6 shorthand elision rather than as it is written.
+5. Both suites 93/93. Full frontend unit suite 86 files / 1911 tests green.
+   `npm run build` clean. Anchor gate clean on the added lines, checked with a
+   live control.
+
+Neighbouring suites green in a private copy: `lib-fresh-auth-consent-op-eviction`,
+`pages-settings`, `pages-admin`, `pages-paper-detail` (244 tests).
+
+Two observations for the architect, surfaced rather than acted on:
+
+- The "Why it is worth closing" section describes `_handleSessionAuth` in
+  `pages/orcid-callback.js` as the one remaining type-only site. The
+  verification pass read it and found no guard there at all: it passes
+  `data.fresh_auth_proof` straight into `cacheSessionProof`. That changes what
+  its own task is scoped to fix, not this one.
+- The type half of the predicate is pinned by exactly one assertion per suite,
+  the `4242` row of the non-string `it.each`, since `null` and `undefined` are
+  refused by either half alone. Pre-existing, and not weakened by this change.
