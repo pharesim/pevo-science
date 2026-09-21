@@ -1067,3 +1067,145 @@ every probe.
    backslash truncation in `enclosingQuote` and `statementAt`, the three sibling heads'
    quadratic spelling, and `BOUND_TO_ACCOUNTS_RE`'s qualifier spacing. None was revisited
    this round; none is in this task's scope.
+
+## Architect re-review (2026-09-21, round 3) — HELD PENDING FIXES:
+
+Reviewed at 3200f742 via `/ce-code-review` across five lenses — correctness,
+project-standards, testing, adversarial, learnings — plus one validator batch over both
+surviving findings and the architect's own regex-level and suite-level probes. 3200f742 is
+an ancestor of `main`; no orphan SHA, and 59823277 records the task move as a single `R`.
+
+Two things about the run itself, because they bound what it proves. The cross-model
+adversarial pass did NOT run: the scope was a fixed SHA rather than the working tree and no
+different-provider route is installed on this host, so the lens ran in-process and has no
+independent-family corroboration this round. And the working tree advanced past 3200f742
+mid-review — a sibling commit on this same file landed — so the review ran from
+`git archive 3200f742` copies and every line number below is a line number in the file AT
+3200f742. Line numbers read off the current worktree will be wrong. No reviewer was allowed
+to touch a database, so the live-server answers quoted in the new prose (`relation
+"onlyaccounts" does not exist`, `schema "onlypublic" does not exist`, all four `ONLY`/paren
+whitespace spellings parse) were NOT re-derived this round; they stand on the round-3 signal
+block's own check.
+
+**What held up, so it is not redone.** All four round-2 items landed, item 1 on the second
+resolution. Re-derived by execution rather than taken from the note, by three lenses and the
+architect's probe independently: the code delta is exactly the two assertion lines and every
+regex-bearing line is identical to the parent; relaxing the first alternative's boundary
+alone, or making its paren optional alone, leaves the suite 25/25 green, both together red
+the `onlyaccounts` line alone, and widening the second alternative to `ONLY\s*` reds that
+line alone out of all 379 softened assertions; `ONLY\b\s*\(?\s*` admits exactly what the
+committed group does (0 divergences over 12.2M enumerated heads) and carries the quadratic
+curve; the six-ordering matrix reproduces cell for cell, the two-group line answering for
+the three orderings that move `IF EXISTS` and `ONLY` relative to each other and the
+three-group line for all five; the paren-branch table reproduces row for row; the three
+sibling heads do not take `UPDATE onlyaccounts` / `MERGE INTO onlyaccounts` as this table
+and the two target patterns resolve them to the relation they name; all three acceptance
+criteria hold. Project standards is clean: the repo's real `anchor_violation()` function,
+shown first to fire on rotten controls and to pass durable ones, fires on none of the added
+lines.
+
+The hold is one sentence. It is held rather than recorded because it is exactly the class
+this task exists to close, and because it is the missing-scope-qualifier slip this round's
+own Self-found item 13 fixed one sentence further down the same comment.
+
+### Item 1 (required). The reason given for leaving the fourth paren spelling unasserted is a false universal.
+
+The fixture comment over the three paren lines says the fourth legal spelling,
+`ONLY( accounts )`, "is left out because every change to the branch that reds it reds one of
+these three as well". That is true of every SINGLE-ATOM change to the branch and false of
+the branch in general. Split the paren alternative into a closed-up style and a
+spaced-before style:
+
+```
+(?:ONLY\b\(|ONLY\b\s+\(\s*|ONLY\s+)?
+```
+
+All three asserted spellings still match. Only `ONLY( accounts )` stops matching. The suite
+stays 25/25 green with every `expect` softened, and `ALTER TABLE ONLY( accounts ) DROP COLUMN
+updated_at;` planted in a migration goes uncounted where the committed pattern reds it. The
+variant `(?:ONLY\b\s*\(|ONLY\b\s+\(\s*|ONLY\s+)?` behaves the same. Found independently by
+the correctness and adversarial lenses, confirmed by the validator by execution, and
+reproduced by the architect at the regex level. The same comment calls a style split "a
+change" to the branch a few lines later, so the universal is contradicted inside its own
+container.
+
+The fix is prose, and it is the qualifier the very next sentence of that comment already
+carries: say every single-atom change to the branch that reds it reds one of these three as
+well. Checked against the single-atom rows before prescribing it: making the run before the
+paren mandatory reds `ONLY(accounts)` with it, deleting the run after the paren reds
+`ONLY ( accounts )` with it, and dropping the paren alternative or the paren atom reds all
+three; the remaining single-atom changes do not red the fourth spelling at all.
+
+Do NOT land the fourth fixture instead. With `ONLY( accounts )` asserted, `ONLY(accounts)`
+no longer reds alone when the run before the paren is made mandatory, and `ONLY ( accounts )`
+no longer reds alone when the run after it is deleted, so "two of the three carry a red bar
+of their own" and "which no other line here reaches" would both become false, and the line
+would guard a refactor nobody is proposing.
+
+Correct this task file's own record with it: the round-3 signal block's `[TODO Architect]`
+item 1 repeats the same universal ("every change to the branch that reds it reds one of the
+three asserted spellings as well"). Restate it in place, as round 2's item 4 was handled.
+
+Keep the round to that. No other comment text changes, no assertion changes, no pattern
+change: the expected diff is one reworded sentence in the test file plus the task-file
+correction. Probe: build the style-split pattern above in a scratch copy and show the three
+asserted lines stay green while the planted fourth spelling goes uncounted, which is what
+makes the unscoped sentence false and the scoped one true.
+
+### Dismissed this round, recorded so they are not re-raised
+
+- **A closed-up `UPDATE ONLY(accounts) SET updated_at = NOW()` passes every arm silently.**
+  Pre-existing: the DML heads are byte-identical to the parent. `UPDATE_TARGET_RE`,
+  `MERGE_TARGET_RE` and `ACCOUNTS_STATEMENT_RE` spell their clause `(?:ONLY\s+)?`, so with no
+  space before the paren the two target patterns capture the keyword `ONLY` as the table,
+  `NOT_A_TABLE` does not reject it, and the statement detector does not match; the write
+  resolves to a plausible OTHER table, which is the silent direction. Demonstrated by plant
+  in a migration and in a `src` file: 25/25 green, while the one-space spelling reds two
+  tests. Dismissed on the user's canary bar: no code in either tree spells it, and a
+  migration that says `UPDATE ... accounts SET updated_at` is what code review catches
+  whatever sits between the keyword and the table. Two fix shapes were verified in isolated
+  copies and are recorded so a later decision does not re-derive them: adding `'only'` to
+  `NOT_A_TABLE` makes it fail closed with the clean tree still green, and respelling the
+  three heads with the ALTER head's `(?:ONLY\b\s*\(\s*|ONLY\s+)?` resolves the head to
+  `accounts` and removes their quadratic shape in the same change. That `UPDATE ONLY(accounts)`
+  parses was inferred from the `relation_expr` production it shares with `ALTER TABLE`, not
+  read off a server.
+- **Round-3 `[TODO Architect]` item 2, pruning the `ONLY (accounts)` line.** Dismissed; keep
+  it. It holds the ordinary one-space spelling, and removing a reviewed fixture is churn that
+  buys nothing.
+- **Round-3 `[TODO Architect]` item 3, a second pin for the second alternative's required
+  space.** Dismissed as preemptive hardening. The single point of failure is documented in
+  both the docblock and the fixture comment, which is the right weight for it.
+- **Round-3 `[TODO Architect]` item 1, the fourth spelling as a fixture.** Resolved by item 1
+  of this hold: it stays unasserted and the sentence explaining why is corrected.
+
+### No action on this task
+
+- Round-2 `[TODO Architect]` items 2 and 3 — the trigger, rule and routine arms scanning
+  `migrations` only, and the table-rebuild-and-rename idiom — are already carried on
+  `backend-accounts-updated-at-writer-canary`, which owns the file's reader and arms.
+  Triaging them here would split one decision across two task files.
+- Round-2 item 4 was dismissed in the round-2 hold, and item 7 is its own pending task.
+- Round-3 `[TODO Architect]` item 4, the abort-masking point (every `alterations(...)`
+  assertion shares one `it`, so a plain run names only the first red): no action. It was used
+  by every lens this round, and whether it is worth a learnings entry is decided at archive.
+
+### Left open, NOT decided — do not act on these
+
+Round-2 `[TODO Architect]` items 1, 5 and 6 — the catalog-qualified three-part name
+(`pevo_app.public.accounts`), the backslash truncation in `enclosingQuote` and `statementAt`,
+and the three sibling heads' quadratic spelling — have never been given a disposition. They
+are with the user as an open triage decision. Item 5 was not re-verified at the current
+HEAD, and the reader it lives in is being reworked on the writer-canary task. None of the
+three is in scope for the round-4 fix; archiving this task waits on their disposition.
+
+### Residual risks recorded, no action asked
+
+`ALTER TABLE onlypublic.accounts` is named in the docblock and only `onlyaccounts` is
+asserted; every natural mutant tried admits both together, and only a contrived change
+admits the qualified one alone. A second suite-invisible quadratic spelling exists beside
+the one the cost paragraph names — the first alternative's paren made optional alone, with
+the second alternative kept — and "against that one spelling this paragraph is all there is"
+can be read as saying there is only one; it falls under the timing-assertion class already
+declined, and no claim in the paragraph is false. The equivalence results are bounded-corpus
+measurements, not proofs.
