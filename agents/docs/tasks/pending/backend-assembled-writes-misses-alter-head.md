@@ -250,10 +250,19 @@ one), so it is wording only. Carry the hedge across so the three statements agre
   the shipped code is correct on the input, the failure direction is a loud false red, and
   `src` spells no ALTER.
 
-### Not triaged this round
+### The four `[TODO Architect]` gaps, triaged by the user (2026-09-21). No action on this task.
 
-The four `[TODO Architect]` pre-existing gaps above are the architect's to route and need
-no backend action. Two appear to overlap tasks already in `pending/` (the routine arms'
-tree in `backend-alter-accounts-if-exists-evades-pin`, the `public.` qualifier in
-`backend-trigger-bind-qualifier-admits-no-spacing`); the architect is checking before
-filing or dismissing.
+1. Routine arms read `migrations` only: FILED as `backend-routine-arms-read-migrations-only`.
+   It was already open on `backend-accounts-updated-at-writer-canary`'s residual list and
+   carried forward undecided by the IF EXISTS review; the new task supersedes those entries.
+2. `NOT_A_TABLE` misses the DDL uses of `UPDATE`: DISMISSED on the user's canary bar.
+   Neither tree spells `ON UPDATE CASCADE`, `GRANT UPDATE ON`, `BEFORE UPDATE ON` or the
+   rest (checked by grep at `72f1196d`), and it is the class of the `'only'` addition
+   dismissed on the IF EXISTS task.
+3. Allowlists license by count: DISMISSED as recorded. It is on the writer-canary residual
+   list, and this range's `accountsColumnWriters` docblock now states the limit in the code.
+4. Routine-bind read and the `<unnamed>` exemption: the qualifier spacing is
+   `backend-trigger-bind-qualifier-admits-no-spacing` already; the "no exemption can match"
+   docblock sentence is APPENDED to that task as an architect note; the `LITERAL_CAP` and
+   joined-`EXECUTE` part is DISMISSED, since nothing changes in outcome while the exemption
+   list is empty.

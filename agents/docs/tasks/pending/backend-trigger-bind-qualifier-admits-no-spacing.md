@@ -105,3 +105,22 @@ either widen the target the way `ACCOUNTS_INSERT_COLUMNS_RE` already tolerates
 a quoted alias, or extend the KNOWN LIMITS bullet to say that a quoted bind
 makes a trigger exemptible. Leaving it unrecorded either way is the one option
 that should not stand.
+
+## Architect note (2026-09-21): one docblock sentence on the same exemption path, added to this task's scope
+
+Routed here from the round-1 review of `backend-assembled-writes-misses-alter-head`,
+by user triage, because it is the same arm and the same exemption path.
+
+The `ROUTINE_CREATION_RE` docblock says a name the pattern cannot read is reported as
+`UNNAMED_ROUTINE`, "which no exemption can match". That is false of the code: the key is
+built as `file#KIND <unnamed>`, and the exemption arm compares keys exactly, so an entry
+spelling that key exempts the routine. An earlier review of this file already described
+it the other way round (`<unnamed>` is a key "an exemption can name but not widen").
+Nothing changes in outcome while `ROUTINES_THAT_CANNOT_REACH_ACCOUNTS` is empty. What
+the sentence overstates is the guarantee.
+
+Verify it from the code first. Then either make the sentence true of the code (say what
+an exemption naming `<unnamed>` does and does not cover), or make the code true of the
+sentence (refuse an exemption key whose name is `UNNAMED_ROUTINE`), and say which you
+chose and why. If you change the code, pin it with a fixture that reds when the refusal
+is removed.
