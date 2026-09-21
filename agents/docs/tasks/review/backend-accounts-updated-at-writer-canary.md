@@ -2502,3 +2502,191 @@ They sit in the one place the three adversarial passes did not look, which is an
 interpolation met somewhere other than the main path, and every interpolation fixture in
 the file puts its `${` on the main path. That is the gap to close in the pins, not only
 in the code.
+
+## Backend re-review signal (2026-09-21, commit 79cb6536)
+
+One commit, verified an ancestor of `main` with `git merge-base --is-ancestor`. Every
+probe ran in scratch copies built from `git archive HEAD`, with `node_modules` and the
+repo-root `.env` symlinked. The shared checkout was touched only to apply the finished file
+and commit it, and its `git status` held only a sibling's `CONCEPTS.md` throughout. Each
+hold probe was reproduced at HEAD before any change.
+
+All six items and the fold-in landed. The round then went further than the hold. Four
+adversarial Workflow passes ran on the fix, and they showed that the hand-written
+interpolation close cannot be made sound. Every regex-or-division rule it tried closed some
+shapes and opened others. So the close now comes from TypeScript's own parser, and a new
+tree arm compares the reader's state with TypeScript's at every line end. The reasoning is
+in the `typescriptView` and `TypeScriptView` docblocks.
+
+### Item 1. An interpolation is recognised wherever template text holds one.
+
+Probe: the hold's planted file. At HEAD the suite was 25/25 GREEN; now both writer arms are
+red. Its control (drop the apostrophe) reds in both trees. The glob-template spelling and the
+HTML-attribute spelling behave the same.
+
+Construct: the interpolation test runs straight after the block branch, ahead of the value
+and dollar-span branches, and it copies to TypeScript's close (`closes.has(i)`).
+
+Pins:
+- The three writer fixtures `insideValue`, `globbed` and `insideSpan`. Each also asserts
+  agreement with TypeScript at every line end; the nesting item below says why.
+- The two minimal members plus a dollar-span member, as end-of-line state pins.
+- A family of 1,728 generated templates. 274 of them are misread at HEAD and 0 now.
+- Moving the arm back to the main path, or between the two branches, reds the fixtures for
+  exactly the placements it drops.
+
+### Item 2. Fail-closed, and why.
+
+A wrapped interpolation is recorded (`BlankedCode.unclosed`) and reported by the new arm
+'every interpolation closes on the line it opens', with line and column. The agreement arm
+reds it too.
+
+Probe: the hold's wrapped file. At HEAD it was 25/25 GREEN; now both arms are red.
+
+Why fail-closed: with the parser supplying the close's line, copying across lines would be
+easy. It is refused because refusing costs nothing while neither tree wraps an interpolation,
+and a copy would widen item 6's narrowing to every line the interpolation spans. The cost is
+stated in the `BlankedCode.unclosed` docblock: any wrapped interpolation added later reds,
+harmless or not. 100 dependency files wrap one, zod and tiptap among them.
+
+Both "as it was before" sentences are gone. The opaque-arm comment now names both things
+that make the value real.
+
+### Item 3. The fixture answers for the close.
+
+The close is asserted directly beside the scan assertion. With the close taken from the
+parser, the reader has no quote tracking of its own left to give a regex judgement to. The
+`frontend/src/editor.js` attribute-escaping spelling is pinned as not reported. At HEAD,
+`interpolationEnd` returned -1 on that very line. A TypeScript oracle over 571 repo files
+counts 2 misjudged closes at HEAD and 0 now.
+
+### Item 4 and the fold-in.
+
+The `braced` fixture goes through `scansOf` and through the agreement check. The escaped-quote
+and escaped-backtick fixtures are its siblings. Each was red under its own deletion while the
+hand-written lexer existed; each is red now under a reader that copies to the nearest `}`.
+The KNOWN LIMITS sentence is replaced with what the fixtures pin.
+
+### Items 5 and 6. Text.
+
+- Item 5: the `ticks` comment names the boundary set the main-path `/*` arm hands to
+  `blockCloses`, by that symbol, and it says how the in-literal call's set differs.
+- Item 6: KNOWN LIMITS now says the unmasked write is seen, the comment-gap form is silent,
+  and the flat read that copying replaced caught it. Probe reproduced: GREEN at HEAD, and
+  still GREEN, as the hold asked.
+
+### Reported as the hold asked
+
+- **The ALTER with a dollar-quoted DEFAULT.** In `src` the assembled-write arm reds it at HEAD
+  and now. The ALTER-column arm was silent on it at HEAD and reds it now, because the
+  interpolation inside the span is copied.
+- **The statement read.** `statementAt` and `enclosingQuote` still read an interpolation flat.
+  On today's trees they read exactly what they read at HEAD, since the blanked text is
+  byte-identical. The residual is now written into KNOWN LIMITS and both docblocks rather
+  than only in this file.
+
+### User decision, 2026-09-21
+
+HEAD has a pre-existing silent pass: a SQL `--` comment on the same line as its template's
+closing backtick blanked the backtick, as in ``q(`SELECT count(*) FROM sessions -- live
+ones only`)``. Item 1's fix removed a HEAD misread that had caught some of those lines by
+accident, and without this fix those lines turn from HEAD-red to silent.
+
+Surfaced to the user, who chose to include it. The comment now ends:
+- at the template's own closing backtick
+- at any escape spelling a line feed or carriage return (`\n`, `\x0a`, `\u000a`, `\u{a}` and
+  the `\r` forms); the escape is blanked with the comment
+
+The comment also steps over interpolations, and records a wrapped one.
+
+### What the adversarial passes found, and where each landed
+
+Four passes, dispatched versus returned: 14/14, 14/14, 14/14 and 10/10. No agent died.
+Each pass independently reproduced its silent and false-red findings before anything was
+acted on.
+
+- **Hand-written interpolation closes** (`x!!`, a trailing-dot `1.`, an identifier ending in
+  a combining mark, a pattern after `if (x)`, escapes, templates three deep). Replaced by
+  `typescriptView`. Template literal TYPES are covered too.
+- **The `$$` of `$${n}` taken for a dollar tag**, both as a span's close and as the
+  recurrence that admits an opener. Fixed by `tagAt`.
+- **A SQL comment's extent searched raw**, across an interpolation's `*/`, an escaped
+  backtick, or a `$$` inside a nested template. Fixed by `maskedTemplateText` and
+  `lineCommentEnd`; the block branch now steps over interpolations in template text.
+- **PostgreSQL block comments nest.** The reader closed at the inner `*/`, which was silent in
+  migrations at HEAD. See `BlankState.nested`.
+- **The TypeScript-agreement arm** (new). Every silent pass these passes built from a flag
+  left wrong past its line now reds. It also makes two pre-existing main-path misreads loud
+  when they cross a line: `budget[k]--` and the phantom pattern that eats a `//`. It finds 0
+  disagreements in backend/src, backend/tests and the frontend. Over 13,912 dependency files
+  it reds 110: 99 are wrapped interpolations, 5 are the two known main-path misreads below,
+  and 6 were a gap in the view's comment scan (a doc comment trailing a file), now fixed and
+  pinned.
+
+**Why nesting stays, and what it costs.** Nesting makes the standard hider fail when the
+reader's flag is wrong. That hider is a route-comment glob closed by a later `/** */`, and
+under nesting the doc comment's `/*` counts one level deeper. That is why each writer
+fixture now also asserts agreement with TypeScript: the misread itself shows at the line end,
+whichever hider is used.
+
+The last pass ran a differential over about 2.3 million valid fixtures, against a reference
+PostgreSQL lexer. It found every write HEAD caught and this misses to need a documented
+misread as its trigger:
+- a value spanning lines
+- an `E'\''` string
+- an unbalanced tag inside dollar-quoted data
+- a comment closer spelled with an escape
+
+It found 0 such cases on ordinary TypeScript or PostgreSQL-valid SQL. KNOWN LIMITS records
+this, with the trigger classes.
+
+### Verification
+
+- The canary is 29 tests (was 25), green. `tests/eslint/` is 9 files / 139 tests green,
+  measured in the shared checkout after the file was applied.
+- `npm run typecheck` reports 0 errors. ESLint is clean on the file.
+- The pre-commit anchor gate finds 0 hits over the 1,281 added lines. It was run standalone
+  with `ALLOW_MARKER` set, and its control lines fire. The hook passed on the commit itself.
+- **No-op on today's trees.** Blanked text, span events, entry stacks and end states are
+  byte-identical to HEAD across all 119 scanned files (44,233 lines). No file ends with a
+  nested comment open.
+- **TypeScript oracle** over 1,112 real files (571 repo, 541 dependency): 0 template-flag
+  mismatches at about 298,000 line ends, 0 misjudged interpolation closes, and the comment
+  blanking matches TypeScript's.
+- **A 73-mutant corpus** over the added code: 72 red, and 1 red by hanging (a close on a
+  later line mapped to a column makes the copy loop). Tokens that proved inert were deleted
+  rather than kept: the arm's `!sql`, `next === '{'` and `template` conjuncts are implied by
+  the parser's map, and one comment-range call was dead.
+
+### [TODO Architect] Surfaced, not acted on
+
+- **`x[k]--`.** Read as a SQL comment in TypeScript code, because `DECREMENT_RE` wants a name
+  character on either side. Pre-existing. The cross-line form is now loud through the
+  agreement arm. The same-line form (`if (retries[id]-- > 0) await q('UPDATE accounts SET
+  updated_at = NOW() ...')`) is silent at HEAD and now. Accepting `)` or `]` before the `--`
+  closes it.
+- **`export default /re/`.** `default` is missing from `PATTERN_KEYWORD_RE`. Pre-existing; the
+  cross-line form is loud now.
+- **Two pre-existing false reds, identical at HEAD.**
+  - Error-message prose that names a write, e.g. `Failed to update accounts for
+    ${username}`, reds the assembled-write and readable arms.
+  - A TypeScript binding named `updated_at` introduced by destructuring or as a parameter
+    default reds the fail-closed resolution arm.
+- **A possible next step, for you to weigh.** The reader's remaining TypeScript layer (its
+  template flag, the main-path regex judgement, TypeScript comments and strings) could come
+  from the same parser view. That would retire the remaining main-path misread classes. It
+  is a design decision rather than a fix, so it is offered, not done.
+- **The `upgraded_at IS NULL OR upgraded_at >= updated_at` CHECK constraint.** Still an open
+  architect decision.
+
+### Residuals, recorded in KNOWN LIMITS rather than chased
+
+- A write inside an interpolation with a comment in its token gap (item 6).
+- The flat interpolation read in `statementAt` and `enclosingQuote`. Every consequence found
+  is loud.
+- The nesting interplay with documented phantoms, and comment closers spelled with an escape
+  (read raw).
+- `String.raw` read as cooked. This can be silent, not only loud.
+- An unbalanced tag inside dollar-quoted data.
+- Misreads whose damage ends on their own line, which the agreement arm cannot see.
+- The refusal's cost on any future wrapped interpolation.
