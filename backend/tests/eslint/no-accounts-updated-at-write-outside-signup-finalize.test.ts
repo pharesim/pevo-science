@@ -4017,6 +4017,11 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     expect(how(["  'ALTER TABLE accounts DROP COLUMN ' + column,"])).toEqual(['concatenation']);
     expect(accountsColumnAlterations(readable([{ rel: 'x.ts', lines: dropped }]))).toEqual([]);
     expect(unresolvedIn(dropped)).toEqual([]);
+    // The head is matched in any case, and the interpolation is looked for in
+    // the whole statement rather than on the head's line. Each of these goes
+    // silent if its feature does, and nothing else reads an ALTER's assembly.
+    expect(how(['  await q(`alter table accounts drop column ${column}`);'])).toEqual(['interpolation']);
+    expect(how(['  await q(`ALTER TABLE accounts', '    DROP COLUMN ${column}`);'])).toEqual(['interpolation']);
     // Spelled-out statements, one-line and multi-line, are not assembled.
     expect(how(["  'UPDATE accounts SET custody = $1 WHERE id = $2',", '  [custody, id],'])).toEqual([]);
     expect(how(['  `UPDATE accounts', "   SET custody = 'light', updated_at = NOW()", '   WHERE id = $1`,'])).toEqual([]);
