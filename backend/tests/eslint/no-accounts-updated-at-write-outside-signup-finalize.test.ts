@@ -163,16 +163,18 @@
  *      cannot see it at all, and anchoring on the table also survives a
  *      misattribution by the upward walk.
  *
- *   4. NO ASSEMBLED `accounts` WRITE. A statement partly held in a variable
- *      defeats the table-first read, which finds a placeholder where the SET
- *      list should be, so the shape is refused where the join is spelled on
- *      the statement's own lines: a `${...}` interpolation anywhere in it, or
- *      a `+` beside its opening or closing quote. The fragment carrying the
- *      assignment is caught separately by the fail-closed arm, because no
- *      readable head's statement reaches a constant declared on its own.
- *      The `ALTER TABLE accounts` head is read here too, and it has no such
- *      second catcher: an ALTER carries no assignment, so a column clause
- *      held in a variable is refused by this scan or by none.
+ *   4. NO ASSEMBLED `accounts` WRITE OR ALTER. A statement partly held in a
+ *      variable defeats the table-first read, which finds a placeholder where
+ *      the SET list should be, so the shape is refused where the join is
+ *      spelled on the statement's own lines: a `${...}` interpolation anywhere
+ *      in it, or a `+` beside its opening or closing quote. A SET-list
+ *      fragment carrying the assignment is caught separately by the
+ *      fail-closed arm, because no readable head's statement reaches a
+ *      constant declared on its own. A column LIST held in a variable has no
+ *      such second catcher, since a list names the column with no `=` after
+ *      it, and neither, as a rule, does an `ALTER TABLE accounts` clause: a
+ *      drop, a rename and a retype each spell the column with no assignment of
+ *      their own. This scan reads the ALTER head for that reason.
  *      Read-side interpolation is untouched; the recovery lookups themselves
  *      interpolate their window and are SELECTs.
  *
@@ -233,19 +235,24 @@
  *     of a join spelled away from the statement's own lines (a fragment pushed
  *     into an array and joined later, a template built by a helper): the
  *     assembled-write scan cannot see the join, and only a fragment that
- *     spells the assignment reds by resolution. None of that backstop extends
- *     to the ALTER head, because what the fail-closed arm fires on is the
- *     assignment token, and a retype, a drop or a rename carries none. An
- *     ALTER whose table is named dynamically (`ALTER TABLE ${table}`, an
- *     `EXECUTE format('ALTER TABLE %I DROP COLUMN updated_at', 'accounts')`),
- *     or whose column clause is joined on away from its own lines, reds
- *     nowhere. What the ALTER head does get is the assembled-write scan, which
- *     refuses a join spelled on the statement's own lines in `src` and nothing
- *     further. What makes a text scan sound today is
- *     that no write or ALTER in either tree names its table, or assembles its
- *     text, that way, and that `src` spells no ALTER at all — and that a
- *     migration doing so would have to reach for dynamic SQL to write one
- *     static column, which is a shape worth a second look on its own.
+ *     spells the assignment reds by resolution. None of that backstop reaches
+ *     a column LIST held in a variable, or, as a rule, the ALTER head: what
+ *     the fail-closed arm fires on is the assignment token, a list names the
+ *     column with no `=` after it, and a drop, a rename and a retype each
+ *     spell it with no assignment of their own. (An equality inside a USING
+ *     expression or a CHECK is read as one, which is why that is only a
+ *     rule.) So an ALTER whose table is named dynamically (`ALTER TABLE
+ *     ${table}`, an `EXECUTE format('ALTER TABLE %I DROP COLUMN updated_at',
+ *     'accounts')`), or whose column clause is assembled in any way the
+ *     assembled-write scan does not recognise, reds nowhere. That scan
+ *     recognises two, in `src` only: a `${...}` interpolation in the
+ *     statement's text, and a `+` beside its quote. An array `.join`, a
+ *     `.concat` or a `+=` is silent even on the statement's own line. What
+ *     makes a text scan sound today is that no write or ALTER in either tree
+ *     names its table, or assembles its text, in any of those ways, and that
+ *     `src` spells no ALTER at all — and that a migration doing so would have
+ *     to reach for dynamic SQL to write or alter one static column, which is
+ *     a shape worth a second look on its own.
  *   - Shapes that are not house style and are not read: a quoted identifier
  *     (`UPDATE "accounts"`), an upper-case `UPDATED_AT`, a positional
  *     `INSERT INTO accounts VALUES (...)` with no column list, an
@@ -773,9 +780,10 @@ const ALTER_ACCOUNTS_RE =
  *  ALTER has. {@link accountsColumnWriters} asks one the ALTER arm already
  *  answers for the ALTER head, from the same read. The routine-creation head,
  *  read by {@link routineSites}, is not an `accounts` head and stays out: here
- *  it would make an interpolated routine an assembled `accounts` statement, and
- *  the exemption arm refuses every routine it finds whatever that routine's
- *  read reaches. */
+ *  it would make an interpolated routine an assembled `accounts` statement.
+ *  Its read decides only whether a routine counts as bound to the table; the
+ *  exemption arm, which reads the migrations, refuses every unexempted routine
+ *  it finds whatever that read reaches. */
 const READ_FROM_HEADS = [ACCOUNTS_STATEMENT_RE, ALTER_ACCOUNTS_RE];
 
 /** Trigger, rule and stored-routine creation, in every spelling PostgreSQL
@@ -796,9 +804,10 @@ const UNNAMED_ROUTINE = '<unnamed>';
 const BOUND_TO_ACCOUNTS_RE = /\b(?:ON|TO)\s+(?:public\.)?accounts\b/i;
 
 /** A template interpolation inside a SQL literal, and a string join on either
- *  side of one. Harmless in a read; refused inside an `accounts` write because
- *  each moves part of the statement out of the statement, leaving the
- *  table-first read a placeholder where the SET list should be. The join is
+ *  side of one. Harmless in a read; refused inside an `accounts` write or ALTER
+ *  because each moves part of the statement out of the statement, leaving the
+ *  arm that reads it a placeholder: the table-first read where the SET list
+ *  should be, the ALTER arm where the column should be. The join is
  *  recognised where it is spelled against the literal: a `+` closing the text
  *  before the opening quote, or opening the text after the closing quote (on
  *  that line, or leading the next). */
@@ -1918,14 +1927,18 @@ function columnAssignments(files: Readable[]): Map<string, Occurrence[]> {
  *  two statements ends the first read at its semicolon, so a second statement
  *  beside it would otherwise go unread.
  *
- *  The DML head alone, not every head in {@link READ_FROM_HEADS}, and on
+ *  The write head alone, not every head in {@link READ_FROM_HEADS}, and on
  *  purpose. An ALTER statement is read from the same position by
  *  {@link accountsColumnAlterations}, whose test is any mention of the column,
  *  and every text {@link writesColumn} accepts spells the column by name: the
  *  assignment, the row target list and each column list are all matched on it.
- *  An ALTER this walk could flag is therefore a red bar there already, against
- *  the allowlist that pins alterations, and reading it here as well would only
- *  count the one statement a second time, against the writer allowlists. */
+ *  An ALTER this walk could flag is therefore counted there already, and
+ *  anywhere but the licensed migration that count is a red bar; reading it
+ *  here as well would only count it a second time, against the writer
+ *  allowlists. In the licensed migration an ALTER edited in place is absorbed
+ *  by the count, which is a limit of licensing by count rather than of this
+ *  walk: a retype edited to `USING now()` spells no comparison, so a widened
+ *  walk would not see it either. */
 function accountsColumnWriters(files: Readable[]): Occurrence[] {
   const found: Occurrence[] = [];
   for (const { rel, lines, code } of files) {
@@ -1959,13 +1972,15 @@ interface AssembledWrite {
 /** Every `accounts` statement whose text is assembled rather than spelled,
  *  read from every head in {@link READ_FROM_HEADS}.
  *
- *  The ALTER head is the one that most needs this arm. A DML statement with its
- *  SET list held in a variable still has a second catcher: the fragment spells
- *  an assignment, and no readable head reaches it, so the fail-closed arm reds.
- *  An ALTER carries no assignment. A column clause held in a variable leaves
- *  {@link accountsColumnAlterations} a placeholder where the column should be
- *  and gives the fail-closed arm nothing to resolve, so an interpolated
- *  `ALTER TABLE accounts DROP COLUMN ${...}` is reported here or nowhere. */
+ *  Only one assembled shape has a second catcher: a SET list held in a
+ *  variable spells an assignment that no readable head reaches, so the
+ *  fail-closed arm reds on the fragment. A column list held in a variable
+ *  spells none, and neither does the clause of a drop, a rename or a retype,
+ *  so an interpolated `INSERT INTO accounts (${...})` or `ALTER TABLE accounts
+ *  DROP COLUMN ${...}` leaves every other arm a placeholder and is reported
+ *  here or nowhere. That is why the ALTER head is read here, and why the
+ *  dynamic-SQL entry under KNOWN LIMITS names the joins this arm does not
+ *  recognise. */
 function assembledWrites(files: Readable[]): AssembledWrite[] {
   const found: AssembledWrite[] = [];
   for (const { rel, lines, code } of files) {
@@ -2017,7 +2032,10 @@ function routineSites(files: Readable[]): RoutineSite[] {
   return found;
 }
 
-/** Every `ALTER TABLE accounts` statement that names the column. */
+/** Every `ALTER TABLE accounts` statement that names the column. The ALTER
+ *  head alone, because the question is one only an ALTER has: a write head's
+ *  statement names the column whenever it writes it, so read here, every
+ *  licensed writer would count as an alteration too. */
 function accountsColumnAlterations(files: Readable[]): Occurrence[] {
   const found: Occurrence[] = [];
   for (const { rel, lines, code } of files) {
@@ -2267,8 +2285,8 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
       'an accounts write or ALTER whose text is partly held in a variable is unreadable to the ' +
         'scan that reads it: the table-first scan sees a placeholder where the SET list should ' +
         'be, and the ALTER arm one where the column should be. Spell the statement out, or ' +
-        'bind the value as a parameter; an identifier cannot be bound, so an ALTER has to be ' +
-        `spelled. Why it matters: ${ORDERING_RATIONALE}\n` +
+        'bind the value as a parameter; an ALTER takes no bind parameters at all, so it has ' +
+        `to be spelled. Why it matters: ${ORDERING_RATIONALE}\n` +
         `${assembled.map((write) => write.site).join('\n')}`,
     ).toEqual([]);
   });
@@ -3978,7 +3996,7 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     expect(scansOf(inHandler("    `UPDATE accounts SET note = 'a -- b', updated_at = NOW() WHERE id = $1`,")).tableFirst).toEqual([key]);
   });
 
-  it('an assembled accounts write is read by its interpolation or by its join', () => {
+  it('an assembled accounts write or ALTER is read by its interpolation or by its join', () => {
     expect(SQL_INTERPOLATION_RE.test('SET updated_at = NOW() ${recencyFragment}')).toBe(true);
     expect(SQL_INTERPOLATION_RE.test('SET verify_token = $1, expires_at = $2')).toBe(false);
     const how = (lines: string[]): string[] => assembledWrites(readable([{ rel: 'x.ts', lines }])).map((write) => write.how);
@@ -3988,12 +4006,13 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     expect(how(["  'UPDATE accounts SET custody = $1, ' + recency + ' WHERE id = $2',"])).toEqual(['concatenation']);
     expect(how(["  recency + 'UPDATE accounts SET custody = $1 WHERE id = $2',"])).toEqual(['concatenation']);
     expect(how(["  'UPDATE accounts SET custody = $1, '", '    + recency,'])).toEqual(['concatenation']);
-    // The ALTER head is read as well, and needs it more than the DML heads do.
-    // An ALTER carries no assignment, so a column clause held in a variable
-    // gives the fail-closed arm nothing to catch, and the ALTER arm reads a
-    // placeholder where the column should be. The two controls on those arms
-    // are what make this scan the only one reporting the shape.
-    const dropped = ['async function drop(column: string) {', '  await q(`ALTER TABLE accounts DROP COLUMN ${column}`);', '}'];
+    // The ALTER head is read as well. A drop spells its column with no
+    // assignment, so the column's name held in a constant gives the
+    // fail-closed arm nothing to resolve, and the ALTER arm reads a placeholder
+    // where the column should be. The two controls show both arms silent on
+    // that shape with the name spelled in the same file; the writer walks
+    // never read an ALTER head at all.
+    const dropped = ["const column = 'updated_at';", 'async function drop() {', '  await q(`ALTER TABLE accounts DROP COLUMN ${column}`);', '}'];
     expect(how(dropped)).toEqual(['interpolation']);
     expect(how(["  'ALTER TABLE accounts DROP COLUMN ' + column,"])).toEqual(['concatenation']);
     expect(accountsColumnAlterations(readable([{ rel: 'x.ts', lines: dropped }]))).toEqual([]);
