@@ -740,14 +740,12 @@ export function initEditPage() {
     // than trusted. loadPaperData assigns `reviews` from the enrichment
     // response before it calls _restoreDraft, so the intersection has the
     // paper's reviews in hand. Iterating `reviews` rather than the saved array
-    // is what does the work: a tick whose review is gone finds no match and is
-    // dropped, each surviving entry is rebuilt from the review (normalizing a
-    // persisted shape back to {author, permlink} and collapsing a duplicate),
-    // and the order follows the rendered checklist.
+    // also rebuilds each surviving entry as {author, permlink} (collapsing a
+    // duplicate) and orders the result like the rendered checklist.
     _reconcileAddressedReviews(saved) {
       if (!Array.isArray(saved)) return [];
       return this.reviews
-        .filter(rev => saved.some(tick => tick && tick.author === rev.author && tick.permlink === rev.permlink))
+        .filter(rev => saved.some(entry => entry && entry.author === rev.author && entry.permlink === rev.permlink))
         .map(rev => ({ author: rev.author, permlink: rev.permlink }));
     },
 

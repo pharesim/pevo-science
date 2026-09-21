@@ -2050,24 +2050,20 @@ describe('editPage re-auth window ordering', () => {
   });
 });
 
-
 // The review checklist is the one form field whose loss changes what goes on
 // chain rather than only what the user retypes: a passwordless account's entry
 // gate is allowed to navigate to ORCID while no new file is held, on the
 // premise that everything else is drafted, and a returning form that silently
-// dropped its ticks resubmits without `addresses_reviews`. So the draft carries
-// `addressedReviews` the way it carries the text fields: saved by
-// _scheduleDraftSave, watched so a tick schedules that save, and restored by
-// _restoreDraft. Restore reconciles against the reviews the paper actually
-// carries, because a tick is meaningless once its review is gone from the
-// checklist.
+// dropped its ticks resubmits without `addresses_reviews`. Restore reconciles
+// against the reviews the paper actually carries, because a tick is meaningless
+// once its review is gone from the checklist.
 describe('editPage draft carries the addressed-review ticks', () => {
   const DRAFT_KEY = 'pevo-draft-edit-alice-p1';
 
   const REV_ONE = { author: 'carol', permlink: 'rev-1', body: 'first review' };
   const REV_TWO = { author: 'dave', permlink: 'rev-2', body: 'second review' };
 
-  function tick(rev) {
+  function addressed(rev) {
     return { author: rev.author, permlink: rev.permlink };
   }
 
@@ -2128,13 +2124,13 @@ describe('editPage draft carries the addressed-review ticks', () => {
     try {
       const comp = createComponent();
       comp._initialLoadDone = true;
-      comp.addressedReviews = [tick(REV_TWO)];
+      comp.addressedReviews = [addressed(REV_TWO)];
 
       comp._scheduleDraftSave();
       vi.advanceTimersByTime(2000);
 
       const saved = JSON.parse(localStorage.getItem(DRAFT_KEY));
-      expect(saved.addressedReviews).toEqual([tick(REV_TWO)]);
+      expect(saved.addressedReviews).toEqual([addressed(REV_TWO)]);
     } finally {
       vi.useRealTimers();
     }
@@ -2157,7 +2153,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
       vi.advanceTimersByTime(2000);
 
       const saved = JSON.parse(localStorage.getItem(DRAFT_KEY));
-      expect(saved.addressedReviews).toEqual([tick(REV_ONE)]);
+      expect(saved.addressedReviews).toEqual([addressed(REV_ONE)]);
     } finally {
       comp.destroy();
       vi.useRealTimers();
@@ -2166,25 +2162,25 @@ describe('editPage draft carries the addressed-review ticks', () => {
 
   it('restore reinstates a tick whose review is still on the paper', async () => {
     arrangeLoad([REV_ONE, REV_TWO]);
-    localStorage.setItem(DRAFT_KEY, storedDraft({ addressedReviews: [tick(REV_TWO)] }));
+    localStorage.setItem(DRAFT_KEY, storedDraft({ addressedReviews: [addressed(REV_TWO)] }));
 
     const comp = loadedComponent();
     await comp.loadPaperData();
 
-    expect(comp.addressedReviews).toEqual([tick(REV_TWO)]);
+    expect(comp.addressedReviews).toEqual([addressed(REV_TWO)]);
   });
 
   it('restore drops a saved tick whose review is no longer offered', async () => {
     // rev-2 is gone from the paper by the time the form comes back.
     arrangeLoad([REV_ONE]);
     localStorage.setItem(DRAFT_KEY, storedDraft({
-      addressedReviews: [tick(REV_ONE), tick(REV_TWO)],
+      addressedReviews: [addressed(REV_ONE), addressed(REV_TWO)],
     }));
 
     const comp = loadedComponent();
     await comp.loadPaperData();
 
-    expect(comp.addressedReviews).toEqual([tick(REV_ONE)]);
+    expect(comp.addressedReviews).toEqual([addressed(REV_ONE)]);
   });
 
   // The whole point of carrying the field: the resubmit after the round-trip
@@ -2194,7 +2190,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
     const { invalidatePaperCache } = await import('../../src/api.js');
     invalidatePaperCache.mockResolvedValue({});
     arrangeLoad([REV_ONE, REV_TWO]);
-    localStorage.setItem(DRAFT_KEY, storedDraft({ addressedReviews: [tick(REV_TWO)] }));
+    localStorage.setItem(DRAFT_KEY, storedDraft({ addressedReviews: [addressed(REV_TWO)] }));
 
     const comp = loadedComponent();
     await comp.loadPaperData();
@@ -2205,7 +2201,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
     expect(comp.step).toBe('success');
     const commentOp = broadcastOps.mock.calls[0][1][0];
     const meta = JSON.parse(commentOp[1].json_metadata).pevotest;
-    expect(meta.addresses_reviews).toEqual([tick(REV_TWO)]);
+    expect(meta.addresses_reviews).toEqual([addressed(REV_TWO)]);
 
     comp.destroy();
   });
@@ -2218,13 +2214,13 @@ describe('editPage draft carries the addressed-review ticks', () => {
     const { invalidatePaperCache } = await import('../../src/api.js');
     invalidatePaperCache.mockResolvedValue({});
     arrangeLoad([REV_ONE, REV_TWO]);
-    localStorage.setItem(DRAFT_KEY, storedDraft({ addressedReviews: [tick(REV_TWO)] }));
+    localStorage.setItem(DRAFT_KEY, storedDraft({ addressedReviews: [addressed(REV_TWO)] }));
 
     const comp = loadedComponent();
     await comp.loadPaperData();
     // Non-vacuous: the draft has to have held a tick for the clear to have
     // anything to take.
-    expect(comp.addressedReviews).toEqual([tick(REV_TWO)]);
+    expect(comp.addressedReviews).toEqual([addressed(REV_TWO)]);
     comp.authorName = 'Alice';
     await comp.handleSubmit();
     expect(comp.step).toBe('success');
@@ -2245,7 +2241,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
     expect(editPageTemplate).toContain('isReviewAddressed(rev.author, rev.permlink)');
 
     const comp = createComponent();
-    comp.addressedReviews = [tick(REV_TWO)];
+    comp.addressedReviews = [addressed(REV_TWO)];
 
     expect(comp.isReviewAddressed(REV_TWO.author, REV_TWO.permlink)).toBe(true);
     expect(comp.isReviewAddressed(REV_ONE.author, REV_ONE.permlink)).toBe(false);
