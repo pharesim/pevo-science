@@ -1584,3 +1584,55 @@ so pinning it would be preemptive hardening.
 - Instrumented: across all 39 `isCommentLine` literals the existing suite carries, the no-close
   branch is reached with `undefined` and `true` and never with `false`, which is why the constant
   was uncovered.
+
+---
+
+## Architect re-review (2026-09-22) — ARCHIVED:
+
+Reviewed via `/ce-code-review` scoped to `d179e1a7` (the two canary files only), five lenses
+(correctness, project-standards, testing, adversarial in-process, learnings). The cross-model
+adversarial route was again unavailable on this host (no different-provider CLI installed), so the
+adversarial lens ran in-process.
+
+**All three items held on 2026-09-15 are FIXED**, each verified by execution rather than accepted
+from the signal block:
+
+- Item 1: the set of lines whose `isCommentLine` answer moves with the region argument equals
+  exactly the two populations the restated sentence names, empty set difference both ways, at
+  2,298 / 43,848 / 82,085 generated shapes by three independent enumerations (architect,
+  adversarial, correctness). Directions match the sentence, and the star population is the whole
+  silent over-report surface. Both hold reproductions (`' * trailing prose */'` at false is live;
+  `'  * Number(cached?.hasPassword === false);'` at true is prose) hold.
+- Item 2: "the known-closed reading" pre-exists in the file at the guard site and in the machinery
+  suite. The repo pre-commit anchor gate reports zero hits over the added lines with a known-bad
+  control tripping; no slug, ordinal, line-number, SHA or bare positional anchor was added.
+- Item 3: the mutant `return insideRegion !== false` reddens exactly the new pin and is 16/16 green
+  with the pin removed. Instrumented, the no-close branch receives `false` exactly once across both
+  suites (the pin), so the pin comment's claim is true. A 33-mutant per-assertion ledger shows the
+  pin masks nothing else. The declared placement deviation has no consequence under any lens.
+
+No reader behavior change: the comment-stripped module is byte-identical across the commit, and all
+three readers agree on every line of the 86 files / 21,984 lines under `frontend/src` (architect and
+correctness A/B, separately).
+
+Two findings surfaced and DISMISSED at user triage (2026-09-22):
+
+1. (P3, correctness + adversarial, executed) The new "no value of the argument fixes either"
+   universal has one counterexample: a `//` line inside a template literal that carries its own
+   `*/` with a live interpolation behind it answers live at a region reported open
+   (`[false, true, true]` across true / false / undefined; three controls stay prose at all three).
+   Dismissed as the class-level reading: reaching it needs a comment close inside `//` markup inside
+   a literal plus an over-reporting pass, the same contrivance class as the `/*/` shape dismissed in
+   three earlier rounds, and it deviates in the loud direction. A further prose round on this
+   predicate was judged more likely to add a defect than remove one.
+2. (pre-existing, from `4ef94970`, surfaced by the implementer and confirmed by two lenses)
+   `enclosingSymbol`'s template-branch bound `j < lineIndex` has no probe whose target line carries a
+   backtick; the `<=` mutant stays 16/16 green and moves the resolved symbol on 32 real lines, none
+   carrying a password-state read. Dismissed: the mutant resolves outward to module scope, which no
+   canary licenses, so set-equality plus the width pins fail closed; a pin would be preemptive
+   hardening.
+
+The two `/*/`-only surviving mutants (close-search origin, `opensUnterminatedBlock` origin) reach
+zero lines in the tree and stay dismissed as contrived. The self-truncating-docblock hazard deferred
+to archive by the 2026-09-14 hold is written via `/ce-compound` at archive. The backend port's drift
+notes ride on `backend-enclosing-symbol-port-backreference`, still in `pending/`.
