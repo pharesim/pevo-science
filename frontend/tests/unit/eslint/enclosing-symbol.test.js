@@ -100,6 +100,12 @@ describe('enclosing-symbol: the resolver, the comment predicate, the brace walk 
     // would read as live.
     expect(isCommentLine('/* hasPassword lives in the resolver */', false)).toBe(true);
     expect(isCommentLine('/* v8 ignore next */ const usesPassword = status.hasPassword;', false)).toBe(false);
+    // An opener whose comment runs on past the line reaches the no-close
+    // branch instead, which answers prose for every prefix that gets
+    // there. No other probe brings a region known closed to that branch,
+    // so a reading that diverged from the constant only at that value
+    // stayed green before this pin.
+    expect(isCommentLine('  /* an opener whose comment runs on', false)).toBe(true);
     // A close-leading line is the one star shape the known-closed reading
     // leaves alone:
     // whatever the region pass believes, it ends a comment and is answered by

@@ -473,11 +473,22 @@ export function sourcesUnder(root) {
  *  hide the read. Only further comment may follow the close for the line to
  *  stay prose. The rule is written for all three prefixes: inside an open
  *  region a `//` is comment text like any other, so a line that begins with
- *  one and then closes the region is live behind its close too. Where the
- *  region pass is right, two shapes defeat it, both named as residuals here;
- *  where it under-reports, each arm falls back to its shape reading, silently
- *  for a `//` line that carries a close, loudly for a star line that does
- *  not.
+ *  one and then closes the region is live behind its close too. The region
+ *  pass these readings rest on can be right, can under-report and can
+ *  over-report. Two shapes defeat the predicate whatever it says, both
+ *  named as residuals here; no value of the argument fixes either, so they
+ *  sit outside this account rather than under one of its three states.
+ *  What the pass moves is two populations and no others: a `//` line that
+ *  is live behind its close, and a star line that is neither a close nor
+ *  live behind one. Everything else answers on shape whatever the pass
+ *  says, an opener, a close-leading line and a line with no comment prefix
+ *  alike. Not itself a close is the known-closed reading's own condition,
+ *  a test of the prefix and not of the rest of the line, so that condition
+ *  also takes a star line whose close is the last thing on it, although
+ *  that close would have answered prose. Under-reporting makes the `//`
+ *  population silent and the star population loud; over-reporting reverses
+ *  both, and the star population is the whole of what over-reporting
+ *  drops silently.
  *
  *  Shape alone decides every case but two, and a third it decides on shape
  *  and gets wrong, which is the TEMPLATE PARITY residual. A leading `*` (a
@@ -565,11 +576,11 @@ export function isCommentLine(line, insideRegion) {
   // because nothing is open for it to continue and whatever follows it, a
   // trailing comment included, cannot make it one. The close search is
   // consulted for the rest, the close-leading line included, which is why
-  // the reading above excludes it. An opener is searched past its own two
-  // characters, so an opener that begins with a star is not read as
-  // self-closing; a `//` inside a region, a `*` with a region open or none
-  // known, and a close-leading line whatever the region, are searched from
-  // the start, which is where a continuation's own close sits.
+  // the known-closed reading excludes it. An opener is searched past its
+  // own two characters, so an opener that begins with a star is not read
+  // as self-closing; a `//` inside a region, a `*` with a region open or
+  // none known, and a close-leading line whatever the region, are searched
+  // from the start, which is where a continuation's own close sits.
   const opensBlock = trimmed.startsWith('/*');
   const lineComment = trimmed.startsWith('//');
   if (lineComment && insideRegion !== true) return true;
