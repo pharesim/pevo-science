@@ -218,3 +218,57 @@ Review Findings"; no task file created.
 `ui-window-outcome-tally-source-sentence` also edits `fresh-auth.js`, but
 `WINDOW_OUTCOME_BY_SENTINEL`'s and `evictUnnamedAcquisition`'s docblocks only,
 which this change did not touch. No conflict expected.
+
+---
+
+## Architect re-review (2026-09-22) — HELD PENDING FIXES:
+
+Reviewed at 33e10833 and 3b75bab9 via `/ce-code-review` (correctness,
+project-standards, testing, adversarial, frontend-races, learnings). The
+production change is correct and pinned: three reviewers independently
+reproduced both mutation claims in isolated copies (reverting `&& proof`
+reddens exactly the three new cases; guard placement instead of mint placement
+leaves only the broadcast case red). 86 files / 1907 tests and a clean build
+confirmed at 3b75bab9. One item holds archive.
+
+1. **The clause-a header in
+   `frontend/tests/unit/lib-ipfs-upload-real-window.test.js` gives a false
+   reason for mocking `uploadFileToIpfs`.** It says the function "reaches
+   `crypto.subtle` before its first request, which jsdom does not provide."
+   jsdom provides it: `tests/unit/harness.test.js` asserts
+   `crypto.subtle.digest` is a function under the same vitest config. The real
+   blocker is `file.arrayBuffer()`: `uploadFileToIpfs` hashes the file through
+   `sha256File` before its first request, `sha256File` calls
+   `file.arrayBuffer()` before it touches `crypto.subtle`, and jsdom's Blob
+   does not implement it (`tests/unit/crypto.test.js` records the same gap).
+   The mock stays justified, since the function performs real fetches; only
+   the stated reason is wrong, and clause (a) exists so the next reader knows
+   what actually makes the real path impractical. Rewrite the clause to name
+   `file.arrayBuffer()` as the blocker. Comment-only. Audit the replacement
+   sentence against root `CLAUDE.md` "Comment anchors" (file and function
+   names are stable symbols; line numbers are not).
+
+Dismissed at triage, recorded so they are not re-raised:
+
+- The mint callback writes the raw response into the slot before narrowing, so
+  a malformed mint overwrites a still-live window inside the pre-flight margin
+  and the eviction then empties it. Pre-existing, reachable only under a
+  backend contract violation, costs one extra re-auth; the null and numeric
+  classes behaved the same before this task.
+- Testing gaps (`''` seeded directly into the slot, the `retryOnce` and
+  broadcast 401 re-acquisition legs, the coalesced joiner path, the
+  `_memoryWindow` mirror leg): all probed green by reviewers and all share the
+  mechanism the new cases pin, so filing them would be preemptive hardening.
+- The phrases "the unproofed call above" and "each assertion below" in the new
+  spec: the anchor gate reports nothing on the added lines, and each carries a
+  behavioral name or points at adjacent code in the same test body.
+
+Also closed: the "Residual for triage" in the signal block is stale.
+`mintViaPassword` in `settings-fresh-auth.js` and `authorship-consent.js` both
+carry the two-part predicate at HEAD (landed in e86d03bb, outside this task's
+range). Nothing to do there.
+
+Out of scope, left open with the user: vitest exits 1 at 3b75bab9 and at HEAD
+on three unhandled rejections from `tests/unit/pages-edit.test.js`
+(`_mountEditors` reading `$refs.abstractEditor`) even though every test passes.
+Neither `edit.js` nor that spec is touched by this task.
