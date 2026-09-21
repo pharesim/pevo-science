@@ -142,15 +142,15 @@ test('link mode returns 403 when session username does not match the state initi
       headers: { Authorization: `Bearer ${victim.token}` },
       data: { mode: 'link' },
     });
-    // `/start` on mode=link requires the victim to be accredited in some
-    // backends, and it requires admin key to be configured; but pure state
-    // allocation only needs a valid bearer. If the backend responds non-200
-    // (e.g., ORCID not configured in this env) skip the assertion with a
-    // helpful message rather than a cryptic cross-context failure.
-    if (startResp.status() !== 200) {
-      test.skip(true, `/api/orcid/start returned ${startResp.status()} — ORCID config likely missing in this env`);
-      return;
-    }
+    // `/start` on mode=link needs only a valid bearer: the handler runs no
+    // accreditation check and reads no admin key, and pure state allocation
+    // touches neither. The e2e compose override always configures the ORCID
+    // client and the in-network OAuth stub, so a non-200 here is a real
+    // failure to read (a start-limiter 429, a bearer the backend rejects, a
+    // session-check outage) rather than a missing sidecar. Failing loudly
+    // beats the skip this guard used to take, which reported every one of
+    // those causes as an unconfigured environment and turned them green.
+    expect(startResp.status(), await startResp.text()).toBe(200);
     const startBody = await startResp.json();
     const redirectUrl = startBody?.data?.redirect_url;
     expect(redirectUrl, 'redirect_url missing from /start response').toBeTruthy();

@@ -10,17 +10,20 @@
  * the `/orcid/callback` page handling `session_auth` mode by caching the
  * issued window and bouncing back to the page that started the broadcast.
  *
- * Where the real-backend broadcast legs stop, and why that is the assertion:
- * the seeded light accounts carry no encrypted posting key, so
- * `/api/custody/broadcast` consumes the proof and then refuses at its first
- * post-gate step, the posting-key decrypt (`expectPostGateStop`,
- * fixtures/light-account.js). Nothing is signed and nothing reaches a Hive
- * node, the same line every other write spec holds. A control request
- * through the same route with a tampered proof is refused AT the gate with
- * FRESH_AUTH_REQUIRED, which is what separates "passed the gate" from
- * "refused before it". The upload leg has no such stop: the pre-flight
- * consumes the window and mints an upload token, and the transfer pins the
- * bytes for real.
+ * Where the vote's real-backend broadcast stops, and why that is the
+ * assertion: the seeded light accounts carry no encrypted posting key, so
+ * `/api/custody/broadcast` consumes the proof, reads the account row, and
+ * refuses at the posting-key availability guard that fronts the decrypt
+ * (`expectPostGateStop`, fixtures/light-account.js); the decrypt itself
+ * never runs. The vote is the only broadcast in this file that reaches
+ * the gate at all. The comment and publish bundles are refused earlier,
+ * at the op allowlist, for the reason the known-defect pin records.
+ * Nothing is signed and nothing reaches a Hive node, the same line every
+ * other write spec holds. A control request through the same route with a
+ * tampered proof is refused AT the gate with FRESH_AUTH_REQUIRED, which
+ * is what separates "passed the gate" from "refused before it". The
+ * upload leg has no such stop: the pre-flight consumes the window and
+ * mints an upload token, and the transfer pins the bytes for real.
  *
  * One defect this coverage surfaced, pinned here so the suite reddens the
  * day it is fixed: the custody broadcast allowlist admits `comment`, `vote`,
@@ -38,15 +41,18 @@
  * post-gate stop. The publish test asserts the broadcast REQUEST it builds
  * (proof and CID) without pinning the refused response.
  *
- * Carve-out clause (a): the ORCID test stubs `/api/orcid/callback` (no real
- * ORCID OAuth handshake is possible in Playwright), so the window it caches
- * is test-authored and it covers the return leg's cache write only. The
- * vote and comment tests stub the paper-detail READ routes they mount
- * against and the boot-time authed GETs (fixtures/paper-mocks.js), including
- * the accreditation-status poll, so HAF stays out of the page load; the
- * publish test stubs nothing. Every test seeds the JWT via `mintSessionJwt`.
- * On the password factor, which the vote, comment, and publish tests drive,
- * every mint and consume runs real.
+ * Carve-out clause (a): the ORCID test stubs `/api/orcid/callback` (no
+ * real ORCID OAuth handshake is possible in Playwright), so the window it
+ * caches is test-authored and nothing it asserts is backend-issued. What
+ * runs for real is the callback page's handling of that response: the
+ * cache write, the bounce to the seeded return path, and the clearing of
+ * the in-flight mode and return-path keys. The vote and comment tests
+ * stub the paper-detail READ routes they mount against and the boot-time
+ * authed GETs (fixtures/paper-mocks.js), including the
+ * accreditation-status poll, so HAF stays out of the page load; the
+ * publish test stubs nothing. Every test seeds the JWT via
+ * `mintSessionJwt`. On the password factor, which the vote, comment, and
+ * publish tests drive, every mint and consume runs real.
  * Clause (b): no auth middleware is mocked and no cryptographic verification
  * is bypassed. `verifyHiveSignature` runs real on the Bearer path, the
  * password is argon2-verified server-side, and every proof the vote,
@@ -54,16 +60,18 @@
  * Clause (c): this spec is the real-path companion the mocked fresh-auth
  * unit suites cite (`fresh-auth-401-retry.test.js`,
  * `lib-fresh-auth-session-window.test.js`, `lib-ipfs-upload.test.js`,
+ * `lib-ipfs-upload-real-window.test.js`,
  * `lib-fresh-auth-outcome-dispatch.test.js`); the publish test skips itself
  * when HAF indexes no accredited researcher, so that leg is
  * environment-gated. No e2e spec completes a session_auth round-trip
  * against the real `/api/orcid/callback`. The real `/api/orcid/start` and
  * `/api/orcid/callback` are driven for sibling modes elsewhere:
  * `settings-orcid-factor.spec.js` completes a fresh_auth-mode round-trip
- * through the in-network ORCID stub with no conditional skip, and
- * `orcid-link.spec.js` posts to both routes for a cross-user link-mode
- * refusal but skips itself when `/api/orcid/start` is not configured, so
- * that companion is environment-gated.
+ * through the in-network ORCID stub, and `orcid-link.spec.js` posts to
+ * both routes for a cross-user link-mode refusal. Neither carries a
+ * conditional skip: the e2e compose override always configures the ORCID
+ * client and the in-network OAuth stub, so an environment lacking them
+ * reds those specs instead of voiding them.
  */
 
 import { test, expect } from './fixtures/keychain.js';
