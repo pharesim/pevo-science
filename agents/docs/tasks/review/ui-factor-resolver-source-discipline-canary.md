@@ -1496,3 +1496,91 @@ via `/ce-compound` at archive.
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the re-review
 signal. Do not edit this hold block or annotate items as fixed; the commit diff is the evidence and
 the architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-09-21, commit d179e1a7):
+
+All three items landed in one commit. Every clause written was executed before it was written, and
+the three claims the hold made were reproduced first rather than accepted: `isCommentLine(' *
+trailing prose */', false)` is live (item 1's first direction), `isCommentLine('  *
+Number(cached?.hasPassword === false);', true)` is prose (item 1's second), "the reading above"
+occurs zero times at `126e7ae2^` and `126e7ae2` and once from `126b2fba` (item 2), and the named
+mutant leaves both suites 16/16 green (item 3).
+
+**Item 1.** Restated as a three-way pass enumeration, derived from the code rather than from the old
+sentence. The guard's own condition now carries the loud clause, and the over-report direction is
+named as the star arm's silent surface. Two corrections beyond the hold's text, both forced by
+execution:
+
+- The residuals are no longer filed under the pass being right. Neither is fixed by any value of the
+  argument (`isCommentLine('  /*/ code', r)` is prose at `true`, `false` and `undefined`, while the
+  truth with a region really open is live), so the close-search residual also bites while the pass
+  under-reports. Filing them under one state read as a bound they do not have. They are now placed
+  outside the pass account entirely.
+- The non-moving classes are three, not two. A close-leading line never reads the argument either,
+  because the known-closed reading excludes it by its own prefix test, so the sentence names an
+  opener, a close-leading line and a line with no comment prefix.
+
+The sentence claims nothing about whether the non-movers are *correct*, which is deliberate: the
+close-search residual and the block-toggle loudness both live in that group and are named elsewhere
+in the same docblock.
+
+Both moving sets verified exact in both directions, empty set difference each way, over 324
+generated shapes; the three non-moving classes have zero movers. Independently reproduced by two
+review lenses at 15,923 and 891 shapes with the same result.
+
+**Item 2.** `the known-closed reading`, the name the file already uses at the guard site
+(`A close-leading line is the one star shape the known-closed reading leaves to the search`) and in
+the machinery suite. No third name coined. The surrounding five lines re-wrapped; `its own two
+characters` is preserved intact.
+
+**Item 3.** Pinned at `false` in the known-closed opener group. Ledger over all 40 `isCommentLine`
+assertions under the named mutant shows exactly one red, the new line.
+
+**Placement deviation, declared.** The hold asked for the pin "beside the region-unknown form the
+machinery suite already carries". It is instead in the known-closed opener group. The shape-only
+group is uniformly single-argument, and the suite does not introduce the region argument until 26
+lines later, under the comment that explains why it is ever passed; a two-argument call there would
+put the suite's first region-passing assertion inside a shape-only group. The pin's own comment
+names the shape-only sibling, which is what discharges the adjacency the hold wanted. Move it if the
+architect prefers the literal slot.
+
+### Residuals surfaced for triage, deliberately not fixed here
+
+Three single-point mutations survive the full suite green, i.e. those decisions have no probe:
+
+1. The close-search origin `trimmed.indexOf('*/', opensBlock ? 2 : 0)` mutated to `..., 0)`.
+2. `opensUnterminatedBlock`'s `trimmed.indexOf('*/', 2) === -1` mutated to `trimmed.indexOf('*/') === -1`.
+
+Both are the `/*/` close-search residual the docblock dismisses as contrived, so both are arguably
+deliberate. A `/*/` probe was NOT folded into item 3: `isCommentLine('/*/ hasPassword = x;', false)`
+dies under both the no-close mutant and the origin mutant, which would make the new pin a composite
+and break the invariant it was added to satisfy.
+
+3. `enclosingSymbol`'s template branch `for (let j = i + 1; j < lineIndex; j++)` mutated to
+   `j <= lineIndex`. This one is a real behaviour change that no docblock names:
+   `enclosingSymbol(['const template = `', '`;'], 1)` returns `template` on head and `<module>`
+   mutated. Not a `/*/` shape and not a documented residual.
+
+Also noted, not acted on: a mutant making the opener's close-search origin region-dependent
+(`opensBlock && insideRegion !== true ? 2 : 0`) survives even with item 3 applied, so the opener
+arm's pass-independence is unpinned against that one mutation. Only `/*/`-shaped lines are affected,
+so pinning it would be preemptive hardening.
+
+### Verification
+
+- `npx vitest run tests/unit/eslint/` 16/16 green (the it-count stays 4/16; the pin is an assertion
+  inside an existing `it`, so `isCommentLine` assertions go 39 to 40).
+- Full frontend unit suite green: 86 files, 1911 tests.
+- `node --check` passes on both files.
+- A real parser reads the `isCommentLine` docblock as one comment spanning 98 lines from its opener
+  to its real close, landing immediately before `export function isCommentLine` (no self-truncation).
+- Repo pre-commit anchor gate run non-vacuously over all 26 added lines: zero hits, with
+  `ALLOW_MARKER='anchor-allow'` set explicitly and five known-bad controls tripping and both durable
+  carve-out forms spared.
+- Zero emdashes and zero ` -- ` introduced; both files still contain none. No added comment line
+  exceeds 79 characters.
+- Instrumented: across all 39 `isCommentLine` literals the existing suite carries, the no-close
+  branch is reached with `undefined` and `true` and never with `false`, which is why the constant
+  was uncovered.
