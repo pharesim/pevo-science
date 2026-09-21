@@ -2211,3 +2211,294 @@ From that run's `journal.jsonl` (`wf_90759732-4c6`):
 - An interpolation that SPANS LINES is not recognised and is read flat, as before. A write
   spelled inside an interpolation is copied rather than read. The brace-depth half of the
   interpolation close is not discriminable by any shape tried; the quoting half is pinned.
+
+## Architect re-review (2026-09-21, round 6) — HELD PENDING FIXES:
+
+Reviewed at `db7f23ab` via `/ce-code-review` across six lenses — correctness,
+adversarial, testing, maintainability, project-standards, learnings — followed by one
+independent validator batch that took six findings and rejected none. All five signalled
+commits (`81f7df9c`, `fde7f6ed`, `143ae89e`, `597255bd`, `db7f23ab`) are ancestors of
+`main`; no orphan SHAs. Dispatched versus returned, since the last hold asked for it of
+you and the same applies to me: 6 reviewers dispatched, 6 returned; 1 validator
+dispatched, 1 returned; no verdict here rests on a dead vote. The cross-model adversarial
+pass did NOT run: no different-provider CLI is installed on this host, so that lens ran
+in-process, the same gap recorded in round 5.
+
+The review was pinned to the COMMITTED tree at `db7f23ab`. `3200f742` (the sibling
+ALTER-task commit) has since landed on top of the same file, so the fixes below land on
+the current head and any line you look up has moved. Everything here is therefore
+anchored on symbols, not line numbers.
+
+**What landed, verified from the tree and by execution rather than read from the
+signal.** In isolated `git archive` copies with `node_modules` and the repo-root `.env`
+symlinked, never in the shared checkout:
+
+- The canary is 25 tests green and `tests/eslint/` is 9 files / 135 tests green, as
+  claimed (architect's own run, plus three lenses).
+- Item 1 landed and is pinned: in `statementAt` the depth test, then the delimiter test,
+  then the event consumption traced clean, and the `!shallower` conjunct, the
+  `char === quote` test, the `break` and the ordering each red on deletion.
+- Item 3 landed and is pinned: `unreadableStatements` is what the arm and its fixtures
+  both call, and its head membership, `gi` flags, `match.index` and `closedAt === -1`
+  test each red on deletion.
+- Item 4 landed: the lead sentence describes replay, and a whole-file grep found no
+  sibling sentence still describing two judging readers, a second read of a line, or
+  `BlankedCode.sql`.
+- Item 2's conjunct landed and is pinned. It is also the cause of items 1 and 2 below.
+- "The reader is a no-op on today's trees" reproduced: blanked text, span events and
+  entry stacks of all 119 scanned files are byte-identical between `4a9074ca` and
+  `db7f23ab`. No remnant of `fde7f6ed`'s second read survives.
+- The regex, division-operand and interpolation-span reading was checked against a
+  TypeScript-parser oracle over 1,163 real TS/JS files (360 backend, 205 frontend, 598
+  `node_modules`) with zero misjudgements. That part of the round is sound on real code
+  and nothing below is about it.
+- A 61-mutant one-token deletion sweep over everything the range added or changed: 53
+  red, 8 green. Of the 8, four are provably inert (the interpolation arm's `!sql`
+  conjunct is dominated by `template`; toggle-versus-set on the opaque arm is identical
+  under that arm's own guard; two arm-order swaps sit between arms whose next-character
+  guards are mutually exclusive), two needed shapes valid TypeScript does not produce,
+  one is item 4 below, and one is the fold-in under it.
+- For the first round since round 1, no docblock the range added or edited contradicts
+  the code, apart from the three sentences items 2, 4 and 6 name. That class was held in
+  rounds 2 through 5 and the difference shows.
+
+The hold is that the round opened two silent passes of the class this file exists to
+close, both REGRESSIONS against the range base rather than limits: a plain
+`UPDATE accounts SET updated_at = NOW()` that `4a9074ca` reds leaves the suite 25/25
+GREEN at `db7f23ab`. Each was demonstrated with a one-token flipping control and a
+base-versus-head pair, by a lens, again by the validator in its own copies, and items 1,
+2 and 4 a third time by the architect. Verify each the same way and state the probe per
+item when moving back to `review/`.
+
+### Bundle A (required): the reader must know where an interpolation is whenever a template is open
+
+**Item 1. An interpolation must be recognised whatever value or span the reader believes
+it is inside.** The `${` arm in `blankLine` sits on the main path, after the arm that
+opens a quoted value, and neither the opaque branch nor the dollar branch tests for one.
+So an interpolation written inside quotes in template text — `'${...}'`, which
+`backend/src` spells 19 times — is met inside the value and read flat. Its nested
+template's OPENING backtick passes the `ticks && template` gate and ends the "template";
+a possessive apostrophe then opens a phantom value in code mode; and the same gate
+DECLINES the nested closing backtick, which is the one base toggled on. The flag is left
+inverted at the end of the line. From there `//` stops being a comment, the glob in a
+`/api/admin/*` route comment opens a block comment that runs to the next `*/` over the
+writer, and any later URL template flips the flag back, so the end-state arm is clean
+too.
+
+Probe, planted as a file under the copy's `backend/src/lib/`:
+
+```ts
+export async function notify(who: string | null, id: number, q: (s: string, p?: unknown[]) => Promise<void>) {
+  const msg = `unknown user '${who ? `${who}'s alias` : null}'`;
+  // rate-limited like the other /api/admin/* routes
+  await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);
+  /** Where the profile lives. */
+  const link = `https://example.org/u/${id}`;
+  return { msg, link };
+}
+```
+
+25/25 GREEN at `db7f23ab`. Delete the one apostrophe in `'s alias` and both writer arms
+red. **The same file REDS both writer arms at `4a9074ca`.** Bisected over the range:
+caught at `4a9074ca`, SILENT at `81f7df9c`, caught at `fde7f6ed`, SILENT at `143ae89e`,
+`597255bd` and `db7f23ab`. So the second-read patch you deleted was closing this, and the
+commit that replaced it reopened it. A second spelling does the same with the hiding
+comment swapped for `` const glob = `${dir}/*`; `` and a backtick-template writer. The
+HTML-attribute form (`data-x='${fmt(`${name}'s uploads`)}'` inside a multi-line builder
+template, the quoted-attribute shape `app.ts` builds its meta tags in) reproduces
+identically, per the adversarial lens's own planted file and bisect.
+
+The exact trigger, a quoted interpolation holding a nested template, is in neither tree
+today (`grep -rnE "['\"]\$\{[^}]*\`" backend/src` returns nothing), which is consistent
+with the byte-identical dump. Every ingredient is house style: 19 quoted interpolations,
+14 nested templates inside interpolations (`hafsql.ts`, `routes/papers.ts`,
+`routes/reviews.ts`), ten or more `/api/*` glob comments, about 25 URL templates, and a
+template with a lone apostrophe in `lib/broadcast-error.ts`. This is ordinary English
+message building, not an evasion, and what it hides is the plainest writer there is.
+
+The invariant is what is held and the construct is yours. One shape was tried in a
+scratch mutant and restored: testing for the interpolation directly after the `block`
+branch, ahead of the opaque and dollar branches, keeps the suite 25/25 with no plant and
+reds both planted spellings. It is also the language's own reading, since a quote in
+template text never suspends an interpolation, and an escaped `\${` is still consumed at
+its backslash by the escape arms before the test can see it. Note what that does NOT
+close: item 2's wrapped form stays green under it. Pin with a writer fixture AND an
+end-of-line state pin, because a brute force over 1,512 well-formed single-line templates
+of the form `` `P${c ? `N` : E}S` `` leaves `state.template === true` on 192 of them at
+head and on 0 at base, and the end-state arm only ever sees the ones nothing later flips
+back. Minimal members: `` const m = `'${c ? `it's` : null}'`; `` and
+`` const m = `can't ${c ? `it's` : null} isn't`; ``.
+
+**Item 2. A wrapped interpolation is not "read flat, as it was before", and the
+difference is a second silent pass.** KNOWN LIMITS and the `interpolationEnd` docblock
+both record an interpolation that spans lines as a residual read the way it always was.
+Before this round the flat read recovered the flag at the nested template's closing
+backtick. The `ticks && template` gate declines exactly that backtick, so the flag is
+inverted from that line on.
+
+```ts
+export async function notify(items: Array<{ name: string }>, dir: string, id: number, q: (s: string, p?: unknown[]) => Promise<void>) {
+  const text = `Summary: ${items
+    .map((r) => `${r.name}'s score`)
+    .join(', ')}`;
+  const glob = `${dir}/*`;
+  await q(`UPDATE accounts SET updated_at = NOW() WHERE id = $1`, [id]);
+  /** a later doc comment */
+  return { text, glob };
+}
+```
+
+25/25 GREEN at `db7f23ab`; drop the apostrophe and both writer arms red; both red at
+`4a9074ca`. Attribution, measured rather than argued: with ONLY the opaque-branch
+backtick arm put back to the base spelling the writer is seen again, so the gate is the
+cause. The arrow-body form (`` { return `${r.name}'s`; } ``) behaves the same, and a
+differential fuzz of 2,496 composed fixtures found 18 "base caught, head silent", all 18
+from these two wrapped preludes and none from any single-line one. With no later
+template to resync the flag, the end-state arm is loud; with a URL or glob template
+after it, silent.
+
+Neither tree wraps an interpolation today: an instrumented count of
+`interpolationEnd === -1` over both trees is 0 (the only two such returns at module load
+are this file's own fixtures). So the file's fail-closed idiom fits and costs nothing:
+report every `${` whose close is not on its own line, the way `unreadableStatements`
+reports a statement it cannot read to a terminator, with a message that names the line.
+The fuller alternative is carrying brace depth across lines in `BlankState` so an
+interpolation's contents are read by the code rules. Either is acceptable; say which and
+why. Whichever it is, correct both "as it was before" sentences. They are true only
+against the commit immediately before `db7f23ab`, which already carried the gate, and a
+reader takes "before" to mean before this work. The opaque-arm comment's "which holds
+because a quote inside a regex literal opens none" needs the same look: item 1 is a
+second way the value that gate trusts is not real.
+
+### Bundle B (required): the interpolation reader's own pins
+
+**Item 3. The fixture that says an interpolation keeps a regex's apostrophe inside it
+passes without the interpolation reader.** The comment above it credits
+`interpolationEnd` with holding `/'/g` and `"''"` inside the span. Called directly on
+that fixture's own line, `interpolationEnd` returns -1, although the interpolation
+closes on that line: its quote stack has no notion of a regex literal, the pattern's
+apostrophe leaves the count odd, and it runs off the end of the line looking for a quote
+that never re-closes. The assertion is green because the flat fallback happens to read
+that line correctly. Two controls: with the interpolation arm disabled the fixture run
+alone still passes, where the nested-template fixture beside it fails; and the same
+fixture is green at `597255bd`, one commit before `interpolationEnd` existed. The two
+sibling fixtures return 45 and 49 from the same call, so this one alone is vacuous.
+
+That is the "green for a reason other than the one its comment cites" shape, in this
+round's own fixture. It matters more after item 1 than before it, because recognising
+interpolations in more places routes more text through this function, and the docblock
+says -1 means "does not close on this line", which is not what happened here. Make the
+fixture answer for the feature (assert the close directly, beside the scan assertion),
+and either give the interpolation's quote tracking the same regex judgement the main
+path now has, or state in KNOWN LIMITS that a quote inside a regex inside an
+interpolation is read as a quote and what that costs. The hand-escaping idiom is the one
+round 4 named as ordinary, so the residual route needs saying out loud if you take it.
+
+**Item 4. The brace-depth half of the interpolation close IS discriminable, and
+unpinned.** KNOWN LIMITS and the signal both say no fixture can tell it apart. Delete
+`else if (char === '{') depth++;` from `interpolationEnd`: the suite is 25/25 green with
+no plant, and 25/25 green with this planted:
+
+```ts
+  const label = `outer ${fmt({ a: 1 }, `it's`)} end`; await q(`UPDATE accounts SET updated_at /* stamped */ = NOW() WHERE id = $1`, [id]);
+  const kind = 'light';
+```
+
+The unmutated reader reds that writer on both walks. Control: replace `{ a: 1 }` with
+`1` and the writer is seen under the mutant too, so the object literal's brace is the
+only thing the depth count answers for. The object literal closes the interpolation
+early, the nested template after it is read flat, its apostrophe opens a phantom value,
+and the gate declines every backtick to the end of the line. The trailing quoted string
+on the next line is what made the difference: without it the readable arm reds the
+mutant, which is very likely why every shape tried looked inert. Add the fixture through
+`scansOf` and replace the sentence with what it pins.
+
+One fold-in, not required. The same sweep that called this deletion cosmetic called the
+escape skip in `interpolationEnd` cosmetic by the same argument (the caller does not
+advance on -1, so the flat read recovers). That argument was wrong here. While you are
+in this fixture, try the escape skip against the same shape, and either pin it or say in
+the re-review note what was tried.
+
+### Bundle C (required, text only)
+
+**Item 5. "The block-comment boundary one level down" does not locate its target.** The
+new `ticks` comment in `blankLine` points at code with a positional phrase and no symbol
+riding along. The project-standards lens followed it to the `if (block)` branch a few
+lines below. The validator and the architect, independently, found the real referent:
+the main-path `/*` arm's boundary set, `blockCloses(..., template ? ['`'] : [])`, a long
+way further down, as distinct from the in-literal call that passes
+`ticks && template ? [tag, '`'] : [tag]`. A careful reader landing on the wrong code is
+the failure the anchor rule exists for, and it is what separates this from the three
+anchors dismissed in rounds 3 and 4, each of which pointed a few lines away at the only
+thing matching its description. Name what it points at: `blockCloses`' main-path
+boundary set, by that symbol. Do not take the lens's own suggested wording ("tests the
+block flag alone"); it describes the wrong branch.
+
+**Item 6. The KNOWN LIMITS sentence on a write spelled inside an interpolation is
+inaccurate.** It says such a write "is copied rather than read, which no arm then sees".
+The unmasked form IS seen at head. What is not seen is that form with a comment in its
+token gap, because the interpolation is copied with its comments:
+
+```ts
+  const sql = `${light ? `UPDATE accounts SET updated_at /* stamp */ = NOW()` : `UPDATE accounts SET custody = 'self'`} WHERE id = $1`;
+```
+
+25/25 green at head, both writer arms red at base, both red at head with only the
+comment deleted. Correct the sentence to say that, including that base caught it. No new
+scan branch is asked for: a whole statement chosen by a ternary inside another template
+is an unusual construction, none of the 14 nested templates in `backend/src` holds a
+statement head, and it is the kind of line a reviewer stops on.
+
+### Dismissed this round, recorded so they are not re-raised
+
+- `codeBefore` repeating `opensCodeBody`'s backward scan for the nearest earlier line
+  carrying code. Accurate, single-lens, no behaviour behind it. `opensCodeBody` can
+  delegate to `codeBefore` unchanged (the pattern's `\s*$` tail makes trimmed and
+  untrimmed matching equivalent). Welcome if you are in the area, not a deliverable, on
+  the same grounds as the same-file duplication in rounds 4 and 5.
+- The escape-skip loop appearing in both `regexLiteralEnd` and `interpolationEnd`. The
+  lens that raised it recommends no change, and the two loops' surroundings differ
+  enough that a shared helper would add indirection rather than remove it.
+- `regexLiteralEnd`'s no-closer `-1` return being unpinned. Execution-confirmed as a gap
+  under the mutant, but the only trigger found needs a regex literal with no closing
+  slash on its line, which valid TypeScript does not produce. Preemptive.
+- The four green mutants the sweep proved inert, listed under "What landed". Do not
+  build fixtures for them; none can exist without also changing the invariant that makes
+  each pair equivalent.
+
+### Not part of this hold
+
+- The `upgraded_at IS NULL OR upgraded_at >= updated_at` CHECK constraint remains an
+  open architect decision, unchanged since round 2.
+- The four entries this round's signal appended under `[TODO Architect]` stay open
+  triage: a multi-statement template lending a readable sibling head's table,
+  `enclosingQuote`'s own flat quote scan meeting a quote inside a regex, the end-state
+  arm building its list inline, and the `assembledWrites` half of the ALTER-head question
+  (already its own task). Do not fold any of them in. The earlier residual lists stay
+  open on the same terms.
+- Recorded as residual risks rather than items, because every consequence any lens
+  reached was fail-closed or could not be reproduced as a silent pass: `statementAt` and
+  `enclosingQuote` still read an interpolation flat while `blankLine` now copies it
+  whole, a new divergence beside the recorded regex one; and `interpolationEnd` can
+  over-copy on one line when a phantom quote from a regex pairs with a later quote and a
+  `}` follows. Item 3 may well close the second. If item 1 changes what the statement
+  read sees at an interpolation, say so in the note.
+- A claim to correct in the next signal rather than in code: `db7f23ab`'s commit message
+  says the interpolation arm also closes an ALTER whose dollar-quoted DEFAULT holds a
+  nested template. Probed, `ALTER TABLE accounts ADD COLUMN note TEXT DEFAULT $d$ ${ok ?
+  `a` : `b`} $d$, ALTER COLUMN updated_at TYPE ...` is silent at BOTH base and head,
+  because the `${` arm is unreachable inside a dollar span for the same reason item 1
+  gives. Pre-existing, and inside the ALTER-head work already tracked. If item 1's fix
+  reaches the dollar branch it may close this too; report what you find, do not chase it
+  here.
+
+### A note on the evidence, since the last hold asked the same of you
+
+This round's signal was accurate in a way the previous two were not: its counts
+reproduced, its commits were all named, its no-op claim held to the byte, and its
+reconciliation of the earlier run's dead votes was right and found a fifth the addendum
+had missed. The two silent passes above were not hidden by a vote that never happened.
+They sit in the one place the three adversarial passes did not look, which is an
+interpolation met somewhere other than the main path, and every interpolation fixture in
+the file puts its `${` on the main path. That is the gap to close in the pins, not only
+in the code.
