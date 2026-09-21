@@ -170,6 +170,9 @@
  *      a `+` beside its opening or closing quote. The fragment carrying the
  *      assignment is caught separately by the fail-closed arm, because no
  *      readable head's statement reaches a constant declared on its own.
+ *      The `ALTER TABLE accounts` head is read here too, and it has no such
+ *      second catcher: an ALTER carries no assignment, so a column clause
+ *      held in a variable is refused by this scan or by none.
  *      Read-side interpolation is untouched; the recovery lookups themselves
  *      interpolate their window and are SELECTs.
  *
@@ -230,11 +233,19 @@
  *     of a join spelled away from the statement's own lines (a fragment pushed
  *     into an array and joined later, a template built by a helper): the
  *     assembled-write scan cannot see the join, and only a fragment that
- *     spells the assignment reds by resolution. What makes a text scan sound
- *     today is that no write in either tree names its table, or assembles its
- *     text, that way — and that a migration doing so would have to reach for
- *     dynamic SQL to write one static column, which is a shape worth a second
- *     look on its own.
+ *     spells the assignment reds by resolution. None of that backstop extends
+ *     to the ALTER head, because what the fail-closed arm fires on is the
+ *     assignment token, and a retype, a drop or a rename carries none. An
+ *     ALTER whose table is named dynamically (`ALTER TABLE ${table}`, an
+ *     `EXECUTE format('ALTER TABLE %I DROP COLUMN updated_at', 'accounts')`),
+ *     or whose column clause is joined on away from its own lines, reds
+ *     nowhere. What the ALTER head does get is the assembled-write scan, which
+ *     refuses a join spelled on the statement's own lines in `src` and nothing
+ *     further. What makes a text scan sound today is
+ *     that no write or ALTER in either tree names its table, or assembles its
+ *     text, that way, and that `src` spells no ALTER at all — and that a
+ *     migration doing so would have to reach for dynamic SQL to write one
+ *     static column, which is a shape worth a second look on its own.
  *   - Shapes that are not house style and are not read: a quoted identifier
  *     (`UPDATE "accounts"`), an upper-case `UPDATED_AT`, a positional
  *     `INSERT INTO accounts VALUES (...)` with no column list, an
@@ -749,11 +760,22 @@ const COPY_COLUMNS_RE = /\bCOPY\s+(?:public\s*\.\s*)?accounts\s*\(([^)]*)\)/i;
 const ALTER_ACCOUNTS_RE =
   /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\b\s*\(\s*|ONLY\s+)?(?:public\s*\.\s*)?accounts\b/i;
 
-/** Every head a scan reads a statement FROM, and so every head whose statement
- *  has to be readable to a terminator. Read by {@link unreadableStatements},
- *  which the arm and its fixtures both call. The arm once kept its own loop and
- *  a fixture helper kept a copy, and the two drifted apart the last time the
- *  set widened: the arm learned about the ALTER head and the copy did not. */
+/** Every `accounts` head a scan reads a statement FROM: every one whose
+ *  statement has to be readable to a terminator, and every one whose statement
+ *  some arm would read a placeholder in were its text assembled. Read by
+ *  {@link unreadableStatements}, which the arm and its fixtures both call, and
+ *  by {@link assembledWrites}. The readable arm once kept its own loop and a
+ *  fixture helper kept a copy, and the two drifted apart the last time the set
+ *  widened: the arm learned about the ALTER head and the copy did not.
+ *
+ *  Two walks read a single head of this set, each on purpose, and each
+ *  docblock says why. {@link accountsColumnAlterations} asks a question only an
+ *  ALTER has. {@link accountsColumnWriters} asks one the ALTER arm already
+ *  answers for the ALTER head, from the same read. The routine-creation head,
+ *  read by {@link routineSites}, is not an `accounts` head and stays out: here
+ *  it would make an interpolated routine an assembled `accounts` statement, and
+ *  the exemption arm refuses every routine it finds whatever that routine's
+ *  read reaches. */
 const READ_FROM_HEADS = [ACCOUNTS_STATEMENT_RE, ALTER_ACCOUNTS_RE];
 
 /** Trigger, rule and stored-routine creation, in every spelling PostgreSQL
@@ -1894,7 +1916,16 @@ function columnAssignments(files: Readable[]): Map<string, Occurrence[]> {
 /** Every `accounts` statement that writes the column, read table-first. Every
  *  head on a line is considered, not only the first: a migration line carrying
  *  two statements ends the first read at its semicolon, so a second statement
- *  beside it would otherwise go unread. */
+ *  beside it would otherwise go unread.
+ *
+ *  The DML head alone, not every head in {@link READ_FROM_HEADS}, and on
+ *  purpose. An ALTER statement is read from the same position by
+ *  {@link accountsColumnAlterations}, whose test is any mention of the column,
+ *  and every text {@link writesColumn} accepts spells the column by name: the
+ *  assignment, the row target list and each column list are all matched on it.
+ *  An ALTER this walk could flag is therefore a red bar there already, against
+ *  the allowlist that pins alterations, and reading it here as well would only
+ *  count the one statement a second time, against the writer allowlists. */
 function accountsColumnWriters(files: Readable[]): Occurrence[] {
   const found: Occurrence[] = [];
   for (const { rel, lines, code } of files) {
@@ -1925,21 +1956,32 @@ interface AssembledWrite {
   how: 'interpolation' | 'concatenation';
 }
 
-/** Every `accounts` statement whose text is assembled rather than spelled. */
+/** Every `accounts` statement whose text is assembled rather than spelled,
+ *  read from every head in {@link READ_FROM_HEADS}.
+ *
+ *  The ALTER head is the one that most needs this arm. A DML statement with its
+ *  SET list held in a variable still has a second catcher: the fragment spells
+ *  an assignment, and no readable head reaches it, so the fail-closed arm reds.
+ *  An ALTER carries no assignment. A column clause held in a variable leaves
+ *  {@link accountsColumnAlterations} a placeholder where the column should be
+ *  and gives the fail-closed arm nothing to resolve, so an interpolated
+ *  `ALTER TABLE accounts DROP COLUMN ${...}` is reported here or nowhere. */
 function assembledWrites(files: Readable[]): AssembledWrite[] {
   const found: AssembledWrite[] = [];
   for (const { rel, lines, code } of files) {
     code.forEach((line, i) => {
-      for (const match of line.matchAll(new RegExp(ACCOUNTS_STATEMENT_RE.source, 'gi'))) {
-        const statement = statementAt(code, i, match.index ?? 0);
-        const how = SQL_INTERPOLATION_RE.test(statement.text)
-          ? 'interpolation'
-          : joinedByPlus(code, statement, i)
-            ? 'concatenation'
-            : null;
-        if (how === null) continue;
-        found.push({ site: occurrenceAt(rel, lines, i).site, how });
-        return;
+      for (const pattern of READ_FROM_HEADS) {
+        for (const match of line.matchAll(new RegExp(pattern.source, 'gi'))) {
+          const statement = statementAt(code, i, match.index ?? 0);
+          const how = SQL_INTERPOLATION_RE.test(statement.text)
+            ? 'interpolation'
+            : joinedByPlus(code, statement, i)
+              ? 'concatenation'
+              : null;
+          if (how === null) continue;
+          found.push({ site: occurrenceAt(rel, lines, i).site, how });
+          return;
+        }
       }
     });
   }
@@ -2218,13 +2260,15 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     ).toEqual([]);
   });
 
-  it('no accounts write statement is assembled by interpolation or concatenation', () => {
+  it('no accounts write or ALTER statement is assembled by interpolation or concatenation', () => {
     const assembled = assembledWrites(sources);
     expect(
       assembled.map((write) => `[${write.how}] ${write.site}`),
-      'an accounts write whose text is partly held in a variable is unreadable to the ' +
-        'table-first scan, which sees a placeholder where the SET list should be. Spell the ' +
-        `statement out, or bind the value as a parameter. Why it matters: ${ORDERING_RATIONALE}\n` +
+      'an accounts write or ALTER whose text is partly held in a variable is unreadable to the ' +
+        'scan that reads it: the table-first scan sees a placeholder where the SET list should ' +
+        'be, and the ALTER arm one where the column should be. Spell the statement out, or ' +
+        'bind the value as a parameter; an identifier cannot be bound, so an ALTER has to be ' +
+        `spelled. Why it matters: ${ORDERING_RATIONALE}\n` +
         `${assembled.map((write) => write.site).join('\n')}`,
     ).toEqual([]);
   });
@@ -3944,6 +3988,16 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     expect(how(["  'UPDATE accounts SET custody = $1, ' + recency + ' WHERE id = $2',"])).toEqual(['concatenation']);
     expect(how(["  recency + 'UPDATE accounts SET custody = $1 WHERE id = $2',"])).toEqual(['concatenation']);
     expect(how(["  'UPDATE accounts SET custody = $1, '", '    + recency,'])).toEqual(['concatenation']);
+    // The ALTER head is read as well, and needs it more than the DML heads do.
+    // An ALTER carries no assignment, so a column clause held in a variable
+    // gives the fail-closed arm nothing to catch, and the ALTER arm reads a
+    // placeholder where the column should be. The two controls on those arms
+    // are what make this scan the only one reporting the shape.
+    const dropped = ['async function drop(column: string) {', '  await q(`ALTER TABLE accounts DROP COLUMN ${column}`);', '}'];
+    expect(how(dropped)).toEqual(['interpolation']);
+    expect(how(["  'ALTER TABLE accounts DROP COLUMN ' + column,"])).toEqual(['concatenation']);
+    expect(accountsColumnAlterations(readable([{ rel: 'x.ts', lines: dropped }]))).toEqual([]);
+    expect(unresolvedIn(dropped)).toEqual([]);
     // Spelled-out statements, one-line and multi-line, are not assembled.
     expect(how(["  'UPDATE accounts SET custody = $1 WHERE id = $2',", '  [custody, id],'])).toEqual([]);
     expect(how(['  `UPDATE accounts', "   SET custody = 'light', updated_at = NOW()", '   WHERE id = $1`,'])).toEqual([]);
