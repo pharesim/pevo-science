@@ -1302,10 +1302,12 @@ the edit draft does not carry `addressedReviews`, so a passwordless entry-gate
 navigation returns with the ticks gone and the resubmit broadcasts without
 `addresses_reviews`. Pre-existing, but it silently changes what goes on chain.
 
-Still open with the user, not decided this round (signal residual 3): the review
-page, the comment composer, and both vouch call sites reach
-`broadcastWithFreshAuth` with the permissive default and navigate over undrafted
-work. Pre-existing and unchanged by this diff.
+Filed as its own task, `ui-composer-surfaces-navigate-over-undrafted-work`
+(signal residual 3): the review page, the comment composer, and both vouch call
+sites reach `broadcastWithFreshAuth` with the permissive default and navigate over
+undrafted work. Pre-existing and unchanged by this diff. That task shares a seam
+with item 1's draft flush (something that runs immediately before a navigating
+acquisition); whichever lands second reuses the first one's seam.
 
 Accepted as documented residuals: a passwordless account with no window dropping N
 images gets N identical `reauthRequired` toasts (nothing informative is evicted, so
