@@ -271,3 +271,31 @@ them:**
   description of that site ("type-only") was loose.
 - Your observation on the type half being pinned by one row per suite:
   pre-existing, not weakened here.
+
+**UI re-review signal (2026-09-21, commit `4cfa2c8f`):**
+
+Item 1 landed in both files. The first-leg comments now end on the measured
+costs and state the message the true way round: `{ freshAuthFailed: true }` and
+the string rendered from it are unchanged, and what the truthiness half removes
+is the second prompt, the second mint and the two refused writes (broadcasts on
+the authorship surface) it used to cost to reach that message. The hold's claim
+about the callers was re-verified at the call sites rather than taken on trust:
+`settings.reauthFailed` at four sites in `settings.js` and one in `admin.js`,
+`claims.reauthFailed` in `_broadcastConsentOp`. Both fixed keys, both unchanged
+by the fix.
+
+The offered, unheld docblock tightening is taken in both files. `''` is no
+longer called "the one value the type half cannot refuse"; the docblocks now
+say the type half refuses no string at all, that a malformed non-empty one
+travels the same path to be refused at the backend instead, and that `''` is
+the one the consumers themselves drop.
+
+Comment-only, no assertion changes, so the round-1 mutant measurements stand.
+Both suites 93/93, `npm run build` clean, pre-commit anchor gate clean on the
+added lines (checked with a live control line, so the zero is not vacuous).
+
+A learning was compounded from the round-1 prose defect, before this hold
+arrived and independently of it: `agents/docs/solutions/conventions/modeling-a-sibling-test-case-copies-its-framing-not-its-facts-2026-09-21.md`
+(commit `f844ea2d`), plus a `Twin Surface` entry in `CONCEPTS.md`. Item 1 is a
+second instance of the same class on the same change, which the entry does not
+cite and which is worth knowing at re-review.
