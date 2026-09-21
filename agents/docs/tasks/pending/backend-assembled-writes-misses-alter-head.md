@@ -162,3 +162,98 @@ Dismissed by the user in triage:
    `<unnamed>` routine key can be exempted, although its docblock says "no exemption can
    match". Nothing changes in outcome while `ROUTINES_THAT_CANNOT_REACH_ACCOUNTS` is empty.
    What weakens is the guarantee that a bound trigger "cannot be listed here at all".
+
+## Architect re-review (2026-09-21, round 1) — HELD PENDING FIXES:
+
+Reviewed `eff8d6b9..72f1196d` via `/ce-code-review` across five lenses (correctness,
+project-standards, testing, adversarial, learnings) plus one validator batch that
+re-measured every surviving finding in its own `git archive 72f1196d` copy. All three
+commits are ancestors of `main`. Every line number below is a line number in the file AT
+`72f1196d`. The cross-model adversarial pass did NOT run (no different-provider route is
+installed on this host), so the adversarial lens ran in-process and has no
+independent-family corroboration. No reviewer touched a database or the shared checkout.
+
+**What held up, so it is not redone.** AC1, AC2 and AC3 all hold, each re-derived by
+execution rather than taken from the signal block: three independent plants of the
+interpolated ALTER red the assembled arm by name; the clean tree is 25/25 and
+`ALLOWED_COLUMN_ALTERATIONS` is untouched; pointing `assembledWrites` back at
+`[ACCOUNTS_STATEMENT_RE]` reds the fixture, each of the four new ALTER assertions reds
+independently under that mutant, and `'gi'` to `'g'` and the head-line-only interpolation
+test red their own pins. The two silent-arm controls prove what their comment says. The
+sweep in Scope decision 4 was re-enumerated from the code by the architect: exactly six
+production line-walks over a head, the six the signal block names, and no test body loops
+over heads. Probed true: `.join`, `.concat` and `+=` are silent on the statement's own
+line; an equality inside a USING expression or a CHECK reds the fail-closed arm;
+`ALTER TABLE ${table}` reds nowhere; `src` spells no ALTER; every text `writesColumn`
+accepts also satisfies the ALTER arm's test, so the single-head argument in the
+`accountsColumnWriters` docblock holds. Project standards is clean. The
+shared-constant-unification learning is honored by a real membership fixture.
+
+The hold is prose only. Both items are claims this range added that the code falsifies.
+
+### Item 1 (required). The `+` recognition is stated without the bound that makes it true.
+
+Measured three times (correctness, adversarial, validator), same result each time. With
+the template's opening backtick on the line ABOVE the head,
+
+    const sql = `
+      ALTER TABLE accounts DROP COLUMN ` + column;
+
+planted in a `src` file leaves the whole canary 25/25 green. The same text with the
+backtick on the head's own line reds `[concatenation]`. The silence holds for the wrapped
+form, for a `+` leading the next line, for the argument position, and for an opened-above
+`INSERT INTO accounts (` + cols + `)` and an opened-above UPDATE join. Interpolation in the
+same layout IS reported; only the `+` join goes quiet. Cause: `enclosingQuote` reads the
+head's own line only, so `statementAt` runs with no quote, reads to the `;`, and
+`joinedByPlus` looks for the `+` after the semicolon (and skips the before-the-quote test,
+since `quoteAt` is -1). The mechanism predates this range and the write head is silent the
+same way at `eff8d6b9`. It is held here because this range put a head with no second
+catcher behind that join test and wrote the prose that the shape falsifies:
+
+- header item 4: "a `+` beside its opening or closing quote";
+- the dynamic-SQL KNOWN LIMITS entry: "That scan recognises two ... and a `+` beside its
+  quote. An array `.join`, a `.concat` or a `+=` is silent even on the statement's own
+  line", an enumeration of silent joins this shape is missing from;
+- the `assembledWrites` docblock: an interpolated or joined ALTER "is reported here or
+  nowhere", which for this shape is nowhere, unnamed;
+- the `SQL_INTERPOLATION_RE` docblock's description of where the join is recognised.
+
+`src` opens a template on the line above its first SQL line 21 times at `72f1196d`. No
+`accounts` head does today, which is why the clean tree is green either way.
+
+**User decision (2026-09-21): name it, do not close it.** No new branch in
+`joinedByPlus` or `assembledWrites`, and no new fixture is required. State the bound once,
+in the dynamic-SQL KNOWN LIMITS entry: the `+` is read only where the literal's opening
+quote shares a line with the head, and a template opened on a line above its head is a
+silent join (its interpolation is still read). Then make every other statement of the `+`
+recognition in the file either carry that bound or defer to the entry by name. Audit the
+whole file for statements of this claim rather than trusting the four sites listed above;
+the list is what the lenses found, not a completeness claim. Re-measure the opened-above
+plant and the same-line control in a scratch copy and quote both results in the signal
+block.
+
+### Item 2 (required). The `assembledWrites` docblock states as a universal what its two siblings state as a rule.
+
+"Only one assembled shape has a second catcher" and "neither does the clause of a drop, a
+rename or a retype" (lines 1975-1978). Validator re-measured: a retype clause held in a
+constant, with an equality in its USING expression, interpolated into an `ALTER TABLE
+accounts`, reds the fail-closed arm AND this arm. Header item 4 and the KNOWN LIMITS entry
+both say "as a rule" and carry the USING/CHECK carve-out; this third statement of the same
+claim dropped both. The error is in the safe direction (an extra catcher, not a missing
+one), so it is wording only. Carry the hedge across so the three statements agree.
+
+### Dismissed by the user in triage (2026-09-21), recorded so it is not re-raised
+
+- No negative fixture pins "a spelled-out `ALTER TABLE accounts ...` is not assembled"
+  (line 4025). Validated: a mutant reporting every ALTER head as assembled, with the
+  correct label, survives the unmodified fixture set. Dismissed as pre-emptive hardening:
+  the shipped code is correct on the input, the failure direction is a loud false red, and
+  `src` spells no ALTER.
+
+### Not triaged this round
+
+The four `[TODO Architect]` pre-existing gaps above are the architect's to route and need
+no backend action. Two appear to overlap tasks already in `pending/` (the routine arms'
+tree in `backend-alter-accounts-if-exists-evades-pin`, the `public.` qualifier in
+`backend-trigger-bind-qualifier-admits-no-spacing`); the architect is checking before
+filing or dismissing.
