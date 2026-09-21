@@ -194,3 +194,80 @@ Two observations for the architect, surfaced rather than acted on:
 - The type half of the predicate is pinned by exactly one assertion per suite,
   the `4242` row of the non-string `it.each`, since `null` and `undefined` are
   refused by either half alone. Pre-existing, and not weakened by this change.
+
+---
+
+## Architect re-review (2026-09-21) — HELD PENDING FIXES:
+
+First review of `e86d03bb`, via `/ce-code-review` (correctness, adversarial,
+testing, project-standards, frontend-races, learnings). The code change is
+accepted as landed and is NOT part of this hold: all five acceptance criteria
+were re-measured independently in private copies of `e86d03bb` and hold.
+Pre-fix red observed (prompts 2, mints 2, `run` twice with `""`); each
+single-surface revert reddens exactly that surface's two new cases, confirmed
+by three reviewers separately; both retry-leg cases were shown to reach the
+second mint; full unit suite 86 files / 1911 tests green and `npm run build`
+clean. One comment sentence is held.
+
+**Item 1. The new first-leg comments credit the fix with removing a message it
+does not remove.**
+
+In 'an empty-string mint refuses at the first leg, ...' in both
+`lib-settings-fresh-auth.test.js` and `lib-authorship-consent.test.js`, the
+comment closes:
+
+> what the truthiness half removes is the second prompt and the two refused
+> writes, and a re-authentication message that blames a password the user typed
+> correctly.
+
+(the authorship twin says "broadcasts" for "writes"). The last clause is false.
+The outcome is `{ freshAuthFailed: true }` before and after the fix, which the
+same sentence says itself when it opens with "either way", and every caller
+turns that outcome into the same string: `settings.reauthFailed` on the four
+settings actions and the admin action, `claims.reauthFailed` in
+`_broadcastConsentOp`. The user who hits this contract violation still ends on
+that message after the fix. What the fix removes is what the case measures: the
+second prompt, the second mint, and the refused `run` calls. This task's own
+"What happens" section had it right ("The outcome object is the same either
+way; what changes is everything it cost to get there"); the comment drifted
+from it.
+
+Fix: end that sentence at the measured costs in both files, keeping the twins
+saying the same thing. If you want to keep the point about the message, state
+it the true way round: the message is unchanged, and it now costs the user one
+prompt rather than two to reach it. Comment-only. No assertion changes, so the
+mutant measurements above do not need re-running; a green run of the two suites
+is enough evidence.
+
+**Not held, offered while you are in those files (skip freely, it will not be
+re-raised):** both `mintViaPassword` docblocks call `''` "the one value the
+type half cannot refuse". Read literally the type half cannot refuse any
+string, and the adversarial pass measured `' '`, `'null'` and
+`'[object Object]'` walking the same two-prompt path, refused by the backend as
+`expired`. `''` is the one value the consumers DROP, which is what the rest of
+each docblock goes on to describe. A tighter phrasing would say that.
+
+**Dismissed at triage (user, 2026-09-21), recorded so re-review does not reopen
+them:**
+
+- The retry-leg cases assert `run` once and the outcome but not a mint or
+  prompt count of 2, so they would stay green if the gate never reminted
+  (measured by two reviewers with the gate forced non-remintable). Dismissed as
+  preemptive hardening: on the landed code the cases are sensitive, the shape is
+  inherited from each suite's pre-existing null-proof retry case, and a
+  different existing case reddens if the remintable set changes. Hardening only
+  the new cases would leave the older twins weaker.
+- The password-factor memo is no longer written on an empty-proof mint. Already
+  accepted in this task's Notes; three reviewers reached it independently
+  without being shown that note, and none found a consequence beyond the one
+  extra status read.
+- Truthy non-proof strings still take the two-prompt path. The client cannot
+  tell them from a genuinely expired token without coupling to the token
+  format. Out of reach of a client-side narrowing.
+- Your observation on `_handleSessionAuth`: confirmed, it passes
+  `data.fresh_auth_proof` straight into `cacheSessionProof` with no guard.
+  `ui-orcid-callback-session-window-proof-type-check` already prescribes the
+  two-part predicate there, so its fix is unaffected; only this task's
+  description of that site ("type-only") was loose.
+- Your observation on the type half being pinned by one row per suite:
+  pre-existing, not weakened here.
