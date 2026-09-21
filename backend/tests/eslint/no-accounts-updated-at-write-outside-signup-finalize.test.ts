@@ -124,7 +124,15 @@
  * arm of it. The two shapes that produced it are refused at the opener — a
  * block comment with no closer, and a dollar-quote tag that is not a
  * PostgreSQL tag or never recurs — and the end-state assertion is what catches
- * the next one.
+ * the next one. It does not catch a misread that a later line undoes, and that
+ * is how most of the silent passes this file has had worked: a flag left set or
+ * cleared past the line that misled it, a `//` then not a comment and a path
+ * glob in its prose opening a block comment over the writes below, and a later
+ * template putting the flag back before the end. So the reader's state is also
+ * compared with TypeScript's own at EVERY line end, for template text and for
+ * block comments ({@link TypeScriptView}), and the first line the two disagree
+ * at is a red bar naming it. An interpolation spanning lines, which read flat
+ * does exactly that, is also recorded where it opens and reported by line.
  *
  * FOUR SCANS OVER `src`, two of them deriving the same writer set from
  * opposite ends so a misattribution in either walk is a red bar rather than a
@@ -167,7 +175,8 @@
  *      variable defeats the table-first read, which finds a placeholder where
  *      the SET list should be, so the shape is refused where the join is
  *      spelled on the statement's own lines: a `${...}` interpolation anywhere
- *      in it, or a `+` beside its opening or closing quote. A SET-list
+ *      in it outside a SQL comment (one inside a comment evaluates to comment
+ *      text), or a `+` beside its opening or closing quote. A SET-list
  *      fragment carrying the assignment is caught separately by the
  *      fail-closed arm, because no readable head's statement reaches a
  *      constant declared on its own. A column LIST held in a variable has no
@@ -267,7 +276,11 @@
  *     The reverse error is the tolerable one and is not chased:
  *     a line inside a block comment that carries no leading `*`, or an odd
  *     quote in a line of prose, is read as live SQL and can only cost a red
- *     bar on a statement that was never live.
+ *     bar on a statement that was never live, except where that prose holds a
+ *     `--` and a live statement follows the comment's real end on the same
+ *     line, which the `--` then blanks. The two shapes found doing that, an
+ *     escaped backtick taken for the template's end and a nested comment ended
+ *     at its inner closer, are read right.
  *   - The ALTER head anchors on the keyword `TABLE`, and that is not the only
  *     keyword reaching an ordinary table. `ALTER MATERIALIZED VIEW accounts
  *     RENAME COLUMN touched_at TO updated_at`, and the same statement spelled
@@ -315,7 +328,11 @@
  *     either, and the second is the one that costs: the pattern runs to the
  *     next slash on the line, which is routinely a `//` opener, after which
  *     the comment's own prose is read as code and a path glob in it opens a
- *     block comment over the lines below.
+ *     block comment over the lines below. That damage crosses a line end,
+ *     where the reader's block state then disagrees with TypeScript's, so the
+ *     TypeScript-agreement arm reds it; what stays silent is a misjudgement
+ *     whose damage ends on its own line. Inside an interpolation there is no
+ *     judgement to make: its close is TypeScript's ({@link typescriptView}).
  *   - A string VALUE that spans lines is read as code from its second line
  *     on BY THE BLANKING, because the value state resets at each line while the
  *     block, template and dollar states do not. The reset is what keeps one
@@ -326,13 +343,16 @@
  *     resets the same way but does not read on: a line ending mid-value stops
  *     it with no terminator, so the statement resolves no table and is reported
  *     by line instead. The two readers therefore diverge here on purpose, and
- *     only here — see {@link statementAt}. It is also the one shape that can
+ *     this is the only divergence made on purpose — see {@link statementAt}.
+ *     A value spanning lines is also the one shape that can
  *     supply the body keyword from a VALUE: the keyword test is END-ANCHORED,
  *     so a closed value cannot
  *     (`SET note = 'stored exactly as'` ends in its own quote and matches
  *     nothing), but a value left OPEN at the end of a line can
  *     (`SET note = 'stored exactly as`), and a span on the next line then reads
- *     as a body with its own markers blanked.
+ *     as a body with its own markers blanked. (The two readers also differ at
+ *     an interpolation, which the statement read takes flat, and not on
+ *     purpose; the interpolation limit records that.)
  *   - The body-or-value judgement at a dollar-quote opener has residuals of its
  *     own. It is made from the keyword before the opener, and every line it
  *     consults is a BLANKED one — the opener's own line up to that point, and
@@ -357,8 +377,13 @@
  *     rather than a red bar. The residual left is the other direction: a nested
  *     literal that is pure DATA, a `RAISE NOTICE` message rather than a
  *     statement to execute, still has a genuine comment marker of its own
- *     blanked, which can only hide a write spelled inside a string nothing
- *     executes.
+ *     blanked, which on its own hides only a write spelled inside a string
+ *     nothing executes. An UNBALANCED tag inside such data (`$v$Tier $$...$v$`)
+ *     is worse: it opens a phantom literal past the data's own close, and a
+ *     marker read from there can reach the live statement after it. In a
+ *     migration the stack left open reds the end-state arm; in a template the
+ *     closing backtick clears it, so there it is a silent residual. Neither
+ *     tree spells a tag inside dollar-quoted data.
  *   - The two dialects disagree at one opener, and each is right in its own
  *     file. `${` is a template interpolation in TypeScript, so `` `$${n}` `` is
  *     the placeholder-builder idiom and opens nothing; in a migration the same
@@ -371,20 +396,56 @@
  *     covered is SQL held in a `.ts` file that spells a brace-leading literal:
  *     the TypeScript answer wins there, and it is the right one, since the
  *     interpolation would have run before PostgreSQL ever saw the text.
- *   - An interpolation is copied whole ({@link interpolationEnd}), so nothing
- *     inside one is a delimiter, a comment marker or a quote for any arm
- *     outside it. Two residuals come with that. One that SPANS LINES is not
- *     recognised at all and is read flat, as it was before, since copying to
- *     the end of a line would blank live code; neither tree spells one. And a
- *     write spelled INSIDE an interpolation is copied rather than read, which
- *     no arm then sees — a shape that would mean building a statement out of
- *     the expression interpolated into another statement. The brace-depth half
- *     of the close is not discriminable by any fixture: ended early at a `}`
- *     of its own, what an interpolation leaves behind is `)`-shaped text that
- *     every arm reads inertly, in every shape tried (an object literal, one
- *     carrying a quoted value, a nested template, a comment). The QUOTING half
- *     is pinned, because a `}` inside a string leaves the quote behind it
- *     open.
+ *   - An interpolation is copied whole, to the close TypeScript's parser gives
+ *     it ({@link typescriptView}), so nothing inside one is a delimiter, a
+ *     comment marker or a quote for any arm outside it. It is recognised
+ *     wherever template text holds one: on the main path, inside a quoted
+ *     value (`'${name}'`) and inside a dollar-quoted span, since TypeScript
+ *     reads one in all three. Inside a SQL comment it is blanked with the
+ *     comment, which is inert, since what it evaluates to is comment text; the
+ *     comment's own extent is found with every interpolation in it stepped over
+ *     ({@link lineCommentEnd}, {@link maskedTemplateText}), so a `*\/`, a
+ *     backtick or a `$$` inside one ends nothing, and a comment that meets
+ *     one whose close is on a later line records it. Three residuals come
+ *     with it.
+ *     One whose close is on a later line is RECORDED, and the
+ *     every-interpolation-closes arm reports it by line (see
+ *     {@link BlankedCode.unclosed}). The reader itself still reads that line
+ *     flat, and a flat read takes a nested template's opening backtick for the
+ *     outer template's close and then declines its closing one, which leaves
+ *     the flag wrong; that arm and the TypeScript-agreement arm are what see
+ *     it, and neither tree wraps an interpolation.
+ *     A write spelled INSIDE an interpolation is copied together with the
+ *     interpolation's comments. A plain one is still read by both writer walks,
+ *     because its text survives the copy. One with a comment in a token gap is
+ *     not: `` `${light ? `UPDATE accounts SET updated_at /* stamp *\/ = NOW()`
+ *     : other} WHERE id = $1` `` is silent, and the flat read that
+ *     interpolation copying replaced blanked that comment and caught it in both
+ *     walks. That narrowing is left in place because a whole statement chosen
+ *     by a ternary inside another template is an unusual construction, none of
+ *     the twenty nested templates in `src` (on fourteen lines) holds a
+ *     statement head, and it is the kind of line a reviewer stops on.
+ *     And the statement read and {@link enclosingQuote} still read an
+ *     interpolation flat while the blanking copies it whole, so the two
+ *     disagree wherever a nested template sits ahead of the position they are
+ *     asked about: a statement read can run past its template's closing
+ *     backtick to the line's `;`, or stop inside the nested template. Every
+ *     consequence found is loud, an assignment left unresolved or a statement
+ *     reported unreadable, and no `accounts` write or ALTER in `src` holds an
+ *     interpolation at all, since the assembled-write arm refuses one.
+ *   - SQL block comments NEST, as PostgreSQL's do ({@link BlankState.nested}),
+ *     so on valid SQL a comment ends where PostgreSQL ends it. What nesting
+ *     changes is the documented misreads: a phantom `/*` read out of a value
+ *     that spans lines, out of an `E'\''` string, or out of an unbalanced tag
+ *     inside dollar-quoted data now runs past a balanced comment after it to
+ *     the next closer at depth 0, where flat counting ended it at the first
+ *     `*\/`. A comment closer spelled with an escape in template text, its
+ *     slash escaped with a backslash or its star spelled as a hex escape, is
+ *     likewise read raw and not cooked, so it closes nothing here. A
+ *     differential fuzz of about 2.3 million valid fixtures found every case of
+ *     a write base caught and this misses to need one of those triggers, and
+ *     found nesting refusing more phantoms than it widens. Neither tree spells
+ *     any of them.
  *   - The scans read the shapes an author writes by accident, not the ones an
  *     author writes to evade a test. A writer determined to get past them can.
  *
@@ -422,6 +483,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 import {
   enclosingSymbol,
   MODULE_SCOPE,
@@ -860,8 +922,11 @@ const LITERAL_CAP = 40;
  * and that literal can carry another, so the open tags are a STACK rather than
  * a tag: inside a body every depth is source, read with the body's own rules —
  * quoting tracked, comments blanked, each comment bounded by the innermost tag.
- * Inside a VALUE nothing is tracked at all, because a value's characters are
- * data to its own closing tag and a `$` inside one is just a dollar sign.
+ * Inside a VALUE nothing SQL is tracked at all, because a value's characters
+ * are data to its own closing tag and a `$` inside one is just a dollar sign.
+ * What TypeScript puts there still counts: an interpolation is copied wherever
+ * template text holds one, and the `$$` of a `$${n}` is not the value's
+ * closing tag ({@link tagAt}).
  *
  * WHY THE STATE IS CARRIED ACROSS LINES. A block comment spans lines, and a
  * line-local guess about which of its lines are comment is wrong in both
@@ -900,6 +965,12 @@ interface BlankState {
    *  the statement, markers included, and nothing inside one is a span of its
    *  own, so the stack never grows past a value. */
   dollarCode: boolean;
+  /** How many SQL block comments are open INSIDE the one `block` says is
+   *  open. PostgreSQL nests them, so `/* old /* note *\/ kept *\/` is one
+   *  comment ending at its second closer, and ending it at the first reads the
+   *  rest of it as SQL, where its prose can open a line comment over a live
+   *  statement. A TypeScript comment does not nest and keeps this at 0. */
+  nested: number;
 }
 
 /** A dollar-quoted span the blanking reader OPENED or CLOSED, and where.
@@ -1005,46 +1076,124 @@ function regexLiteralEnd(line: string, at: number, prior: string): number {
   return -1;
 }
 
-/** The end, exclusive, of the `${...}` interpolation opening at `at`, or -1
- *  when it does not close on this line.
+/** What TypeScript's own parser says about a `.ts` file's templates: where
+ *  each interpolation closes, and whether each line ends inside template text.
  *
  *  An interpolation holds TypeScript, not the SQL around it, and what it holds
  *  can be a template of ITS OWN. Read flat, that nested template's OPENING
  *  backtick closes the outer one, so the flag says no template is open while
- *  one still is — and every arm that tests the flag then answers for the wrong
+ *  one still is, and every arm that tests the flag then answers for the wrong
  *  text. The reader does not descend into one: the whole interpolation is
  *  copied as written, so no character inside it is a delimiter, a comment
  *  marker or a quote for any arm out here.
  *
- *  Finding the close needs the brace depth AND the quoting, since a `}` inside
- *  a string or a nested template closes nothing. An interpolation that spans
- *  lines reports -1 and is read as it was before, flat: the shape is not in
- *  either tree, and copying to the end of the line would blank live code. */
-function interpolationEnd(line: string, at: number): number {
-  let depth = 1;
-  const quotes: string[] = [];
-  for (let j = at + 2; j < line.length; j++) {
-    const char = line[j];
-    if (char === '\\') {
-      j++;
-      continue;
-    }
-    const open = quotes[quotes.length - 1];
-    if (open !== undefined && open !== '`') {
-      if (char === open) quotes.pop();
-      continue;
-    }
-    if (char === '`') {
-      if (open === '`') quotes.pop();
-      else quotes.push(char);
-      continue;
-    }
-    if (open === '`') continue;
-    if (char === "'" || char === '"') quotes.push(char);
-    else if (char === '{') depth++;
-    else if (char === '}' && --depth === 0) return j + 1;
+ *  WHERE IT CLOSES IS TYPESCRIPT'S ANSWER, not this file's. Finding the close
+ *  by hand needs brace depth, quoting with its escapes, nested templates at
+ *  every depth, comments, and the regex-or-division judgement, and that last
+ *  one needs a parser: a division after an operand spelling a test does not
+ *  carry (`x!!`, a trailing-dot `1.`, an identifier ending in a combining
+ *  mark) reads as a pattern, runs on to the next slash and swallows the
+ *  template's own closing backtick, and a pattern opening a statement after
+ *  `if (x)` reads as a division. A hand-written rule for any of these trades
+ *  one of those shapes for another, so the close comes from the parser the
+ *  code is compiled with. `typescript` is already what `npm run typecheck` runs, and the
+ *  citation canary in this directory reads its sources the same way.
+ *
+ *  The TEMPLATE-TEXT and BLOCK-COMMENT answers are what the
+ *  TypeScript-agreement arm compares the reader's own state against, at every
+ *  line end. The reader keeps its own state, because its SQL arms are what
+ *  read template text and nothing here replaces them; the comparison is what
+ *  makes a line the reader gets wrong a red bar instead of a flag left set
+ *  over the lines below. */
+interface TypeScriptView {
+  /** Per line: the column of every `${` TypeScript opens an interpolation at,
+   *  mapped to the end, exclusive, of its close when that is on the same line,
+   *  or to -1 when it is on a later one. A `${` missing from the map is not an
+   *  interpolation at all, as in an ordinary string. */
+  closes: Map<number, number>[];
+  /** Per line: whether the line ends inside template text. */
+  templateAtEnd: boolean[];
+  /** Per line: whether the line ends inside a TypeScript block comment. */
+  blockAtEnd: boolean[];
+}
+
+function typescriptView(lines: string[]): TypeScriptView {
+  const starts: number[] = [];
+  let offset = 0;
+  for (const line of lines) {
+    starts.push(offset);
+    offset += line.length + 1;
   }
-  return -1;
+  const lineOf = (pos: number): number => {
+    let low = 0;
+    let high = starts.length - 1;
+    while (low < high) {
+      const mid = (low + high + 1) >> 1;
+      if (starts[mid] <= pos) low = mid;
+      else high = mid - 1;
+    }
+    return low;
+  };
+  const closes = lines.map(() => new Map<number, number>());
+  const templateAtEnd = lines.map(() => false);
+  const blockAtEnd = lines.map(() => false);
+  const text = lines.join('\n');
+  const sf = ts.createSourceFile('view.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  // Every character is part of a token or of the trivia between two tokens,
+  // so the block comments are exactly the `/*` spans in those gaps. Asking the
+  // comment-range API at each node instead misses a comment before a token
+  // that is no node (a closing `}` or `)`), and one trailing code on its line.
+  let scanned = 0;
+  const trivia = (to: number): void => {
+    for (let j = scanned; j < to; j++) {
+      if (text.startsWith('//', j)) {
+        while (j < to && text[j] !== '\n') j++;
+      } else if (text.startsWith('/*', j)) {
+        const closer = text.indexOf('*/', j + 2);
+        const end = closer === -1 || closer + 2 > to ? to : closer + 2;
+        for (let i = lineOf(j); i < lineOf(end); i++) blockAtEnd[i] = true;
+        j = end - 1;
+      }
+    }
+    scanned = Math.max(scanned, to);
+  };
+  const visit = (node: ts.Node): void => {
+    // A doc comment is parsed into nodes of its own; left out, its text is
+    // trivia again and is read as the comment it is.
+    if (node.kind >= ts.SyntaxKind.FirstJSDocNode && node.kind <= ts.SyntaxKind.LastJSDocNode) return;
+    if (ts.isTemplateLiteralToken(node)) {
+      // Template text runs from the opening backtick or `}` to the closing
+      // backtick or `${`, so a line ends inside it wherever its newline does.
+      const from = lineOf(node.getStart(sf));
+      const to = lineOf(node.getEnd());
+      for (let i = from; i < to; i++) templateAtEnd[i] = true;
+    }
+    // A template literal TYPE interpolates the same way, and is spelled the
+    // same way, so its `${` is just as much TypeScript to the reader.
+    if (ts.isTemplateExpression(node) || ts.isTemplateLiteralTypeNode(node)) {
+      let before: ts.Node = node.head;
+      for (const span of node.templateSpans) {
+        const open = before.getEnd() - 2;
+        const close = span.literal.getStart(sf);
+        const line = lineOf(open);
+        closes[line].set(open - starts[line], lineOf(close) === line ? close - starts[line] + 1 : -1);
+        before = span.literal;
+      }
+    }
+    const children = node.getChildren(sf);
+    if (children.length === 0) {
+      trivia(node.getStart(sf));
+      scanned = Math.max(scanned, node.getEnd());
+      return;
+    }
+    children.forEach(visit);
+  };
+  visit(sf);
+  // The end-of-file token is no leaf when a doc comment trails the last
+  // statement, since the comment is parsed as that token's child, so the
+  // trivia after the last leaf is read here.
+  trivia(text.length);
+  return { closes, templateAtEnd, blockAtEnd };
 }
 
 /** The code before a position, as the blanking reader has it: the current
@@ -1086,12 +1235,36 @@ const DOLLAR_QUOTE_RE = /^\$(?:[\p{L}_][\p{L}\p{Nd}_]*)?\$/u;
  *  a block comment opener with no closer is not a comment: reading it as one
  *  turns off the blanking that every pattern here depends on, for every line
  *  after it, and a line no scan reads is a silent pass rather than a red bar. */
-function dollarCloses(lines: string[], lineIndex: number, from: number, tag: string): boolean {
+function dollarCloses(
+  lines: string[],
+  lineIndex: number,
+  from: number,
+  tag: string,
+  interpolates: boolean,
+): boolean {
   for (let i = lineIndex; i < lines.length; i++) {
-    const text = i === lineIndex ? lines[i].slice(from + tag.length) : lines[i];
-    if (text.includes(tag)) return true;
+    const start = i === lineIndex ? from + tag.length : 0;
+    for (let at = lines[i].indexOf(tag, start); at !== -1; at = lines[i].indexOf(tag, at + 1)) {
+      if (tagAt(lines[i], at, tag, interpolates)) return true;
+    }
   }
   return false;
+}
+
+/** Whether the dollar-quote `tag` is spelled at `at` on `line`: the characters
+ *  match, and where TypeScript is interpolating, the tag's last `$` does not
+ *  begin a `${`.
+ *
+ *  To TypeScript, `$${n}` is a dollar sign followed by an interpolation, which
+ *  is why {@link dollarOpenerAt} refuses it as an opener. A CLOSE has to refuse
+ *  it for the same reason, and so does the recurrence that admits an opener.
+ *  Read as a close, the `$$` of `$${...}` inside an open `$$` span ended the
+ *  span there and consumed the interpolation's own `$`, so what was left of
+ *  the interpolation was read as template text, and a nested template in it
+ *  inverted the flag over the lines after it. `$d${x}` inside a `$d$` span is
+ *  the same shape with a tag. */
+function tagAt(line: string, at: number, tag: string, interpolates: boolean): boolean {
+  return line.startsWith(tag, at) && !(interpolates && line[at + tag.length] === '{');
 }
 
 /** The tag of the dollar-quoted span opening at `at` on `lineIndex`, or null
@@ -1136,7 +1309,7 @@ function dollarOpenerAt(
   const opener = line.slice(at).match(DOLLAR_QUOTE_RE);
   if (opener === null) return null;
   if (interpolates && line[at + opener[0].length] === '{') return null;
-  return dollarCloses(lines, lineIndex, at, opener[0]) ? opener[0] : null;
+  return dollarCloses(lines, lineIndex, at, opener[0], interpolates) ? opener[0] : null;
 }
 
 /** The keyword a routine or anonymous-block body follows. A dollar-quoted span
@@ -1203,19 +1376,124 @@ function blockCloses(
   lineIndex: number,
   from: number,
   boundaries: string[],
+  interpolations?: Map<number, number>[],
+  nests = false,
 ): boolean {
+  let depth = 1;
   for (let i = lineIndex; i < lines.length; i++) {
-    const text = i === lineIndex ? lines[i].slice(from + 2) : lines[i];
-    const closes = text.indexOf('*/');
+    const source = interpolations === undefined ? lines[i] : maskedTemplateText(lines[i], interpolations[i]);
+    const text = i === lineIndex ? source.slice(from + 2) : source;
     let ends = -1;
     for (const boundary of boundaries) {
       const at = text.indexOf(boundary);
       if (at !== -1 && (ends === -1 || at < ends)) ends = at;
     }
-    if (closes !== -1 && (ends === -1 || closes < ends)) return true;
+    for (let j = 0; j < text.length && (ends === -1 || j < ends); j++) {
+      if (nests && text.startsWith('/*', j)) {
+        depth++;
+        j++;
+      } else if (text.startsWith('*/', j)) {
+        if (--depth === 0) return true;
+        j++;
+      }
+    }
     if (ends !== -1) return false;
   }
   return false;
+}
+
+/** `line` as SQL text a template carries: every interpolation TypeScript
+ *  opens on it ({@link TypeScriptView.closes}) replaced by spaces of the same
+ *  length, to its close or, where that is on a later line, to the end of the
+ *  line, and every escaped backtick blanked too, since it is a character of
+ *  the template and not its end.
+ *
+ *  This is the text {@link blockCloses} searches when it decides whether a
+ *  `/*` in template text opens a comment at all; where the comment then ENDS
+ *  is the block branch's, which steps over the same interpolations. An
+ *  interpolation is TypeScript, so a `*\/` inside one, such as the pattern of a
+ *  `.replace(/\/\*\//g, '')` that strips comment markers, is not the SQL
+ *  comment's closer, a backtick inside one belongs to a nested template rather
+ *  than ending the outer one, and the `$$` of a `$${n}` placeholder is not a
+ *  dollar tag. Searched raw, each admitted a comment that was none or refused
+ *  one that was. */
+function maskedTemplateText(line: string, closes: Map<number, number> | undefined): string {
+  let out = line;
+  for (const [open, end] of closes ?? []) {
+    const stop = end === -1 ? line.length : end;
+    out = out.slice(0, open) + ' '.repeat(stop - open) + out.slice(stop);
+  }
+  let masked = '';
+  for (let j = 0; j < out.length; j++) {
+    if (out[j] === '\\' && j + 1 < out.length) {
+      masked += out[j + 1] === '`' ? '  ' : out.slice(j, j + 2);
+      j++;
+    } else {
+      masked += out[j];
+    }
+  }
+  return masked;
+}
+
+/** The length of the escape at `at` when it spells a line feed or a carriage
+ *  return, which is where PostgreSQL ends a line comment, or 0. TypeScript
+ *  spells either four ways: `\n`, `\x0a`, `\u000a` and `\u{a}` in any case
+ *  and with any leading zeros, and the same for `\r` and `0d`. */
+function lineBreakEscape(line: string, at: number): number {
+  const spelled = /^\\(?:[nr]|x0[adAD]|u000[adAD]|u\{0*[adAD]\})/.exec(line.slice(at));
+  return spelled === null ? 0 : spelled[0].length;
+}
+
+/** Where a SQL line comment opening at `from` on `line` ends: at the end of
+ *  the line, or sooner where the text carrying it ends first.
+ *
+ *  In template text that is three places, each a fact about TypeScript rather
+ *  than SQL. The template's own closing backtick, since TypeScript ends the
+ *  template there whatever the SQL around it says: run to the end of the line
+ *  instead, the comment blanked that backtick with it and left the flag set
+ *  over the lines below. An escape spelling a line feed or a carriage return
+ *  ({@link lineBreakEscape}), since the value TypeScript builds has a line
+ *  break there and PostgreSQL ends the comment at it; the escape is blanked
+ *  with the comment, so what follows it starts a word. (A template read raw,
+ *  by `String.raw` or a tag that takes the raw strings, keeps the escape as
+ *  two characters and the comment runs on. The reader takes it as cooked, so
+ *  it reads the rest of that comment as SQL, which reds where the text names
+ *  a write and is silent where it opens a block comment over one: a raw
+ *  template of SQL with comments is a residual, and no template in either
+ *  tree is read raw.) And an
+ *  interpolation is stepped over whole rather than searched, since its text is
+ *  TypeScript; one whose close is not on this line is recorded in
+ *  `unclosed`, because the comment is the only thing that meets it, and read
+ *  on flat it can invert the flag. Inside a dollar-quoted literal the
+ *  innermost `tag` ends it too ({@link tagAt}), and every place a tag test is
+ *  made has to agree with every other about where a tag is. */
+function lineCommentEnd(
+  line: string,
+  from: number,
+  inTemplate: boolean,
+  closes: Map<number, number>,
+  tag: string | null,
+  unclosed: number[],
+): number {
+  for (let j = from; j < line.length; j++) {
+    if (inTemplate && line[j] === '\\') {
+      const spelled = lineBreakEscape(line, j);
+      if (spelled > 0) return j + spelled;
+      j++;
+    } else if (inTemplate && line[j] === '`') {
+      return j;
+    } else if (closes.has(j)) {
+      const end = closes.get(j) ?? -1;
+      if (end === -1) {
+        unclosed.push(j);
+        return line.length;
+      }
+      j = end - 1;
+    } else if (tag !== null && tagAt(line, j, tag, inTemplate)) {
+      return j;
+    }
+  }
+  return line.length;
 }
 
 /** `line` with its comment spans blanked, and the state the next line starts
@@ -1227,14 +1505,17 @@ function blankLine(
   state: BlankState,
   sql: boolean,
   blanked: string[] = [],
-): { text: string; state: BlankState; spans: SpanEvent[] } {
+  view: Map<number, number>[] = [],
+): { text: string; state: BlankState; spans: SpanEvent[]; unclosed: number[] } {
   const line = lines[lineIndex];
+  const closes = view[lineIndex] ?? new Map<number, number>();
   const escapes = !sql;
   // A backtick delimits a template in TypeScript and is an ordinary character
   // everywhere in SQL, so every arm that OPENS or ENDS a template is gated on
-  // the dialect. (The block-comment boundary one level down tests the flag
-  // alone, which is inert for as long as these arms keep the flag false in a
-  // `.sql` read.)
+  // the dialect. (The boundary set the main-path `/*` arm hands
+  // {@link blockCloses} adds the backtick on the flag alone, which is inert for
+  // as long as these arms keep the flag false in a `.sql` read. The set the
+  // in-literal `/*` arm hands it tests the dialect and the flag both.)
   // The template FLAG is no substitute for that gate, however safe it reads:
   // the flag starts false in a `.sql` file but nothing kept it there,
   // so one unpaired backtick inside an ordinary quoted value — an audit note,
@@ -1245,20 +1526,79 @@ function blankLine(
   // template test the flag as well as the dialect, since in TypeScript a
   // backtick ends nothing where no template is open.
   const ticks = !sql;
-  let { block, template, dollar, dollarCode } = state;
+  let { block, template, dollar, dollarCode, nested } = state;
   let opaque: string | null = null;
   const spans: SpanEvent[] = [];
+  const unclosed: number[] = [];
   let out = '';
   let i = 0;
   while (i < line.length) {
     const char = line[i];
     const next = line[i + 1];
     if (block) {
+      // An interpolation inside a SQL block comment is TypeScript, so its text
+      // cannot close the comment: it is blanked whole, to the same close
+      // {@link blockCloses} masked it to when it judged the comment to close.
+      // In template text only, where the masking was done, because a block
+      // opened in code is a TypeScript comment, which holds no interpolation;
+      // one the reader opened there by mistake has to end where
+      // {@link blockCloses} said it would.
+      if (ticks && template && closes.has(i)) {
+        const end = closes.get(i) ?? -1;
+        if (end === -1) unclosed.push(i);
+        const stop = end === -1 ? line.length : end;
+        out += ' '.repeat(stop - i);
+        i = stop;
+        continue;
+      }
+      // A SQL comment nests and a TypeScript one does not; see
+      // {@link BlankState.nested}.
+      if ((sql || (ticks && template)) && char === '/' && next === '*') {
+        nested++;
+        out += '  ';
+        i += 2;
+        continue;
+      }
       const closing = char === '*' && next === '/';
       out += closing ? '  ' : ' ';
       i += closing ? 2 : 1;
-      block = !closing;
+      if (closing && nested > 0) nested--;
+      else if (closing) block = false;
       continue;
+    }
+    // An interpolation is TypeScript inside the template's SQL, and it is
+    // copied whole, to the close TypeScript gives it: see
+    // {@link typescriptView}. It is tested ahead of the
+    // quoted-value and dollar-span branches and not only on the main path,
+    // because TypeScript opens one at `${` wherever template text holds one. A
+    // quote or a dollar tag in template text is one of the template's
+    // characters, so neither suspends an interpolation, and `'${name}'` is
+    // house style. (Inside a SQL comment it is blanked with the comment before
+    // this test is reached, which is inert; see {@link lineCommentEnd}.) Met
+    // inside a value instead, an interpolation was read as the value's own
+    // characters: a nested template's OPENING backtick ended the outer
+    // template in the value branch's backtick arm, an apostrophe after it
+    // opened a phantom value in code, and the flag was left inverted at the end
+    // of the line. An escaped `\${` never reaches this test, since every
+    // branch's escape arm consumes the backslash and the `$` together, and
+    // `$${n}`, the placeholder-builder idiom, reaches it only at the second
+    // `$`, where it is the interpolation TypeScript reads it as ({@link tagAt}
+    // keeps an open span's own tag from claiming that first `$`). One whose
+    // close is on a later line is recorded for the every-interpolation-closes
+    // arm and then read flat like any other text: see
+    // {@link BlankedCode.unclosed}. The test is TypeScript's map and nothing
+    // else, since the map holds only the columns TypeScript opens an
+    // interpolation at, in a `.ts` file: a `${` in an ordinary string is not
+    // in it and is read as text, and where the reader's own flag is wrong
+    // about a template the TypeScript-agreement arm is what reports that.
+    if (closes.has(i)) {
+      const end = closes.get(i) ?? -1;
+      if (end !== -1) {
+        out += line.slice(i, end);
+        i = end;
+        continue;
+      }
+      unclosed.push(i);
     }
     // A value inside a code body is read before the body itself, so the body's
     // comment handling cannot blank a marker that is one of the value's own
@@ -1275,7 +1615,7 @@ function blankLine(
       // replays that depth and suppresses the terminator of whatever statement
       // comes next. The blanking's own damage stops at the line, because
       // `opaque` resets; the mis-recorded span does not.
-      if (dollar.length > 0 && line.startsWith(dollar[dollar.length - 1], i)) {
+      if (dollar.length > 0 && tagAt(line, i, dollar[dollar.length - 1], !sql)) {
         const tag = dollar[dollar.length - 1];
         out += tag;
         spans.push({ col: i, width: tag.length, tag, open: false });
@@ -1300,10 +1640,17 @@ function blankLine(
       // there hands the rest of the string to the code rules, where a `/*`
       // opens a comment that blanks every line up to the next `*/`. In SQL it
       // is an ordinary character of the value. The gate trusts the value to be
-      // real, which holds because a quote inside a regex literal opens none:
-      // see {@link regexLiteralEnd}. Without it, a line carrying an ODD number
-      // of quote characters that opened no string leaves this arm declining the
-      // backtick of the template after them.
+      // real, and two things make it so, each closing one way it was not. A
+      // quote inside a regex literal opens no value (see
+      // {@link regexLiteralEnd}); without that, a line carrying an ODD number of
+      // quote characters that opened no string leaves this arm declining the
+      // backtick of the template after them. And an interpolation is copied
+      // before this branch sees any of its characters, by the `${` test at the
+      // head of the loop, whenever its close is found (one that is not is
+      // recorded, and its file refused by the every-interpolation-closes arm);
+      // without that, a nested template's OPENING backtick
+      // reached this arm from inside `'${...}'`, ended the outer template here,
+      // and its closing backtick was then declined by this same gate.
       if (ticks && template && char === '`') {
         template = false;
         opaque = null;
@@ -1341,8 +1688,9 @@ function blankLine(
         continue;
       }
       // The innermost tag is what closes: a nested literal ends before the body
-      // carrying it does.
-      if (line.startsWith(tag, i)) {
+      // carrying it does. See {@link tagAt} for the one spelling of it that is
+      // not a close.
+      if (tagAt(line, i, tag, !sql)) {
         out += tag;
         spans.push({ col: i, width: tag.length, tag, open: false });
         i += tag.length;
@@ -1385,8 +1733,9 @@ function blankLine(
         // A line comment ends with its line OR with the literal carrying it,
         // whichever comes first. Running to the end of the line regardless is
         // what erases the live statement a body spells after a nested literal.
-        const closes = line.indexOf(tag, i);
-        const until = closes === -1 ? line.length : closes;
+        // Inside a template the template's own end bounds it as well, and so
+        // on: see {@link lineCommentEnd}.
+        const until = lineCommentEnd(line, i + 2, ticks && template, closes, tag, unclosed);
         out += ' '.repeat(until - i);
         i = until;
         if (until === line.length) break;
@@ -1397,7 +1746,7 @@ function blankLine(
       if (
         char === '/' &&
         next === '*' &&
-        blockCloses(lines, lineIndex, i, ticks && template ? [tag, '`'] : [tag])
+        blockCloses(lines, lineIndex, i, ticks && template ? [tag, '`'] : [tag], ticks && template ? view : undefined, true)
       ) {
         block = true;
         out += '  ';
@@ -1424,19 +1773,6 @@ function blankLine(
       out += char;
       i++;
       continue;
-    }
-    // An interpolation is TypeScript inside the template's SQL, and it is
-    // copied whole: see {@link interpolationEnd}. Before the dollar-quote
-    // opener below, because `${` is this dialect's interpolation wherever a
-    // template is open, and `$${n}` is the placeholder-builder idiom that
-    // opener already refuses.
-    if (char === '$' && next === '{' && !sql && template) {
-      const end = interpolationEnd(line, i);
-      if (end !== -1) {
-        out += line.slice(i, end);
-        i = end;
-        continue;
-      }
     }
     if (char === '$' && (sql || template)) {
       const opener = dollarOpenerAt(lines, lineIndex, i, !sql);
@@ -1470,10 +1806,23 @@ function blankLine(
       next === '-' &&
       (sql || template || !isDecrement(line, i))
     ) {
-      out += ' '.repeat(line.length - i);
-      break;
+      // Inside a template the comment also ends at the template's closing
+      // backtick ({@link lineCommentEnd}). Run to the end of the line instead,
+      // it blanked that backtick with it, the flag stayed set past the end of
+      // the template, and one ordinary ``q(`SELECT 1 -- note`)`` left every
+      // line after it read the wrong way round: a glob in a route comment
+      // opened a block comment over the plain write below it.
+      const until = lineCommentEnd(line, i + 2, ticks && template, closes, null, unclosed);
+      out += ' '.repeat(until - i);
+      i = until;
+      if (until === line.length) break;
+      continue;
     }
-    if (char === '/' && next === '*' && blockCloses(lines, lineIndex, i, template ? ['`'] : [])) {
+    if (
+      char === '/' &&
+      next === '*' &&
+      blockCloses(lines, lineIndex, i, template ? ['`'] : [], ticks && template ? view : undefined, sql || (ticks && template))
+    ) {
       block = true;
       out += '  ';
       i += 2;
@@ -1482,7 +1831,7 @@ function blankLine(
     out += char;
     i++;
   }
-  return { text: out, state: { block, template, dollar, dollarCode }, spans };
+  return { text: out, state: { block, template, dollar, dollarCode, nested }, spans, unclosed };
 }
 
 /** Every line of a file with its comments blanked, read from the top so a
@@ -1498,19 +1847,35 @@ function blankLine(
 function blankAll(
   lines: string[],
   sql: boolean,
-): { code: string[]; state: BlankState; entry: string[][]; spans: SpanEvent[][] } {
-  let state: BlankState = { block: false, template: false, dollar: [], dollarCode: false };
+): {
+  code: string[];
+  state: BlankState;
+  entry: string[][];
+  spans: SpanEvent[][];
+  unclosed: number[][];
+  template: boolean[];
+  block: boolean[];
+  typescript?: TypeScriptView;
+} {
+  let state: BlankState = { block: false, template: false, dollar: [], dollarCode: false, nested: 0 };
+  const view = sql ? { closes: [], templateAtEnd: [], blockAtEnd: [] } : typescriptView(lines);
   const code: string[] = [];
   const entry: string[][] = [];
   const spans: SpanEvent[][] = [];
+  const unclosed: number[][] = [];
+  const template: boolean[] = [];
+  const block: boolean[] = [];
   lines.forEach((_line, i) => {
     entry.push(state.dollar);
-    const blanked = blankLine(lines, i, state, sql, code);
+    const blanked = blankLine(lines, i, state, sql, code, view.closes);
     state = blanked.state;
     code.push(blanked.text);
     spans.push(blanked.spans);
+    unclosed.push(blanked.unclosed);
+    template.push(state.template);
+    block.push(state.block);
   });
-  return { code, state, entry, spans };
+  return { code, state, entry, spans, unclosed, template, block, typescript: sql ? undefined : view };
 }
 
 /** A file's lines with their comments blanked, carrying what the blanking
@@ -1535,6 +1900,44 @@ function blankAll(
 interface BlankedCode extends Array<string> {
   entry?: string[][];
   spans?: SpanEvent[][];
+  /** The column of every `${` the reader met in template text whose close
+   *  TypeScript puts on a later line, per line: met by the interpolation arm,
+   *  by a `--` comment's read of the rest of its line ({@link lineCommentEnd}),
+   *  or inside a SQL block comment.
+   *
+   *  The reader cannot copy such an interpolation whole, and what remains is
+   *  reading it flat, which is not the harmless fallback it looks like. A
+   *  wrapped ``.map((r) => `${r.name}'s score`)`` puts a nested template on a
+   *  line of its own, the reader takes its OPENING backtick for the outer
+   *  template's close, and the dialect-and-flag gate on the value branch's
+   *  backtick arm then declines its CLOSING one, which is the one that would
+   *  have put the flag back. So the outer template's own closing backtick SETS
+   *  the flag rather than clearing it, and from there a `//` stops being a
+   *  comment and the glob in an `/api/admin/*` route comment can open a block
+   *  comment over the write after it (it did before SQL comments nested, and
+   *  still does wherever the closer it meets is not a doc comment's), and a
+   *  later URL template flips the flag back so the end-state arm is clean as
+   *  well. The shape is refused
+   *  instead, the way a statement that cannot be read to its terminator is:
+   *  the reader records it here and reads on flat, and the
+   *  every-interpolation-closes arm reports each one by line; the
+   *  TypeScript-agreement arm sees the flag it leaves wrong as well. Now that
+   *  the parser gives the close's line, copying it whole across lines would be
+   *  straightforward. It is refused instead because refusing costs nothing
+   *  while neither tree wraps an interpolation, and a copy would widen the
+   *  narrowing the interpolation limit in KNOWN LIMITS records, a comment
+   *  inside an interpolation copied rather than blanked, to every line the
+   *  interpolation spans. What refusing costs later is that ANY wrapped interpolation added to
+   *  `src` reds, including a harmless one with no nested template, such as an
+   *  error message whose ternary is laid out over three lines. */
+  unclosed?: number[][];
+  /** Whether the reader ends each line inside template text and inside a
+   *  block comment, beside what TypeScript says of the same line ends
+   *  ({@link TypeScriptView}), which is what the TypeScript-agreement arm
+   *  compares. `typescript` is absent for SQL, which the arm skips. */
+  template?: boolean[];
+  block?: boolean[];
+  typescript?: TypeScriptView;
 }
 
 function blankFile(lines: string[], sql: boolean): BlankedCode {
@@ -1542,6 +1945,10 @@ function blankFile(lines: string[], sql: boolean): BlankedCode {
   const code: BlankedCode = blanked.code;
   code.entry = blanked.entry;
   code.spans = blanked.spans;
+  code.unclosed = blanked.unclosed;
+  code.template = blanked.template;
+  code.block = blanked.block;
+  code.typescript = blanked.typescript;
   return code;
 }
 
@@ -1591,9 +1998,12 @@ function readable(files: ScannedSource[]): Readable[] {
  *
  *  The spans it skips are the blanking reader's own, replayed from
  *  {@link SpanEvent} rather than re-derived, so this reader cannot disagree with
- *  the other two about where a value begins. That also removes the need for a
- *  dialect flag here: a backtick is only ever a delimiter where the blanking
- *  reader already treated it as one. */
+ *  the other two about where a dollar-quoted value begins. That also removes
+ *  the need for a dialect flag here: a backtick is only ever a delimiter where
+ *  the blanking reader already treated it as one. It CAN still disagree about
+ *  an interpolation, which it reads flat while the blanking copies it whole, so
+ *  a nested template's backticks are quotes to this reader and characters to
+ *  that one; the interpolation limit in KNOWN LIMITS records it. */
 function enclosingQuote(
   code: BlankedCode,
   lineIndex: number,
@@ -1764,7 +2174,9 @@ interface SqlStatement {
  * This is the ONE place the two readers deliberately answer differently, and
  * the difference is a refusal rather than a divergence: the blanking reads on,
  * because blanking a whole file is not optional, while the statement read gives
- * up on a statement it cannot bound. Dollar-quoted spans are not affected —
+ * up on a statement it cannot bound. (They also differ at an interpolation,
+ * which this read takes flat while the blanking copies it whole. That one is
+ * not deliberate, and the interpolation limit in KNOWN LIMITS records it.) Dollar-quoted spans are not affected —
  * they DO span lines, because those are the blanking reader's own decisions,
  * replayed rather than re-derived.
  */
@@ -2088,6 +2500,55 @@ function unreadableStatements(files: Readable[]): Occurrence[] {
   return found;
 }
 
+/** Every interpolation across `files` whose close is not found on the line
+ *  it opens, as the blanking reader recorded it ({@link BlankedCode.unclosed}),
+ *  each named by its line and its column, which is what the
+ *  every-interpolation-closes arm reports.
+ *
+ *  As with {@link unreadableStatements}, the arm's own choice of files is not
+ *  something a fixture can answer for: handed no files, it stays green. That
+ *  matters more here than there, because the reader reads a recorded line on
+ *  flat and neither writer walk sees a write the flat read hides, so this arm
+ *  and the TypeScript-agreement arm are the only catchers of the shape. What
+ *  answers for it is reading the arm. */
+function unclosedInterpolations(files: Readable[]): Occurrence[] {
+  const found: Occurrence[] = [];
+  for (const { rel, lines, code } of files) {
+    (code.unclosed ?? []).forEach((columns, i) => {
+      for (const column of columns) {
+        const at = occurrenceAt(rel, lines, i);
+        found.push({ ...at, site: `${at.site} [interpolation at column ${column + 1}]` });
+      }
+    });
+  }
+  return found;
+}
+
+/** The first line of each TypeScript file in `files` at whose end the reader
+ *  and TypeScript disagree about what is open, which is what the
+ *  TypeScript-agreement arm reports. Two things are compared. Template text:
+ *  where TypeScript is inside it the reader must be too, and where TypeScript
+ *  is not, the reader must not be. And outside template text, a block comment,
+ *  since that is where the reader's own block state means a TypeScript
+ *  comment; inside it, the state is a SQL comment's, which TypeScript does not
+ *  see. The first line only, because what is wrong after it follows from it:
+ *  the misread is on that line or before it. As with the other tree arms, the
+ *  arm's own choice of files is not something a fixture can answer for. */
+function templateDisagreements(files: Readable[]): Occurrence[] {
+  const found: Occurrence[] = [];
+  for (const { rel, lines, code } of files) {
+    const view = code.typescript;
+    if (view === undefined) continue;
+    const at = lines.findIndex((_line, i) =>
+      view.templateAtEnd[i]
+        ? code.template?.[i] !== true
+        : code.template?.[i] !== false || code.block?.[i] !== view.blockAtEnd[i],
+    );
+    if (at !== -1) found.push(occurrenceAt(rel, lines, at));
+  }
+  return found;
+}
+
 /** The routines not covered by an exact exemption key. */
 function unexempted(routines: RoutineSite[], exemptions: string[]): RoutineSite[] {
   return routines.filter((routine) => !exemptions.includes(routine.key));
@@ -2181,6 +2642,37 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
         'A block comment, a template and a dollar-quoted span each close in a well-formed file, ' +
         'so an open one at the last line names the shape the reader got wrong — fix the reader, ' +
         `not this list. Why the guard matters: ${ORDERING_RATIONALE}\n${unfinished.join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('the reader agrees with TypeScript at every line end on template text and block comments', () => {
+    const disagreements = templateDisagreements(sources);
+    expect(
+      disagreements.map((o) => o.site),
+      'the reader ends this line inside template text, or inside a block comment, where ' +
+        'TypeScript does not, or the other way round, so it misread something on this line or ' +
+        'before it. Most of the silent passes this canary has ' +
+        'had worked that way: a flag left set or cleared past the line that misled it, after ' +
+        'which a `//` is not a comment and a path glob in prose opens a block comment over the ' +
+        'writes below it, and a later template often puts the flag back so the end state is ' +
+        'clean. This arm makes the misread itself the red bar. Fix the reader for the shape on ' +
+        `that line, not this list. Why the guard matters: ${ORDERING_RATIONALE}\n` +
+        `${sitesOf(disagreements)}`,
+    ).toEqual([]);
+  });
+
+  it('every interpolation closes on the line it opens', () => {
+    const unclosed = unclosedInterpolations(sources);
+    expect(
+      unclosed.map((o) => o.site),
+      'a `${...}` interpolation whose close TypeScript puts on a later line. The reader copies ' +
+        'an interpolation whole, to its close, so that nothing inside it is read as SQL, and it ' +
+        'copies within one line. Read flat instead, a nested template inside it can invert the ' +
+        'template flag at its backticks, after which a `//` stops being a comment and a path ' +
+        'glob in prose can open a block comment over the lines below, writers included, which ' +
+        'neither writer walk sees. So the shape is refused rather than read: hoist the ' +
+        'expression into a const and interpolate that. ' +
+        `Why the guard matters: ${ORDERING_RATIONALE}\n${sitesOf(unclosed)}`,
     ).toEqual([]);
   });
 
@@ -3053,8 +3545,146 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     expect(blankAll(['const a = `x;'], false).state.template).toBe(true);
     // And the arms still do their job in TypeScript, where a backtick really
     // does delimit: the template opens, and a `--` inside it is a comment
-    // however it is spelled.
-    expect(scanned("  await q(`UPDATE accounts SET a = 1--x`);").trimEnd()).toBe('  await q(`UPDATE accounts SET a = 1');
+    // however it is spelled, running to the template's closing backtick.
+    expect(scanned("  await q(`UPDATE accounts SET a = 1--x`);")).toBe('  await q(`UPDATE accounts SET a = 1   `);');
+    // Not past it. A `--` on the same line as its template's closing backtick
+    // ran to the end of the line, blanked the backtick with it and left the
+    // flag set, so an ordinary one-line query with a trailing SQL comment
+    // inverted every line after it: the glob in a route comment opened a block
+    // comment down to the next `*/`, over the plain write between them.
+    const trailing = [
+      'async function touch(id: number) {',
+      '  const total = await q(`SELECT count(*) FROM sessions -- live ones only`);',
+      '  // rate-limited like the other /api/admin/* routes',
+      "  await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);",
+      '  /** Where the profile lives. */',
+      '  const link = `https://example.org/u/${id}`;',
+      '}',
+    ];
+    expect(scansOf(trailing).tableFirst).toEqual(['x.ts#touch']);
+    expect(scansOf(trailing).columnFirst).toEqual(['x.ts#touch']);
+    expect(disagreementIn(trailing)).toEqual([]);
+    expect(blankAll(['  const total = await q(`SELECT 1 -- note`);'], false).state.template).toBe(false);
+    // An escaped backtick is a character of the template, so the comment runs
+    // past it and the statement it quotes stays comment text.
+    expect(
+      scansOf(['async function touch() {', '  await q(`SELECT 1 -- once ran \\`UPDATE accounts SET updated_at = NOW()\\` by hand`);', '}'])
+        .tableFirst,
+    ).toEqual([]);
+    // The same bound behind a quoted interpolation, where the reading before
+    // interpolations were copied in values ended the template early by
+    // mistake and so caught this line by accident.
+    expect(
+      scansOf([
+        'async function touch(who: string | null, id: number) {',
+        "  const msg = `unknown user '${who ? `${who}'s alias` : null}' -- check the spelling`;",
+        '  // rate-limited like the other /api/admin/* routes',
+        "  await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);",
+        '  /** Where the profile lives. */',
+        '  const link = `https://example.org/u/${id}`;',
+        '}',
+      ]).tableFirst,
+    ).toEqual(['x.ts#touch']);
+    // And the comment's read of its line is the only thing that meets an
+    // interpolation inside it, so one whose close is not found there is
+    // recorded by that read: the reader never reaches a `${` the comment has
+    // already blanked, and a wrapped one read on flat inverts the flag.
+    const wrappedInComment = [
+      'async function touch(tables: string[], id: number) {',
+      '  const sql = `SELECT p.id FROM posts p -- INNER JOIN to ${tables',
+      "    .map((t) => `${t}'s rows`)",
+      "    .join(', ')} plus an identity check",
+      '    WHERE p.id = $1`;',
+      '}',
+    ];
+    expect(unclosedIn(wrappedInComment)).toEqual([
+      `${occurrenceAt('x.ts', wrappedInComment, 1).site} [interpolation at column ${wrappedInComment[1].indexOf('${') + 1}]`,
+    ]);
+    // A `\n` or `\r` escape puts a line break in the value TypeScript builds,
+    // and PostgreSQL ends the comment there, so the statement after it is live.
+    for (const escape of ['\\n', '\\r']) {
+      expect(
+        scansOf([
+          'async function touch(id: number) {',
+          `  await q(\`-- stamp the marker${escape} UPDATE accounts SET updated_at = NOW() WHERE id = $1\`, [id]);`,
+          '}',
+        ]).tableFirst,
+        escape,
+      ).toEqual(['x.ts#touch']);
+    }
+    // Inside a dollar-quoted body the comment's scan agrees with the close test
+    // about where a tag is, so the `$$` of a `$${...}` does not end it; and
+    // the comment steps over an interpolation rather than meeting the `$$`
+    // inside its nested template, which the flag at the line's end answers
+    // for further down.
+    for (const comment of ["    -- $${label(`it's`)} as in the /api/admin/* routes", '    -- note ${xs.map((x) => `$$ --`)} for the /api/admin/* routes']) {
+      const body = [
+        'async function touch(xs: string[]) {',
+        '  await q(`DO $$',
+        '  BEGIN',
+        comment,
+        '    UPDATE accounts SET updated_at = NOW() WHERE id = 1;',
+        // A line comment holding a closer, so that a comment the glob above
+        // opened by mistake ends here and not at a doc comment's `/*`, which a
+        // nesting SQL comment would count as one level deeper.
+        '    -- done */',
+        '  END $$`);',
+        '}',
+      ];
+      expect(scansOf(body).tableFirst, comment).toEqual(['x.ts#touch']);
+      expect(scansOf(body).columnFirst, comment).toEqual(['x.ts#touch']);
+      expect(disagreementIn(body), comment).toEqual([]);
+    }
+    // And the comment steps over an interpolation to find the template's end,
+    // so a nested template inside one ends nothing: met as a backtick, it
+    // ended the comment early and read the rest of the line as SQL.
+    expect(
+      scansOf([
+        'async function touch(who: string, id: number) {',
+        "  const sql = `SELECT 1 -- for ${who ? `${who}'s` : 'nobody'} only",
+        '    FROM t`;',
+        '  // rate-limited like the other /api/admin/* routes',
+        "  await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);",
+        '  /** Where the profile lives. */',
+        '  const link = `https://example.org/u/${id}`;',
+        '}',
+      ]).tableFirst,
+    ).toEqual(['x.ts#touch']);
+    // And a SQL block comment's closer is looked for outside interpolations: a
+    // `*/` inside a pattern that strips comment markers does not end it, and a
+    // `$$` of a `$${n}` does not end one inside a body, so the SQL commented
+    // out there stays comment text.
+    expect(
+      scansOf([
+        'async function touch(id: number, s: string, note: string, dir: string) {',
+        "  await q(`SELECT ${s.replace(/[`]/g, '')} /* note: ${note.replace(/\\/\\*/g, '').replace(/`/g, '')} */`, [id]);",
+        '  const glob = `${dir}/*`;',
+        "  await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);",
+        '  // */',
+        '}',
+      ]).tableFirst,
+    ).toEqual(['x.ts#touch']);
+    expect(
+      scansOf(['async function touch(n: number) {', '  await q(`DO $$ BEGIN /* UPDATE accounts SET updated_at = NOW() $${n} */ PERFORM 1; END $$`);', '}']).tableFirst,
+    ).toEqual([]);
+    // The same masking decides whether a `/*` opens a comment at all: a `*/`
+    // found only inside an interpolation is none, so this `/*` is text, and
+    // taken for a comment it ran over the write below to the doc comment.
+    expect(
+      scansOf([
+        'async function touch(id: number, s: string) {',
+        "  await q(`SELECT 1 /* ${s.replace(/\\/\\*/g, '')} is stripped`);",
+        "  await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);",
+        '  /** Where the profile lives. */',
+        '}',
+      ]).tableFirst,
+    ).toEqual(['x.ts#touch']);
+    // A wrapped interpolation inside a SQL block comment is recorded as well:
+    // the comment reads its line to the end and on, and nothing else meets it.
+    const wrappedInBlock = ['const s = `SELECT 1 /* for ${items', '  .join()} */`;'];
+    expect(unclosedIn(wrappedInBlock)).toEqual([
+      `${occurrenceAt('x.ts', wrappedInBlock, 0).site} [interpolation at column ${wrappedInBlock[0].indexOf('${') + 1}]`,
+    ]);
     // The FLAG half, which the dialect gate does not supply. In TypeScript a
     // backtick ends a template only where one is open; inside an ordinary
     // single-quoted string it is one of the string's characters. The arm that
@@ -3088,8 +3718,8 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     ];
     expect(scansOf(interpolated).tableFirst).toEqual(['x.ts#touch']);
     expect(scansOf(interpolated).columnFirst).toEqual(['x.ts#touch']);
-    // Its close is found by quoting as well as by brace depth, since a `}`
-    // inside a string closes nothing. An interpolation in the write's OWN
+    // Its close is TypeScript's, and a `}` inside a string closes nothing. An
+    // interpolation in the write's OWN
     // statement is what makes that observable: ended early, the quote left
     // behind opens a value and the comment in the SET list's token gap stays
     // live inside it.
@@ -3102,13 +3732,541 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     ).toEqual(['x.ts#touch']);
     // And the quote spellings an interpolation carries stay inside it: a regex
     // with an apostrophe, and an ordinary quoted string.
+    const escaping = [
+      'async function touch(id: number, raw: string) {',
+      "  const label = `outer ${raw.replace(/'/g, \"''\")} end`; await q(`UPDATE accounts SET updated_at /* stamped */ = NOW() WHERE id = $1`, [id]);",
+      '}',
+    ];
+    expect(scansOf(escaping).tableFirst).toEqual(['x.ts#touch']);
+    // The scan alone does not answer for the interpolation reader here: a flat
+    // read of this line reads it correctly too, so the assertion stays green
+    // with the reader switched off. What answers for it is the close itself,
+    // which TypeScript gives past the pattern's apostrophe, where a reader that
+    // took the apostrophe for a quote found no close at all.
+    expect(typescriptView(escaping).closes[1].get(escaping[1].indexOf('${'))).toBe(escaping[1].indexOf('} end') + 1);
+    // And what a close not found would cost, since the reader refuses one: the
+    // attribute-escaping spelling, a regex holding the quote of the value it
+    // sits in, is ordinary code in `frontend/src/editor.js`, and it is not
+    // reported as an interpolation that does not close.
+    expect(unclosedIn(["  const html = `<span data-latex=\"${latex.replace(/\"/g, '&quot;')}\"></span>`;"])).toEqual([]);
+  });
+
+  it('an interpolation is copied wherever template text holds one, to the close TypeScript finds on its line', () => {
+    // WHERE IT IS RECOGNISED. TypeScript opens an interpolation at `${`
+    // wherever template text holds one: a quote or a dollar tag in that text is
+    // one of the template's characters, so neither suspends one. The reader
+    // tested for it on the main path alone, so one written inside a quoted
+    // value was read as the value's characters, and a nested template's
+    // OPENING backtick ended the outer template from inside the value. An
+    // apostrophe after it then opened a phantom value in code, the nested
+    // CLOSING backtick was declined inside that value, and the outer closing
+    // backtick set the flag the wrong way round. From there a `//` is not a
+    // comment, and the glob in an `/api/admin/*` route comment opened a block
+    // comment that ran to the next `*/` over the write, before SQL comments
+    // nested; now the doc comment's `/**` counts one level deeper and the write
+    // stays visible, so each fixture also asserts the flag against TypeScript,
+    // which is what the misread itself shows at. Each of
+    // the three writer fixtures that follow puts its `${` somewhere other than
+    // the main path.
+    const insideValue = [
+      'async function touch(who: string | null, id: number) {',
+      "  const msg = `unknown user '${who ? `${who}'s alias` : null}'`;",
+      '  // rate-limited like the other /api/admin/* routes',
+      "  await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);",
+      '  /** Where the profile lives. */',
+      '  const link = `https://example.org/u/${id}`;',
+      '}',
+    ];
+    expect(scansOf(insideValue).tableFirst).toEqual(['x.ts#touch']);
+    expect(scansOf(insideValue).columnFirst).toEqual(['x.ts#touch']);
+    expect(disagreementIn(insideValue)).toEqual([]);
+    // The same, hidden by a glob template rather than a route comment, over a
+    // write in a template of its own.
+    const globbed = [
+      'async function touch(who: string | null, dir: string, id: number) {',
+      "  const msg = `unknown user '${who ? `${who}'s alias` : null}'`;",
+      '  const glob = `${dir}/*`;',
+      '  await q(`UPDATE accounts SET updated_at = NOW() WHERE id = $1`, [id]);',
+      '  /** Where the profile lives. */',
+      '  const link = `https://example.org/u/${id}`;',
+      '}',
+    ];
+    expect(scansOf(globbed).tableFirst).toEqual(['x.ts#touch']);
+    expect(scansOf(globbed).columnFirst).toEqual(['x.ts#touch']);
+    expect(disagreementIn(globbed)).toEqual([]);
+    // And inside a dollar-quoted VALUE, whose branch ends the template at a
+    // backtick just as the quoted-value branch does.
+    const insideSpan = [
+      'async function touch(who: string | null, id: number) {',
+      "  const note = `UPDATE audit SET note = $n$ ${who ? `${who}'s alias` : null} isn't it $n$ WHERE id = 1`;",
+      '  // rate-limited like the other /api/admin/* routes',
+      "  await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);",
+      '  /** Where the profile lives. */',
+      '  const link = `https://example.org/u/${id}`;',
+      '}',
+    ];
+    expect(scansOf(insideSpan).tableFirst).toEqual(['x.ts#touch']);
+    expect(scansOf(insideSpan).columnFirst).toEqual(['x.ts#touch']);
+    expect(disagreementIn(insideSpan)).toEqual([]);
+    // A dollar tag must not claim the `$` in front of an interpolation.
+    // `$${...}` is a dollar sign and an interpolation to TypeScript, which is
+    // why the opener refuses it, and read as a tag it did two kinds of damage.
+    // As the only RECURRENCE of a lone `$$`, it admitted that `$$` as an
+    // opener; as the CLOSE of the span that opened, it consumed the
+    // interpolation's `$` and handed the rest of the interpolation to the
+    // template rules, where its nested template inverted the flag. The
+    // single-line spelling needs both halves: its `$$` recurs only as the
+    // placeholder, so the recurrence rule opens no span, and with that rule
+    // reverted alone the close rule still refuses to end the span there, so it
+    // runs harmlessly to the template's backtick. The reader reaches this line
+    // only where the interpolation ahead of the placeholder is copied rather
+    // than read flat. `loneTag` is what answers for the recurrence on its own.
+    const tagBeforeInterpolation = [
+      'async function touch(xs: Array<{ name: string }>, dir: string, id: number) {',
+      "  const note = `$$ ${label(`draft`)} $${xs.map((r) => `${r.name}'s`).join(', ')}'::text`;",
+      '  const glob = `${dir}/*`;',
+      "  await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);",
+      '  /** Where the profile lives. */',
+      '}',
+    ];
+    expect(scansOf(tagBeforeInterpolation).tableFirst).toEqual(['x.ts#touch']);
+    expect(scansOf(tagBeforeInterpolation).columnFirst).toEqual(['x.ts#touch']);
+    expect(disagreementIn(tagBeforeInterpolation)).toEqual([]);
+    // The DO-block spelling answers for the close, in the span branch: its
+    // `$$` recurs as `END $$`, so the span is real, and the tag test there is
+    // what stops it closing at the placeholder.
+    const doBlock = [
+      'async function touch(xs: Array<{ name: string }>, dir: string, id: number) {',
+      '  await q(`',
+      '    DO $$',
+      '    BEGIN',
+      "      PERFORM pg_notify(${quote('accounts')}, $${xs.map((r) => `${r.name}'s`).join(', ')}');",
+      '    END $$;',
+      '  `);',
+      '  const glob = `${dir}/*`;',
+      "  await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);",
+      '  /** Where the profile lives. */',
+      '}',
+    ];
+    expect(scansOf(doBlock).tableFirst).toEqual(['x.ts#touch']);
+    expect(scansOf(doBlock).columnFirst).toEqual(['x.ts#touch']);
+    expect(disagreementIn(doBlock)).toEqual([]);
+    // The same close inside a quoted value in the body, which is where the
+    // value branch tests the innermost tag.
+    const tagInValue = [
+      'async function touch(c: boolean, id: number) {',
+      "  await q(`DO $$ BEGIN PERFORM f('$${c ? `it's` : 'x'}'); END $$`);",
+      '  // rate-limited like the other /api/admin/* routes',
+      "  await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);",
+      '  /** Where the profile lives. */',
+      '  const link = `https://example.org/u/${id}`;',
+      '}',
+    ];
+    expect(scansOf(tagInValue).tableFirst).toEqual(['x.ts#touch']);
+    expect(scansOf(tagInValue).columnFirst).toEqual(['x.ts#touch']);
+    expect(disagreementIn(tagInValue)).toEqual([]);
+    // And the recurrence that admits an opener follows the same rule, since a
+    // span the reader would never close there is not one that closes: a lone
+    // `$$` whose only later spelling is the `$$` of a `$${n}` placeholder opens
+    // nothing, so the comment in its template's token gap is blanked.
+    const loneTag = [
+      'async function touch(id: number, n: number) {',
+      "  await q(`UPDATE accounts SET note = 'x' || $$, updated_at /* stamped */ = NOW() WHERE id = $1`, [id]);",
+      '  await q(`SELECT $${n}`);',
+      '}',
+    ];
+    expect(scansOf(loneTag).tableFirst).toEqual(['x.ts#touch']);
+    expect(scansOf(loneTag).columnFirst).toEqual(['x.ts#touch']);
+    expect(disagreementIn(loneTag)).toEqual([]);
+    // Only where a template IS open, though. In an ordinary string `${` is two
+    // characters, and read as an interpolation there it runs to the next `}`
+    // across everything between, a template included, whose backticks then
+    // toggle nothing and whose comments are copied rather than blanked.
+    const inString = [
+      'async function touch(text: string, id: number) {',
+      "  const at = text.indexOf('${'); await q(`UPDATE accounts SET updated_at /* stamped */ = NOW() WHERE id = $1`, [id]); const end = text.indexOf('}');",
+      '}',
+    ];
+    expect(scansOf(inString).tableFirst).toEqual(['x.ts#touch']);
+    expect(scansOf(inString).columnFirst).toEqual(['x.ts#touch']);
+    expect(disagreementIn(inString)).toEqual([]);
+    // The state at the end of the line, pinned beside the writers, because a
+    // writer fixture only goes red where nothing later flips the flag back.
+    // A later template whose text holds a `//`, a `/*` or an odd quote puts it
+    // back, and a line inverted ahead of one of those is invisible to every
+    // writer fixture; the state is what shows it.
+    const clean = { block: false, template: false, dollar: [], dollarCode: false, nested: 0 };
+    for (const line of [
+      "const m = `'${c ? `it's` : null}'`;",
+      "const m = `can't ${c ? `it's` : null} isn't`;",
+      "const m = `$d$ ${c ? `it's` : null} isn't $d$`;",
+    ]) {
+      expect(blankAll([line], false).state, line).toEqual(clean);
+    }
+    // And a family around those three: a nested template in a ternary, with
+    // quotes and apostrophes before it, inside it and after it, and a dollar
+    // tag before it that recurs after it or does not, so the dollar-span reach
+    // is exercised as well as the value's. Every member is a well-formed
+    // one-line template, so every one ends the line with nothing open; 274 of
+    // these 1,728 did not with the test on the main path alone.
+    const before = ['', "'", "can't ", '"', "it's '", '$d$ '];
+    const nested = ['x', "it's", '"', "'", '${a}', "${a}'s"];
+    const other = ['null', "'x'", '`e`', "`it's`", '"y"', "`${b}'s`"];
+    const after = ['', "'", " isn't", '"', "'s", ' $d$', "' end", " isn't $d$"];
+    const misread: string[] = [];
+    for (const p of before) {
+      for (const n of nested) {
+        for (const e of other) {
+          for (const s of after) {
+            const line = `const m = \`${p}\${c ? \`${n}\` : ${e}}${s}\`;`;
+            if (JSON.stringify(blankAll([line], false).state) !== JSON.stringify(clean)) misread.push(line);
+          }
+        }
+      }
+    }
+    expect(misread).toEqual([]);
+
+    // WHERE IT CLOSES is TypeScript's answer ({@link typescriptView}). These
+    // rows pin the view's own columns against the parser: each row is a line
+    // whose one-line template holds the interpolation and what follows it.
+    // That the reader copies to exactly that close, and not to a nearer `}`,
+    // is what the object-literal, escaped-quote and escaped-backtick writer
+    // fixtures further down answer for.
+    const closeIn = (line: string): number | undefined => typescriptView([line]).closes[0].get(line.indexOf('${'));
+    const closes: Array<[string, string]> = [
+      // An object literal's `}`, a `}` in either kind of string, an escaped
+      // quote, a nested template with an escaped backtick, two levels down.
+      ['${fmt({ a: 1 }, x)}', ' end'],
+      ["${fmt('}')}", ' end'],
+      ['${fmt("}")}', ' end'],
+      ["${fmt('it\\'s }')}", ' end'],
+      ['${fmt(`a \\` }`)}', ' end'],
+      ["${a ? `x ${b ? `it's` : `}`}` : ''}", ' end'],
+      // Patterns holding a quote, a slash, a brace or a backtick.
+      ["${raw.replace(/'/g, \"''\")}", ' end'],
+      ["${s.replace(/[/'\"]/g, '')}", ' end'],
+      ["${s.replace(/}/g, '')}", ' end'],
+      ["${s.replace(/'/g, \"''\").replace(/\"/g, '\\\\\"')}", ' end'],
+      // Divisions after operands a hand-written test misjudged, and a pattern
+      // opening a statement after a control-flow `)`.
+      ['${r.n!! / 2}', ' and ${m / 3}'],
+      ['${1. / n}', ' and ${m / 3}'],
+      ["${(() => { if (x) /'/.test(s); return 1; })()}", " it's"],
+      // Comments, including one holding a `}`.
+      ['${fmt(/* } */ x)}', ' end'],
+    ];
+    for (const [interpolation, rest] of closes) {
+      expect(closeIn(`const s = \`${interpolation}${rest}\`;`), interpolation).toBe('const s = `'.length + interpolation.length);
+    }
+    // A close on a later line is -1, and a `${` in an ordinary string is no
+    // interpolation at all.
+    expect(typescriptView(['const s = `${items', '  .join()}`;']).closes[0].get('const s = `'.length)).toBe(-1);
+    expect(closeIn("const at = text.indexOf('${');")).toBeUndefined();
+    // Every depth is recorded, since a SQL comment's scan steps over each one
+    // it meets and a nested one is what it meets inside a nested template.
+    expect([...typescriptView(['const s = `${a ? `x ${b} y` : 0}`;']).closes[0].keys()]).toHaveLength(2);
+    // And where template text is open at a line's end, which is what the
+    // TypeScript-agreement arm reads: inside the text of a template spanning
+    // lines, and not inside an interpolation that spans them.
+    expect(typescriptView(['const s = `a', '  b ${c', '  } d', '  e`;']).templateAtEnd).toEqual([true, false, true, false]);
+    // And a block comment, as TypeScript reads one: open at the end of its
+    // first line, closed at its last, and a one-line one open at no line end.
+    expect(typescriptView(['/* a', ' b */ x;', 'y; /* c */']).blockAtEnd).toEqual([true, false, false]);
+
+    // The shapes those rows cover, as writers. Each prelude line holds a slash
+    // a hand-written close would have to judge, placed where judging it wrong
+    // leaves the flag set past the template: a later route comment's glob could
+    // then open a block comment over the plain write below it, and the URL
+    // template after that put the flag back; the flag at each line end is
+    // asserted as well, since that is where the misread shows. The first three are divisions a
+    // judgement took for patterns, the fourth a pattern it took for a
+    // division, and the fifth a pattern with an escaped brace.
+    const behindPrelude = (prelude: string): string[] => [
+      'async function touch(id: number, n: number | null, s: string, rows: Array<{ n: number | null; c: number }>, strict: boolean) {',
+      prelude,
+      '  // rate-limited like the other /api/admin/* routes',
+      "  await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);",
+      '  /** Where the profile lives. */',
+      '  const link = `https://example.org/u/${id}`;',
+      '}',
+    ];
+    for (const prelude of [
+      '  rows.forEach((r) => { const label = `half ${r.n!! / 2}`; const rest = r.c / 3; });',
+      '  const v = `SELECT ${1. / f(`/}${/{/.test(s)}`)} FROM t`;',
+      "  const m = `${s.replace(/'/g, \"''\") + (n!! / 2)}`; const half = { n: 1 / 2 };",
+      "  rows.forEach((r) => { const m = `A ${strict ? `${(() => { if (strict) /'/.test(s); return 1; })()}` : 0} B`; g('}', '`'); const k = `}`; });",
+      "  const glob = `${(() => { if (strict) /\\}/.test(s); return s; })() ? `${n}/*` : '*'}`;",
+    ]) {
+      expect(scansOf(behindPrelude(prelude)).tableFirst, prelude).toEqual(['x.ts#touch']);
+      expect(scansOf(behindPrelude(prelude)).columnFirst, prelude).toEqual(['x.ts#touch']);
+      expect(disagreementIn(behindPrelude(prelude)), prelude).toEqual([]);
+    }
+
+    // WHAT HAPPENS WHEN IT DOES NOT CLOSE: the reader records it and reads the
+    // line on flat, and the every-interpolation-closes arm names the line and
+    // the column. Neither writer walk sees the write below; that arm and the
+    // TypeScript-agreement arm are what red. Read flat, this one's
+    // nested template has its OPENING backtick taken for the outer template's
+    // close and its closing one declined inside the apostrophe's phantom
+    // value, so the outer template's own closing backtick sets the flag rather
+    // than clearing it, and the glob and the doc comment that follow hide the
+    // write between them.
+    const wrapped = [
+      'async function touch(items: Array<{ name: string }>, dir: string, id: number) {',
+      '  const text = `Summary: ${items',
+      "    .map((r) => `${r.name}'s score`)",
+      "    .join(', ')}`;",
+      '  const glob = `${dir}/*`;',
+      '  await q(`UPDATE accounts SET updated_at = NOW() WHERE id = $1`, [id]);',
+      '  /** a later doc comment */',
+      '  return { text, glob };',
+      '}',
+    ];
+    expect(unclosedIn(wrapped)).toEqual([
+      `${occurrenceAt('x.ts', wrapped, 1).site} [interpolation at column ${wrapped[1].indexOf('${') + 1}]`,
+    ]);
+    // And the TypeScript-agreement arm names the same line, since the flat read
+    // leaves the flag set where TypeScript is inside the interpolation's code.
+    expect(disagreementIn(wrapped)).toEqual([occurrenceAt('x.ts', wrapped, 1).site]);
+    // A `${` TypeScript opens nothing at is text, even where the reader's flag
+    // is wrong and it meets one in what it takes for a template: the `'${'` in
+    // the string after the inversion is not reported as a second unclosed
+    // interpolation, since that report would name the wrong cause.
+    const stringAfter = [...wrapped.slice(0, 4), "  const at = text.indexOf('${');", '}'];
+    expect(unclosedIn(stringAfter)).toHaveLength(1);
+    // It sees the two other disagreements as well, each a shape the reader
+    // misreads on the main path with no interpolation involved. A `--` after
+    // an element access is a decrement the reader takes for a SQL comment,
+    // which blanks the opening backtick of a template the line ends inside.
+    // And a division after `x!!` is taken for a pattern, which eats the `//`
+    // of a comment, whose glob then opens a block comment TypeScript never
+    // sees.
+    const decrement = [
+      'async function touch(budget: Record<string, number>, k: string) {',
+      '  const msg = budget[k]-- > 0 ? `retry` : `',
+      '    giving up`;',
+      '}',
+    ];
+    expect(disagreementIn(decrement)).toEqual([occurrenceAt('x.ts', decrement, 1).site]);
+    const phantomPattern = [
+      'async function touch(n: number | null, id: number) {',
+      '  const half = n!! / 2; // like the /api/admin/* routes',
+      "  await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);",
+      '  /** Where the profile lives. */',
+      '}',
+    ];
+    expect(disagreementIn(phantomPattern)).toEqual([occurrenceAt('x.ts', phantomPattern, 1).site]);
+    // And nothing on a file the reader reads right, block comments and a
+    // template spanning lines included.
+    expect(disagreementIn(['/**', ' * doc', ' */', 'const s = `a', '  b`; /* x */', 'const t = 1; // y'])).toEqual([]);
+    // One line, the same expression is copied and reported nowhere, and so is
+    // one whose first character is a quote.
+    expect(unclosedIn(["  const text = `Summary: ${items.map((r) => `${r.name}'s score`).join(', ')}`;"])).toEqual([]);
+    expect(unclosedIn(['  const t = `${"-"}${sep}${x}`;'])).toEqual([]);
+    // Inside a SQL block comment an interpolation is blanked with the comment:
+    // what it evaluates to is comment text, so the statement holding it is not
+    // an assembled one.
     expect(
-      scansOf([
-        'async function touch(id: number, raw: string) {',
-        "  const label = `outer ${raw.replace(/'/g, \"''\")} end`; await q(`UPDATE accounts SET updated_at /* stamped */ = NOW() WHERE id = $1`, [id]);",
-        '}',
-      ]).tableFirst,
-    ).toEqual(['x.ts#touch']);
+      assembledWrites(
+        readable([{ rel: 'x.ts', lines: ['async function touch(who: string, id: number) {', '  await q(`UPDATE accounts SET verify_token = NULL /* cleared by ${who} */ WHERE id = $1`, [id]);', '}'] }]),
+      ),
+    ).toEqual([]);
+    // The reader copies to TypeScript's close, answered for at the scan: ended
+    // early at the object literal's `}`, the nested template after it would be
+    // read flat, its apostrophe would open a phantom value in code, and the
+    // gate would decline every backtick to the end of the line.
+    const braced = [
+      'async function touch(id: number) {',
+      "  const label = `outer ${fmt({ a: 1 }, `it's`)} end`; await q(`UPDATE accounts SET updated_at /* stamped */ = NOW() WHERE id = $1`, [id]);",
+      '}',
+    ];
+    expect(scansOf(braced).tableFirst).toEqual(['x.ts#touch']);
+    expect(scansOf(braced).columnFirst).toEqual(['x.ts#touch']);
+    expect(disagreementIn(braced)).toEqual([]);
+    // The same for a nearer `}` after an escape: an escaped quote in a string,
+    // and an escaped backtick in a nested template, each taken for the close of
+    // its literal, would end the copy at the `}` after it. For the backtick the
+    // apostrophe sits AFTER the interpolation, because ahead of it the
+    // backticks left behind would pair up again before the write's template.
+    const escapedQuote = [
+      'async function touch(id: number) {',
+      "  const label = `outer ${fmt('it\\'s }', `it's`)} end`; await q(`UPDATE accounts SET updated_at /* stamped */ = NOW() WHERE id = $1`, [id]);",
+      '}',
+    ];
+    expect(scansOf(escapedQuote).tableFirst).toEqual(['x.ts#touch']);
+    expect(scansOf(escapedQuote).columnFirst).toEqual(['x.ts#touch']);
+    expect(disagreementIn(escapedQuote)).toEqual([]);
+    const escapedTick = [
+      'async function touch(id: number) {',
+      "  const label = `outer ${fmt(`a \\` }`)} it's done`; await q(`UPDATE accounts SET updated_at /* stamped */ = NOW() WHERE id = $1`, [id]);",
+      '}',
+    ];
+    expect(scansOf(escapedTick).tableFirst).toEqual(['x.ts#touch']);
+    expect(scansOf(escapedTick).columnFirst).toEqual(['x.ts#touch']);
+    expect(disagreementIn(escapedTick)).toEqual([]);
+  });
+
+  it('the TypeScript view and the SQL comment extents each answer for their own rules', () => {
+    // A writer behind a prelude line: seen when the reader reads the prelude
+    // right, hidden when it leaves a comment open over the write or a flag
+    // wrong over the lines below.
+    const behind = (...prelude: string[]): string[] => [
+      'async function touch(id: number, xs: string[], s: string, n: number, strict: boolean) {',
+      ...prelude,
+      "  await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);",
+      '  /** Where the profile lives. */',
+      '}',
+    ];
+    const seen = (lines: string[], rel = 'x.ts'): void => {
+      const key = `${rel}#${rel.endsWith('.sql') ? MODULE_SCOPE : 'touch'}`;
+      expect(scansOf(lines, rel).tableFirst, lines.join('\n')).toEqual([key]);
+      expect(scansOf(lines, rel).columnFirst, lines.join('\n')).toEqual([key]);
+      expect(disagreementIn(lines, rel), lines.join('\n')).toEqual([]);
+    };
+
+    // THE VIEW. A template literal TYPE interpolates like an expression, so it
+    // is in the map too: read flat, the nested template type's text was code,
+    // and its `//` blanked the writer after it on the same line. Nor does a
+    // glob in one open a comment the reader then disagrees with TypeScript
+    // about.
+    seen(["type Q = (s: string, p?: unknown[]) => Promise<void>;", "export const touch = (q: Q, u: `${`https://${string}`}`) => q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [u]);"]);
+    expect(disagreementIn(['export type Pattern = `${`src/*`}.ts`;', '/** Matches every source file. */'])).toEqual([]);
+    // Block comments TypeScript's comment-range API does not report from a
+    // node: one before a closing `}`, one trailing code on its line, and a
+    // commented-out entry before an object literal's `};`.
+    expect(disagreementIn(['function flush(queue: string[]): void {', '  queue.length = 0;', '  /* drain to the audit log first,', '     once it exists */', '}'])).toEqual([]);
+    expect(disagreementIn(['export const LIMIT = 50; /* the page size the', '   admin list was tuned for */'])).toEqual([]);
+    expect(disagreementIn(['const o = {', '  a: 1,', '  /* b: 2,', '  c: 3, */', '};'])).toEqual([]);
+    // The parse is TypeScript's own, not TSX, so an angle-bracket assertion is
+    // an assertion; and a target that knows every identifier the language
+    // does.
+    expect(typescriptView(['const n = <number>(x as unknown);', 'const s = `a', '  b`;']).templateAtEnd).toEqual([false, true, false]);
+    expect(typescriptView(['const ᏸ = 4; const h = ᏸ / 2; const s = `a /`;', 'const t = `b', 'c`;']).templateAtEnd).toEqual([false, true, false]);
+    // The close is the `}` itself, not the trivia before it, so a close on the
+    // next line is a wrapped interpolation, and every one on a line counts.
+    expect(typescriptView(['const s = `${ x }`;']).closes[0].get(11)).toBe(17);
+    expect(unclosedIn(['const s = `${a ? `${b', '}` : c}`;'])).toHaveLength(2);
+    expect(unclosedIn(['const s = `${a', '}`; const t = `${b', '}`;'])).toHaveLength(2);
+    // SQL is not parsed as TypeScript: here a TypeScript read would take the
+    // `${` in a comment for an interpolation and step over the body's close.
+    expect(blankAll(['DO $$ BEGIN PERFORM 1; END; -- see `${ $$;', 'SELECT 1;', '-- } `'], true).state.dollar).toEqual([]);
+    // And the agreement arm reads the first line as readily as any other, and
+    // passes over a SQL file in its list rather than stopping at it.
+    const decremented = ['const s = x[k]-- > 0 ? `a` : `', 'b`;'];
+    expect(disagreementIn(decremented)).toEqual([occurrenceAt('x.ts', decremented, 0).site]);
+    const phantom = ['const half = n!! / 2; // like the /api/admin/* routes', 'const x = 1;', '/** Where the profile lives. */'];
+    expect(disagreementIn(phantom)).toEqual([occurrenceAt('x.ts', phantom, 0).site]);
+    expect(disagreementIn(['SELECT 1;'], 'm.sql')).toEqual([]);
+    expect(
+      templateDisagreements(readable([{ rel: 'm.sql', lines: ['SELECT 1;'] }, { rel: 'x.ts', lines: decremented }])).map((o) => o.site),
+    ).toEqual([occurrenceAt('x.ts', decremented, 0).site]);
+
+    // A LINE COMMENT ends where PostgreSQL ends it: at a line break the value
+    // TypeScript builds carries, however the escape spells it, with the escape
+    // blanked so the statement after it starts a word.
+    for (const escape of ['\\n', '\\r', '\\x0a', '\\x0D', '\\u000a', '\\u000D', '\\u{a}', '\\u{00000A}']) {
+      seen(['async function touch(id: number) {', `  await q(\`SELECT 1; -- note${escape}UPDATE accounts SET updated_at = NOW() WHERE id = $1\`, [id]);`, '}']);
+    }
+    // And not at an escape that builds no line break, or at a backslash that
+    // is itself escaped: the comment runs on and the statement is comment text.
+    for (const escape of ['\\v', '\\\\n']) {
+      expect(scansOf(['async function touch(id: number) {', `  await q(\`SELECT 1; -- note${escape} UPDATE accounts SET updated_at = NOW() WHERE id = $1\`, [id]);`, '}']).tableFirst, escape).toEqual([]);
+    }
+    // In a migration a backslash is a character, so it ends nothing.
+    seen(['-- stamp with \\n newline escapes, like the /api/admin/* routes', 'UPDATE accounts SET updated_at = NOW() WHERE id = 1;', '/* done */'], 'm.sql');
+    // Nor is a backtick anything to a migration's DO body.
+    seen(['DO $$', 'BEGIN', '  -- the `accounts` rows under /api/admin/* keep their marker', '  UPDATE accounts SET updated_at = NOW() WHERE id = 1;', '  /* done */', 'END $$;'], 'm.sql');
+    // It ends at the template's own backtick however close that is, and steps
+    // over an interpolation to find it, in a body as on the main path.
+    expect(disagreementIn(['const s = `SELECT 1 --`;', 'const t = 1;'])).toEqual([]);
+    expect(disagreementIn(['const s = `SELECT 1 -- note ${x}`;', 'const t = 1;'])).toEqual([]);
+    expect(
+      disagreementIn(['async function touch(xs: string[]) {', '  await q(`DO $$', '  BEGIN', '    -- note ${xs.map((x) => `$$ --`)} for the /api/admin/* routes', '    UPDATE accounts SET updated_at = NOW() WHERE id = 1;', '    /* done */', '  END $$`);', '}']),
+    ).toEqual([]);
+    // And at the literal's own tag, which stays unblanked, so the span closes.
+    expect(blankAll(['DO $$ BEGIN PERFORM 1; -- done $$;', 'SELECT 1;'], true).state.dollar).toEqual([]);
+
+    // A BLOCK COMMENT nests, as PostgreSQL's do: the outer one ends at its own
+    // closer, so the `--` in its prose is comment text and the statement after
+    // it is live, in a template and in a migration; and a statement after an
+    // inner comment is still inside the outer one.
+    seen(['async function touch(id: number) {', '  await q(`/* old /* note */ -- kept */ UPDATE accounts SET updated_at = NOW() WHERE id = $1`, [id]);', '}']);
+    seen(['/* old /* note */ -- kept */ UPDATE accounts SET updated_at = now();'], 'm.sql');
+    expect(scansOf(['async function touch() {', '  await q(`SELECT id FROM accounts /* old: /* x */ UPDATE accounts SET updated_at = NOW() */`);', '}']).tableFirst).toEqual([]);
+    // And an opener whose own closer is not there before the text carrying it
+    // ends is no comment, nested or not: counted flat, the inner closer ended
+    // it, the reader then nested past the template's backtick or the body's
+    // tag, and the comment ran over the write below.
+    seen(behind('  await q(`SELECT 1 /* a /* b */ c`);'));
+    seen(['DO $$ BEGIN /* a /* b */ c END $$;', 'UPDATE accounts SET updated_at = now() WHERE id = 1;', '/* done */'], 'm.sql');
+    // Its closer and its end are looked for in the SQL text: an escaped
+    // backtick is a character of the template, not its end.
+    seen(['async function touch(id: number) {', '  await q(`/* bump \\`updated_at\\` -- the recovery marker */ UPDATE accounts SET updated_at = NOW() WHERE id = $1`, [id]);', '}']);
+    // Every interpolation on the line is masked, the text after a nested one
+    // included, and so are those on the lines after the opener.
+    seen(behind('  await q(`SELECT 1 /* ${xs.map((x) => `${x}*/`).join()}`);'));
+    seen(behind("  await q(`SELECT 1 /* ${s.replace(/\\/\\*/g, '')} is stripped ${n}`);"));
+    seen(behind('  await q(`SELECT 1 /* multi', "    ${s.replace(/\\/\\*/g, '')} is stripped`);"));
+    // The search starts after the opener, so a glob's `/*/` is no comment.
+    seen(behind('  const glob = `${s}/*/keys`;'));
+    // A comment the reader opened in CODE by mistake, from a pattern it read as
+    // a division, ends where the closer test said it would, at the `*/` it
+    // found; stepping over the interpolation there ran it over the write. The
+    // misread still costs the column walk its head, so the write is caught by
+    // the table walk and reported unresolved, which is loud, and a whole
+    // phantom comment over it is silent.
+    const phantomOverWrite = ['async function touch(strict: boolean, s: string, id: number) {', "  if (strict) /[/*]/.test(s) && fail(`${'*/'}`); await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]); /* stamp */", '}'];
+    expect(scansOf(phantomOverWrite).tableFirst).toEqual(['x.ts#touch']);
+    expect(unresolvedIn(phantomOverWrite)).toHaveLength(1);
+    // NESTING, token by token: a closer followed by `*`, a `/*/` inside a
+    // comment, three levels, a level held across a line end, and the nested
+    // opener blanked to its own length, even between a column and its `=`.
+    seen(['async function touch(id: number) {', '  await q(`/* x /* y */* -- z */ UPDATE accounts SET updated_at = NOW() WHERE id = $1`, [id]);', '}']);
+    seen(['async function touch(id: number) {', '  await q(`/* a /*/ b */ -- c */ UPDATE accounts SET updated_at = NOW() WHERE id = $1`, [id]);', '}']);
+    seen(['async function touch(id: number) {', '  await q(`/* a /* b /* c */ */ -- d */ UPDATE accounts SET updated_at = NOW() WHERE id = $1`, [id]);', '}']);
+    seen(['async function touch(id: number) {', '  await q(`/* a /* b', '*/ -- c */ UPDATE accounts SET updated_at = NOW() WHERE id = $1`, [id]);', '}']);
+    seen(['/* a /* b', '*/ -- c */ UPDATE accounts SET updated_at = now();'], 'm.sql');
+    seen(['UPDATE accounts SET updated_at /* old /* note */ kept */ = now() WHERE id = 1;'], 'm.sql');
+    const nestedLine = 'SELECT 1; /* a /* b */ c */ SELECT 2;';
+    expect(blankFile([nestedLine], true)[0]).toBe('SELECT 1;'.padEnd(nestedLine.length - ' SELECT 2;'.length) + ' SELECT 2;');
+    // The closer test counts the same way: a `/*/` opens one level and closes
+    // none, and an unclosed nested comment in a template's DO body is no
+    // comment, so the template ends where TypeScript ends it.
+    seen(behind('  await q(`SELECT 1 /* a /*/ b */ c`);'));
+    seen(behind('  await q(`DO $$ BEGIN /* a /* b */ c END $$`);'));
+    // It stops at the text's boundary even with a closer after it on the line,
+    // and it takes a closer at the start of a later line, the file's last one.
+    expect(disagreementIn(['export const glob = `src/*`; export const y = 1; // ends the */ note', 'export const x = 1;'])).toEqual([]);
+    expect(disagreementIn(['export const x = 1;', '/* kept for the admin list', '*/'])).toEqual([]);
+    // MASKING keeps every other escape whole, so a `\*/` still closes, and
+    // blanks an escaped backtick to its own length, so the opener's column is
+    // still the opener's; and it masks every interpolation on the line, not the
+    // first alone.
+    seen(['async function touch(id: number) {', '  await q(`/* a -- b \\*/ UPDATE accounts SET updated_at = NOW() WHERE id = $1`, [id]);', '}']);
+    expect(disagreementIn(['export const s = `\\`\\` /*/* a */ tail`;', 'export const t = 1;'])).toEqual([]);
+    seen(behind("  await q(`SELECT 1 /* ${n} ${s.replace(/\\/\\*/g, '')} is stripped`);"));
+    // LINE BREAKS that are not: a no-break space, and a control character
+    // whose code shares a line feed's last digit.
+    for (const escape of ['\\u{a0}', '\\u001a', '\\u{1a}']) {
+      expect(scansOf(['async function touch(id: number) {', `  await q(\`SELECT 1; -- note${escape} UPDATE accounts SET updated_at = NOW() WHERE id = $1\`, [id]);`, '}']).tableFirst, escape).toEqual([]);
+    }
+    // THE VIEW'S TRIVIA SCAN: a comment beginning with its own slash, an empty
+    // one, two back to back, a `//` inside one followed by another, a string
+    // continued onto a second line, and a doc comment after the last statement.
+    expect(disagreementIn(['/*/ the next export', '   is kept for the admin list */', 'export const LIMIT = 50;'])).toEqual([]);
+    expect(disagreementIn(['export const a = 1; /**/', 'export const b = 2;'])).toEqual([]);
+    expect(disagreementIn(['export const a = 1; /* x *//* the page size', '   the admin list was tuned for */ export const b = 2;'])).toEqual([]);
+    expect(disagreementIn(['export const a = 1; /* see https://example.org */ /* the page size', '   the admin list was tuned for */ export const b = 2;'])).toEqual([]);
+    expect(disagreementIn(["export const glob = 'src/* and \\", "lib/*'; export const t = 1;"])).toEqual([]);
+    expect(disagreementIn(['export const t = 1;', '/**', ' * Kept for the admin list.', ' */'])).toEqual([]);
+    // An interpolation inside a comment is blanked to its own length, and a
+    // wrapped one to the end of its line.
+    const inComment = 'const s = `SELECT 1 /* ${x} */ FROM t`;';
+    expect(blankFile([inComment], false)[0]).toHaveLength(inComment.length);
+    for (const wrappedLine of ['const s = `SELECT 1 /* for ${items.map((x) => `${x}`)', 'const s = `SELECT 1 /* for ${items.filter((x) => x !== `*/`)']) {
+      const code = blankFile([wrappedLine, '  .join()} */`;'], false);
+      expect(code[0], wrappedLine).toBe('const s = `SELECT 1'.padEnd(wrappedLine.length));
+    }
   });
 
   it('a regex literal is read whole, so a quote or a marker inside one opens nothing', () => {
@@ -3358,6 +4516,18 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
    *  what the fail-closed arm reports. */
   function unresolvedIn(lines: string[], rel = 'x.ts'): Occurrence[] {
     return columnAssignments(readable([{ rel, lines }])).get(UNRESOLVED_TABLE) ?? [];
+  }
+
+  /** The interpolations in a fixture file that do not close on their own
+   *  line, through the same scan the every-interpolation-closes arm runs. */
+  function unclosedIn(lines: string[], rel = 'x.ts'): string[] {
+    return unclosedInterpolations(readable([{ rel, lines }])).map((o) => o.site);
+  }
+
+  /** The first line of a fixture file at whose end the reader and TypeScript
+   *  disagree, through the same scan the TypeScript-agreement arm runs. */
+  function disagreementIn(lines: string[], rel = 'x.ts'): string[] {
+    return templateDisagreements(readable([{ rel, lines }])).map((o) => o.site);
   }
 
   /** What the writer scans make of a fixture file. */
