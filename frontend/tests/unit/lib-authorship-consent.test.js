@@ -178,6 +178,17 @@ const passwordless = () =>
   mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
 const statusUnavailable = () => mockFetchEmailStatus.mockRejectedValue(new Error('Failed to fetch'));
 
+// `run` as the real consumer behaves when the proof is falsy. The paper-detail
+// call site passes `proof ? { freshAuthProof: proof } : {}` into `broadcastOps`,
+// whose own `if (freshAuthProof)` drops it again, so an empty proof leaves the
+// broadcast carrying none at all and the backend's consume check reports
+// `missing` — a remintable reason. The suite's default `run` resolves for any
+// argument it is handed, which would report an empty proof as a completed
+// broadcast: the one outcome production cannot reach.
+const refusesFalsyProof = (proof) => (proof
+  ? Promise.resolve({ tx_id: 'tx1' })
+  : Promise.reject(codedError('FRESH_AUTH_REQUIRED', 'missing')));
+
 describe('withAuthorshipFreshAuth', () => {
   let run;
   beforeEach(() => {
@@ -433,9 +444,11 @@ describe('withAuthorshipFreshAuth', () => {
     // a JSON response can carry, and the mint returns `fresh_auth_proof`
     // verbatim. Handed through uncoerced, a null proof reads as an ORCID
     // round-trip in flight: the op aborts silently, no navigation happens, and
-    // the user watches a correctly-answered prompt do nothing. The row drives
+    // the user watches a correctly-answered prompt do nothing. The rows drive
     // the whole non-string class rather than the null member alone, because the
-    // coercion is a type test and not a null check.
+    // type half of the coercion admits or refuses all of them together. `''` is
+    // not one of them and has its own case: a string clears that half, and only
+    // the truthiness half refuses it.
     mockMintAuthorshipFreshAuthProof.mockResolvedValue(value);
     const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
     expect(out).toEqual({ freshAuthFailed: true });
@@ -461,6 +474,61 @@ describe('withAuthorshipFreshAuth', () => {
       .mockResolvedValueOnce('minted-proof')
       .mockResolvedValueOnce(null);
     const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
+    expect(out).toEqual({ freshAuthFailed: true });
+    // Exactly once: the attempt that 401d. The retry never got a proof to
+    // broadcast with.
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('an empty-string mint refuses at the first leg, on one prompt and no broadcast', async () => {
+    // Its own case rather than a fourth `it.each` row, because `''` is not a
+    // member of the class those rows drive: it IS a string, so the type half
+    // admits it and the outcome ladder finds it equal to none of the four
+    // sentinels and reads it as a proof to act on. Past there nothing compares
+    // it against a sentinel any more, only against truthiness, so the broadcast
+    // leaves with no proof field at all, the backend's consume reports
+    // `missing`, and that reason is remintable: the gate re-resolves the factor
+    // and mints through this same callback, asking for the password a second
+    // time to obtain the same empty answer. Only the second refusal is
+    // terminal. The outcome object is `{ freshAuthFailed: true }` either way —
+    // what the truthiness half removes is the second prompt and the two refused
+    // broadcasts, and a re-authentication message that blames a password the
+    // user typed correctly.
+    mockMintAuthorshipFreshAuthProof.mockResolvedValue('');
+    run.mockImplementation(refusesFalsyProof);
+
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
+
+    expect(out).toEqual({ freshAuthFailed: true });
+    // Never broadcast: an empty proof spends the op's broadcast on a request
+    // the backend refuses, exactly as `run(undefined)` would.
+    expect(run).not.toHaveBeenCalled();
+    // And the refusal costs one prompt and one mint. Nothing remintable
+    // reaches the retry gate, so the user is asked once.
+    expect(reauthRequest).toHaveBeenCalledTimes(1);
+    expect(mockMintAuthorshipFreshAuthProof).toHaveBeenCalledTimes(1);
+  });
+
+  it('an empty-string mint on the RETRY leg refuses there too', async () => {
+    // The retry gate mints through the same callback, so a narrowing applied to
+    // the initial resolution alone would leave this leg handing `''` into
+    // `run(retry)` with the whole suite still green. That deletability is the
+    // whole reason this case exists, and it is the only reason: the asymmetry
+    // the null rows turn on does not carry over. A null reads as a redirect in
+    // flight on the initial resolution and costs a broadcast only on the retry,
+    // where `''` clears the ladder on both legs — so for an empty proof the
+    // initial resolution is the expensive one (two prompts, two refused
+    // broadcasts), and this leg spends one, after a first attempt that carried
+    // a real proof and 401d on its own.
+    run
+      .mockRejectedValueOnce(codedError('FRESH_AUTH_REQUIRED', 'expired'))
+      .mockImplementation(refusesFalsyProof);
+    mockMintAuthorshipFreshAuthProof
+      .mockResolvedValueOnce('minted-proof')
+      .mockResolvedValueOnce('');
+
+    const out = await withAuthorshipFreshAuth(TARGET, LIGHT, run);
+
     expect(out).toEqual({ freshAuthFailed: true });
     // Exactly once: the attempt that 401d. The retry never got a proof to
     // broadcast with.

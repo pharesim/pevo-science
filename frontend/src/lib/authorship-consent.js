@@ -62,15 +62,23 @@ import {
 // verbatim and FRESH_AUTH_REDIRECT_PENDING is `null`, the one member of the
 // outcome vocabulary a JSON response can carry, so an uncoerced null proof
 // reads as a redirect in flight at `withAuthorshipFreshAuth`'s outcome ladder
-// and the op aborts silently for a navigation that never started.
-// FRESH_AUTH_MINT_FAILED is the honest answer for a non-string: re-auth could
+// and the op aborts silently for a navigation that never started. The
+// truthiness half is there for `''`, the one value the type half cannot
+// refuse: a string clears the whole ladder and arrives at `run` as a proof to
+// act on, where the call site's own `proof ? { freshAuthProof: proof } : {}`
+// and `broadcastOps`'s `if (freshAuthProof)` each drop it again, so the
+// broadcast leaves with no proof field at all, the backend's consume reads
+// that as `missing`, and that reason is remintable: the gate mints again
+// through this same callback, asking for the password a second time to obtain
+// the same empty answer. Only the second refusal is terminal.
+// FRESH_AUTH_MINT_FAILED is the honest answer for both halves: re-auth could
 // not be completed, and re-prompting cannot mend a token the backend has
 // declined to issue.
 function mintViaPassword(target, assumed, guard) {
   return mintViaPasswordFactor(
     async (password) => {
       const proof = await mintAuthorshipFreshAuthProof(target, password);
-      return typeof proof === 'string' ? proof : FRESH_AUTH_MINT_FAILED;
+      return typeof proof === 'string' && proof ? proof : FRESH_AUTH_MINT_FAILED;
     },
     { message: passwordPromptMessage(), assumed, guard },
   );

@@ -57,15 +57,25 @@ import {
 // ladder, and every caller aborts silently for a navigation that never
 // started: the user answers the prompt, the spinner clears, and the action
 // simply does not happen. The vocabulary's other members are Symbols, which no
-// response can produce. FRESH_AUTH_MINT_FAILED is what a non-string lands on
-// instead, because it is already this surface's word for re-auth that could
-// not be completed and it reaches the user without spending a second prompt
-// and a second write on a token the backend has declined to issue.
+// response can produce.
+// The truthiness half carries `''`, the one value the type half cannot refuse:
+// it is a string, so it clears the whole outcome ladder and arrives at `run` as
+// a proof to act on. Past there nothing compares it against a sentinel any
+// more, only against truthiness — the settings and admin API functions spread
+// `...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {})` — so the
+// request leaves with no proof field at all, the backend's consume reads that
+// as `missing`, and that reason is remintable: the gate mints again through
+// this same callback, asking for the password a second time to obtain the same
+// empty answer. Only the second refusal is terminal.
+// FRESH_AUTH_MINT_FAILED is what both halves land on instead, because it is
+// already this surface's word for re-auth that could not be completed and it
+// reaches the user without spending that second prompt and a second write on a
+// token the backend has declined to issue.
 function mintViaPassword(action, assumed, guard) {
   return mintViaPasswordFactor(
     async (password) => {
       const proof = await mintSettingsActionProof(action, password);
-      return typeof proof === 'string' ? proof : FRESH_AUTH_MINT_FAILED;
+      return typeof proof === 'string' && proof ? proof : FRESH_AUTH_MINT_FAILED;
     },
     { message: passwordPromptMessage(), assumed, guard },
   );
