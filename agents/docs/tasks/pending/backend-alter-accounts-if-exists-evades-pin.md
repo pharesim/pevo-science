@@ -355,11 +355,18 @@ counted, `RED` = the mutation kills that line.
 | **`ONLY (paren)`** (new) | . | RED | . | . | . | . | . | **RED** | . | . |
 | **`ONLY(paren)`** (new) | . | RED | . | . | . | . | . | **RED** | **RED** | . |
 
-The three bolded columns are the three pairwise orders the hold named. Before this
-round each of them killed nothing and the suite stayed green; the new line is the
-only fixture that answers for any of them, and it answers for all three. Each of
-the ten mutants was also run through vitest in its own copy: nine red exactly one
-test, and the tenth is discussed under "Self-found".
+The three bolded columns are the three reorderings the hold named. Two things this
+paragraph said about them are wrong, struck and restated in round 3. They were called
+pairwise orders: hoisting the qualifier to the front is a rotation rather than a
+pairwise swap, so the three are two swaps and one rotation. And "before this round each
+of them killed nothing and the suite stayed green" is wrong for one of the three. The
+ten-mutant kill matrix in this same block shows the `IFEX+ONLY` row RED under the
+swap-`IF EXISTS`-with-qualifier column, so that order was already killed by a fixture
+round 1 added; the matrix is right and the sentence under it contradicted its own cell.
+What survives is the rest: the new line is the only fixture that answers for the other
+two, and the only one that answers for all three. Each of the ten mutants was also run
+through vitest in its own copy: nine red exactly one test, and the tenth is discussed
+under "Self-found".
 
 ### Item 2 (required) — the combined fixture's comment no longer overclaims
 
@@ -504,14 +511,22 @@ followed by two independent refuters. Everything below was then re-verified by h
 against the live server and by planting in a probe copy, because a lens's confidence
 is not evidence. One lens claim did not survive that check and is recorded as refuted.
 
-**Refuted, recorded so it is not re-raised.** The convention lens held that the
-docblock's "the two admit exactly the same statements" is false, offering
-`ALTER TABLE onlyaccounts DROP COLUMN updated_at;` as the counter-example. Both
-spellings reject that string identically — the `\b` after `ONLY` blocks it in each —
-and an exhaustive differential over 1,220,700 constructed head strings finds zero
-divergence between them. The claim stands as written. The same lens reported that
-every other falsifiable claim in the diff reproduces and that the anchor gate fires
-on none of the added lines, which matches the checks run here.
+**Recorded here as refuted, wrongly. Struck and restated in round 3.** The convention
+lens held that the docblock's "the two admit exactly the same statements" is false,
+offering `ALTER TABLE onlyaccounts DROP COLUMN updated_at;` as the counter-example,
+and the lens was RIGHT. What got measured against it was `ONLY\b\s*\(?\s*`, with the
+word boundary. What the docblock printed was `ONLY\s*\(?\s*`, without one. Both
+spellings do reject that string when the boundary is there, and the differential over
+1,220,700 constructed head strings that found zero divergence was a differential
+between the committed group and the boundary-FUL short form. Neither fact reaches the
+sentence the lens was disputing, because the spelling that sentence printed carries no
+boundary and so reads `onlyaccounts` — a head naming another relation, which the server
+accepts as one — as a write to this table. Recording the finding as refuted was the
+error, and a later round consulting this entry would have skipped the re-check on the
+strength of it. Round 3 fixes the sentence and lands the negative fixture. The rest of
+that lens's report — that every other falsifiable claim in the diff reproduces and that
+the anchor gate fires on none of the added lines — matched the checks run here and
+still does.
 
 **Gate control, because a green gate proves nothing on its own.** The pre-commit
 anchor gate passes on this diff, and it was shown to fire on this exact file by
@@ -765,3 +780,290 @@ arms iterate the shared head set, so an interpolated ALTER head against `account
 reported as an assembled write. `accountsColumnWriters` carries the same single-head walk.
 Pre-existing, untouched by this round, and a file-wide decision rather than an ALTER-arm one.
 Filed as `backend-assembled-writes-misses-alter-head` in `pending/`.
+
+## Backend re-review signal (2026-09-21, working tree)
+
+`backend(canary): the boundary is inert where the paren is required, and three orderings
+are six` — one file,
+`backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`, plus
+this task file. `ALTER_ACCOUNTS_RE` is byte-identical to the one round 2 committed: a
+comment-stripped comparison against HEAD shows the whole code delta is two added assertion
+lines, with nothing removed or modified, and the file's regex-bearing lines hash the same
+on both sides. Everything else in the diff is comment text.
+
+All four hold items landed: item 1 on the hold's second resolution, items 2 and 3 as
+prescribed, item 4 with one addition. Two rounds of adversarial verification against the
+round's OWN new prose then found thirteen further defects of exactly the class the hold
+exists to close, every one of them in text this round wrote. All thirteen are fixed and
+listed under "Self-found", because the count is the useful signal and a round that reports
+only its prescribed items would be hiding it.
+
+### A methodological correction that bears on the earlier rounds' matrices
+
+Every `alterations(...)` assertion in this file lives in ONE `it` block. A failing `expect`
+aborts that block, so a plain run reports only the FIRST assertion to red and says nothing
+about the rest; `1 failed | 24 passed` counts test blocks, not assertions inside the
+failing one. The masking is real and was demonstrated rather than supposed: deleting the
+first alternative's paren atom reds three ALTER fixtures, and a plain run names one.
+
+So every exclusivity claim below was established by rewriting all 379 `expect(` in the file
+to `expect.soft(` in a scratch copy and re-running, which reports every red. The
+soft-asserted clean copy is 25/25 green, so the rewrite changes no verdict on its own.
+Seventeen mutations were run that way, one fresh copy each: six relaxations of the guards
+in the `ONLY` group, six changes to its paren branch, and the five non-grammar orderings.
+Every red and green in the tables below is read off those runs.
+Rounds 1 and 2 derived their per-fixture kill matrices at the regex level rather than from
+vitest output, so those matrices are not wrong; but a matrix read off aborting output would
+have been, and it is worth recording before a later round builds one that way.
+
+### Item 1 (required) — resolution taken, and why that one
+
+Took the hold's SECOND resolution. The boundary-free `ONLY\s*\(?\s*` citation stays, the
+claim changes from "cost rather than grammar" to grammar and cost together, and the
+negative fixture lands:
+
+```
+expect(alterations(['ALTER TABLE onlyaccounts DROP COLUMN updated_at;'])).toBe(0);
+```
+
+The first resolution is a two-character prose fix that leaves the tidy-to-short-form mutant
+killing nothing. The second converts it into a killed one, and what it closes is a
+correctness gap rather than a cost one: under the printed spelling a head naming a
+DIFFERENT relation is counted as a write to this table.
+
+Probe. Mutating the `ONLY` group to the boundary-free short form reds exactly the
+`onlyaccounts` line and nothing else across all 379 soft assertions. Mutating to the
+boundary-ful short form leaves `tests/eslint/` at 9 files / 135 tests, identical to
+control, and three independently constructed differentials find zero divergence from the
+committed group — 0 over 438,750 enumerated heads, 0 over 4,000,000 structured random
+strings, and 0 over a 992,064-case sweep that includes an exhaustive codepoint sweep of the
+slot after `ONLY`. The boundary-free form's divergences are all widenings of one family,
+an `only`-leading identifier read as the keyword. Live server, aimed at relations that do
+not exist so nothing executes: `relation "onlyaccounts" does not exist` and
+`schema "onlypublic" does not exist`, neither a syntax error, so both are real statements
+about other relations. The cost half was measured for the spelling actually printed rather
+than carried over from the one round 2 measured: 2,975 ms at 100,000 spaces against 0.3 ms
+for the committed group, growing 4x per doubling.
+
+### Item 2 (required) — both sentences reworded, on a six-ordering matrix
+
+The docblock no longer says the all-three line is "the only spelling a reordering can be
+caught by"; it says it is the only one that answers for EVERY reordering. The fixture
+comment's "three optional groups admit three pairwise orders" is now six orderings, five
+besides grammar order, three pairwise swaps and two rotations, and the hoist it uses as its
+worked example is named as one of the rotations. The other fixture is referred to by what
+it spells, not positionally.
+
+Probe, each ordering mutated in its own fresh copy and also evaluated at the regex level
+over every ALTER string the file asserts. `.` = still counted, `RED` = that line stops
+being counted.
+
+| fixture | swap ONLY/qual | swap IFEX/ONLY | rot. B,C,A | rot. C,A,B (hoist qual) | swap IFEX/qual |
+|---|---|---|---|---|---|
+| each single-group line | . | . | . | . | . |
+| each paren spelling | . | . | . | . | . |
+| `IF EXISTS ONLY` | . | RED | RED | . | RED |
+| `IF EXISTS ONLY public.` | RED | RED | RED | RED | RED |
+
+So single-group lines answer for none of the five, the two-group line for exactly three —
+the three that move `IF EXISTS` and `ONLY` relative to each other — and the three-group
+line for all five. The two the two-group line does not reach are the two in which only the
+qualifier moves, which is now what the fixture comment claims for the three-group line
+instead of the broader "the only one that answers for the qualifier's POSITION" it claimed
+before (see Self-found item 5).
+
+### Item 3 (required) — the trailing atom pinned, and the whole branch's attribution stated
+
+`ALTER TABLE ONLY ( accounts ) DROP COLUMN updated_at;` landed, and the comment now names
+what each of the three paren lines does and does not answer for.
+
+| change to the `ONLY` branch | lines that red |
+|---|---|
+| delete the run BEFORE the paren | `ONLY (accounts)` and `ONLY ( accounts )` |
+| make that run mandatory | `ONLY(accounts)` alone |
+| delete the run AFTER the paren | `ONLY ( accounts )` alone |
+| make that run mandatory | `ONLY (accounts)` and `ONLY(accounts)` |
+| drop the paren alternative | all three |
+| split into fully-spaced and fully-closed-up styles | `ONLY (accounts)` alone |
+
+The trailing atom is answered for by the new line and by nothing else, which is the hold's
+item. The pre-existing `ONLY (accounts)` line turns out to carry no unique red bar against
+any single-atom change to the branch, so the comment describes what it does hold rather
+than crediting it with the leading atom. Live server, against a non-existent relation: the
+spaced form parses, as do the closed-up and the fully-spaced ones.
+
+### Item 4 (required) — this task file's own record corrected, plus a third error
+
+Both claims the hold named are struck and restated in place, in the round-2 signal block:
+the entry that recorded the convention lens's `onlyaccounts` finding as refuted (it tested
+a spelling the docblock does not print, so the lens was right), and the sentence claiming
+all three named reorderings killed nothing before round 2 (the kill matrix in that same
+block shows one of them already RED).
+
+The addition: the same sentence called those three reorderings "pairwise orders" when one
+of them, hoisting the qualifier to the front, is a rotation. That is the same taxonomy slip
+item 2 flags in the code, so leaving it standing in the file that prescribes the fix would
+have been the convention-enforcing-fix-must-audit-its-own-replacement failure. Corrected
+and flagged here rather than silently.
+
+### Self-found: thirteen defects in this round's own prose
+
+Found by two adversarial verification passes over the round's diff, plus my own re-read.
+Each was re-verified by execution here rather than taken from the lens that raised it.
+
+Pass 1, four:
+
+1. **"The word boundary after `ONLY` is the whole of what keeps it out" was false.** In the
+   committed group the `\b` is INERT: deleting it alone leaves the suite green with zero
+   behavioural divergence over corpora to 992,064 heads, because the first alternative
+   already requires `\(` and the second already requires `\s+`. A refuter then showed the
+   required paren is inert alone too. They are redundant with each other, and the fixture
+   reds only when BOTH go, which is what the one-alternative boundary-free tidy does.
+2. **"Holding all of it takes three lines", with a unique attribution for the spaced
+   form.** Against single-atom changes two lines hold the branch, and the spaced form never
+   reds alone. Reworded to the table above.
+3. **`ALTER TABLE IF EXISTS public.accounts` was quoted as a line "here"** when it is not a
+   fixture at all; it is the migration spelling round 1 used as its demonstration. Worse,
+   "every other line here still matches" is false for the negatives, which assert 0 and
+   never match under any ordering. Now says a migration spelling the statement, and
+   "unaffected".
+4. **The reason given for why single-group lines catch no reordering was the wrong fact.**
+   It is not that the exercised group is optional; it is that the other two match empty,
+   and an empty match has no position. Both copies of the sentence fixed.
+
+My own re-read before pass 1 returned, three:
+
+5. The fixture comment called the three-group line "the only one that answers for the
+   qualifier's POSITION". The two-group line catches two of the four qualifier-moving
+   orderings. The true claim is narrower and is now what the comment makes. A pass-1
+   refuter reached this independently.
+6. "the short spelling as written there" pointed across a paragraph break, which the anchor
+   convention says rots. Names the spelling now.
+7. "the `onlyaccounts` fixture goes green again" implied the fixture had been red. It
+   passes under that spelling; it was never red.
+
+Pass 2, five:
+
+8. **"Twice over" was an undercount: there are three guards, and the third is a single
+   point of failure.** Relaxing the second alternative's required space to `ONLY\s*` — with
+   the boundary and the paren both untouched — admits `onlyaccounts`, and the negative
+   fixture is the ONLY assertion in the file that reds on it. This one matters beyond the
+   arithmetic: the docblock's own reasoning that the gap before a paren is optional is a
+   standing invitation to spell the second alternative the same way, and that guard has no
+   redundancy behind it. Both the docblock and the fixture comment now say three guards and
+   name which one is single-point.
+9. **"Dropping either one alone changes nothing any statement can see" was false under the
+   literal reading.** Deleting the paren ATOM, rather than making it optional, gives 6,000
+   divergences and reds three fixtures. Now says relaxing rather than dropping, and names
+   the two relaxations.
+10. **"All three spellings are legal and all three are asserted" miscounts its own
+    premise.** Two independently optional runs give four combinations. The fourth,
+    `ONLY( accounts )`, parses on the server and is matched by the committed pattern, and
+    is asserted nowhere. This is the round-2 item-2 class recurring in the same comment.
+    The comment now says four are legal, three asserted, and why the fourth adds no red bar.
+11. **The `UPDATE onlyaccounts` illustration did not hold distributively** across the three
+    named siblings: `MERGE_TARGET_RE` cannot match an UPDATE at all, and
+    `ACCOUNTS_STATEMENT_RE` has no target capture. The substantive point holds for all
+    three and the `ONLY\s+` spelling claim is exact for all three; only the illustration
+    over-reached. Restated per their jobs.
+12. Ragged reflow, three instances: one the round's first edit left behind, and two the
+    corrections for the items above introduced in their turn.
+13. "`ONLY (accounts)` reds only alongside one of those two" carried no scope qualifier and
+    is falsified by a change the very next clause describes. Now "never reds alone against
+    such a change".
+
+### Acceptance criteria
+
+1. **Met.** `ALTER TABLE IF EXISTS accounts DROP COLUMN updated_at;` appended to
+   `002_nullable_email.sql` reds `only the column-introducing migration alters
+   accounts.updated_at itself`, reporting
+   `{"002_nullable_email.sql#<module>": 1, "016_accounts_updated_at.sql#<module>": 3}`
+   against the expected `{"016_accounts_updated_at.sql#<module>": 3}`, and no other arm
+   sees it. Nine further plants ran in fresh copies, four red and five green:
+
+   | planted in a migration | result |
+   |---|---|
+   | `ALTER TABLE IF EXISTS ONLY public.accounts DROP COLUMN updated_at;` | red |
+   | `ALTER TABLE ONLY ( accounts ) DROP COLUMN updated_at;` | red |
+   | `ALTER TABLE ONLY ( public . accounts ) ALTER COLUMN updated_at TYPE timestamptz USING NOW();` | red |
+   | `ALTER TABLE ONLY(accounts) RENAME COLUMN touched_at TO updated_at;` | red |
+   | `ALTER TABLE ONLY ( sessions ) DROP COLUMN updated_at;` | green (other table) |
+   | `ALTER TABLE ONLY ( accounts ) DROP COLUMN pending_email;` | green (other column) |
+   | `ALTER TABLE onlyaccounts DROP COLUMN updated_at;` | green (other relation) |
+   | `ALTER TABLE ( accounts ) DROP COLUMN updated_at;` | green (not a legal statement) |
+   | `ALTER TABLE hafsql.accounts DROP COLUMN updated_at;` | green (the read-only view stays out) |
+
+   Every must-red plant was grammar-checked on the live server first, aimed at a relation
+   confirmed absent from `pg_class`, so none is a statement PostgreSQL would reject anyway.
+   Plant location changes no verdict: the same statements as a new `018_probe_plant.sql`
+   give identical outcomes with only the reported key differing. And inside the allowed
+   symbol rather than against the key set: the same statement in
+   `016_accounts_updated_at.sql` raises its tally from 3 to 4 and reds, so the count is what
+   refuses a further alteration in an allowed symbol.
+2. **Met.** Clean tree green: the file's 25 tests, and 9 files / 135 tests under
+   `tests/eslint/` including the standing anchor canary. `npm run typecheck` clean on both
+   projects. `npm run lint` unchanged — it is `eslint src/` and does not reach this file, so
+   the file was linted explicitly and is clean; the one pre-existing warning in
+   `src/lib/author-supersession.ts` is untouched.
+3. **Met.** Deleting only `(?:IF\s+EXISTS\s+)?` reds the three `IF EXISTS`-carrying
+   fixtures and nothing else, confirmed by peeling assertions one at a time. The group is
+   load-bearing against real migration text and not only fixtures: with those three lines
+   neutralised AND a live `ALTER TABLE IF EXISTS accounts DROP COLUMN updated_at;` sitting
+   in the migration tree, the suite goes green.
+
+### Gates
+
+The final diff is 89 lines added and 22 removed. A comment-stripped comparison shows the
+whole code delta is the two assertion lines named under items 1 and 3; every regex-bearing
+line hashes the same as HEAD, and no non-comment line was removed or modified.
+
+The real `.githooks/pre-commit` passes on that diff, run against a throwaway
+`GIT_INDEX_FILE` so the shared index was never touched. A green gate proves nothing on its
+own, so the same hook was then run against a blob of this file carrying two deliberately
+rotten comment lines (a task slug, a round and hold ordinal, a bare positional anchor, a
+file:line cite and an acceptance-number redirect), staged into a second throwaway index
+only: it rejected both lines and exited 1. An earlier pass had also sourced
+`anchor_violation()` standalone with `ALLOW_MARKER` set explicitly to `anchor-allow`, fired
+it on 12 rotten controls, one per arm, and seen it correctly decline 5 durable or
+marker-exempt ones.
+
+Reading every added comment line against the root conventions found no task slug, round
+or hold ordinal, `Option X.N` label, file:line or SHA cite, or bare positional anchor;
+every back-reference the round introduced resolves to a set named in the same container.
+The only non-ASCII added is em dashes in code comments, which the no-em-dash rule exempts.
+
+### Blast radius
+
+The file exports nothing and nothing imports it; the only tests its edit can affect are
+those under `tests/eslint/`, which were run whole and are green. The full backend suite was
+not run: it carries known pre-existing failures and load-induced flakiness, so it would
+have added noise and no signal for a change whose entire code delta is two assertions.
+
+All mutation runs used isolated scratchpad copies of `backend/`. The shared checkout was
+read only throughout and its md5 for this file was verified unchanged before and after
+every probe.
+
+### [TODO Architect] for triage, nothing applied
+
+1. **The fourth paren spelling is legal, matched, and asserted nowhere.**
+   `ALTER TABLE ONLY( accounts )` parses and the committed head matches it. It is left out
+   because every change to the branch that reds it reds one of the three asserted spellings
+   as well, and the comment says so; a fourth line would make the enumeration exhaustive at
+   the cost of a fixture carrying no unique red bar. Prose decision, not a coverage gap.
+2. **`ONLY (accounts)` carries no unique red bar against any single-atom change** to the
+   branch, and reds alone only under a change splitting the branch into two styles. A prune
+   candidate. Not pruned here: round 2 landed it and the architect reviewed it, so removing
+   it is the architect's call rather than a tidy-up.
+3. **The second alternative's required space is a single point of failure pinned by exactly
+   one assertion.** Now documented in both the docblock and the fixture comment. A second
+   line for it would be the preemptive hardening this project usually declines, so it is
+   recorded rather than hardened.
+4. **The abort-masking point above** applies to any future exclusivity claim about this
+   file. No action asked; recorded so a later round reaches for the soft-assert method
+   rather than reading exclusivity off an aborting run.
+5. **Round 2's seven [TODO Architect] findings are carried forward untouched** — the
+   catalog-qualified three-part name, the trigger/rule/routine arms scanning `migrations`
+   only, the table-rebuild-and-rename idiom, the linear-time shape held by prose alone, the
+   backslash truncation in `enclosingQuote` and `statementAt`, the three sibling heads'
+   quadratic spelling, and `BOUND_TO_ACCOUNTS_RE`'s qualifier spacing. None was revisited
+   this round; none is in this task's scope.

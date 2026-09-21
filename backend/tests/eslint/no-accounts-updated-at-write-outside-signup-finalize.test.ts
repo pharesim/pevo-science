@@ -672,8 +672,15 @@ const COPY_COLUMNS_RE = /\bCOPY\s+(?:public\s*\.\s*)?accounts\s*\(([^)]*)\)/i;
  *  Those positions were read off a live server rather than reasoned about:
  *  `ALTER TABLE ONLY IF EXISTS accounts` is rejected as a syntax error, and so
  *  is `ALTER TABLE (accounts)`. What makes the positions PINS rather than
- *  claims is the fixture set: one line per group, plus one carrying all three
- *  at once, which is the only spelling a reordering can be caught by.
+ *  claims is the fixture set, which carries a line exercising each group on its
+ *  own, one exercising `IF EXISTS` and `ONLY` together, and one exercising all
+ *  three. Only that last one answers for every reordering of the groups. A line
+ *  exercising a single group answers for none of them, and the reason is the
+ *  other two rather than the one it names: they match empty, an empty match has
+ *  no position to get wrong, and so every ordering collapses to the same
+ *  concatenation. The two-group line answers for three of the five non-grammar
+ *  orderings, the three that move `IF EXISTS` and `ONLY` relative to each
+ *  other, and the three-group line for all five.
  *
  *  `IF EXISTS` is admitted because a drop or a retype of the column carried
  *  behind it is the very statement this arm exists to refuse. No ALTER head in
@@ -693,22 +700,50 @@ const COPY_COLUMNS_RE = /\bCOPY\s+(?:public\s*\.\s*)?accounts\s*\(([^)]*)\)/i;
  *
  *  That group is spelled as two alternatives with the paren REQUIRED in one of
  *  them, rather than as the shorter `ONLY\s*\(?\s*` with an optional one, and
- *  the reason is cost rather than grammar: the two admit exactly the same
- *  statements, but an optional paren sitting between two unbounded whitespace
+ *  the reasons are grammar and cost together.
+ *
+ *  Grammar, because `ONLY\s*\(?\s*` carries no word boundary, and with the
+ *  paren optional alongside it there is nothing left in that group to stop the
+ *  leading `only` of an ordinary identifier being read as the keyword.
+ *  `ALTER TABLE onlyaccounts` and `ALTER TABLE onlypublic.accounts` then count
+ *  as writes to this table; the server takes both as statements about some
+ *  OTHER relation, answering `relation "onlyaccounts" does not exist` and
+ *  `schema "onlypublic" does not exist` rather than a syntax error. The
+ *  `onlyaccounts` fixture is what reds that spelling, and it takes both changes
+ *  at once to get there, because the FIRST alternative refuses those heads
+ *  twice over: relax its boundary alone, or make its paren optional alone, and
+ *  nothing any statement can see moves. The second alternative refuses them
+ *  once only, on the space it requires after `ONLY`, so that one guard is a
+ *  single point of failure — widen it to `ONLY\s*` and the heads walk in. Which
+ *  is a live temptation rather than a hypothetical: the reasoning that makes
+ *  the gap before a paren optional belongs to the paren alternative and does
+ *  not carry to this one. The `onlyaccounts` line is the only assertion in the
+ *  file that reds when that space goes.
+ *
+ *  Cost, because an optional paren sitting between two unbounded whitespace
  *  runs lets the engine split those runs every possible way before giving up.
  *  A line carrying `ALTER TABLE ONLY` and then whitespace that never reaches a
  *  table costs quadratic time under the short spelling — seconds at a hundred
  *  thousand spaces, against under a millisecond at four hundred thousand under
  *  this one. No line in either tree looks like that, so this is headroom and
- *  not a live cost, and no assertion holds the timing down: this paragraph is
- *  what keeps the shape from being tidied back into the short form.
+ *  not a live cost, and it is the half of the reason no assertion holds down.
+ *  Carry the boundary across into `ONLY\b\s*\(?\s*` and the grammar half is
+ *  answered: that spelling admits exactly the statements this group does, the
+ *  `onlyaccounts` fixture passes under it too, and nothing else here can tell
+ *  the two apart. Against that one spelling this paragraph is all there is, and
+ *  it is what keeps the shape from being tidied into it.
  *
- *  Which needs saying plainly, because three sibling heads DO carry the short
- *  form and its cost: `ACCOUNTS_STATEMENT_RE`, `UPDATE_TARGET_RE` and
- *  `MERGE_TARGET_RE` each measure the same quadratic curve on the same input
- *  shape. They are left alone here because the widening that made the question
- *  live is this head's, and because the cost is headroom for them exactly as it
- *  is for this one. They are named so a reader comparing the heads reads this
+ *  Which needs saying plainly, because three sibling heads DO carry that cost:
+ *  `ACCOUNTS_STATEMENT_RE`, `UPDATE_TARGET_RE` and `MERGE_TARGET_RE` each
+ *  measure the same quadratic curve on the same input shape. Only the cost
+ *  reaches them, not the grammar half: each spells its own clause `ONLY\s+`
+ *  with the space required, so none of them takes a head that runs `ONLY`
+ *  straight into the table name for this table. What they do instead differs
+ *  with their job: the statement detector does not match such a head at all,
+ *  and the two target patterns resolve it to the relation it actually names.
+ *  They are left alone here because the widening that made the question live is
+ *  this head's, and because the cost is headroom for them exactly as it is for
+ *  this one. They are named so a reader comparing the heads reads this
  *  one as the deliberate exception rather than as the odd one out to tidy away,
  *  which is the reading that would undo the paragraph. */
 const ALTER_ACCOUNTS_RE =
@@ -3451,23 +3486,55 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // combination alone. The per-clause attribution comes from the set of
     // single-clause lines, not from this one.
     expect(alterations(['ALTER TABLE IF EXISTS ONLY accounts DROP COLUMN updated_at;'])).toBe(1);
-    // All three groups at once, in grammar order. This is the only spelling
-    // that carries every one of them, and so the only one that answers for the
-    // qualifier's POSITION: three optional groups admit three pairwise orders,
-    // and the single-clause lines answer for none of them. Hoist the qualifier
-    // to the front of the pattern and every other line here still matches while
-    // `ALTER TABLE IF EXISTS public.accounts` stops being counted at all. This
-    // line misses under every reordering of the three.
+    // All three groups at once, in grammar order, which is the only spelling
+    // that carries every one of them. Three optional groups admit six
+    // orderings, five besides grammar order — three pairwise swaps and two
+    // rotations — and the single-clause lines answer for none of the five,
+    // because the two groups such a line does not exercise match empty and an
+    // empty match has no position to get wrong. The `IF EXISTS ONLY` fixture
+    // answers for the three that move those two clauses relative to each other.
+    // That leaves the two orderings in which only the qualifier moves, and this
+    // is the line that answers for them. Hoist the qualifier to the front of
+    // the pattern, which is one of the two rotations: every other line here is
+    // unaffected, while a migration spelling the statement
+    // `ALTER TABLE IF EXISTS public.accounts DROP COLUMN updated_at;` quietly
+    // stops being counted. This line is what reds instead, and it misses under
+    // all five orderings, so it answers for the other three as well.
     expect(alterations(['ALTER TABLE IF EXISTS ONLY public.accounts DROP COLUMN updated_at;'])).toBe(1);
     // A parenthesised target, which PostgreSQL admits under `ONLY` and nowhere
     // else: a bare `ALTER TABLE (accounts)` is a syntax error, which is why the
     // paren rides inside the `ONLY` group here rather than outside it as the
-    // DML heads spell it. The gap after `ONLY` is optional because the closed-up
-    // spelling parses too, and the `ONLY(accounts)` fixture is what pins it so.
+    // DML heads spell it. The branch carries a whitespace run on each side of
+    // that paren and the server leaves both optional, which makes four
+    // spellings legal rather than three. Three are asserted; the fourth,
+    // `ONLY( accounts )`, is left out because every change to the branch that
+    // reds it reds one of these three as well. Two of the three carry a red bar
+    // of their own against a single-atom change to the branch: `ONLY(accounts)`
+    // is what reds when the run before the paren is made mandatory, and
+    // `ONLY ( accounts )` is what reds when the run after it is deleted, which
+    // no other line here reaches. `ONLY (accounts)` never reds alone against
+    // such a change, so what it holds by itself is coarser: that the branch
+    // goes on admitting the ordinary one-space spelling at all, which a change
+    // splitting the branch into a fully spaced and a fully closed-up style
+    // would take away. `ONLY ( accounts )` is also the spelling the docblock
+    // writes when it says what the server accepts here.
     expect(alterations(['ALTER TABLE ONLY (accounts) DROP COLUMN updated_at;'])).toBe(1);
     expect(alterations(['ALTER TABLE ONLY(accounts) DROP COLUMN updated_at;'])).toBe(1);
+    expect(alterations(['ALTER TABLE ONLY ( accounts ) DROP COLUMN updated_at;'])).toBe(1);
     expect(alterations(['ALTER TABLE accounts ADD COLUMN pending_email TEXT;'])).toBe(0);
     expect(alterations(['ALTER TABLE sessions ALTER COLUMN updated_at TYPE TIMESTAMPTZ;'])).toBe(0);
+    // A head naming a DIFFERENT relation whose name merely opens with the
+    // keyword. The server settles that it is a real statement rather than a
+    // curiosity: `ALTER TABLE onlyaccounts` answers that the relation does not
+    // exist, not that the line is a syntax error. Three things in the group
+    // keep it out, and this line answers for them unevenly. The word boundary
+    // and the first alternative's required paren are redundant with each other,
+    // so relaxing either alone leaves this line green; what reds it is the pair
+    // going at once, which is what tidying the group back to a single
+    // alternative with an optional paren does. The space the SECOND alternative
+    // requires after `ONLY` is redundant with nothing: widen it to `ONLY\s*`
+    // and this line reds on its own, the only assertion in the file that does.
+    expect(alterations(['ALTER TABLE onlyaccounts DROP COLUMN updated_at;'])).toBe(0);
     // A pre-decrement is an operator, not a comment, so it blanks nothing.
     expect(scansOf(['async function touch(n: number, id: number) {', '  let left = n;', "  if (--left === 0) await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id]);", '}']).tableFirst).toEqual(['x.ts#touch']);
     expect(scanned('  if (--left === 0) touch();')).toBe('  if (--left === 0) touch();');
