@@ -58,9 +58,10 @@ import {
 // started: the user answers the prompt, the spinner clears, and the action
 // simply does not happen. The vocabulary's other members are Symbols, which no
 // response can produce.
-// The truthiness half carries `''`, the one value the type half cannot refuse:
-// it is a string, so it clears the whole outcome ladder and arrives at `run` as
-// a proof to act on. Past there nothing compares it against a sentinel any
+// The truthiness half carries `''`. The type half refuses no string at all, and
+// a malformed non-empty one travels this same path to be refused at the backend
+// instead; `''` is the one the consumers themselves drop. It clears the whole
+// outcome ladder and arrives at `run` as a proof to act on. Past there nothing compares it against a sentinel any
 // more, only against truthiness — the settings and admin API functions spread
 // `...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {})` — so the
 // request leaves with no proof field at all, the backend's consume reads that

@@ -63,9 +63,10 @@ import {
 // outcome vocabulary a JSON response can carry, so an uncoerced null proof
 // reads as a redirect in flight at `withAuthorshipFreshAuth`'s outcome ladder
 // and the op aborts silently for a navigation that never started. The
-// truthiness half is there for `''`, the one value the type half cannot
-// refuse: a string clears the whole ladder and arrives at `run` as a proof to
-// act on, where the call site's own `proof ? { freshAuthProof: proof } : {}`
+// truthiness half is there for `''`. The type half refuses no string at all,
+// and a malformed non-empty one travels this same path to be refused at the
+// backend instead; `''` is the one the consumers themselves drop. It clears the
+// whole ladder and arrives at `run` as a proof to act on, where the call site's own `proof ? { freshAuthProof: proof } : {}`
 // and `broadcastOps`'s `if (freshAuthProof)` each drop it again, so the
 // broadcast leaves with no proof field at all, the backend's consume reads
 // that as `missing`, and that reason is remintable: the gate mints again

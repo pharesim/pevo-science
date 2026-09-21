@@ -490,10 +490,11 @@ describe('withAuthorshipFreshAuth', () => {
     // `missing`, and that reason is remintable: the gate re-resolves the factor
     // and mints through this same callback, asking for the password a second
     // time to obtain the same empty answer. Only the second refusal is
-    // terminal. The outcome object is `{ freshAuthFailed: true }` either way —
-    // what the truthiness half removes is the second prompt and the two refused
-    // broadcasts, and a re-authentication message that blames a password the
-    // user typed correctly.
+    // terminal. The outcome object is `{ freshAuthFailed: true }` either way,
+    // and so is the re-authentication message every caller renders from it. What
+    // the truthiness half removes is what this case measures: the second prompt,
+    // the second mint, and the two refused broadcasts it used to cost to reach
+    // that message.
     mockMintAuthorshipFreshAuthProof.mockResolvedValue('');
     run.mockImplementation(refusesFalsyProof);
 
