@@ -1143,3 +1143,185 @@ any changed gate runs. Run on the 8414dd64 bundle; the fixup's only
 behavior change is the passwordless PDF re-pick posture, which no E2E spec
 can drive (the E2E accounts hold a password), so it was not re-run. Dev
 routing restored afterwards.
+
+---
+
+## Architect re-review (2026-09-21, round 6) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on `8414dd64` + `0b2ff3c3` (frontend paths only,
+inspected at the pinned head), five reviewer personas plus a learnings pass and an
+independent validation batch that confirmed all four findings below. `publish.js`,
+`edit.js` and `editor.js` are byte-identical between `0b2ff3c3` and main at review
+time, so every item applies to main as written.
+
+**All three round-5 items are verified genuinely landed, and this is the first
+round on this task where every per-site probe claim in the signal held.** Two
+reviewers re-ran the probes in separate scratch copies: each truncation in
+`_handleImageUpload` reverted alone fails exactly its named spec, and an over-broad
+flush fails the control; the `_windowReady` wrapper forced permissive fails two
+specs per page; the PDF carve-out reverted fails exactly the re-pick spec; the
+publish wrapper ignoring its opts fails the re-pick and confirm-dialog specs. Item 3
+is confirmed already landed: `fa436034` and `f9b6ad8d` are ancestors of the review
+base, and at `0b2ff3c3` removing `ensureSessionWindow`'s non-string guard fails 5
+specs, removing `acquisitionAborted`'s fall-through to `failed` fails 3, and removing
+the `cancelled` row fails 10, matching the signal exactly. Project-standards and the
+frontend-races lens came back clean. The account-state check passes: `hasPassword`
+false with light custody is ARCHITECTURE § 6.1 state C, and § 6.4 / § 6.5 invariant
+#1 are untouched, since the diff changes whether the client navigates and never
+what proof a request carries.
+
+**The file-selection widening (signal residual 1) is accepted.** It is the same loss
+class as the entry gate, and the entry-gate-only form would silently lose the first
+file on the second pick.
+
+The theme of this round: **a non-destructive refusal is only an improvement if it
+leaves the user a way through.** Item 2 of the round-5 hold prescribed the
+suppression and did not prescribe the way through; that omission is the
+architect's, and the implementer flagged the resulting dead end as residual 2
+rather than landing it silently. The probes below show it sits on the ordinary
+first-submit path, which is wider than the post-401 resubmit the round-5 hold
+reasoned about. Items 1 to 3 are one fix.
+
+### Item 1 — a passwordless account holding a file is refused at every gate, with no in-page way to re-authenticate
+
+With a file held, `_windowReady` suppresses navigation at the entry and
+file-selection gates, so a passwordless account gets `reauthRequired` and the
+`common.reauthRequired` toast ("Please confirm your identity again, then try once
+more."). Nothing in the tab can do that: `beginSessionAuthOrcidRedirect` has one
+call site, inside the acquisition the gate just suppressed, and the window is
+per-tab `sessionStorage`. Probe at `0b2ff3c3`: three consecutive `handleSubmit`
+calls produce three identical toasts, zero `startOrcid` calls, zero broadcasts. The
+pre-change tree navigated in the same arrangement (file lost, flow completes).
+
+Reachability is ordinary. The idle window is 15 minutes, the gate margin is 120
+seconds, and a file pick never slides the window, so the refusal begins about 13
+minutes after the ORCID return: attach a PDF, finish the form, click Submit. Two
+more ways in, both probed: files attached while unaccredited (the gate returns true
+ungated) followed by accreditation landing, where the user is told to confirm
+"again" having never held a window; and a window still live but inside the margin.
+
+Fix: on a `reauthRequired` refusal at the entry and file-selection gates, ask
+instead of toasting. Show an explicit confirm through the existing
+`broadcastConfirm` store whose copy states the cost: confirming identity with ORCID
+leaves this page, the text is saved as a draft, attached files will need to be
+selected again. On confirm, flush the pending draft save and acquire with
+`allowRedirect: true`. On decline, refuse silently, as a dismissed password modal
+does. Constraints:
+
+- The pre-broadcast gates and the broadcast layer stay unconditionally
+  non-navigating and keep the toast. Their "try once more" becomes true, because
+  the resubmit now reaches a gate that offers the confirm.
+- The password factor is untouched: it still prompts inline with files held.
+- Do not grow another copy of the outcome dispatch in the pages. The pages see a
+  boolean today; whichever seam carries the refusal out (an option on
+  `freshAuthWindowReady`, or the outcome key returned to the page), the vocabulary
+  table stays the one place that decides which outcomes speak. Reconcile with the
+  shared-dispatch task if it has landed by pickup.
+- `broadcastConfirm.request()` resolves `false` for a decline AND for
+  refuse-while-open. Both must end in a refusal with no navigation.
+- `edit.js` does not use the store today; the store is global, so no new
+  component is needed.
+- New copy is state-neutral (it must not presume a prior window, per the
+  accreditation-flip case), carries no emdashes, and is stubbed across all 16
+  locales with a `STUBS.md` entry.
+- Flush the pending draft save before any acquisition that may navigate. The
+  confirm path is the required one; an unconditional flush at the top of
+  `_windowReady` is the simplest form and also closes the two-second debounce hole
+  the signal recorded as residual 5 for the permissive path.
+- Nothing is persisted into the draft beyond what it carries today.
+
+Tests, per page: with a file held and no window, a passwordless submit requests
+the confirm and does not toast; on confirm, `startOrcid` is called once, the
+navigation is assigned, and the draft was flushed first; on decline, no
+`startOrcid`, the file is kept, `step` is `'idle'`, and no toast fires. Add the
+accreditation-flip arrangement on publish. Keep the existing specs that pin the
+pre-broadcast refusal with the toast.
+
+### Item 2 — the PDF re-pick carve-out is not a way through; revert it
+
+The fixup presents re-picking the PDF as the one move that may still navigate. A
+successful attach never clears the file input (only the refusal branch does), so
+re-choosing the PDF the user actually wants fires no `change` event: no gate, no
+navigation, no toast. With a supplementary file held the re-pick is refused
+outright. The pinning spec calls the handler directly with a differently named
+file, so it cannot see either.
+
+With item 1 in place the carve-out has no job. Revert `handlePdfChange` to the bare
+`this._windowReady()`, delete the carve-out comment and the sentence in
+`_windowReady`'s docblock that describes it, and replace the re-pick spec with one
+asserting that a pick over a held PDF with no window requests the confirm. The
+override spec that drops the window inside the confirm mock stays: it is what pins
+the opts spread on publish once the re-pick spec no longer co-pins it. Re-probe
+that claim after the revert.
+
+### Item 3 — the edit page's documented way out lands on the no-changes error
+
+When new supplementary files are the only edit, removing them (the way through the
+signal names) makes the form unchanged, and the no-changes check runs before the
+entry gate: `step` becomes `'error'` with `edit.noChanges`, and nothing navigates.
+Probe confirmed. Do NOT reorder the no-changes check; round 1 put it ahead of the
+gate deliberately so an unchanged form never costs a round-trip. Item 1 resolves
+this, because the refusal no longer sends the user off to empty the form. Add the
+edit-page spec for exactly this arrangement: unchanged form plus one new
+supplementary file, passwordless, no window, submit requests the confirm.
+
+### Item 4 — the edit page's pre-broadcast override is unpinned, and it is load-bearing
+
+`pages-edit.test.js` stays 74 of 74 with the `...opts` spread removed from
+`edit.js`'s `_windowReady`, and 74 of 74 with both pre-broadcast call sites reduced
+to a bare `this._windowReady()` (validator probe). The signal calls the override
+not observable by a unit spec. That is true only when no file is ever held. The
+supplementary remove button carries no `:disabled` binding, so a file removed while
+the awaited upload leg is in flight makes `holdsAttachedFiles` false at the
+pre-broadcast gate with the pins already paid for, and the explicit
+`allowRedirect: false` is then the only guard.
+
+Add one spec per branch (continuation and same-author, since the two literals sit
+in mutually exclusive branches and neither twin can mask the other): the upload
+mock empties `supplementaryFiles` and drops the stored window, and the spec asserts
+no `startOrcid`, no broadcast, `step` back at `'idle'`, and the `reauthRequired`
+toast. Prefer this in-flow shape over a direct call to the wrapper: a direct call
+pins the spread and leaves both call-site literals unpinned. Probe each literal
+and the spread separately.
+
+### Item 5 (low) — the subject-change abandonment has no spec, and the mock that would host one does not mirror the mapper
+
+The signal claims a subject-change abandonment takes the same queue-flushing exit
+as a torn-down session. `editor.test.js` mocks `describeUploadError` under a
+comment saying it mirrors the real mapper, but maps only `UPLOAD_SESSION_TORN_DOWN`
+to null; `UPLOAD_SUBJECT_CHANGED` shares the null contract in `lib/ipfs-upload.js`
+and falls to `common.uploadFailed` in the mock. Raised independently by three
+reviewers. Make the mock follow the real mapper's null contract and add the editor
+spec: a subject-change rejection mid-batch abandons the remaining images and adds
+no toast of its own.
+
+### Not held, routed / accepted
+
+Filed as its own task, `ui-edit-draft-omits-addressed-reviews` (signal residual 4):
+the edit draft does not carry `addressedReviews`, so a passwordless entry-gate
+navigation returns with the ticks gone and the resubmit broadcasts without
+`addresses_reviews`. Pre-existing, but it silently changes what goes on chain.
+
+Still open with the user, not decided this round (signal residual 3): the review
+page, the comment composer, and both vouch call sites reach
+`broadcastWithFreshAuth` with the permissive default and navigate over undrafted
+work. Pre-existing and unchanged by this diff.
+
+Accepted as documented residuals: a passwordless account with no window dropping N
+images gets N identical `reauthRequired` toasts (nothing informative is evicted, so
+the item 1 contract of round 5 holds); an explicit `allowRedirect: undefined`
+defeats the opts spread, and no caller passes one; a mid-submit PDF swap inside the
+margin can navigate, identical to base behavior and moot once item 2 reverts the
+carve-out; editor images queued or inside the draft debounce are not counted by
+`holdsAttachedFiles`. One wording note, recorded rather than held: the new comment
+in `_handleImageUpload` reads as if the subject-change class is closed, but the
+abandonment fires only when the in-flight image fails with an already-reported
+code; an in-flight image that succeeds across a cross-tab subject change is not
+covered.
+
+Not verified by this review: the full-suite count, `npm run build`, and the E2E
+run the signal reports.
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
+re-review signal. Do not edit this hold block or annotate items as fixed; the commit
+diff is the evidence and the architect updates the block at re-review.
