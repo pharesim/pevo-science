@@ -90,7 +90,7 @@ import Alpine from 'alpinejs';
 import { broadcastOps } from '../../src/signer.js';
 import { fetchPaper, fetchPaperEnrichment } from '../../src/api.js';
 import { clearPasswordFactorMemo } from '../../src/lib/fresh-auth.js';
-import { initEditPage } from '../../src/pages/edit.js';
+import { initEditPage, editPageTemplate } from '../../src/pages/edit.js';
 
 // Sentinel the DOM-bound field / toast must NOT contain.
 const LEAK_SENTINEL = 'deadbeef-leak-sentinel';
@@ -274,12 +274,12 @@ describe('editPage handleSubmit sanitization', () => {
   // $watch handlers + storage listener registration live in
   // init()/_setupReactiveBindings(), not loadPaperData(). The Retry button
   // re-invokes loadPaperData(); if registration lived there, each retry
-  // would duplicate the 8 $watch handlers (Alpine's returned unsubscribe
+  // would duplicate the $watch handlers (Alpine's returned unsubscribe
   // handle was discarded) and overwrite _storageListener without
   // removeEventListener'ing the prior one. The invariant: registrations
   // happen exactly once across init + N loadPaperData calls.
   describe('reactive bindings register exactly once across retries', () => {
-    it('init() registers all 8 $watch handlers + 1 storage listener; subsequent loadPaperData() does not re-register', async () => {
+    it('init() registers every draft $watch handler + 1 storage listener exactly once; subsequent loadPaperData() does not re-register', async () => {
       const addEventListenerSpy = vi.spyOn(window, 'addEventListener');
       fetchPaper.mockResolvedValue({ data: { author: 'alice', permlink: 'p1', body: '', json_metadata: '{}' } });
       fetchPaperEnrichment.mockResolvedValue({ data: {} });
@@ -296,7 +296,12 @@ describe('editPage handleSubmit sanitization', () => {
         c => c[0] === 'storage'
       ).length;
 
-      expect(watchCallsAfterInit).toBe(8); // title, abstract, body, keywordsText, authorName, authorAffiliation, authorOrcid, citations
+      // Every field _scheduleDraftSave persists needs a watcher, or a change
+      // to it never reaches the stored draft.
+      expect(comp.$watch.mock.calls.map(([expr]) => expr)).toEqual([
+        'title', 'abstract', 'body', 'keywordsText', 'authorName',
+        'authorAffiliation', 'authorOrcid', 'citations', 'addressedReviews',
+      ]);
       expect(storageListenersAfterInit).toBe(1);
 
       // Retry: simulate the user clicking the Retry button after a
@@ -2045,3 +2050,204 @@ describe('editPage re-auth window ordering', () => {
   });
 });
 
+
+// The review checklist is the one form field whose loss changes what goes on
+// chain rather than only what the user retypes: a passwordless account's entry
+// gate is allowed to navigate to ORCID while no new file is held, on the
+// premise that everything else is drafted, and a returning form that silently
+// dropped its ticks resubmits without `addresses_reviews`. So the draft carries
+// `addressedReviews` the way it carries the text fields: saved by
+// _scheduleDraftSave, watched so a tick schedules that save, and restored by
+// _restoreDraft. Restore reconciles against the reviews the paper actually
+// carries, because a tick is meaningless once its review is gone from the
+// checklist.
+describe('editPage draft carries the addressed-review ticks', () => {
+  const DRAFT_KEY = 'pevo-draft-edit-alice-p1';
+
+  const REV_ONE = { author: 'carol', permlink: 'rev-1', body: 'first review' };
+  const REV_TWO = { author: 'dave', permlink: 'rev-2', body: 'second review' };
+
+  function tick(rev) {
+    return { author: rev.author, permlink: rev.permlink };
+  }
+
+  // Only the fields _restoreDraft reads. `title` is the shape sentinel the
+  // restore gates on, so every fixture carries it as a string.
+  function storedDraft(extra = {}) {
+    return JSON.stringify({
+      title: 'Drafted Title',
+      abstract: 'drafted abstract',
+      body: 'drafted body',
+      keywordsText: 'quantum',
+      ...extra,
+    });
+  }
+
+  // The shared createComponent() leaves $refs unset, and loadPaperData defers
+  // _mountEditors through the mocked $nextTick; an empty $refs lets that
+  // deferred mount find no editor elements instead of dereferencing undefined.
+  function loadedComponent() {
+    const comp = createComponent();
+    comp._mounted = true;
+    comp.$refs = {};
+    return comp;
+  }
+
+  function arrangeLoad(reviews) {
+    fetchPaper.mockResolvedValue({
+      data: {
+        author: 'alice',
+        permlink: 'p1',
+        head_author: 'alice',
+        head_permlink: 'p1',
+        canonical_author: 'alice',
+        canonical_permlink: 'p1',
+        title: 'Old Title',
+        body: '## Abstract\n\nold abstract\n\n---\n\nold body',
+        json_metadata: JSON.stringify({ pevotest: { version: 1 } }),
+      },
+    });
+    fetchPaperEnrichment.mockResolvedValue({ data: { reviews } });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    mockStores.auth.isConnected = true;
+    mockStores.auth.isAccredited = true;
+    mockStores.auth.username = 'alice';
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: true } });
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it('the debounced save writes the ticks into the stored draft', () => {
+    vi.useFakeTimers();
+    try {
+      const comp = createComponent();
+      comp._initialLoadDone = true;
+      comp.addressedReviews = [tick(REV_TWO)];
+
+      comp._scheduleDraftSave();
+      vi.advanceTimersByTime(2000);
+
+      const saved = JSON.parse(localStorage.getItem(DRAFT_KEY));
+      expect(saved.addressedReviews).toEqual([tick(REV_TWO)]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a tick change schedules that save', () => {
+    vi.useFakeTimers();
+    const comp = createComponent();
+    try {
+      comp._setupReactiveBindings();
+
+      // The registration is the assertion: without it a tick is the one
+      // change on the form that never reaches the stored draft.
+      const registration = comp.$watch.mock.calls.find(([expr]) => expr === 'addressedReviews');
+      expect(registration).toBeDefined();
+
+      comp._initialLoadDone = true;
+      comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
+      registration[1]();
+      vi.advanceTimersByTime(2000);
+
+      const saved = JSON.parse(localStorage.getItem(DRAFT_KEY));
+      expect(saved.addressedReviews).toEqual([tick(REV_ONE)]);
+    } finally {
+      comp.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it('restore reinstates a tick whose review is still on the paper', async () => {
+    arrangeLoad([REV_ONE, REV_TWO]);
+    localStorage.setItem(DRAFT_KEY, storedDraft({ addressedReviews: [tick(REV_TWO)] }));
+
+    const comp = loadedComponent();
+    await comp.loadPaperData();
+
+    expect(comp.addressedReviews).toEqual([tick(REV_TWO)]);
+  });
+
+  it('restore drops a saved tick whose review is no longer offered', async () => {
+    // rev-2 is gone from the paper by the time the form comes back.
+    arrangeLoad([REV_ONE]);
+    localStorage.setItem(DRAFT_KEY, storedDraft({
+      addressedReviews: [tick(REV_ONE), tick(REV_TWO)],
+    }));
+
+    const comp = loadedComponent();
+    await comp.loadPaperData();
+
+    expect(comp.addressedReviews).toEqual([tick(REV_ONE)]);
+  });
+
+  // The whole point of carrying the field: the resubmit after the round-trip
+  // broadcasts the reviews the user ticked before it.
+  it('the resubmit after a restore broadcasts addresses_reviews with the restored ticks', async () => {
+    broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+    const { invalidatePaperCache } = await import('../../src/api.js');
+    invalidatePaperCache.mockResolvedValue({});
+    arrangeLoad([REV_ONE, REV_TWO]);
+    localStorage.setItem(DRAFT_KEY, storedDraft({ addressedReviews: [tick(REV_TWO)] }));
+
+    const comp = loadedComponent();
+    await comp.loadPaperData();
+    comp.authorName = 'Alice';
+
+    await comp.handleSubmit();
+
+    expect(comp.step).toBe('success');
+    const commentOp = broadcastOps.mock.calls[0][1][0];
+    const meta = JSON.parse(commentOp[1].json_metadata).pevotest;
+    expect(meta.addresses_reviews).toEqual([tick(REV_TWO)]);
+
+    comp.destroy();
+  });
+
+  // The ticks live inside the one draft object, so the post-success clear
+  // takes them with the text: the next visit starts from the chain, not from
+  // a tick the revision already addressed.
+  it('the post-success draft clear takes the ticks with it', async () => {
+    broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+    const { invalidatePaperCache } = await import('../../src/api.js');
+    invalidatePaperCache.mockResolvedValue({});
+    arrangeLoad([REV_ONE, REV_TWO]);
+    localStorage.setItem(DRAFT_KEY, storedDraft({ addressedReviews: [tick(REV_TWO)] }));
+
+    const comp = loadedComponent();
+    await comp.loadPaperData();
+    // Non-vacuous: the draft has to have held a tick for the clear to have
+    // anything to take.
+    expect(comp.addressedReviews).toEqual([tick(REV_TWO)]);
+    comp.authorName = 'Alice';
+    await comp.handleSubmit();
+    expect(comp.step).toBe('success');
+    expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+    comp.destroy();
+
+    const reopened = loadedComponent();
+    await reopened.loadPaperData();
+
+    expect(reopened.addressedReviews).toEqual([]);
+  });
+
+  // A restored tick has to reach the rendered checkbox. The input is not
+  // x-model bound (the value is an {author, permlink} pair, not a string), so
+  // a checklist that only listens for @change comes back from the round-trip
+  // showing every box clear while addressedReviews holds the restored set.
+  it('the checklist checkbox reflects the restored set', () => {
+    expect(editPageTemplate).toContain('isReviewAddressed(rev.author, rev.permlink)');
+
+    const comp = createComponent();
+    comp.addressedReviews = [tick(REV_TWO)];
+
+    expect(comp.isReviewAddressed(REV_TWO.author, REV_TWO.permlink)).toBe(true);
+    expect(comp.isReviewAddressed(REV_ONE.author, REV_ONE.permlink)).toBe(false);
+  });
+});

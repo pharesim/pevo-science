@@ -324,6 +324,7 @@ const template = `
                         <input type="checkbox" class="mt-1 rounded border-parchment-dark text-pevo-teal focus:ring-pevo-teal"
                                data-testid="address-review-checkbox"
                                :value="rev.author + '/' + rev.permlink"
+                               :checked="isReviewAddressed(rev.author, rev.permlink)"
                                @change="toggleAddressedReview(rev.author, rev.permlink, $event.target.checked)" />
                         <div class="min-w-0">
                           <span class="text-sm font-medium text-ink" x-text="rev.is_anonymous ? $t('review.anonymousReviewer') : ('@' + rev.author)"></span>
@@ -550,6 +551,7 @@ export function initEditPage() {
       this.$watch('authorAffiliation', () => this._scheduleDraftSave());
       this.$watch('authorOrcid', () => this._scheduleDraftSave());
       this.$watch('citations', () => this._scheduleDraftSave());
+      this.$watch('addressedReviews', () => this._scheduleDraftSave());
     },
 
     async loadPaperData() {
@@ -724,12 +726,29 @@ export function initEditPage() {
             if (draft.authorOrcid) this.authorOrcid = draft.authorOrcid;
             this.newCoAuthors = draft.newCoAuthors || [];
             if (draft.citations) this.citations = draft.citations;
+            this.addressedReviews = this._reconcileAddressedReviews(draft.addressedReviews);
           }
         }
       } catch {
         localStorage.removeItem(this.draftKey);
         console.warn('Draft recovery failed');
       }
+    },
+
+    // A tick only means something while the checklist still offers its review,
+    // so the saved set is intersected with the reviews the paper carries rather
+    // than trusted. loadPaperData assigns `reviews` from the enrichment
+    // response before it calls _restoreDraft, so the intersection has the
+    // paper's reviews in hand. Iterating `reviews` rather than the saved array
+    // is what does the work: a tick whose review is gone finds no match and is
+    // dropped, each surviving entry is rebuilt from the review (normalizing a
+    // persisted shape back to {author, permlink} and collapsing a duplicate),
+    // and the order follows the rendered checklist.
+    _reconcileAddressedReviews(saved) {
+      if (!Array.isArray(saved)) return [];
+      return this.reviews
+        .filter(rev => saved.some(tick => tick && tick.author === rev.author && tick.permlink === rev.permlink))
+        .map(rev => ({ author: rev.author, permlink: rev.permlink }));
     },
 
     async _mountEditors() {
@@ -794,7 +813,8 @@ export function initEditPage() {
           title: this.title, abstract: this.abstract, body: this.body,
           keywordsText: this.keywordsText, authorName: this.authorName,
           authorAffiliation: this.authorAffiliation, authorOrcid: this.authorOrcid,
-          newCoAuthors: this.newCoAuthors, citations: this.citations, savedAt: Date.now(),
+          newCoAuthors: this.newCoAuthors, citations: this.citations,
+          addressedReviews: this.addressedReviews, savedAt: Date.now(),
         };
         localStorage.setItem(this.draftKey, JSON.stringify(draft));
       }, 2000);
@@ -957,6 +977,10 @@ export function initEditPage() {
       const item = this.citations.splice(this.dragIndex, 1)[0];
       this.citations.splice(index, 0, item);
       this.dragIndex = null;
+    },
+
+    isReviewAddressed(author, permlink) {
+      return this.addressedReviews.some(r => r.author === author && r.permlink === permlink);
     },
 
     toggleAddressedReview(author, permlink, checked) {
