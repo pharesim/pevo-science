@@ -781,7 +781,7 @@ reported as an assembled write. `accountsColumnWriters` carries the same single-
 Pre-existing, untouched by this round, and a file-wide decision rather than an ALTER-arm one.
 Filed as `backend-assembled-writes-misses-alter-head` in `pending/`.
 
-## Backend re-review signal (2026-09-21, working tree)
+## Backend re-review signal (2026-09-21, commit 3200f742)
 
 `backend(canary): the boundary is inert where the paren is required, and three orderings
 are six` — one file,
