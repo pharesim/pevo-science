@@ -1,6 +1,7 @@
 ---
 title: "When a fix removes a compensating misread, a base-versus-head differential's regressions are triaged by their trigger, and the chase stops once every remaining one needs a documented misread"
 date: 2026-09-22
+last_updated: 2026-09-22
 category: conventions
 module: backend/tests/eslint + code-review process
 problem_type: convention
@@ -39,7 +40,7 @@ tags:
 
 `backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts` asserts that `accounts.updated_at` is written only by two allowed statements. Its hand-written reader (`blankLine`, driven per file by `blankAll`) blanks comments and tracks templates, quoted values, dollar-quoted spans and interpolations. The writer scans then pattern-match the blanked text. A silent pass is a planted ordinary writer (`await q('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [id])`) that leaves the suite green.
 
-The review standard for this canary counts a REGRESSION as a planted plain writer that the base tree reds and the head tree leaves green. Regressions are held; documented limits are accepted. The hold that set it, the architect re-review dated 2026-09-21 in the task file, proved each case with:
+The review standard for this canary counts a REGRESSION as a planted plain writer that the base tree reds and the head tree leaves green. Regressions are held; documented limits are accepted. The hold that set it, the architect re-review dated 2026-09-21 in the task's review history (the task has since been archived, and the full record lives in the git history of `agents/docs/tasks/`), proved each case with:
 - a base-versus-head pair
 - a one-token control
 - a bisect over the range
@@ -63,7 +64,7 @@ The sibling learning `canary-reader-takes-typescript-facts-from-the-parser-not-a
    - **Record which arm caught it at base.** A writer arm firing on the writer is a detection. The end-state arm ('the reader finishes every file it reads with no span left open'), or any arm unrelated to the writer, means a compensating misread left a span open, so the catch was accidental. The arm tells you HOW base caught it; the trigger still decides what to do.
    - **Report per fixture family**, with improvements (base silent, head red) and silent-in-both next to the regressions. Keep the ordinary-code families separate, so that "ordinary: 0" is visible rather than averaged away.
 
-3. **Fix a compensating misread in scope when it is pre-existing and cheap, and surface it first.** The first pass found one. A SQL `--` comment on the same line as its template's closing backtick blanked the backtick with it. That gap was pre-existing (``q(`SELECT count(*) FROM sessions -- live ones only`)`` was silent at base too), but base's own misread had masked it on some lines. It was surfaced to the user, who chose to include the fix: the comment now ends at the template's closing backtick and at any escape spelling a line break. The task file records this under "User decision, 2026-09-21".
+3. **Fix a compensating misread in scope when it is pre-existing and cheap, and surface it first.** The first pass found one. A SQL `--` comment on the same line as its template's closing backtick blanked the backtick with it. That gap was pre-existing (``q(`SELECT count(*) FROM sessions -- live ones only`)`` was silent at base too), but base's own misread had masked it on some lines. It was surfaced to the user, who chose to include the fix: the comment now ends at the template's closing backtick and at any escape spelling a line break. The task's review history records this under "User decision, 2026-09-21" (archived with the task; in git history).
 
 4. **Stop once both of these hold:**
    - every remaining base-caught, head-missed case needs a documented misread as its trigger

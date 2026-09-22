@@ -63,6 +63,8 @@ Each held for its own shapes, and each round's adversarial pass found the next o
    - `templateAtEnd`: whether the line ends inside template text, from the template literal tokens' extents.
    - `blockAtEnd`: whether the line ends inside a TypeScript block comment.
 
+   The view converts each parser position into the reader's own line numbering with a `starts`/`lineOf` map built from `lines`, not with `getLineAndCharacterOfPosition`; the parser counts line breaks the reader's split does not, and the reason is in `a-parsers-line-is-not-the-readers-line-unless-built-from-the-same-split.md`.
+
    The reader's interpolation arm becomes a lookup, `if (closes.has(i))`. It is tested ahead of the quoted-value and dollar-span branches, because TypeScript interpolates wherever template text holds a `${`. A close on a later line is refused rather than copied: it is recorded in `BlankedCode.unclosed` and reported by 'every interpolation closes on the line it opens'.
 
 3. **Find comments by scanning the trivia gaps between leaf tokens.** Asked at each node, the comment-range API missed two kinds of comment: one before a token that is no node (a closing `}`, `)` or `;`), and one trailing code on its line. So:
@@ -162,6 +164,8 @@ Spellings that defeated a hand-written rule:
 
 ## Related
 
+- `a-parsers-line-is-not-the-readers-line-unless-built-from-the-same-split.md`: the corollary for the conversion inside `typescriptView`. The parser's per-line answers are re-indexed into the reader's own `split('\n')` array, since the parser counts breaks the split does not, and the agreement arm cannot see a misalignment shared by both sides it compares.
+- `differential-fuzz-regressions-after-removing-a-compensating-misread-are-triaged-by-trigger.md`: the method one level up. How the base-versus-head differential that verified this redesign was judged, and when the chase stopped.
 - `source-discipline-canary-comment-normalization-and-lens-vs-probe-coverage-2026-09-08.md`: the same canary and reader. It introduced the terminal-state assertion. This learning adds the per-line-end comparison for a misread that a later line undoes, which the terminal state cannot show.
 - `belt-and-braces-guard-absorbs-upstream-mutation-pins-2026-09-18.md`: the same canary's regex-or-division rule and its residuals. Its assumption of a complete operand list did not hold (`x!!`, `1.`, a combining-mark identifier, `f<string>`). The agreement arm is a detector, not the kind of silencing net that doc warns against.
 - `source-discipline-canary-detection-must-survive-ordinary-authoring-shapes-2026-08-31.md`: resolving ambiguous openers toward code. A wrong boundary call on carried state can still blank code downstream, which the agreement arm catches where it crosses a line.
