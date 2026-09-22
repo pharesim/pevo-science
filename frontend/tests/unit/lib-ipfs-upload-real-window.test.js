@@ -21,10 +21,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // deterministic edge-case coverage"): every function mocked here is an `api.js`
 // export that performs a real fetch(). Reproducing a mint that answers with a
 // malformed proof means a backend that violates its own response contract,
-// which no live deployment can be asked for; and `uploadFileToIpfs` reaches
-// `crypto.subtle` before its first request, which jsdom does not provide. The
-// window itself, the gate, the eviction and the upload orchestration are all
-// real.
+// which no live deployment can be asked for; and `uploadFileToIpfs` hashes the
+// file through `sha256File` before its first request, and `sha256File` calls
+// `file.arrayBuffer()`, which jsdom's Blob does not implement (`crypto.test.js`
+// records the same gap); `crypto.subtle` itself is present, as
+// `harness.test.js` asserts. The window itself, the gate, the eviction and the
+// upload orchestration are all real.
 //
 // `mockUploadFileToIpfs` MIRRORS one real behavior rather than inventing one:
 // `uploadFileToIpfs` throws FRESH_AUTH_REQUIRED with `reason: 'missing'`
