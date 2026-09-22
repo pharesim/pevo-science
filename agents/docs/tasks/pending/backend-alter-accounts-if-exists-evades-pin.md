@@ -960,7 +960,12 @@ Pass 2, five:
     premise.** Two independently optional runs give four combinations. The fourth,
     `ONLY( accounts )`, parses on the server and is matched by the committed pattern, and
     is asserted nowhere. This is the round-2 item-2 class recurring in the same comment.
-    The comment now says four are legal, three asserted, and why the fourth adds no red bar.
+    The comment now says four are legal and three asserted. The reason it gave for leaving
+    the fourth out, recorded here as "why the fourth adds no red bar", carried no scope and
+    is struck and restated in round 4: a fourth line would carry no red bar of its own
+    against a single-atom change to the branch, and would carry one against the split the
+    round-3 hold named, `(?:ONLY\b\(|ONLY\b\s+\(\s*|ONLY\s+)?`. The comment now carries the
+    single-atom qualifier.
 11. **The `UPDATE onlyaccounts` illustration did not hold distributively** across the three
     named siblings: `MERGE_TARGET_RE` cannot match an UPDATE at all, and
     `ACCOUNTS_STATEMENT_RE` has no target capture. The substantive point holds for all
@@ -1046,10 +1051,19 @@ every probe.
 ### [TODO Architect] for triage, nothing applied
 
 1. **The fourth paren spelling is legal, matched, and asserted nowhere.**
-   `ALTER TABLE ONLY( accounts )` parses and the committed head matches it. It is left out
-   because every change to the branch that reds it reds one of the three asserted spellings
-   as well, and the comment says so; a fourth line would make the enumeration exhaustive at
-   the cost of a fixture carrying no unique red bar. Prose decision, not a coverage gap.
+   `ALTER TABLE ONLY( accounts )` parses and the committed head matches it. The reason this
+   item gave for leaving it out is wrong, struck and restated in round 4. It said every
+   change to the branch that reds the fourth spelling reds one of the three asserted
+   spellings as well. That is true of every single-atom change to the branch and false of
+   the branch in general: splitting the paren alternative into a closed-up and a
+   spaced-before style, `(?:ONLY\b\(|ONLY\b\s+\(\s*|ONLY\s+)?`, keeps all three asserted
+   spellings matching and stops matching `ONLY( accounts )` alone. The fixture comment made
+   the same unscoped claim and now carries the qualifier. What survives is the scoped
+   version: every single-atom change to the branch that reds the fourth spelling reds one
+   of the three as well, so a fourth line would make the enumeration exhaustive at the cost
+   of a fixture carrying no red bar of its own against such a change. Against such a change
+   leaving it out is a prose decision, not a coverage gap; against the closed-up and
+   spaced-before split it is a gap, one the round-3 hold declined to guard.
 2. **`ONLY (accounts)` carries no unique red bar against any single-atom change** to the
    branch, and reds alone only under a change splitting the branch into two styles. A prune
    candidate. Not pruned here: round 2 landed it and the architect reviewed it, so removing
@@ -1209,3 +1223,231 @@ the second alternative kept — and "against that one spelling this paragraph is
 can be read as saying there is only one; it falls under the timing-assertion class already
 declined, and no claim in the paragraph is false. The equivalence results are bounded-corpus
 measurements, not proofs.
+
+## Backend re-review signal (2026-09-22, working tree)
+
+`backend(canary): scope the fourth paren spelling's omission to single-atom changes` — one
+file, `backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`,
+plus this task file. The whole test-file delta is the word `single-atom`: with comment
+markers and line breaks stripped, the before and after token streams differ by that one
+inserted token, and every non-comment line is byte-identical to HEAD. The paragraph was
+re-broken by the rule it was already written to, a greedy fill at 80 columns that keeps each
+code span whole, and the pre-change paragraph was checked to be exactly that fill. Of its 17
+lines, the first six, through the line the reworded sentence starts on, are unchanged, and
+the other eleven are re-broken. No pattern, assertion, or other comment text changed.
+
+The file has 29 tests at HEAD, not the 25 the round-3 hold counted at 3200f742; the four
+later commits to the file take it from one count to the other. `ALTER_ACCOUNTS_RE` is
+byte-identical to the one 3200f742 carried, but the reader around it has changed since, so
+every probe below was re-run at HEAD rather than carried over.
+
+### Item 1 (required) — the sentence scoped as prescribed
+
+The sentence now reads: "Three are asserted; the fourth, `ONLY( accounts )`, is left out
+because every single-atom change to the branch that reds it reds one of these three as
+well." That is the qualifier the sentence after it already carries.
+
+Probe. Every `expect(` in a scratch copy rewritten to `expect.soft(`, so no red masks a later
+one, plus one probe-only soft assertion for
+`ALTER TABLE ONLY( accounts ) DROP COLUMN updated_at;` after the three paren lines so the
+fourth spelling's own red is visible. The probe line exists only in the scratch copies. The
+soft control with the probe line is 29/29 green, exit 0. One fresh copy per mutant of the
+`ONLY` group, whose committed spelling is `(?:ONLY\b\s*\(\s*|ONLY\s+)?`. The two splits,
+spelled out because a table cell cannot carry their alternation bars:
+
+```
+S1, the hold's split:    (?:ONLY\b\(|ONLY\b\s+\(\s*|ONLY\s+)?
+S2, the hold's variant:  (?:ONLY\b\s*\(|ONLY\b\s+\(\s*|ONLY\s+)?
+```
+
+| `ONLY` group mutated to | asserted lines that red | fourth spelling |
+|---|---|---|
+| S1 | none | RED alone |
+| S2 | none | RED alone |
+| boundary deleted | none | . |
+| run before the paren deleted | `ONLY (accounts)`, `ONLY ( accounts )` | . |
+| run before the paren made mandatory | `ONLY(accounts)` | RED |
+| run after the paren deleted | `ONLY ( accounts )` | RED |
+| run after the paren made mandatory | `ONLY (accounts)`, `ONLY(accounts)` | . |
+| paren atom deleted | all three | RED |
+| paren made optional | none | . |
+| `ONLY` deleted from the paren alternative | all three | RED |
+| paren alternative dropped | all three | RED |
+| run before the paren narrowed to `\s?` | none | . |
+| run after the paren narrowed to `\s?` | none | . |
+
+Every single-atom row that reds the fourth spelling reds an asserted line with it, which is
+what the scoped sentence says; S1 and S2 red it with every asserted line green, which is
+what made the unscoped one false. The migration half, without the probe line:
+`ALTER TABLE ONLY( accounts ) DROP COLUMN updated_at;` appended to `002_nullable_email.sql`
+reds `only the column-introducing migration alters accounts.updated_at itself` under the
+committed pattern, softened and plain alike, with `"002_nullable_email.sql#<module>": 1` in
+the received tally. The same plant under S1, and under S2, leaves the file 29/29 green, exit
+0, with every `expect` softened: the plant goes uncounted and nothing reds.
+
+### This task file's record, as prescribed plus one more of the same class
+
+- **`[TODO Architect]` item 1 of the round-3 signal block**, restated in place as
+  prescribed, with the closed-up and spaced-before split as the counterexample and a marker
+  saying round 4 restated it. Two more of its phrases were unscoped and now carry the
+  qualifier: "no unique red bar", and the closing "Prose decision, not a coverage gap",
+  which now says that against that split the omission is a gap the round-3 hold declined
+  to guard.
+- **Addition: Self-found item 10 of the same block.** Its closing sentence recorded the
+  comment as saying "why the fourth adds no red bar", which is the unscoped claim in summary
+  form. Restated in place.
+
+The same block's `[TODO Architect]` item 2 is left as round 3 wrote it. Whether its "reds
+alone only under a change splitting the branch into two styles" is false turns on how
+"split" is read, which is `[TODO Architect]` item 2 of this block.
+
+### Gates
+
+- `tests/eslint/`: 9 files / 139 tests passed, vitest exit 0, no Errors line. The canary
+  file alone: 29/29.
+- `npm run typecheck` exit 0. `npx eslint` on the test file exit 0; `npm run lint` is
+  `eslint src/` and does not reach it.
+- `.githooks/pre-commit` run against a throwaway `GIT_INDEX_FILE` holding only these two
+  paths: exit 0. `anchor_violation()` sourced standalone with `ALLOW_MARKER` set explicitly
+  fires on a rotten control line and on none of the test file's added lines. No non-ASCII
+  character is added to the test file.
+- Every mutant ran in its own copy under the scratchpad, built from `git archive HEAD` with
+  the edited test file laid over it. The shared checkout was only read. Each vitest run
+  loads `tests/setup.ts`, which deletes the appTag's Redis keys when Redis answers and reads
+  the genesis block from HAF. The `.env` `REDIS_URL` points at 172.20.0.2, which is now the
+  IPFS container and refuses 6379, checked directly, so no run here reached Redis; the HAF
+  read is a SELECT.
+
+### Blast radius
+
+A comment in a test file nothing imports. The gates above cover everything the edit can
+reach; the full backend suite was not run, since no code changed.
+
+### Adversarial passes over this round's own text
+
+Three passes, each a set of lenses followed by refuters. The first ran four lenses
+(re-derivation by execution, a refuter aimed at the reworded sentence, a refuter aimed at
+the task-file text, and project standards with scope) and one refuter per finding, twelve in
+all. The second ran two lenses over the rewritten task-file text; eight of its twelve
+findings each went to a refuter, and I checked the other four myself. The third ran two
+lenses over what the second pass's fixes rewrote, and each of its four findings went to a
+refuter.
+
+No finding in any of the three passes was filed against the test-file change. The reworded
+sentence holds under the reading the hold's single-atom rows use: the sentence refuter found
+no counterexample among 353 single-atom mutants enumerated at the regex level with no
+lookaround in them, plain-atom swaps and insertions included. Under a reading that admits a
+lookaround it fails, which is `[TODO Architect]` item 1 of this block. The first pass's
+re-derivation reproduced every cell of the Item 1 table, the migration plants, L1 and L2,
+both test counts, and the token and reflow claims.
+
+Every finding that survived was in task-file text this round wrote. All are fixed:
+
+1. The first draft's candidate wording for pinning "single-atom", "every change to one of
+   the branch's atoms", was defeated by B4 and B5, which swap the boundary for a lookahead.
+   The second draft's replacement, a scope of keeping the two runs independent, was defeated
+   by X and Y. That draft's `[TODO Architect]` item 1 also said "no wording that counts
+   atoms pins the reading", which its own first sentence contradicts by stating the hold's
+   reading in words that count atoms, and it rested that on counting the boundary as an
+   atom, which the regex grammar does not. The third pass found the third draft's argument
+   gave "no lookaround" as its whole ground, which S1 shows is not enough; it now also names
+   "no new alternative". `[TODO Architect]` item 1 of this block now names the operations
+   instead, calls what B4 changes a piece, and lists seven counterexamples, C1 among them,
+   each re-run here, as a sample of a larger set.
+2. The first draft struck round-3 `[TODO Architect]` item 2 on L2 alone, which rested on
+   one reading of "split", and called it "the same unscoped universal as item 1". Reverted
+   to the round-3 text and recorded as a question. In the second draft, `[TODO Architect]`
+   item 2 of this block leaned on the independence argument to say any change reddening
+   `ONLY (accounts)` alone must tie the two runs together as a split does. Y reds it alone
+   and leaves them independent. That item now names L2, B5 and Y and leaves open how
+   "styles" is read.
+3. Restating round-3 `[TODO Architect]` item 1 scoped its premise and kept its unscoped
+   conclusion, "Prose decision, not a coverage gap", beside the counterexample it now
+   names. Scoped. The first draft had also called "no unique red bar" that item's closing
+   phrase, which it is not.
+4. Restated Self-found item 10 said a fourth line "would carry one against a change that
+   splits the paren alternative into a closed-up and a spaced-before style". The comment's
+   fully spaced and fully closed-up split fits those words too, and against it a fourth
+   line reds with `ONLY (accounts)`. Pinned to the pattern of the split the hold named.
+5. The `ONLY (accounts)` sentence was named as the one after the prescribed sentence. It is
+   two sentences later; the one after is "Two of the three carry a red bar".
+6. "The eleven from that sentence to the paragraph's end" was off by one: the reworded
+   sentence starts on a line that did not change.
+7. The entries carrying the same term were miscounted twice, once as three entries all
+   restated this round. `[TODO Architect]` item 1 of this block now names the five, the one
+   that quotes the comment, and the two restated. The commit subject no longer states the
+   universal.
+8. This section first said the test-file change "survived all of it" while the sentence
+   refuter had lookaround swaps falsifying the sentence, described its lenses loosely,
+   misreported the two refuted findings, and in two of its items pointed with "the same way"
+   and "the other one" at nothing it named. The third pass then found its opening sentence
+   claimed a refuter per finding for the second pass, "all seven counterexamples" in item 1,
+   and three second-pass fixes with no item here. Rewritten.
+
+Two findings were refuted. One held that restating record entries beyond the prescribed one
+exceeds the hold's cap. Its refuter answered that the hold's concrete limits bind the test
+file and that Self-found item 10 had to follow the comment, and the half about round-3
+`[TODO Architect]` item 2 is moot now that its restatement is reverted. The other held that
+the first draft's refactor-nobody-is-proposing ground for a dismissal argued on the wrong
+axis. Its refuter pointed to the round-3 hold recording rather than holding a sentence false
+under one reading only, which is the ground `[TODO Architect]` item 1 of this block now
+gives.
+
+### [TODO Architect] for triage, nothing applied
+
+1. **"Single-atom change" has readings under which the scoped sentence is false as well.**
+   The prescribed sentence and the comment's later "`ONLY (accounts)` never reds alone
+   against such a change" both hold under the reading the hold's single-atom rows use:
+   deleting one of the branch's atoms or its paren alternative, making an atom optional or
+   mandatory, or changing a run's quantifier. None of those brings a lookaround or a new
+   alternative into the pattern. Without a lookaround the pattern reads a head only up to
+   the table name, and without a new alternative a paren spelling can match only through the
+   paren alternative, in which no atom but `\(` can take the paren, so the run before the
+   paren and the run after it are matched apart. Whether each of the four spellings matches
+   then turns on its run before the paren and its run after it, each judged on its own, and
+   `ONLY(accounts)` and `ONLY ( accounts )` matching put both no whitespace and one space in
+   each run's admitted set, which admits the other two spellings as well.
+
+   Both sentences fail once the reading admits a lookaround. L1, L2, X and Y insert one
+   after the boundary, B4 and B5 swap the boundary for one, and C1 rewrites the run before
+   the paren as one group holding one. In the soft-asserted copy each reds the line shown
+   and nothing else:
+
+   ```
+   L1  (?:ONLY\b(?!\(\s)\s*\(\s*|ONLY\s+)?              the fourth spelling
+   L2  (?:ONLY\b(?!\s\(\w)\s*\(\s*|ONLY\s+)?            ONLY (accounts)
+   B4  (?:ONLY(?!\(\s)\s*\(\s*|ONLY\s+)?                the fourth spelling
+   B5  (?:ONLY(?!\s\(\w)\s*\(\s*|ONLY\s+)?              ONLY (accounts)
+   C1  (?:ONLY\b(?:\s+|(?!\(\s))\(\s*|ONLY\s+)?         the fourth spelling
+   X   (?:ONLY\b(?!\(\s*accounts\s)\s*\(\s*|ONLY\s+)?   the fourth spelling
+   Y   (?:ONLY\b(?!\s\(\s*accounts\))\s*\(\s*|ONLY\s+)? ONLY (accounts)
+   ```
+
+   These seven are a sample: the first pass's regex-level sweep also found 56 lookaround
+   swaps of the boundary that each red one of the two spellings alone.
+
+   B4 changes one existing piece of the branch and adds nothing, as making the paren
+   optional does, so a scope that only counts how much a change touches cannot tell the two
+   apart. X and Y leave the two runs independent of each other and key on the run before the
+   closing paren, where the four spellings also differ, so a scope of keeping the runs
+   independent does not hold either. A wording that the 353-mutant sweep, these seven and
+   the argument that opens this item all leave standing is one that names the operations, as
+   the hold's rows do.
+
+   The same term stands in five entries of the round-3 signal block: the paragraph under
+   its Item 3 table, its Self-found items 2 and 10, and its `[TODO Architect]` items 1 and
+   2. Its Self-found item 13 quotes the comment's "never reds alone against such a change".
+   This round restated two of the five, Self-found item 10 and `[TODO Architect]` item 1.
+   A change of wording in the comment would reach all six.
+
+   Not applied: the hold fixed the wording and asked for no other comment change. Each of
+   the seven singles out a spelling by construction, and the round-3 hold recorded rather
+   than held a sentence false under one reading only, so this may be a dismissal; the
+   choice is the architect's.
+2. **Round-3 `[TODO Architect]` item 2 carries the same kind of question.** It says
+   `ONLY (accounts)` "reds alone only under a change splitting the branch into two styles".
+   L2, B5 and Y add no alternative and red it alone. Whether any of them splits the branch
+   into two styles in what it admits is a matter of how "styles" is read, so this is
+   recorded rather than struck. Left as round 3 wrote it.
+
+Round-2 `[TODO Architect]` items 1, 5 and 6, left open with the user, were not touched.

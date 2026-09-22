@@ -4739,17 +4739,17 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // DML heads spell it. The branch carries a whitespace run on each side of
     // that paren and the server leaves both optional, which makes four
     // spellings legal rather than three. Three are asserted; the fourth,
-    // `ONLY( accounts )`, is left out because every change to the branch that
-    // reds it reds one of these three as well. Two of the three carry a red bar
-    // of their own against a single-atom change to the branch: `ONLY(accounts)`
-    // is what reds when the run before the paren is made mandatory, and
-    // `ONLY ( accounts )` is what reds when the run after it is deleted, which
-    // no other line here reaches. `ONLY (accounts)` never reds alone against
-    // such a change, so what it holds by itself is coarser: that the branch
-    // goes on admitting the ordinary one-space spelling at all, which a change
-    // splitting the branch into a fully spaced and a fully closed-up style
-    // would take away. `ONLY ( accounts )` is also the spelling the docblock
-    // writes when it says what the server accepts here.
+    // `ONLY( accounts )`, is left out because every single-atom change to the
+    // branch that reds it reds one of these three as well. Two of the three
+    // carry a red bar of their own against a single-atom change to the branch:
+    // `ONLY(accounts)` is what reds when the run before the paren is made
+    // mandatory, and `ONLY ( accounts )` is what reds when the run after it is
+    // deleted, which no other line here reaches. `ONLY (accounts)` never reds
+    // alone against such a change, so what it holds by itself is coarser: that
+    // the branch goes on admitting the ordinary one-space spelling at all,
+    // which a change splitting the branch into a fully spaced and a fully
+    // closed-up style would take away. `ONLY ( accounts )` is also the spelling
+    // the docblock writes when it says what the server accepts here.
     expect(alterations(['ALTER TABLE ONLY (accounts) DROP COLUMN updated_at;'])).toBe(1);
     expect(alterations(['ALTER TABLE ONLY(accounts) DROP COLUMN updated_at;'])).toBe(1);
     expect(alterations(['ALTER TABLE ONLY ( accounts ) DROP COLUMN updated_at;'])).toBe(1);
