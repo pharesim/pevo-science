@@ -259,25 +259,29 @@
  *     rule.) So an ALTER whose table is named dynamically (`ALTER TABLE
  *     ${table}`, an `EXECUTE format('ALTER TABLE %I DROP COLUMN updated_at',
  *     'accounts')`), or whose column clause is assembled in any way the
- *     assembled-write scan does not recognise, reds nowhere unless that clause
- *     spells an `updated_at =` of its own, or its read reaches no terminator,
- *     which the every-statement-readable arm reds by line. That scan recognises
- *     two, in `src` only: a `${...}` interpolation in the statement's text, and
- *     a `+` beside its quote. The `+` is read only where {@link enclosingQuote}
- *     finds the literal's opening quote on the head's line, and that function
- *     reads the line from its start with no quote open. Where it finds none,
- *     the statement is read to its `;` as if no string enclosed it, and the
- *     join is looked for past that `;` rather than past the closing quote, so
- *     it is silent whichever side of the literal the `+` sits on. Two layouts
- *     that do this are a template opened on a line above its head (its backtick
- *     ending a `const sql =` line, the head starting the next), and a head
- *     whose own literal opens on its line after a template from above closes
- *     there, since that closing backtick is read as an opener and the literal's
- *     opening one as its close. An interpolation in either layout is still
- *     read, since that test reads the statement's text and not its quote. The
- *     other half of the bound is where the read STOPS, and it governs the `+`
- *     AFTER the quote alone: that one is looked for past the stop, wherever the
- *     stop landed, so a join sitting behind it is not seen. A `'` or a `"`
+ *     assembled-write scan does not recognise, reds nowhere unless the
+ *     statement still spells the column: an `updated_at =` reds under the
+ *     fail-closed arm, and a bare `updated_at` left in the head's own literal
+ *     reds under the ALTER arm, which asks for the name rather than for an
+ *     assignment. Nor where its read reaches no terminator, which the
+ *     every-statement-readable arm reds by line. That scan recognises two, in
+ *     `src` only: a `${...}` interpolation in the statement's text, and a `+`
+ *     beside its quote. The `+` before the quote is read only where
+ *     {@link enclosingQuote} finds a quote on the head's line, the literal's
+ *     own or, where a template from above closed there, another one; that
+ *     function reads the line from its start with no quote open. Where it finds
+ *     none, the statement is read to its `;` as if no string enclosed it, and
+ *     the join is looked for past that `;` rather than past the closing quote,
+ *     so it is silent whichever side of the literal the `+` sits on. Two
+ *     layouts that do this are a template opened on a line above its head (its
+ *     backtick ending a `const sql =` line, the head starting the next), and a
+ *     head whose own literal opens on its line after a template from above
+ *     closes there, since that closing backtick is read as an opener and the
+ *     literal's opening one as its close. An interpolation in either layout is
+ *     still read, since that test reads the statement's text and not its quote.
+ *     The other half of the bound is where the read STOPS, and it governs the
+ *     `+` AFTER the quote alone: that one is looked for past the stop, wherever
+ *     the stop landed, so a join sitting behind it is not seen. A `'` or a `"`
  *     inside the literal that is not its delimiter opens a value the read
  *     carries to its match, so a literal holding an odd one of them runs past
  *     its own close and leaves the join beside that close behind the read. That
