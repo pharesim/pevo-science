@@ -164,3 +164,6 @@ planted probes for its evasion shape.
 - Distinct from `eslint-custom-rule-unwrap-arms-need-compound-form-canary-2026-05-16.md`:
   that entry is about a rule's own TEST SUITE missing an AST arm; this one is
   about a production scan's reach over real source.
+- `docblock-literal-comment-close-example-self-truncates-and-reopens-a-second-comment-2026-09-22.md`
+  is the comment-tail hazard turned inward: a sibling scanner's own docblock
+  quoting a comment close, rather than a comment on a line the scan reads.

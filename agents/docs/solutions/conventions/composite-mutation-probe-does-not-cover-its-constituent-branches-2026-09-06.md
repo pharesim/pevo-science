@@ -1,6 +1,7 @@
 ---
 title: "A composite mutation probe proves the mechanism is load-bearing as a whole, not that each branch, operand, or short-circuiting arm is individually covered"
 date: 2026-09-06
+last_updated: 2026-09-22
 category: conventions
 module: frontend/tests/unit/eslint/enclosing-symbol.js + architect re-review intake
 problem_type: convention
@@ -93,3 +94,4 @@ Do not extend this to guards with a single decision point (nothing to discrimina
 - `source-discipline-canaries-must-assert-at-call-site-not-file-granularity-2026-08-26.md`, `fail-closed-does-not-transfer-from-set-equality-to-pairing-canaries-2026-08-31.md`, and `source-discipline-canary-detection-must-survive-ordinary-authoring-shapes-2026-08-31.md` are the three rungs governing what a source-discipline canary collects, compares, and detects over the tree. This entry sits one layer beneath all three: it governs the probes over the shared resolver machinery those canaries are built on.
 - `behavior-change-coverage-gap-not-preemptive-hardening-2026-06-10.md` is the standing triage default this entry is scoped against.
 - The frontend resolver is a deliberate hand-port of `backend/tests/support/enclosing-symbol.ts`, ratified as dialect divergence rather than consolidated. A branch-coverage gap found in one dialect's shared logic is worth checking against the other.
+- `docblock-literal-comment-close-example-self-truncates-and-reopens-a-second-comment-2026-09-22.md` finds a second blind spot in the same module, one layer up: a green suite and a passing `node --check` do not surface a docblock whose own illustrative comment-close characters truncate it. Same pattern as the composite-probe gap here, a trusted check that is blind to the class, on the docblock prose rather than the probe coverage.

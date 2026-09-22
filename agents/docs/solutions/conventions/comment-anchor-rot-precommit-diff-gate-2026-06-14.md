@@ -1,6 +1,7 @@
 ---
 title: "Mechanizing the comment-anchor convention: a prefix-scoped pre-commit DIFF gate"
 date: 2026-06-14
+last_updated: 2026-09-22
 category: conventions
 module: .githooks pre-commit gate + comment-hygiene convention + backend/src vitest canary
 problem_type: convention
@@ -103,7 +104,7 @@ a per-line `anchor-allow` marker exempts a single legitimate line (a regex self-
 assertion), and `PEVO_ANCHOR_GATE=off git commit ...` skips a whole commit. The `.githooks`
 precedent is [[commit-zone-audit-hook-2026-04-30]]; activation is the same one-time
 `git config core.hooksPath .githooks`, and the gate ships with a mirrored
-`.githooks/tests/test-pre-commit.sh` (32 cases; every arm carries both a planted positive
+`.githooks/tests/test-pre-commit.sh` (37 cases; every arm carries both a planted positive
 and a false-positive neighbour, and the positional arm's neighbours are the named forms the
 carve-out protects).
 

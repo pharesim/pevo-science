@@ -1,6 +1,7 @@
 ---
 title: "A source-scan canary's reader takes its TypeScript facts from the TypeScript parser, not a hand-written lexer, and answers to the parser at every line end"
 date: 2026-09-22
+last_updated: 2026-09-22
 category: conventions
 module: backend/tests/eslint
 problem_type: convention
@@ -167,3 +168,4 @@ Spellings that defeated a hand-written rule:
 - `new-fail-closed-outcome-must-not-reuse-an-existing-sentinel-2026-09-15.md`: its re-enumerate-the-reporting-arms rule is what the wrapped-interpolation refusal applies.
 - `sql-grammar-questions-are-settled-against-a-nonexistent-relation-2026-09-16.md`: the SQL form of the same principle. A grammar fact a canary depends on comes from the language's real implementation, not from reasoning.
 - `final-state-assertions-cannot-discriminate-dispatch-from-confirmation-2026-09-01.md`: the general form. An end-state check cannot see a transient wrong state that converges.
+- `docblock-literal-comment-close-example-self-truncates-and-reopens-a-second-comment-2026-09-22.md`: the same comment-boundary hazard turned inward, on a sibling scanner's own illustrative docblock rather than on the source this reader scans. Its detection is the same move as here, asking a real parser rather than the text.

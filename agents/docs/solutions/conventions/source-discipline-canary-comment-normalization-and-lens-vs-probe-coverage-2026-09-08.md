@@ -268,9 +268,13 @@ on a finalized row.
 - `source-discipline-canary-detection-must-survive-ordinary-authoring-shapes-2026-08-31.md`
   is the closest neighbour and treats comments as a detection-reach hazard, but
   scopes its fix as a per-scan trailing-comment strip whose safe direction it
-  decides from scan polarity. That generalization needs narrowing: a comment
-  splitting two tokens a pattern needs adjacent under-matches on a forbidden
-  scan too, which is the direction that doc treats as safe there.
+  decides from scan polarity. That entry has since been narrowed to say what
+  this one says: a comment splitting two tokens a pattern needs adjacent
+  under-matches on a forbidden scan too, so polarity does not make such a scan
+  safe to leave comment-blind. The two now agree.
+- `docblock-literal-comment-close-example-self-truncates-and-reopens-a-second-comment-2026-09-22.md`
+  is the same comment-boundary hazard turned inward, on a sibling scanner's own
+  illustrative docblock rather than on the code it scans.
 - `composite-mutation-probe-does-not-cover-its-constituent-branches-2026-09-06.md`
   is the same family on a narrower axis. It shows a probe can prove a mechanism
   exists without covering its branches; this entry shows a whole list of probes
