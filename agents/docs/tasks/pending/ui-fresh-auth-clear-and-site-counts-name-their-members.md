@@ -1,0 +1,81 @@
+# Two fresh-auth docblock counts disagree with the file they sit in
+
+**Owner:** ui
+**Created:** 2026-09-22
+
+Routed out of the round-5 archive of the fresh-auth dispatch task. Neither
+site was touched by that task's diff, so neither held it; both are the class
+`agents/docs/solutions/conventions/sibling-docblock-tallies-must-each-state-precisely-what-they-count-2026-09-09.md`
+documents, and that entry names the second one as its own still-open repair.
+
+## Why
+
+Two count claims in `frontend/src/lib/fresh-auth.js` are false or misleading
+read alone, and each has a neighbour in the same file that states the true
+count, so a reader landing on either gets a different answer depending on
+which paragraph they read first.
+
+1. **"the sibling clears in `broadcastWithFreshAuth`" (plural), twice.** One
+   site is the docblock above `clearCachedSessionProof`'s tokenless/TTL
+   companions ("the successor-pays-a-re-auth harm that gates the sibling
+   clears in `broadcastWithFreshAuth`"); the other is
+   `evictUnnamedAcquisition`'s docblock ("Ungated, unlike the sibling clears
+   in `broadcastWithFreshAuth`. Those hold a real round-trip..."). That
+   function holds exactly one `clearCachedSessionProof()`, the remintable-401
+   eviction behind `if (!guard.tornDown())`, and `ensureSessionWindow`'s guard
+   docblock in the same file already says so: "the module's one GATED clear,
+   the 401 eviction in `broadcastWithFreshAuth`". Three sentences, two counts.
+
+2. **"three independently owned sites consume the result" at
+   `WINDOW_OUTCOME_BY_SENTINEL`.** The sentence names `freshAuthWindowReady`,
+   `acquisitionAborted` and `windowProof` as consumers of what
+   `acquireSessionProof` resolves. Only `acquisitionAborted` reads the raw
+   result; the other two read the outcome object `ensureSessionWindow` derives
+   from it. `evictUnnamedAcquisition`'s docblock currently reconciles this from
+   a distance ("The THREE-site tally at `WINDOW_OUTCOME_BY_SENTINEL` is a
+   different and equally correct count: it tallies who acts on an outcome...
+   not who reads the raw result"), which the sibling-tallies learning ruled is
+   an explanation of the discrepancy rather than its removal.
+
+## Scope
+
+Comment-only. No executable line changes, no test changes, suite count
+byte-identical before and after.
+
+1. Replace both "sibling clears" sentences with wording that names the one
+   gated clear (the remintable-401 eviction in `broadcastWithFreshAuth`) and
+   states, in each sentence's own words, why the clear it is describing does
+   not share that gate's reason. Prefer naming the member over restating a
+   number, per the learning's "A, B and C do X cannot drift the way three
+   sites do X can".
+2. Edit the `WINDOW_OUTCOME_BY_SENTINEL` sentence directly so it is correct
+   read alone: `acquireSessionProof` resolves to a proof string or a sentinel;
+   `acquisitionAborted` reads that raw result; `freshAuthWindowReady` and
+   `windowProof` act on the outcome object `ensureSessionWindow` derives from
+   it. Then shrink or drop the reconciling clause in `evictUnnamedAcquisition`'s
+   docblock, since a precise target sentence leaves nothing to reconcile.
+3. Before landing, sweep the file for any OTHER sentence that counts the same
+   populations (clears in this module; consumers of the acquisition result or
+   the outcome object) and check each one semantically, not by phrase: the
+   learning records that a phrase-matched sweep missed the sentence in item 2
+   the first time.
+
+## Acceptance criteria
+
+1. Every sentence in `fresh-auth.js` that counts clears, or counts consumers
+   of the acquisition result, agrees with the code and with every other such
+   sentence in the file, read in isolation.
+2. No reconciling clause remains that explains a discrepancy instead of
+   removing it.
+3. The replacement text carries no line numbers, SHAs, task slugs, round
+   ordinals, or bare positional anchors; `.githooks/pre-commit` passes on the
+   staged diff.
+4. Full frontend unit suite green with an unchanged count; `npm run build`
+   clean.
+
+## Notes
+
+Dismissed at the same triage, do not reopen: the spec title `the refusal
+evicts the entry that caused it` in `lib-fresh-auth-session-window.test.js`
+credits the refusal with an eviction that either clear satisfies; it is
+defensible as written because the refusal path does end with the entry gone.
