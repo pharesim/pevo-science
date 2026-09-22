@@ -1,3 +1,65 @@
+## UI-ENV-TEST-EXAMPLE-LOOPBACK-URLS — Point the .env.test template at the loopback ports (archived 2026-09-22) — completed by the user's direct edit in 4c8d9b45, all three scope items covered, no /ce-code-review run (user-authored, architect read the full diff) ✓
+
+### Architect archive note (2026-09-22)
+
+The template now names `127.0.0.1` for `APP_DATABASE_URL`, adds `REDIS_URL` with a placeholder password and a comment naming the two key families the harness touches (`${APP_TAG}:rl:*` in global-setup, `${APP_TAG}:ipfs:pending:<cid>` in global-teardown) and the warn-and-skip behavior when the value is wrong, and its header says both URLs answer only under `./deploy.sh test-up` and why the literal `127.0.0.1` matters. AC 1 holds (no real secret). AC 2 was verified by the architect on 2026-09-22 by running global-setup against both loopback URLs: test-db reset and rate-limit reset completed with no Redis warning.
+
+### Point the .env.test template at the loopback ports
+
+**Owner:** ui
+**Created:** 2026-09-22
+
+Filed by the backend agent at the user's request.
+
+## Why
+
+`frontend/.env.test.example` gives `APP_DATABASE_URL` on `localhost:5432` and has no
+`REDIS_URL` entry, although `frontend/tests/e2e/global-setup.js` and `global-teardown.js`
+read `REDIS_URL` from `frontend/.env.test`. Without it, global setup skips the rate-limit
+reset and global teardown skips its Redis cleanup, each with only a warning, so a copy made
+from the template runs E2E without either.
+
+`architect-e2e-postgres-redis-loopback-ports` publishes Postgres and Redis on 127.0.0.1
+under `./deploy.sh test-up`. Once that lands, the template can name fixed addresses for
+both instead of docker-network IPs, which change on every Docker restart.
+
+## Scope
+
+1. Add a `REDIS_URL` entry to `frontend/.env.test.example`, as
+   `redis://:<REDIS_PASSWORD from the repo-root .env>@127.0.0.1:6379`, with a comment
+   saying it is the dev Redis published on loopback under `./deploy.sh test-up`, and that
+   the harness uses it only for the `${APP_TAG}:rl:*` reset in global setup and the
+   cleanup in global teardown.
+2. Change the `APP_DATABASE_URL` example host from `localhost` to `127.0.0.1`, so both
+   entries name the address the override binds.
+3. Say in the template's header that both URLs only answer while the stack runs under
+   `./deploy.sh test-up`.
+
+## Acceptance criteria
+
+1. The template lists both URLs on 127.0.0.1 and carries no real secret.
+2. A `frontend/.env.test` filled in from the template, with the local passwords, lets E2E
+   global setup finish the test-db reset and the rate-limit reset under
+   `./deploy.sh test-up` with no Redis warning.
+
+[BLOCKED by Architect] Waits on `architect-e2e-postgres-redis-loopback-ports`, which adds
+the loopback port mappings to `docker-compose.test.override.yml`. Until those exist, the
+127.0.0.1 addresses this template would name answer nothing. The architect moves this file
+to `pending/` when that lands.
+
+**Unblocked by Architect (2026-09-22).** The override now publishes postgres on
+`127.0.0.1:5432` and redis on `127.0.0.1:6379` under `./deploy.sh test-up`, verified with
+`docker port` and a global-setup run against both loopback URLs. The `test-up` banner in
+`deploy.sh` prints the same two addresses; keep the template's wording consistent with it.
+
+**Note (architect, 2026-09-22).** The user edited `frontend/.env.test.example` directly: the
+`APP_DATABASE_URL` host is now `127.0.0.1` and a `REDIS_URL` line with a placeholder password
+was added (scope item 2 done, item 1 partly). Once that edit is committed, what remains is
+the `REDIS_URL` comment from scope item 1 and the header sentence from scope item 3. The
+review of the loopback-ports commit also asked that the template keep the literal
+`127.0.0.1`, never `localhost`: the bind is IPv4-only and `localhost` can resolve `::1`
+first for `pg`.
+
 ## ARCHITECT-E2E-POSTGRES-REDIS-LOOPBACK-PORTS — Publish Postgres and Redis on loopback in the E2E override (archived 2026-09-22) — implemented by the architect in 6b50b6f3, /ce-code-review (7 reviewers) returned one P2 design call and one P3, both fixed in abfdcc00; base-file redis comment added at archive; ui-env-test-example-loopback-urls unblocked ✓
 
 ### Architect archive note (2026-09-22)
@@ -186,65 +248,3 @@ too.
 ## Scope
 
 1. Admit the clause in `ALTER_ACCOUNTS_RE`, between `ALTER TABLE` and the
-   optional `ONLY`.
-2. Add a fixture asserting the `IF EXISTS` spelling is counted, alongside the
-   existing `ONLY` / `public.` / foreign-table fixtures.
-3. Check the same omission in the sibling canaries under `tests/eslint/` that
-   carry their own ALTER pattern, and fix any that share it. Report what the
-   sweep covered from the code rather than asserting completeness.
-
-## Acceptance criteria
-
-1. `ALTER TABLE IF EXISTS accounts DROP COLUMN updated_at;` planted in a
-   migration turns the canary red, demonstrated by mutation.
-2. The clean tree stays green.
-3. The fixture pins the clause specifically: deleting only the `IF EXISTS`
-   alternative from the pattern reds it.
-
-## Backend implementation signal (2026-09-14, commit 6e02acf9)
-
-`backend(canary): admit the idempotent ALTER spelling, and pin each head clause`
-— one file, `tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`.
-
-### Scope 1, the clause
-
-`ALTER_ACCOUNTS_RE` now reads
-
-```
-/\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(?:public\s*\.\s*)?accounts\b/i
-```
-
-with the clause in grammar order, before `ONLY`. One alternative in one
-position is the whole clause: `ALTER TABLE ONLY IF EXISTS accounts` is a
-syntax error, so the reverse order needs nothing. The docblock gained one
-paragraph naming the grammar position and the idempotent house style as the
-reason. `ALLOWED_COLUMN_ALTERATIONS` is untouched — no migration in the tree
-spells `IF EXISTS` on the table, so the 016 entry of 3 is unchanged.
-
-### Scope 2, the fixtures — and a correction to the task's premise
-
-The task said to add the fixture "alongside the existing `ONLY` / `public.` /
-foreign-table fixtures". Those do not exist. `ONLY` and `public.` are pinned
-for the statement-head family (`ACCOUNTS_STATEMENT_RE`), but every ALTER
-fixture in the file spelled a bare `ALTER TABLE accounts`, so deleting the
-`ONLY` or the `public.` alternative from `ALTER_ACCOUNTS_RE` was a silent
-21/21 pass. There is no foreign-table ALTER fixture either; the two existing
-negatives are an ALTER on `accounts` that does not name the column, and one
-naming the column on `sessions`.
-
-Four positives were planted, each answering to exactly one feature:
-
-- `ALTER TABLE IF EXISTS accounts DROP COLUMN updated_at;` — the clause this
-  task is about, and the AC3 pin. Deliberately the minimal bare-table
-  spelling: it reds when the `IF EXISTS` alternative is deleted and survives
-  deletion of the other two, so its red bar names one clause. A combined
-  `IF EXISTS ONLY public.accounts` line would have satisfied AC3's wording
-  while reding under all three deletions, naming none of them.
-- `ALTER TABLE ONLY accounts ...` and `ALTER TABLE public.accounts ...` —
-  closing the same unpinned-alternative gap on the two clauses the arm
-  already admitted.
-- `ALTER TABLE IF EXISTS ONLY accounts ...` — the one spelling that answers
-  to the clause ORDER rather than to either clause, so the docblock's
-  grammar-order claim is pinned rather than asserted.
-
-### Scope 3, the sweep — what it covered, from the code
