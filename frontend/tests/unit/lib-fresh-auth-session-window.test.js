@@ -1137,6 +1137,27 @@ describe('the suppressed refusal can be offered a way through', () => {
     expect(mockStartOrcid).not.toHaveBeenCalled();
   });
 
+  it('falls back to the toast when the offer itself throws', async () => {
+    // The offer is the caller's code running inside a gate whose docblock
+    // promises it cannot reject, and every call site takes that promise: none
+    // of them wraps the await, they read the boolean. An escape here would
+    // pass through the page's own try untouched, leave the step machine at
+    // idle, and leave the user clicking a button that looks dead. So a broken
+    // offer lands where the caller would have been with no offer at all.
+    const offer = vi.fn().mockRejectedValue(new Error('store missing'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(freshAuthWindowReady({ allowRedirect: false, onReauthRequired: offer })).resolves.toBe(false);
+
+    expect(mockToastStore.show).toHaveBeenCalledWith(
+      'Please confirm your identity again, then try once more.',
+      'error',
+    );
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+    expect(window.location.href).toBe('');
+    warn.mockRestore();
+  });
+
   it('is offered for the refusal only, never for another outcome', async () => {
     // The dispatch table stays the one place that decides which outcomes
     // speak. This hook intercepts exactly the outcome whose message is a dead

@@ -1488,3 +1488,42 @@ the hold prescribed and closes the debounce hole, but it is not the
 `ui-composer-surfaces-navigate-over-undrafted-work` needs for its stash. That
 task is in `blocked/` with the reasons; whoever picks it up still has to open
 the acquisition chain down to `beginOrcidFreshAuthRedirect`.
+
+### Simplify pass (2026-09-22, commit follows this block)
+
+Three reviewers over the diff: reuse, quality, efficiency. Two findings applied,
+two dismissed with reasons, both dismissals recorded here rather than silently.
+
+Applied:
+
+- A supplementary-file fixture in `pages-edit.test.js` was still an inline
+  literal although this same change introduced a `newSupplementary()` helper
+  190 lines above it in the same describe. It now calls the helper. The two
+  shapes differed by a `type` field, which nothing on that path reads, and the
+  suite confirms it.
+- The gate's new catch around a rejecting offer had no spec. Added one: a
+  throwing offer resolves false, toasts the refusal, and does not navigate.
+  Probed by removing the try/catch, which kills that spec and no other.
+
+Dismissed, both from the efficiency pass:
+
+- **Move the draft flush below publish's accreditation check.** Correct that the
+  flush is dead work on an unaccredited file pick, since that branch returns
+  before any acquisition. Left where the hold put it. The win is one cheap
+  write on an infrequent path, the hold asked for the unconditional form at the
+  top, and keeping it unconditional is what stops a later edit to the
+  accreditation branch from moving the flush out from under a navigating path.
+  Reorder it if you would rather have the write back.
+- **Thread the already-resolved passwordless answer through the retry.** Correct
+  that the re-acquisition re-issues `fetchEmailStatus`, because a negative
+  factor answer is deliberately never memoized. Saving that one GET costs a
+  special-cased parameter on `acquireSessionProof`, and the GET is immediately
+  followed by a full-page navigation that dwarfs it.
+
+Also checked while here, not a finding: the E2E helper `confirmBroadcastDialog`
+selects the confirm button by its store binding rather than its label, so it
+would click the new dialog as readily as the publish-intent one. No collision
+today. Its three call sites are all on the password factor, where this dialog
+never appears, and the one ORCID e2e test covers the callback's return leg
+rather than a gate refusal. Worth remembering if an ORCID-factor e2e spec is
+ever added on a surface that holds a file.

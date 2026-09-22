@@ -2183,7 +2183,7 @@ describe('editPage re-auth window ordering', () => {
     mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
     mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
     const comp = unchangedLightComponent();
-    const attached = { file: { name: 'data.pdf', size: 10 }, fileName: 'data.pdf', description: '', cid: null, error: null, uploading: false };
+    const attached = newSupplementary();
     comp.supplementaryFiles = [attached];
     const target = { files: [{ name: 'more.csv', size: 10 }], value: 'C:\\fakepath\\more.csv' };
 
