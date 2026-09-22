@@ -16,6 +16,12 @@
  * compilation, category labelling, error-classification branches, and the
  * scan-then-cleanup ordering are exercised against the real code.
  *
+ * WHY STUB `fetch` IN THE ORDERING TEST: cleanupIpfsPins unpins through the
+ * real Kubo HTTP API, and its IPFS address now has a host-side default, so
+ * the ordering test would otherwise reach a live node (or hang on one that
+ * is down) to prove something unrelated to IPFS. The stub covers only the
+ * unpin round-trip; the ordering and reset logic stay real.
+ *
  * Covers:
  *   1. WIF, JWT, SESSION_SECRET, BIP39, known-password detection firing.
  *   2. Clean trace → no throw.
@@ -332,9 +338,15 @@ describe('globalTeardown — cleanup ordering (fix #2)', () => {
     writeFileSync(capturedCidsPath, '{"cid":"QmTest"}\n');
     createdPaths.push(capturedCidsPath);
 
-    // Force IPFS cleanup to take the no-IPFS_API_URL path so it still
-    // runs but doesn't try to hit the network.
-    delete process.env.IPFS_API_URL;
+    // Keep cleanup hermetic. IPFS_API_URL and APP_TAG now carry defaults, so
+    // unsetting them no longer keeps this off the network: stub the Kubo
+    // unpin call and drop REDIS_URL instead, so neither half opens a socket.
+    // The assertion here is about ORDER, not about either backend being
+    // reachable.
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue({ ok: true, text: async () => '' });
+    delete process.env.REDIS_URL;
 
     let caught;
     try {
@@ -348,5 +360,9 @@ describe('globalTeardown — cleanup ordering (fix #2)', () => {
     // Cleanup's resetCapturedCids ran, proving cleanup executed BEFORE throw.
     const fs = await import('node:fs');
     expect(fs.existsSync(capturedCidsPath)).toBe(false);
+    // The stubbed unpin was actually reached, so the ordering assertion is
+    // not passing vacuously through an early return.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    fetchSpy.mockRestore();
   });
 });

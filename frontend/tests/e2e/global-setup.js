@@ -107,57 +107,66 @@ export default async function globalSetup() {
  * Narrow-by-design: we only touch `${appTag}:rl:*`. Caches, session keys,
  * accreditation-status keys, and the IPFS pending-pin ledger that
  * global-teardown relies on are all left intact.
+ *
+ * Fails the run rather than skipping. REDIS_URL carries a password, so it
+ * cannot be defaulted the way the secret-free values are, and the common
+ * misconfiguration is not "unset" but "set and stale": the stack is in dev
+ * mode so nothing is published on the loopback port, or the password moved.
+ * Skipping turns either into intermittent 429s in whichever signup or
+ * recovery spec happens to run first, which costs far more to diagnose than
+ * a named failure here.
  */
 async function resetRateLimitKeys() {
   const redisUrl = process.env.REDIS_URL;
   const appTag = process.env.APP_TAG || 'pevotest';
   if (!redisUrl) {
-    console.warn(
-      '[e2e global-setup] REDIS_URL not set — skipping rate-limit reset. ' +
-        'Specs that drive signup/recovery endpoints may 429 if Redis carries ' +
-        'quota from prior runs.',
+    throw new Error(
+      '[e2e global-setup] REDIS_URL is not set. Point it at the Redis the ' +
+        'test override publishes on loopback (see frontend/.env.test.example) ' +
+        'before running E2E.',
     );
-    return;
   }
 
   const redis = new Redis(redisUrl, {
     maxRetriesPerRequest: 2,
     lazyConnect: true,
   });
-  // Log (don't crash) on transient Redis errors — the surrounding try/catch
-  // around connect()/scan already converts hard failures into a skip + warn,
-  // but an error event fired outside that window was previously swallowed
-  // silently. Surfacing it makes "rate-limit reset wasn't actually applied"
-  // debuggable from CI logs.
+  // Keep the last transport error instead of logging each one. The rejection
+  // from connect() is a generic "Connection is closed."; the cause that names
+  // the actual problem (WRONGPASS, ECONNREFUSED) only ever arrives on this
+  // event, so the throw below folds it in. Neither message embeds the URL, so
+  // nothing here can print the password.
+  let lastRedisError = null;
   redis.on('error', (err) => {
-    console.warn('[e2e global-setup] redis error:', err.message);
+    lastRedisError = err;
   });
-  try {
-    await redis.connect();
-  } catch (err) {
-    console.warn(
-      `[e2e global-setup] Redis connect failed (${err.message}); ` +
-        'skipping rate-limit reset.',
-    );
-    return;
-  }
 
   const pattern = `${appTag}:rl:*`;
   let deleted = 0;
   try {
+    await redis.connect();
     const stream = redis.scanStream({ match: pattern, count: 500 });
     for await (const keys of stream) {
       if (keys.length === 0) continue;
       deleted += await redis.del(...keys);
     }
   } catch (err) {
-    console.warn(
-      `[e2e global-setup] rate-limit key scan failed (${err.message}); ` +
-        'E2E specs may hit 429s.',
+    // disconnect(), not quit(): quit() round-trips to a server we may never
+    // have reached, and leaving the client open lets ioredis reconnect on its
+    // default schedule for the rest of the process.
+    redis.disconnect();
+    const cause =
+      lastRedisError && lastRedisError.message !== err.message
+        ? `${err.message}; cause: ${lastRedisError.message}`
+        : err.message;
+    throw new Error(
+      `[e2e global-setup] rate-limit reset failed (${cause}). Check that ` +
+        'the stack is running under `./deploy.sh test-up`, which publishes ' +
+        'Redis on loopback, and that the password matches REDIS_PASSWORD in ' +
+        'the repo-root .env.',
     );
-  } finally {
-    await redis.quit().catch(() => {});
   }
+  await redis.quit().catch(() => {});
   if (deleted > 0) {
     console.log(`[e2e global-setup] cleared ${deleted} rate-limit key(s) under "${pattern}"`);
   }

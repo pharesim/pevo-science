@@ -219,21 +219,23 @@ export async function cleanupIpfsPins() {
     return;
   }
 
-  const ipfsApiUrl = process.env.IPFS_API_URL;
+  // IPFS_API_URL and APP_TAG default because neither carries a secret. The
+  // default Kubo address is the host-side one: docker-compose.yml publishes
+  // the API port in every mode, so it answers whether the stack is in dev or
+  // test mode. It is deliberately NOT the backend's own `http://ipfs:5001`,
+  // which is compose-network DNS and resolves only inside a container.
+  // Defaulting APP_TAG is safe here because this half deletes one exact key
+  // per CID: a wrong prefix deletes nothing rather than deleting the wrong
+  // thing, unlike the pattern-scan reset in global-setup.
+  const ipfsApiUrl = process.env.IPFS_API_URL || 'http://127.0.0.1:5001';
+  const appTag = process.env.APP_TAG || 'pevotest';
+  // REDIS_URL has no default because it carries a password. Missing it costs
+  // the pending-pin ledger entries, not the unpin itself, so this half warns
+  // rather than failing a run whose specs have already reported.
   const redisUrl = process.env.REDIS_URL;
-  const appTag = process.env.APP_TAG;
-
-  if (!ipfsApiUrl) {
-    console.warn(
-      `[e2e teardown] IPFS_API_URL not set — skipping unpin for ${cids.length} CID(s). ` +
-        'Backend orphan cleanup will remove them within 24h.',
-    );
-    resetCapturedCids();
-    return;
-  }
 
   let redis = null;
-  if (redisUrl && appTag) {
+  if (redisUrl) {
     redis = new Redis(redisUrl, {
       maxRetriesPerRequest: 2,
       lazyConnect: true,
@@ -245,10 +247,8 @@ export async function cleanupIpfsPins() {
       console.warn(`[e2e teardown] Redis connect failed: ${err.message}`);
       redis = null;
     }
-  } else if (!redisUrl) {
-    console.warn('[e2e teardown] REDIS_URL not set. skipping redis key deletion.');
   } else {
-    console.warn('[e2e teardown] APP_TAG not set. skipping redis key deletion to avoid wrong-prefix deletes.');
+    console.warn('[e2e teardown] REDIS_URL not set. skipping redis key deletion.');
   }
 
   let unpinned = 0;
