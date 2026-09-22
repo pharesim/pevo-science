@@ -1,250 +1,250 @@
-## UI-FACTOR-RESOLVER-SOURCE-DISCIPLINE-CANARY — Guard the single-resolver invariant for re-auth factor selection (archived 2026-09-22) — 7 hold rounds (6+8+6+3+5+3 items, all FIXED), round 7 review clean; 2 findings dismissed at triage ✓
+## BACKEND-ACCOUNTS-UPDATED-AT-WRITER-CANARY — Pin the accounts.updated_at writer set with a canary (archived 2026-09-22) — 6 hold rounds (3+4+3+3+4+6 bundles/items, all FIXED), round 7 review clean; 1 text overclaim routed to its own task, 3 findings dismissed at triage ✓
 
 
-**Owner:** ui
-**Created:** 2026-08-31
+**Owner:** backend
+**Created:** 2026-09-06
 
-Routed out of the architect review of `5cd378dc` (hasPassword factor-resolution
-reconciliation). Not held on that task: the invariant holds today and the work
-here is establishing a convention for the frontend tree, which is a larger
-decision than that task's scope.
+Routed out of the round-4 architect review of the custody-column alignment
+work. The dependency this guards was created by that task; the guard is
+separate work, so it is filed here rather than held there.
 
 ## Why
 
-Five surfaces independently resolved whether an account has a password, and they
-disagreed about the unavailable-answer case. The wrong answer routes a user into
-a full-page ORCID navigation that discards their work. That divergence is now
-collapsed onto one resolver in `lib/fresh-auth.js`, and the `hasPassword` field
-was removed from the fresh-auth ctx so the surfaces have nothing left to diverge
-on.
+The `/link` stuck-recovery lookup in `routes/signup-verify.ts` admits a row
+only when `upgraded_at <= updated_at`. That branch bypasses the signup
+session-binding check, so the ordering is what keeps an upgraded self-custody
+account out of a bypass it must never reach. The ordering holds for exactly one
+reason: an upgrade stamps `upgraded_at` and never touches `updated_at`, so an
+upgraded row always carries an epoch strictly newer than its recency marker.
 
-What holds the invariant is a manual grep. Nothing fails when a sixth surface
-imports `fetchEmailStatus` and derives its own answer, which is precisely the
-defect class the reconciliation existed to close, and it took five occurrences
-before anyone noticed the first time.
+That reason depends in turn on a universal the route comment states outright:
+the two signup finalizes are the only statements that write
+`accounts.updated_at`, and the table carries no trigger. The claim is true
+today. Four independent checks during the round-4 review confirmed it (a grep
+of every `UPDATE accounts` in `backend/src`, two reviewer enumerations, and a
+validation pass), and no migration defines a trigger on `accounts`.
 
-The backend has an established pattern for this: source-discipline canaries
-under `backend/tests/eslint/` that scan the tree and assert an occurrence set
-against an allowlist. The frontend has no equivalent and no lint configuration
-at all, so this is the first one and sets the shape for whatever follows.
+Nothing enforces it. A third writer added later for an unrelated reason (a
+settings touch, a profile write, an admin tool) would bump `updated_at` on an
+upgraded row, invert the ordering, and silently make that account eligible for
+the binding bypass. No existing test goes red. The seven canaries already in
+`tests/eslint/` are the established way this repo enforces tree-wide invariants
+of exactly this shape.
 
 ## Scope
 
-1. Add a source-discipline canary asserting that factor selection reads the
-   account's password state in exactly one place. Scan `frontend/src` and pin
-   the occurrence set; the rendering-only read in `pages/settings.js` is a
-   legitimate member and should be named as such rather than pattern-excluded.
-2. Make the failure message explain the invariant and name the resolver, so an
-   engineer who trips it consumes the resolver instead of adding an allowlist
-   entry. A canary whose red bar does not explain itself gets neutered.
-3. Decide where this class of test lives in the frontend tree and record the
-   choice in the file's own header, since this is the first one.
+1. Add a source canary under `backend/tests/eslint/` that finds every statement
+   in `backend/src` writing `accounts.updated_at` and asserts the writer set is
+   exactly the two signup finalizes: the `/confirm` finalize and the `/link`
+   finalize. An allow-list keyed on `file#symbol`, so a third writer fails the
+   bar rather than passing silently. The `sourcesUnder` and
+   `statementOccurrences` helpers in `tests/support/enclosing-symbol.ts` already
+   do the scanning and symbol attribution; reuse them rather than writing a
+   third walker.
+2. The failure message must say why the set is closed, not just that it
+   changed: name the `/link` stuck-recovery ordering and the session-binding
+   bypass it protects, so whoever trips it can tell whether their new writer is
+   safe. A bare "unexpected site" message sends the next author to delete the
+   assertion.
+3. Verify the guard by mutation, not by reasoning: add a third `updated_at`
+   writer to a scratch copy of a route, confirm the canary reds, and confirm it
+   greens again when removed.
 
 ## Acceptance criteria
 
-1. Adding a second `fetchEmailStatus`-derived factor decision anywhere under
-   `frontend/src` fails the suite.
-2. The canary's own self-test plants both a positive and a negative, so a regex
-   that matches nothing cannot pass silently.
-3. The scan asserts it examined a non-trivial number of source files, so a
-   broken glob fails loudly rather than vacuously passing.
-4. The failure message names the resolver to consume.
+1. The canary passes on the current tree with the allow-list naming exactly the
+   two finalizes.
+2. Adding any third `accounts.updated_at` writer to `backend/src` turns it red,
+   demonstrated by mutation rather than asserted.
+3. The failure message names the invariant at risk, not only the drift.
 
 ## Notes
 
-Detection precision is the recurring failure mode for this class, not assertion
-granularity: the backend's equivalents have been defeated by an aliased import,
-by a quote style, and by a commented-out call. Read
-`agents/docs/solutions/conventions/source-discipline-canaries-must-assert-at-call-site-not-file-granularity-2026-08-26.md`
-before designing the scan, and plant the evasion shapes as negatives rather than
-discovering them in a later review.
+- Known limit, worth stating in the canary's docblock rather than discovering
+  later: the scan is textual, so a dynamically assembled `UPDATE` statement
+  would hide from it. No `UPDATE accounts` SET list in `backend/src` is
+  string-interpolated today, which is what makes a text scan sound here.
+- Do not widen this into a general "audit every accounts column writer" guard.
+  The value is specific to `updated_at`, because that column is the one a
+  security-relevant ordering is measured against.
+- The companion architect work (recording the ordering dependency in
+  ARCHITECTURE.md § 6.1 / § 6.7) is deferred to the archive of the
+  custody-column alignment task. This canary does not depend on it.
 
----
+## Backend implementation note (2026-09-06)
 
-## UI completion signal (2026-08-31, commits 4ef94970 + 1a819be1 + bb575854)
+Landed as `backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`
+(8 specs). Green on the clean tree; `npx vitest run tests/eslint/` is 9 files /
+117 tests green.
 
-Implemented in an isolated worktree, adversarially reviewed by three lenses
-(evasion, granularity/fail-closed against the three named solutions docs,
-convention-fit including a mechanical run of the pre-commit anchor-gate arms
-over all added lines), then cherry-picked onto main. The spawn base was 57
-commits stale; the worker detected it against the expected base, fast-forwarded
-(zero unique commits) to `c410a279`, and built the pins against the
-reconciled tree.
+### Deviation from the task's stated reuse
 
-**Scope 3 placement decision** (recorded in the file header):
-`frontend/tests/unit/eslint/`, mirroring `backend/tests/eslint/`; the vitest
-include glob collects it with no config change. Scan machinery lives beside it
-in `enclosing-symbol.js` (not collected; only `*.test.js` is).
+The task directs reuse of `sourcesUnder` and `statementOccurrences` from
+`tests/support/enclosing-symbol.ts`. `sourcesUnder` is there and is reused, as
+are `enclosingSymbol` and `isCommentLine`. `statementOccurrences` is NOT in that
+module: it is a private function inside
+`no-custody-claim-derivation-outside-helper.test.ts`, and its `STATEMENT_JOIN_CAP`
+of 4 is tuned for TypeScript expressions. The `/confirm` finalize puts five SET
+lines between `UPDATE accounts` and its `updated_at = NOW()`, so that helper
+structurally cannot reach the shape this canary exists to see. Promoting it to
+the shared module would also have edited a canary whose owning task is mid-hold
+in `pending/`. So the new file carries its own statement reach, delimited by
+what a SQL statement actually ends at (the string quote in TypeScript, the
+semicolon in a migration) rather than by a joined-line budget. The choice is
+recorded in the file's own docblock.
 
-**Shape.** `no-password-factor-derivation-outside-resolver.test.js` scans
-`frontend/src` recursively (85 files against a floor of 40) and asserts exact
-set equality over `file#enclosingSymbol` occurrence keys across four layers:
-`fetchEmailStatus` name occurrences (alias/namespace/re-export aware, comment
-lines excluded, definition skipped by shape not by path), file-granular import
-sites, `hasPassword` property occurrences (the discriminator a factor decision
-cannot avoid writing), and a star re-export ban on the api module. The
-settings.js rendering-only read is a named licensed member. After review, each
-licensed key is additionally pinned at its occurrence WIDTH, closing the
-absorb-into-a-licensed-key class both reviewers demonstrated (the settings
-template literal, and the file's second `flight` coalescer sharing a
-declaration name). Both path-anchored layers accept the Vite-legal
-extensionless `api` specifier spelling. Failure messages explain the invariant
-and name `resolvePasswordFactor` (`lib/fresh-auth.js`) as the thing to consume.
+### What the canary does
 
-**Verification.** Red-first at the licensed-key stage; green 12/12 on the
-clean tree; five real tree mutations (aliased import, namespace-import
-derivation, second derivation inside a licensed file, star re-export,
-commenting out the resolver's own read) each observed red naming the expected
-key; planted self-tests feed synthetic sources through the extracted matchers
-including two-occurrences-in-one-file yielding two keys. Both fix-round absorb
-findings re-planted against the real tree and observed red after the width
-pins. Full frontend unit suite green on the integrated tree.
+Four scans over `backend/src`:
 
-**Residuals surfaced for triage, deliberately not fixed here:**
+1. Column-first: every `updated_at` assignment, attributed to its table by
+   walking up to the nearest `UPDATE <table>` / `INSERT INTO <table>`; those
+   resolving to `accounts` are TALLIED per `file#symbol` and compared to the two
+   finalizes.
+2. Fail-closed resolution: no assignment may resolve to `<unresolved>`.
+3. Table-first: every `accounts` DML statement read whole, flagged when its SET
+   list or INSERT column list carries the column. Not redundant with (1) - an
+   `INSERT INTO accounts (..., updated_at)` carries no assignment token at all.
+4. No interpolated `accounts` write.
 
-1. (prose-pinned, accepted) A constant-width replacement of a licensed line
-   (editing the licensed occurrence itself into a derivation) keeps the width
-   pin satisfied; it requires editing licensed lines directly, which is
-   diff-visible. Documented in both docblocks.
-2. (routed to architect) The scan machinery in `enclosing-symbol.js` is a
-   deliberate port of `backend/tests/support/enclosing-symbol.ts` with
-   frontend-specific declaration shapes added and backend-specific ones
-   dropped. The simplify pass's code-reuse reviewer flagged the cross-package
-   duplication and its drift risk (the per-key `counts` tally exists only
-   frontend-side; `isCommentedOut` only backend-side). Consolidating requires
-   a shared module at a path spanning `frontend/` and `backend/` plus edits to
-   backend test files, which is outside the UI zone and an architecture
-   decision; left for the architect to accept as deliberate dialect divergence
-   or file as a cross-zone task.
+Plus, over `backend/migrations`: the migration writer set pinned to the
+column-introducing back-fill, and a refusal of every trigger, rule, function and
+procedure. The fail-closed arm spans both trees.
 
----
+Three additions beyond the literal scope, each stated so the architect can
+reverse any of them:
 
-## Architect re-review (2026-09-01) — HELD PENDING FIXES:
+- **Migrations are in scope.** The route comment's universal has two halves and
+  the second one ("the table carries no trigger") is the writer no scan of
+  application source can see. Pinning the migration-side writer set covers the
+  same hazard the custody-alignment migration's own header spends a paragraph
+  warning about. Zero triggers/rules/routines exist today, which is what lets
+  the arm refuse all of them rather than parse each target table; the exemption
+  list is the escape hatch and is empty.
+- **Occurrence counts, not a key set.** Both allowed keys are route handlers
+  running a couple of hundred lines each, so a key set alone would absorb a
+  second write added anywhere inside `POST /confirm` or `POST /link` - including
+  the resume branch, where an author fixing a recovery bug would most naturally
+  put one. Verified by mutation.
+- **Scan 4 (no interpolation).** An accounts write partly held in a variable
+  defeats the other three at once: the fragment carrying the assignment is
+  attributed by the upward walk to whatever table sits above the constant's
+  declaration, so it RESOLVES and the fail-closed arm stays quiet. Refusing the
+  shape is what keeps scan 2's guarantee from being conditional. Zero accounts
+  DML literals interpolate today. Read-side interpolation is untouched (the two
+  recovery lookups interpolate their window and are SELECTs).
 
-Reviewed via `/ce-code-review` on `4ef94970` + `1a819be1` + `bb575854` (frontend
-paths only), five reviewer personas including the mandatory adversarial lens (the
-diff IS a silent-pass verification mechanism), plus an independent validation batch
-that reproduced each detection hole by EXECUTING the scan machinery against planted
-sources. **The core is a strong first entry for the class**: all four acceptance
-criteria are met, the detection layer's self-tests run through the real extracted
-predicates (not copies), every pinned width reproduces against the tree, and the
-"stayed green across later fresh-auth edits with no re-pin" claim is genuine (those
-commits touched no pinned line). The routed cross-package-duplication decision is
-resolved below.
+### Mutation verification (acceptance criterion 2)
 
-The held items are all detection-fidelity holes, executed-confirmed, in exactly the
-class this canary's own Notes section names as the recurring failure mode. A guard
-whose evasions are documented-but-open is a weaker guard, so they are held rather
-than accepted.
+Ten classes, each applied to a scratch copy of a real file, run, and reverted;
+each reds the named scan and greens on restore.
 
-### Item 1 — the walker scans `.js` only; a `.mjs` / `.ts` / `.jsx` derivation is invisible to all four layers
+1. `updated_at = NOW()` appended to an existing `UPDATE accounts` SET list in
+   settings - scans 1 and 3.
+2. Brand-new multi-line accounts writer in a file that writes no accounts
+   column today - scans 1 and 3.
+3. `INSERT INTO accounts (..., updated_at)` - scan 3 only, which is the
+   demonstration that scan 3 is not a redundant spelling of scan 1.
+4. Same INSERT behind a table alias (`INSERT INTO accounts AS a (...)`) -
+   scan 3.
+5. Row-assignment form `SET (password_hash, updated_at) = ($1, NOW())` -
+   scans 1 and 3.
+6. A SECOND writer inside the already-licensed `POST /confirm` handler -
+   scans 1 and 3, via the occurrence count.
+7. Interpolated SET fragment in an accounts write - scan 4.
+8. An assignment with no readable statement head - scan 2.
+9. Migration back-fill bumping the marker - the migration writer pin.
+10. `CREATE OR REPLACE FUNCTION ... NEW.updated_at := NOW()` in a migration -
+    the routine arm. A migration-side unresolvable write reds scan 2.
 
-`sourcesUnder` collects only `entry.name.endsWith('.js')`. Vite resolves the other
-extensions with zero config, so a factor derivation authored in such a module joins
-the bundle unscanned, and the importing `.js` file writes neither the status-fetch
-name nor the discriminator. Latent today (the tree is all-`.js`), but a one-line
-authoring choice defeats the guard. Fix: assert beside the file-count floor that
-`frontend/src` contains no non-`.js` source file, so the first foreign-extension file
-fails loudly; add a planted `sourcesUnder` probe with a `.mjs` fixture.
+Classes 4, 5, 6 and 7 were found by an adversarial review pass against the first
+draft, which was green on all four. Each is valid PostgreSQL or valid house
+style, and each is now closed with a planted probe beside it.
 
-### Item 2 — the width pin counts matching LINES, not occurrences
+### Failure messages (acceptance criterion 3)
 
-`occurrencesOf` tallies one per matching LINE, so a second discriminator read added on
-an already-licensed line keeps the pin satisfied. This is not only latent: at the
-reviewed head the pinned `lib/fresh-auth.js#flight: 6` for the password-state scan
-already masks eight textual occurrences (two lines each carry the property twice), so
-the docblock's "exact occurrence count" / "catches every ADDED occurrence under a
-licensed key" claim is factually wrong today. Tally per match (g-flagged match count
-per surviving line) and re-pin the maps to that basis, and add a same-line
-second-read case to the width-widening self-test; or, if line-counting is kept
-deliberately, correct both docblocks to name same-line addition (beside constant-width
-replacement) as a review-diff-mitigated residual. Prefer the per-match fix.
+One `ORDERING_RATIONALE` constant is interpolated into every assertion's message.
+It names the `upgraded_at <= updated_at` term, the signup session-binding bypass
+the term protects, why an upgrade leaves the marker alone, and what a third
+writer does to an upgraded account. It closes by telling the reader to justify a
+new writer rather than widen the list to clear a bar. Rendered output verified
+against a live mutation.
 
-### Item 3 — `importStatementOpens` spares a live reference below a complete single-line import
+### [TODO Architect] Surfaced, not acted on
 
-The upward walk tests the `import {` opener before the `j < lineIndex` terminator, so
-a live reference (an object-literal member, say) sitting within the eight-line window
-below an unrelated complete single-line import is misclassified as an import specifier
-and silently skipped. Executed and confirmed. Fix: run the terminator test
-(`/[;}]|\bfrom\b/`) before the opener match for `j < lineIndex`, so a completed import
-line above returns false; add the two adjacency shapes as planted positives.
+A schema-level complement exists and would be strictly stronger than a source
+scan: `accounts` already carries a two-column CHECK relating `upgraded_at` to
+`custody`, and an ordering CHECK of the same family
+(`upgraded_at IS NULL OR upgraded_at >= updated_at`) would refuse the bad row at
+commit, closing the residuals this canary has to state as limits (dynamic table
+names, an operator's ad-hoc psql, a future trigger). It holds for every state
+enumerated in ARCHITECTURE.md section 6.1 as far as I traced it: the `/link`
+finalize writes both stamps from one `NOW()` so they are equal, the custody
+upgrade leaves the marker alone so the epoch is strictly newer, and both
+migration back-fills leave the pair as they found it.
 
-### Item 4 — the resolution-layer machinery lacks discriminating self-tests
+Not implemented here. It is a schema change with its own deploy-ordering
+question (the same class the custody-alignment migration's header documents), it
+is outside this task's stated scope, and the two guards compose rather than
+compete. Filed for triage rather than actioned.
 
-The detection layer is thoroughly self-tested, but two load-bearing branches of the
-shared resolution machinery are not: the paren-counting guard arm that recognizes a
-wrapped-parameter declaration (every `= (` probe in the suite carries `=>`, which
-short-circuits before that arm), and the comment-skip inside the closing-brace walk
-(every comment-shaped probe is itself a skip target, never walk interior). Mangling
-either leaves every current whole-tree assertion green while future canaries built on
-this module inherit a silently weaker resolver. Add a synthetic-source probe for each:
-a wrapped-parameter const/let/var declaration with neither `function` nor `=>` on the
-opening line, and a comment-embedded `}` between a declaration and its target line.
+Also verified and NOT a hazard, recorded in the canary docblock because it is
+the shape most likely to be "fixed" into a third writer: the signup upserts
+refresh `created_at` in their `ON CONFLICT ... DO UPDATE` branches and leave
+`updated_at` alone. What keeps those branches off a finalized row is the
+duplicate-email pre-check in `POST /signup`, which answers 409 when the row's
+`verify_token` is NULL or carries a `confirmed:` token, so the `DO UPDATE`
+branch only ever lands on a pending row with no finalize behind it and no
+upgrade epoch. Leaving `updated_at` out of the branch is defence in depth
+behind that pre-check: should the upsert ever reach a finalized row, it still
+does not move the marker. Symmetrising it is exactly what this canary refuses.
 
-### Item 5 — `isCommentLine` silently skips live code behind a leading inline block comment
+### Verification
 
-`/^\s*(?:\*|\/\/|\/\*)/` returns true for `/* pragma */ code`, so a live factor read
-prefixed by an inline block comment (a coverage-ignore annotation, say) is skipped by
-the `hasPassword` scan. The docblock frames the predicate's miss direction as loud;
-this miss is silent. Executed and confirmed. Skip a `/*`-opening line only when it
-does not carry `*/` followed by non-whitespace, and add planted probes both
-directions. (Low; boundary-ordinary shape.)
+`npm run typecheck` (src + tests) clean. `npm run lint` clean apart from the
+pre-existing unrelated warning in `src/lib/author-supersession.ts`.
+`tests/eslint/` 9 files / 117 tests green. `.githooks/pre-commit` anchor gate
+exits 0 against the staged diff. No production code changed; the only new file
+is the canary.
 
-### Item 6 — unused regex capture group
+## Architect re-review (2026-09-08) — HELD PENDING FIXES:
 
-The method-shorthand `DECLARATION_PATTERN` captures the parameter list as group 2
-(`\(([^()]*)\)`) while its label reads only `m[1]`. Make it non-capturing. (Trivial;
-listed because the file is being edited for the items above.)
+Reviewed at commit 57ffc5cf via /ce-code-review (correctness, security,
+adversarial, testing, maintainability, project-standards, learnings; eight
+actionable findings independently validated). The core path is confirmed:
+the writer set re-enumerated from the tree matches the allow-list, the suite
+is green (9 files / 117 tests), and two mutations re-run by the architect in a
+scratch copy both red as claimed (a third writer in `POST /verify` as a new
+key; a second writer inside `POST /confirm` as count 2). The hold is about
+what the guard promises beyond the shapes the tree writes today, and about
+the accuracy of the rationale the next author will read. Each item states
+the invariant; the construct is the implementer's choice. Verify every item
+by mutation in a scratch copy (red on the mutation, green on restore) and
+state the probe per item in the re-review note.
 
-### Dialect-divergence decision (routed here, resolved)
+### Bundle A: the fail-closed resolution arm must be unconditional
 
-The architect accepts `enclosing-symbol.js` and `backend/tests/support/enclosing-symbol.ts`
-as deliberate dialect divergence rather than a shared cross-zone module: they already
-diverged within this commit for real per-side needs (the frontend's `template` flag,
-`counts` tally, and Alpine/template-literal declaration shapes; the backend's
-`isCommentedOut`), and a shared module would force unused surface across a zone and
-runner boundary. The one real cost (a brace-walk bugfix reaching only one copy) is
-covered by a one-line reciprocal pointer in the backend docblock, filed as
-`backend-enclosing-symbol-port-backreference`. `isModuleScopeKey` shipping unconsumed
-is accepted (documented seam with backend precedent).
-
-**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
-re-review signal. Do not edit this hold block or annotate items as fixed; the commit
-diff is the evidence and the architect updates the block at re-review.
-
----
-
-## UI re-review signal (2026-09-02, commit 276e4788):
-
-All six held items landed in one commit, `276e4788` (the two canary files
-only). Each item's fix was preceded by a planted probe observed red on the held
-tree, and each fix was mutation-checked afterwards: reverting it turns exactly
-its own probe red and nothing else.
-
-**Item 1.** `sourcesUnder` now returns `{ sources, foreign }`, where `foreign` is
-every non-`.js` file the walk passed over. The walker-floor assertion also
-requires every foreign file's extension to sit in a licensed non-script set
-(`.css` only, for the one stylesheet under `src`), with a message naming the
-walker and the fix. The set is licensed by extension rather than by asserting an
-empty list because `src/styles.css` exists today; a stylesheet cannot carry a
-module, and anything not in the set is a red bar. Planted: a `mkdtemp` fixture
-tree with nested `.js`, `.mjs`, `.ts` and `.css` files (sources and foreign
-both asserted). On the real tree, a planted `.mjs` derivation under `src/lib`
-was observed red.
-
-**Item 2.** `occurrencesOf` tallies per match via a global copy of the pattern
-and marks multi-match lines with their multiplicity in the site list. The
-resolver's `flight` pin moved from 6 to 8 (the status assignment and the
-`assumed` expression each name the property twice on one line); both docblocks
-now say widths count matches, not lines, and the earlier "exact occurrence
-count" claim is true. Planted: a template gate carrying two reads on one line
-and a `Promise.all` line calling the fetch twice, both yielding width 2. On the
-real tree, a same-line second read on the settings gate was observed red.
-
-**Item 3.** On lines above the specifier, `importStatementOpens` runs the
-terminator test before the opener test, and skips comment lines inside the
-clause (a `from` in such a comment was a pre-existing false positive in the
-loud direction). Planted: an object-literal member and a call argument each a
-few lines below a complete single-line import (both count), and a wrapped
-import with a comment line inside its clause (still spared).
-
+1. **An assignment whose statement head the walk cannot read must resolve to
+   `<unresolved>` regardless of what other DML sits above it in the file.**
+   Today `targetTable` walks up to `WALK_CAP` lines without stopping at the
+   assignment's own string literal, so a head the regexes cannot read (a
+   `MERGE INTO`, a quoted identifier, a comment-tagged head, a `+`-joined
+   fragment) resolves to the PREVIOUS statement's table and passes as "not
+   accounts". Route handlers chain queries a few lines apart, so the silent
+   direction is the common placement. Two fix shapes are acceptable: stop
+   the walk when it leaves the assignment's literal, or require that the
+   statement text read from the found head contains the assignment line.
+   Probe: place a foreign-table `UPDATE` two lines above each of the three
+   shapes in items 2 to 4 and confirm each reds.
+2. **`MERGE INTO accounts` must be attributed to accounts, not merely
+   unresolved.** Add a MERGE head to `ACCOUNTS_STATEMENT_RE` and a MERGE
+   target consulted by `targetTable`, so both the `WHEN MATCHED THEN UPDATE
+   SET updated_at` branch and the `THEN INSERT (..., updated_at)` branch red
+   the writer scans. Planted positives for both branches. PostgreSQL 16 is
+   what runs here, so MERGE is a valid writer shape.
+3. **A head line prefixed with an editor tag (`/* sql */ \`UPDATE accounts`)
+   must be scanned.** `isCommentLine` is shape-only and skips that line in
+   `accountsColumnWriters`, the interpolation scan and `targetTable`. Ask
+   whether the SQL keyword itself sits inside a comment, not whether the line
+   starts like one. Planted positive.
+4. **The KNOWN LIMITS claim "a SET list composed from a variable is refused"
