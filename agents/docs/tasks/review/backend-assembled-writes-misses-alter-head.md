@@ -266,3 +266,135 @@ one), so it is wording only. Carry the hedge across so the three statements agre
    docblock sentence is APPENDED to that task as an architect note; the `LITERAL_CAP` and
    joined-`EXECUTE` part is DISMISSED, since nothing changes in outcome while the exemption
    list is empty.
+
+## Backend round-2 signal (2026-09-22, commits 7bc103d8, 23f96433, 73c69f6e, 29099b09, 5d44f839)
+
+All five are ancestors of `main` (`git merge-base --is-ancestor` checked) and touch only
+`backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`. Prose
+only: `git diff` over the range shows no non-comment line. The file moved under the hold
+(`79cb6536` and `b93a3b04` landed after the reviewed range), so the hold's line numbers no
+longer resolve; every measurement below was re-taken against these commits.
+
+Four adversarial verification passes ran over the range, each with two refuters per finding.
+The first three each falsified sentences this work had itself written, which is why there
+are five commits: `7bc103d8` is the hold's two items, and the rest are corrections to it.
+The hold's own prescribed wording is among what was corrected, per the convention that
+hold-block prescriptions are in scope.
+
+### Item 1. What the bound is, stated once in the dynamic-SQL KNOWN LIMITS entry
+
+The prescription ("the `+` is read only where the literal's opening quote shares a line with
+the head") is a necessary condition, and stating it as a sufficient one is false three times
+over. The arm's two halves answer to different things, and the entry now says so:
+
+- The `+` BEFORE the quote is read only where `enclosingQuote` finds a quote on the head's
+  line, and only on that line. Any quote it found will do, including a template's closing
+  backtick carried over from an earlier line, and the half is tested first, so it fires
+  whatever the read went on to reach. A `+` ending an earlier line is silent, though only
+  text ahead of the head can hide there.
+- The `+` AFTER the quote is looked for past where the READ stopped, wherever that landed,
+  and is false where the read reached no terminator. A join sitting behind the stop is not
+  seen.
+- `enclosingQuote` reads the head's line from its start with no quote open. It finds none
+  for a template opened on a line above its head, and misreads the quote where a template
+  from above closes on the head's line (that closing backtick reads as an opener). Both are
+  named as examples, not as a closed list, and in both the join is silent whichever side of
+  the literal the `+` sits on, while an interpolation in either is still read.
+- A `'` or `"` inside the literal that is not its delimiter opens a value the read carries
+  to its match, so a literal holding an odd one runs past its own close and leaves the join
+  beside that close behind the read. That is how a concatenated quoted identifier is
+  spelled. It is silent in every arm only when read on one line with nothing joined past its
+  last literal: wrapped over lines the every-statement-readable arm reds it, and a `+` past
+  its last literal is read as a join.
+
+Sites carrying the bound or deferring to the entry by name: header item 4, the
+`SQL_INTERPOLATION_RE` docblock, the `joinedByPlus` docblock, the `assembledWrites` docblock
+and the join fixture's comment. Two mechanism docblocks the entry cites were bounded as
+well, beyond the sites the hold named: `enclosingQuote`, whose contract said "null when the
+position sits in no string" while it reads one line, and `statementAt`, whose quote-less
+read covers a keyword `enclosingQuote` finds no quote for, while a quote it finds that is
+not the keyword's delimits the read instead.
+
+### Item 2. The hedge, carried and corrected
+
+The `assembledWrites` docblock no longer states a universal ("Only one assembled shape has a
+second catcher" is now "One assembled shape has a second catcher"), its rule covers an
+`ALTER TABLE accounts` clause as its two siblings' does, so the CHECK half of the carve-out
+fits, and it carries the carve-out. Header item 4 had "as a rule" but never the carve-out,
+so it has it now too. The three copies are byte-identical.
+
+Three corrections to what the copies claimed, each measured:
+
+- The carve-out said any equality inside a USING expression or a CHECK is read as an
+  assignment. Only an `updated_at =` is: with the column on the right, or behind a cast, the
+  fail-closed arm stays green. All three copies now say `updated_at =`.
+- "Are nowhere" covered every unrecognised join, and a SET-list or USING fragment joined
+  that way reds the fail-closed arm. It is scoped to the two shapes its sentence names and
+  carries the loud exception: a shape whose read reached no terminator reds the
+  every-statement-readable arm.
+- The entry's consequence ("reds nowhere") now names all three catchers that can still fire:
+  an `updated_at =` reds the fail-closed arm, a bare `updated_at` left in the head's own
+  literal reds the ALTER arm, which asks for the name and not for an assignment, and a read
+  that reaches no terminator reds the every-statement-readable arm.
+
+### Acceptance evidence
+
+All from scratch copies (`git archive <sha> backend`, `node_modules` and `.env` symlinked,
+`tests/setup.ts` stubbed). The shared checkout was never mutated; plants went to
+`backend/src/zz-probe*.ts` inside the copy and were deleted after each run.
+
+- AC1, the hold's shape re-measured at this round's HEAD: the opened-above `+` plant leaves
+  the canary 29/29 green, while the same text with the backtick on the head's line reds
+  `[concatenation] zz-probe-alter.ts:2`; the same layout with `${column}` reds
+  `[interpolation]`. A `+` leading the next line, and a `+` before the literal, are silent.
+- The second silent layout (a template from above closing on the head's own line before the
+  head's literal opens): 29/29 green, control reds `[concatenation]`, the interpolated
+  spelling reds `[interpolation] zz-probe-s1i.ts:3`.
+- The read-stop half: `await q('UPDATE accounts SET "' + column + '" = now() WHERE id = $1', [id]);`
+  is 29/29 green, the same call without the stray `"` reds `[concatenation]`; wrapped over
+  lines it reds `every accounts statement can be read whole`; with one more join past its
+  last literal it reds `[concatenation]`. The column-list and ALTER spellings behave the same.
+- The before half is not gated on the stop: `pre + ` + an unterminated template head reds
+  `[concatenation]`, so the half fires with `closedAt` at -1.
+- The three catchers: `ALTER TABLE ${table} ADD CONSTRAINT stamped CHECK (updated_at = created_at)`
+  reds `every updated_at assignment resolves to the table it writes`;
+  `'ALTER TABLE accounts RENAME COLUMN updated_at TO '.concat(next)` reds
+  `only the column-introducing migration alters accounts.updated_at itself`; the same join
+  with the name held in the variable is 29/29 green, as is
+  `ALTER TABLE ${table} DROP COLUMN updated_at`.
+- AC2: the clean tree is 29/29 on the canary and 139/139 across all 9 `tests/eslint` files at
+  each commit, `ALLOWED_COLUMN_ALTERATIONS` is untouched, and `npm run typecheck` and
+  `npx eslint` on the file both exit 0.
+- AC3 (the round-1 pin) is unchanged: this round adds no fixture and no assertion, so the
+  widening pinned at `43545ee4`/`72f1196d` still reds under its mutants.
+- The soundness clause was measured, not asserted: 23 `accounts` heads in `src`, every one
+  with `enclosingQuote` finding its own literal's opening quote on the head's line and every
+  read closing at that literal's own closing quote, checked against a TypeScript AST view of
+  each file. No head follows a line ending in `+`, and `src` spells no ALTER.
+- The repo's `pre-commit` anchor gate over the added lines is zero-hit at each commit, with
+  `ALLOW_MARKER` set explicitly and the control line firing.
+
+Verification: workflows `wf_dfaa3781-d82`, `wf_3cd820ed-55c`, `wf_8175ec8b-69c` and
+`wf_7af2218f-35d`. Backend did not run code review (`agents/backend/CLAUDE.md` assigns
+`/ce-code-review` to the architect).
+
+### Considered and left, with the reason
+
+- `SqlStatement.quoteAt`'s "(-1 in a migration, where there is none)", the A NOTE ON REUSE
+  sentence about where a read ends, the bare-`;` fixture comment, and header item 4's stated
+  reason for the SET-list fragment's second catcher ("no readable head's statement reaches a
+  constant declared on its own", which a call carrying no `;` of its own can defeat) each
+  state the read's end or its arm without the head-line bound. All predate this range and
+  state neither the `+` recognition nor the second-catcher claim.
+
+### [TODO Architect] Pre-existing gap found by the sweep, not acted on
+
+The head-line read also silences the fail-closed backstop, which no text names. A head in a
+template opened on an earlier line is read past its closing backtick to a `;`, so a sibling
+write with an unreadable head before that `;` is attributed to the first head's table. Two
+plants, each 29/29 green while its control reds: `UPDATE ${table} SET updated_at = NOW()` and
+`'UPDATE "accounts" SET updated_at = NOW()'` sitting after an opened-above `UPDATE sessions`
+head. Pre-existing and not about `+`, so it is recorded rather than fixed; the sentence it
+falsifies is the quoted-identifier bullet's "only where no readable head opens earlier in the
+same quoted text". One live `src` head already reads past its backtick (`bridge-queue.ts`,
+the import-queue UPDATE), harmless today because nothing sits between that backtick and its `;`.
