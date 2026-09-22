@@ -272,3 +272,126 @@ Out of scope, left open with the user: vitest exits 1 at 3b75bab9 and at HEAD
 on three unhandled rejections from `tests/unit/pages-edit.test.js`
 (`_mountEditors` reading `$refs.abstractEditor`) even though every test passes.
 Neither `edit.js` nor that spec is touched by this task.
+
+---
+
+## UI re-review signal (2026-09-22, commit 5c563f14)
+
+Verified on `main` with `git merge-base --is-ancestor`. One hold item, one
+file, comment-only. No fan-out: a single sentence in a single header.
+
+### Hold item 1, as landed
+
+The clause-(a) reason now names `file.arrayBuffer()`. The header reads:
+
+> and `uploadFileToIpfs` hashes the file through `sha256File` before its first
+> request, and `sha256File` calls `file.arrayBuffer()`, which jsdom's Blob does
+> not implement (`crypto.test.js` records the same gap); `crypto.subtle` itself
+> is present, as `harness.test.js` asserts.
+
+The wording is the replacement prescribed in
+`agents/docs/solutions/conventions/carve-out-clause-a-impracticability-claims-are-unverified-prose-2026-09-22.md`,
+with one addition: the `harness.test.js` citation, so the `crypto.subtle` half
+is checkable where it is read rather than asserted bare. That entry's own
+reviewer step is what the addition serves, and it is what caught the slip
+recorded below.
+
+The hold's diagnosis was confirmed empirically before the edit, not read off
+the code. A five-case probe in a scratchpad copy under the real
+`frontend/vitest.config.js`:
+
+- jsdom's `File` has no `arrayBuffer`; `Blob.prototype.arrayBuffer` is
+  `undefined`.
+- `sha256File` on a jsdom `File` rejects with
+  `TypeError: file.arrayBuffer is not a function`.
+- `uploadFileToIpfs` on a jsdom `File` rejects with that same error and
+  `fetch` is never called, so the hash really does precede the first request.
+- `sha256File` on a `node:buffer` `File` returns a 64-hex digest, so the
+  crypto path itself is sound.
+- `crypto.subtle.digest` is callable and returns a 32-byte digest.
+
+### A correction to the hold's premise, recorded here rather than in the hold
+
+The hold says "jsdom provides it: `harness.test.js` asserts
+`crypto.subtle.digest` is a function under the same vitest config." The
+assertion is real and the conclusion drawn from it (that `crypto.subtle` is
+not the blocker) is correct, so hold item 1 stands exactly as written. The
+attribution does not: jsdom does not implement SubtleCrypto.
+
+- jsdom 25.0.1's `CryptoImpl` implements `getRandomValues` and `randomUUID`
+  and nothing else.
+- A raw `new JSDOM('')` window in this environment reports
+  `typeof window.crypto.subtle === 'undefined'`.
+- The ambient global is Node's: `globalThis.crypto === webcrypto` from
+  `node:crypto` is `true`, and `window.crypto` is that same object, because
+  the jsdom environment leaves the Node global in place.
+
+This mattered to the fix, not just to the record. A first draft wrote the
+attribution into the header as "`crypto.subtle` is not the blocker: jsdom
+provides it", which would have replaced one false environment claim with
+another. The committed sentence claims presence and attributes it to nobody,
+which is what the prescribed wording already did. Flagging the premise per the
+solutions entry's own rule: scope the replacement to what was actually checked.
+
+### Adversarial pass
+
+Four independent lenses (factual accuracy, project conventions, completeness,
+regression/inertness) over the draft, each finding put to two skeptics with
+different refutation angles. 3 raised, 1 survived. Conventions and inertness
+returned clean.
+
+- The survivor was the jsdom-attribution error above, found independently by
+  the accuracy lens and by hand, with matching probe output on both sides. The
+  two skeptics split: one upheld it on the ground that the parenthetical exists
+  to survive exactly the audit it would have failed, one refuted it as a
+  non-blocker's provenance and objected that the prescribed rewrite would drag
+  vitest's global-population internals into a header comment. Both are right
+  about their half, and the prescribed wording satisfies both by naming no
+  library at all. That is the sentence that landed.
+- Refuted: that the parenthetical pointed at `crypto.test.js`'s `node:buffer`
+  workaround without saying why it is not taken here. The final wording drops
+  the workaround clause anyway.
+- Refuted, but worth the architect's attention below: the solutions entry's
+  own "before / after (prescribed, pending)" labels for the unit instance go
+  stale with this commit.
+
+### Acceptance criteria
+
+Unchanged by this round except AC4 and AC5. AC1, AC2 and AC3 are about the
+production narrowing and its coverage; no test, fixture or source file changed
+this round, and the suite result below re-confirms them.
+
+4. Met. The changed sentence is the prose this criterion governs. The header's
+   clauses (b) and (c) were re-read and remain true: no auth middleware is
+   mocked, and the clause-(c) companion still exists and still cites back. The
+   correction was swept per the solutions entry's step 4: `crypto.subtle` in
+   `frontend/` now appears only in `src/crypto.js`, the e2e keychain fixture,
+   `harness.test.js`, and the corrected line. The two citers of this spec
+   (`non-consent-fresh-auth.spec.js` and
+   `ui-non-consent-spec-header-overclaims`) name it only in clause-(c)
+   companion lists and carry no copy of the old reason. The added lines pass
+   `.githooks/pre-commit`'s `anchor_violation()` with `ALLOW_MARKER` set by
+   hand and the control line firing, and they are plain ASCII.
+5. Met. 86 files / 1931 tests, vitest exit 0; `npm run build` exit 0. Run in a
+   two-level scratchpad copy, so the build wrote inside the copy and the real
+   `backend/public` was untouched.
+
+### For the architect
+
+Two notes, neither filed as a task.
+
+1. The solutions entry
+   `carve-out-clause-a-impracticability-claims-are-unverified-prose-2026-09-22.md`
+   labels the unit instance's replacement "prescribed, pending"; it has now
+   landed. Its prose also carries the same "jsdom provides it" attribution
+   corrected above. Its other two prescribed replacements, the e2e ORCID
+   clause-(a) and the posting-key-decrypt fixture and its citers, are still
+   open and are outside this task's single-item scope.
+2. The out-of-scope item this hold left with the user is closed. Vitest no
+   longer exits 1 on unhandled rejections from `tests/unit/pages-edit.test.js`:
+   three full-suite runs at HEAD and on this change exited 0 with zero
+   unhandled rejections, and three focused reruns of `pages-edit.test.js`
+   alongside the upload and fresh-auth suites were clean. The fix is
+   `e579c8c4 ui(tests): the edit harness gives every component a $refs`, which
+   landed at 01:15 and is not an ancestor of the hold commit c1e4d844 at 00:57,
+   so the review predated it.
