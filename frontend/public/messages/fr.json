@@ -1022,7 +1022,10 @@
     "vote": "Confirmer le vote",
     "commentTitle": "Publier un commentaire",
     "commentMessage": "Vous êtes sur le point de publier un commentaire.",
-    "comment": "Publier le commentaire"
+    "comment": "Publier le commentaire",
+    "reauthNavigateTitle": "Confirm your identity",
+    "reauthNavigateMessage": "Confirming your identity with ORCID means leaving this page. Your text is saved as a draft and restored when you return. Attached files will need to be selected again.",
+    "reauthNavigate": "Continue to ORCID"
   },
   "upgrade": {
     "title": "Prenez le contrôle de votre compte",

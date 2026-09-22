@@ -892,28 +892,95 @@ describe('publishPage', () => {
     // the navigating factor (the worst case is re-picking the one file being
     // chosen); once a file is held, every gate refuses a passwordless account
     // non-destructively and says so.
-    it('a passwordless account resubmitting with a file attached refuses without navigation and keeps the file', async () => {
-      // The suppressed pre-broadcast refusal sent the user back to Submit with
-      // the window already cleared. The entry gate must not fire the
-      // navigation that wipes the attached file: refuse, tell them, and leave
-      // the form as it is.
+    it('a passwordless account resubmitting with a file attached is asked, and keeps the file on a decline', async () => {
+      // The entry gate must not fire the navigation that wipes the attached
+      // file. It must not dead-end either: a passwordless account has no other
+      // factor, so a refusal with only a toast behind it leaves this form
+      // unsubmittable for good. Ask, and honour a no by changing nothing.
       mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
       mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+      mockStores.broadcastConfirm.request.mockResolvedValueOnce(false);
       const comp = lightComponent();
       const file = { name: 'paper.pdf', size: 1024 };
       comp.pdfFile = file;
 
       await comp.handleSubmit();
 
+      expect(mockStores.broadcastConfirm.request).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'confirm.reauthNavigateTitle' }),
+      );
       expect(mockStartOrcid).not.toHaveBeenCalled();
       expect(mockSessionUpload).not.toHaveBeenCalled();
       expect(broadcastOps).not.toHaveBeenCalled();
       expect(comp.pdfFile).toBe(file);
       expect(comp.step).toBe('idle');
-      expect(mockStores.toast.show).toHaveBeenCalledWith(
-        'Please confirm your identity again, then try once more.',
-        'error',
+      // A decline is the user's own choice to stop. Toasting the way through
+      // on top of the dialog that just offered it is noise.
+      expect(mockStores.toast.show).not.toHaveBeenCalled();
+    });
+
+    it('a passwordless account that accepts the cost navigates, with the draft already written', async () => {
+      // The draft save is debounced by two seconds, so the words typed just
+      // before Submit live only in component state. Confirming sends the tab
+      // to ORCID, and the copy promises the text will be there on the way
+      // back, so the write has to happen before the round-trip starts, not on
+      // the timer that the navigation cancels.
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+      let draftAtOrcid = null;
+      mockStartOrcid.mockImplementation(async () => {
+        draftAtOrcid = localStorage.getItem('pevo-draft-publish');
+        return { redirect_url: 'https://orcid.org/oauth/authorize?x=1' };
+      });
+      mockStores.broadcastConfirm.request.mockResolvedValueOnce(true);
+      vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/publish' } });
+      try {
+        const comp = lightComponent();
+        comp._initialLoadDone = true;
+        comp.pdfFile = { name: 'paper.pdf', size: 1024 };
+
+        await comp.handleSubmit();
+
+        expect(mockStores.broadcastConfirm.request).toHaveBeenCalledTimes(1);
+        expect(mockStartOrcid).toHaveBeenCalledTimes(1);
+        expect(window.location.href).toBe('https://orcid.org/oauth/authorize?x=1');
+        expect(JSON.parse(draftAtOrcid)).toMatchObject({ title: 'My Paper', body: 'Body text' });
+        // Nothing was spent on the way out: the upload legs sit past the gate.
+        expect(mockSessionUpload).not.toHaveBeenCalled();
+        expect(broadcastOps).not.toHaveBeenCalled();
+        expect(comp.step).toBe('idle');
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('asks a passwordless account that attached files before accreditation landed', async () => {
+      // The file-selection gate returns true ungated while unaccredited, so
+      // this account reaches its first submit holding a file and having never
+      // held a window. The copy must not presume a previous one, and the offer
+      // must still be made: without it the first thing accreditation buys is a
+      // form that cannot be submitted.
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+      mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+      mockStores.auth.isAccredited = false;
+      const comp = lightComponent();
+      const target = { files: [{ name: 'paper.pdf', size: 1024 }], value: 'C:\\fakepath\\paper.pdf' };
+
+      await comp.handlePdfChange({ target });
+
+      // Ungated while unaccredited: the file attached with no acquisition.
+      expect(comp.pdfFile).toEqual({ name: 'paper.pdf', size: 1024 });
+      expect(mockStores.broadcastConfirm.request).not.toHaveBeenCalled();
+
+      mockStores.auth.isAccredited = true;
+      mockStores.broadcastConfirm.request.mockResolvedValueOnce(false);
+
+      await comp.handleSubmit();
+
+      expect(mockStores.broadcastConfirm.request).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'confirm.reauthNavigateTitle' }),
       );
+      expect(mockStartOrcid).not.toHaveBeenCalled();
+      expect(comp.step).toBe('idle');
     });
 
     it('with nothing attached, the entry gate still navigates a passwordless account', async () => {
@@ -948,16 +1015,18 @@ describe('publishPage', () => {
       comp.pdfFile = pdf;
       const target = { files: [{ name: 'data.csv', size: 10 }], value: 'C:\\fakepath\\data.csv' };
 
+      mockStores.broadcastConfirm.request.mockResolvedValueOnce(false);
+
       await comp.handleSupplementaryFiles({ target });
 
+      expect(mockStores.broadcastConfirm.request).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'confirm.reauthNavigateTitle' }),
+      );
       expect(mockStartOrcid).not.toHaveBeenCalled();
       expect(comp.pdfFile).toBe(pdf);
       expect(comp.supplementaryFiles).toEqual([]);
       expect(target.value).toBe('');
-      expect(mockStores.toast.show).toHaveBeenCalledWith(
-        'Please confirm your identity again, then try once more.',
-        'error',
-      );
+      expect(mockStores.toast.show).not.toHaveBeenCalled();
     });
 
     it('picking a PDF with a supplementary file already attached refuses without navigation and keeps it', async () => {
@@ -968,40 +1037,41 @@ describe('publishPage', () => {
       comp.supplementaryFiles = [attached];
       const target = { files: [{ name: 'paper.pdf', size: 1024 }], value: 'C:\\fakepath\\paper.pdf' };
 
+      mockStores.broadcastConfirm.request.mockResolvedValueOnce(false);
+
       await comp.handlePdfChange({ target });
 
+      expect(mockStores.broadcastConfirm.request).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'confirm.reauthNavigateTitle' }),
+      );
       expect(mockStartOrcid).not.toHaveBeenCalled();
       expect(comp.pdfFile).toBeNull();
       expect(comp.supplementaryFiles).toEqual([attached]);
       expect(target.value).toBe('');
-      expect(mockStores.toast.show).toHaveBeenCalledWith(
-        'Please confirm your identity again, then try once more.',
-        'error',
-      );
+      expect(mockStores.toast.show).not.toHaveBeenCalled();
     });
 
-    it('re-picking the PDF with nothing else attached may still navigate: the slot it replaces is not held work', async () => {
-      // The entry gate refuses over a held PDF and the PDF has no remove
-      // affordance, so re-picking it is a passwordless account's one in-page
-      // way through once the window has lapsed. The PDF being replaced is
-      // lost to the pick either way; only held supplementary files would be
-      // lost to a navigation, and none are held here.
+    it('picking a PDF over one already attached asks, like every other gate reached with a file held', async () => {
+      // The PDF slot carries no special posture. What is held decides, and a
+      // held PDF is held work: the pick is gated the same way a supplementary
+      // pick is, and the way through is the same question rather than a
+      // hidden move only a reader of the source would find.
       mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
       mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
-      vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/publish' } });
-      try {
-        const comp = lightComponent();
-        comp.pdfFile = { name: 'paper.pdf', size: 1024 };
-        const target = { files: [{ name: 'paper-v2.pdf', size: 2048 }], value: 'C:\\fakepath\\paper-v2.pdf' };
+      mockStores.broadcastConfirm.request.mockResolvedValueOnce(false);
+      const comp = lightComponent();
+      const held = { name: 'paper.pdf', size: 1024 };
+      comp.pdfFile = held;
+      const target = { files: [{ name: 'paper-v2.pdf', size: 2048 }], value: 'C:\\fakepath\\paper-v2.pdf' };
 
-        await comp.handlePdfChange({ target });
+      await comp.handlePdfChange({ target });
 
-        expect(mockStartOrcid).toHaveBeenCalledTimes(1);
-        expect(window.location.href).toBe('https://orcid.org/oauth/authorize?x=1');
-        expect(target.value).toBe('');
-      } finally {
-        vi.unstubAllGlobals();
-      }
+      expect(mockStores.broadcastConfirm.request).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'confirm.reauthNavigateTitle' }),
+      );
+      expect(mockStartOrcid).not.toHaveBeenCalled();
+      expect(comp.pdfFile).toBe(held);
+      expect(target.value).toBe('');
     });
 
     it('with nothing attached, a window closing while the confirm dialog is open refuses at the pre-broadcast gate without navigation', async () => {

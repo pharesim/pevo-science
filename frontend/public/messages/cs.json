@@ -1022,7 +1022,10 @@
     "vote": "Potvrdit hlas",
     "commentTitle": "Přidat komentář",
     "commentMessage": "Chystáte se přidat komentář.",
-    "comment": "Přidat komentář"
+    "comment": "Přidat komentář",
+    "reauthNavigateTitle": "Confirm your identity",
+    "reauthNavigateMessage": "Confirming your identity with ORCID means leaving this page. Your text is saved as a draft and restored when you return. Attached files will need to be selected again.",
+    "reauthNavigate": "Continue to ORCID"
   },
   "upgrade": {
     "title": "Převezměte kontrolu nad svým účtem",

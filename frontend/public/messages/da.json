@@ -1022,7 +1022,10 @@
     "vote": "Bekræft stemme",
     "commentTitle": "Skriv kommentar",
     "commentMessage": "Du er ved at skrive en kommentar.",
-    "comment": "Skriv kommentar"
+    "comment": "Skriv kommentar",
+    "reauthNavigateTitle": "Confirm your identity",
+    "reauthNavigateMessage": "Confirming your identity with ORCID means leaving this page. Your text is saved as a draft and restored when you return. Attached files will need to be selected again.",
+    "reauthNavigate": "Continue to ORCID"
   },
   "upgrade": {
     "title": "Tag kontrol over din konto",

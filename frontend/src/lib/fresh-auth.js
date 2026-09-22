@@ -1358,10 +1358,26 @@ export function promptBusy() {
 // submit sequence so a passwordless account's full-page ORCID round-trip fires
 // while there is nothing to lose. See `ensureSessionWindow` for the ordering
 // rule and the outcome vocabulary.
-export async function freshAuthWindowReady(opts) {
+//
+// `onReauthRequired` is the caller's offer of a way through the one refusal
+// that is otherwise a dead end. The suppressed posture refuses a passwordless
+// account rather than navigate over what it holds, and that is right — but
+// nothing else in the tab can open a window for such an account, so the
+// `reauthRequired` toast's "then try once more" points back at a gate that
+// will refuse identically forever. A caller that knows what is at stake may
+// pass a predicate that states the cost and returns the user's answer: on a
+// yes the gate re-acquires with the navigating factor allowed, on a no it
+// refuses in silence, the way a dismissed password modal does. Callers with
+// nothing to offer (the pre-broadcast gates, where navigating would discard
+// paid-for pins) pass nothing and keep the toast. The offer is scoped to that
+// single outcome deliberately: the dispatch table below stays the one place
+// deciding which outcomes speak, and every other member still travels through
+// it.
+export async function freshAuthWindowReady(opts = {}) {
+  const { onReauthRequired, ...acquireOpts } = opts;
   let outcome;
   try {
-    outcome = await ensureSessionWindow(opts);
+    outcome = await ensureSessionWindow(acquireOpts);
   } catch (err) {
     // A gate that rejects is worse than the path it front-runs: it sits ahead
     // of the caller's own try, so the rejection escapes, the step machine never
@@ -1373,10 +1389,32 @@ export async function freshAuthWindowReady(opts) {
     return false;
   }
   if (outcome.ready) return true;
+  const outcomeKey = windowOutcomeKey(outcome);
+  if (outcomeKey === 'reauthRequired' && onReauthRequired) {
+    let offered;
+    try {
+      offered = await onReauthRequired();
+    } catch (err) {
+      // The offer is the caller's code and this gate may not reject, so a
+      // broken offer degrades to the state the caller would have been in
+      // without one: the refusal, told through the table. Swallowing it into
+      // a silent `false` instead would leave the same dead-looking button the
+      // toast row exists to prevent.
+      console.warn('[fresh-auth] reauth offer failed', err);
+      showWindowOutcomeToast(outcomeKey);
+      return false;
+    }
+    if (!offered) return false;
+    // A yes buys one navigating acquisition and no second offer: with the
+    // factor allowed, the passwordless branch navigates rather than refusing,
+    // so this cannot recur. The gate still answers false, because the caller
+    // must unwind the work it was gating — the page is leaving.
+    return freshAuthWindowReady({ ...acquireOpts, allowRedirect: true });
+  }
   // Every non-ready outcome surfaces through the shared dispatch: the table
   // decides which outcomes speak and which stay silent, so this site cannot
   // drop a newly added vocabulary member on the floor.
-  showWindowOutcomeToast(windowOutcomeKey(outcome));
+  showWindowOutcomeToast(outcomeKey);
   return false;
 }
 

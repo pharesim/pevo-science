@@ -1022,7 +1022,10 @@
     "vote": "Bekräfta röst",
     "commentTitle": "Publicera kommentar",
     "commentMessage": "Du är på väg att publicera en kommentar.",
-    "comment": "Publicera kommentar"
+    "comment": "Publicera kommentar",
+    "reauthNavigateTitle": "Confirm your identity",
+    "reauthNavigateMessage": "Confirming your identity with ORCID means leaving this page. Your text is saved as a draft and restored when you return. Attached files will need to be selected again.",
+    "reauthNavigate": "Continue to ORCID"
   },
   "upgrade": {
     "title": "Ta över kontrollen av ditt konto",

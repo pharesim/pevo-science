@@ -561,22 +561,40 @@ export function initPublishPage() {
     _scheduleDraftSave() {
       if (!this._initialLoadDone) return;
       if (this._draftTimer) clearTimeout(this._draftTimer);
-      this._draftTimer = setTimeout(() => {
-        const hasContent = this.title.trim() || this.abstract.trim() || this.body.trim();
-        if (!hasContent) {
-          localStorage.removeItem(DRAFT_KEY);
-          return;
-        }
-        const draft = {
-          title: this.title, abstract: this.abstract, body: this.body,
-          discipline: this.discipline, keywordsText: this.keywordsText,
-          coAuthors: this.coAuthors, citations: this.citations, authorName: this.authorName,
-          authorAffiliation: this.authorAffiliation, authorOrcid: this.authorOrcid,
-          savedAt: Date.now(),
-        };
-        localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
-        this.draftSavedAt = draft.savedAt;
-      }, 2000);
+      this._draftTimer = setTimeout(() => this._writeDraft(), 2000);
+    },
+
+    // Persist the draft now and cancel any pending debounce. Called before an
+    // acquisition that may navigate: the debounce above means the keystrokes
+    // just before a submit are still only in component state, and a full-page
+    // round-trip would take them with it. Idempotent, so flushing when nothing
+    // is pending costs a write and nothing else.
+    _flushDraftSave() {
+      if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }
+      this._writeDraft();
+    },
+
+    // The draft body, shared by the debounced save and the flush so the two
+    // cannot persist different shapes. The load guard belongs here rather than
+    // only at the scheduler: a flush can fire from a gate before the restore
+    // has run, and writing the empty form then would overwrite a real draft
+    // with nothing.
+    _writeDraft() {
+      if (!this._initialLoadDone) return;
+      const hasContent = this.title.trim() || this.abstract.trim() || this.body.trim();
+      if (!hasContent) {
+        localStorage.removeItem(DRAFT_KEY);
+        return;
+      }
+      const draft = {
+        title: this.title, abstract: this.abstract, body: this.body,
+        discipline: this.discipline, keywordsText: this.keywordsText,
+        coAuthors: this.coAuthors, citations: this.citations, authorName: this.authorName,
+        authorAffiliation: this.authorAffiliation, authorOrcid: this.authorOrcid,
+        savedAt: Date.now(),
+      };
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+      this.draftSavedAt = draft.savedAt;
     },
 
     discardDraft() {
@@ -727,18 +745,50 @@ export function initPublishPage() {
     // here once rather than at each call site. The navigating factor is
     // allowed only while nothing is attached: the worst case is then
     // re-picking the one file being chosen, and the text fields are drafted.
-    // Once a file is held, no gate may navigate over it. Files live in
+    // Once a file is held, no gate may navigate over it unasked. Files live in
     // component state the draft does not carry, so a round-trip fired to
     // acquire for a resubmit, or for a further file, would discard what is
-    // held; a passwordless account is refused non-destructively and told to
-    // re-authenticate instead. `opts` overrides the decision in two places:
-    // the pre-broadcast gate passes `allowRedirect: false` unconditionally,
-    // because by then the uploads are paid for and their CIDs live in
-    // handleSubmit locals, and the PDF pick leaves the slot it replaces out of
-    // the posture (see `handlePdfChange`).
+    // held.
+    //
+    // Refusing there is not the end of it. A passwordless account has no other
+    // factor, and nothing else in the tab can open a window for it, so a
+    // refusal with only a toast behind it leaves that account unable to
+    // publish at all while a file is attached. `onReauthRequired` hands the
+    // refusal back here as a question: the user is told what leaving costs and
+    // decides. `opts` overrides both decisions, and the pre-broadcast gate
+    // overrides both, because past the uploads the pins are paid for and their
+    // CIDs live in handleSubmit locals, so there is no answer worth offering.
+    //
+    // The flush is unconditional and sits ahead of every branch. Any gate here
+    // may end in a navigation, the draft save is debounced, and what the user
+    // typed in the seconds before clicking is exactly what a round-trip would
+    // otherwise take with it.
     async _windowReady(opts = {}) {
+      this._flushDraftSave();
       if (!this.isAccredited) return true;
-      return freshAuthWindowReady({ allowRedirect: !this.holdsAttachedFiles, ...opts });
+      return freshAuthWindowReady({
+        allowRedirect: !this.holdsAttachedFiles,
+        onReauthRequired: () => this._confirmNavigationCost(),
+        ...opts,
+      });
+    },
+
+    // The cost of the one way through, stated before it is taken. Shared with
+    // the edit page's copy of this method through the i18n keys, not the code:
+    // the two pages hold no common component. Worded without reference to a
+    // prior window, because the account may never have held one (files can be
+    // attached while unaccredited, and accreditation landing afterwards is a
+    // first submit, not a second).
+    //
+    // `request()` resolves false both when the user declines and when another
+    // action's dialog already owns the modal; both mean no navigation, which
+    // is what the caller does with a false either way.
+    async _confirmNavigationCost() {
+      return Alpine.store('broadcastConfirm').request({
+        title: this.$t('confirm.reauthNavigateTitle'),
+        message: this.$t('confirm.reauthNavigateMessage'),
+        confirmLabel: this.$t('confirm.reauthNavigate'),
+      });
     },
 
     // An attached PDF or supplementary file, whichever is held. Neither
@@ -751,13 +801,7 @@ export function initPublishPage() {
     async handlePdfChange(e) {
       const file = e.target.files?.[0];
       if (!file) return;
-      // The PDF slot is what this pick replaces, so it is not work a
-      // navigation here would cost; only held supplementary files are. The
-      // exception is also the in-page way through for a passwordless account
-      // whose window lapsed with a PDF attached: the entry gate refuses over
-      // the held file, supplementary files can be removed but the PDF cannot,
-      // so re-picking the PDF is the one move that may still navigate.
-      if (!await this._windowReady({ allowRedirect: this.supplementaryFiles.length === 0 })) {
+      if (!await this._windowReady()) {
         // Clear the input alongside the refusal. A browser fires no `change`
         // for an unchanged selection, so leaving the refused file in the input
         // makes the one file the user wants unpickable: the UI shows nothing
@@ -992,8 +1036,11 @@ export function initPublishPage() {
         // password factor, which costs a modal: the ORCID factor is a
         // navigation that would discard the completed pins, so it is
         // suppressed and a passwordless account gets a re-authenticate toast
-        // with the form intact instead.
-        if (!await this._windowReady({ allowRedirect: false })) { this.step = 'idle'; return; }
+        // with the form intact instead. No offer is threaded with it: the
+        // earlier gates can ask because a yes costs re-picking files, while a
+        // yes here would spend pins the user has already paid for, so the
+        // refusal is the whole answer and the toast is what carries it.
+        if (!await this._windowReady({ allowRedirect: false, onReauthRequired: null })) { this.step = 'idle'; return; }
         if (!this._mounted) return;
 
         this.step = 'broadcasting';

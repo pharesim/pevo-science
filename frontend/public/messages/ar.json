@@ -1022,7 +1022,10 @@
     "vote": "تأكيد التصويت",
     "commentTitle": "نشر تعليق",
     "commentMessage": "أنت على وشك نشر تعليق.",
-    "comment": "نشر التعليق"
+    "comment": "نشر التعليق",
+    "reauthNavigateTitle": "Confirm your identity",
+    "reauthNavigateMessage": "Confirming your identity with ORCID means leaving this page. Your text is saved as a draft and restored when you return. Attached files will need to be selected again.",
+    "reauthNavigate": "Continue to ORCID"
   },
   "upgrade": {
     "title": "تولَّ ملكية حسابك",

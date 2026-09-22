@@ -1022,7 +1022,10 @@
     "vote": "אישור הצבעה",
     "commentTitle": "פרסום תגובה",
     "commentMessage": "אתם עומדים לפרסם תגובה.",
-    "comment": "פרסום תגובה"
+    "comment": "פרסום תגובה",
+    "reauthNavigateTitle": "Confirm your identity",
+    "reauthNavigateMessage": "Confirming your identity with ORCID means leaving this page. Your text is saved as a draft and restored when you return. Attached files will need to be selected again.",
+    "reauthNavigate": "Continue to ORCID"
   },
   "upgrade": {
     "title": "קחו בעלות על החשבון שלכם",

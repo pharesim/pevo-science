@@ -3923,3 +3923,59 @@ pt: header.disconnect
 sv: header.disconnect
 tr: header.disconnect
 zh: header.disconnect
+
+### Added 2026-09-22 (ui-light-account-reauth-window)
+
+The cost-stating confirm a passwordless account is offered when a gate
+would otherwise refuse it outright: leaving the page for ORCID, the draft
+that survives, and the attached files that do not. Shown by both the
+publish and the edit page, so the copy is deliberately neutral about which
+form the reader is on.
+
+ar: confirm.reauthNavigateTitle
+cs: confirm.reauthNavigateTitle
+da: confirm.reauthNavigateTitle
+de: confirm.reauthNavigateTitle
+es: confirm.reauthNavigateTitle
+fa: confirm.reauthNavigateTitle
+fr: confirm.reauthNavigateTitle
+he: confirm.reauthNavigateTitle
+it: confirm.reauthNavigateTitle
+nl: confirm.reauthNavigateTitle
+pl: confirm.reauthNavigateTitle
+pt: confirm.reauthNavigateTitle
+sv: confirm.reauthNavigateTitle
+tr: confirm.reauthNavigateTitle
+zh: confirm.reauthNavigateTitle
+
+ar: confirm.reauthNavigateMessage
+cs: confirm.reauthNavigateMessage
+da: confirm.reauthNavigateMessage
+de: confirm.reauthNavigateMessage
+es: confirm.reauthNavigateMessage
+fa: confirm.reauthNavigateMessage
+fr: confirm.reauthNavigateMessage
+he: confirm.reauthNavigateMessage
+it: confirm.reauthNavigateMessage
+nl: confirm.reauthNavigateMessage
+pl: confirm.reauthNavigateMessage
+pt: confirm.reauthNavigateMessage
+sv: confirm.reauthNavigateMessage
+tr: confirm.reauthNavigateMessage
+zh: confirm.reauthNavigateMessage
+
+ar: confirm.reauthNavigate
+cs: confirm.reauthNavigate
+da: confirm.reauthNavigate
+de: confirm.reauthNavigate
+es: confirm.reauthNavigate
+fa: confirm.reauthNavigate
+fr: confirm.reauthNavigate
+he: confirm.reauthNavigate
+it: confirm.reauthNavigate
+nl: confirm.reauthNavigate
+pl: confirm.reauthNavigate
+pt: confirm.reauthNavigate
+sv: confirm.reauthNavigate
+tr: confirm.reauthNavigate
+zh: confirm.reauthNavigate

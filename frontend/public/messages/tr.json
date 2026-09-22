@@ -1026,7 +1026,10 @@
     "vote": "Oyu Onayla",
     "commentTitle": "Yorum Yayınla",
     "commentMessage": "Bir yorum yayınlamak üzeresiniz.",
-    "comment": "Yorumu Yayınla"
+    "comment": "Yorumu Yayınla",
+    "reauthNavigateTitle": "Confirm your identity",
+    "reauthNavigateMessage": "Confirming your identity with ORCID means leaving this page. Your text is saved as a draft and restored when you return. Attached files will need to be selected again.",
+    "reauthNavigate": "Continue to ORCID"
   },
   "upgrade": {
     "title": "Hesabınızın sahipliğini devralın",

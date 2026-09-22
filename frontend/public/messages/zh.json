@@ -1022,7 +1022,10 @@
     "vote": "确认投票",
     "commentTitle": "发表评论",
     "commentMessage": "您即将发表一条评论。",
-    "comment": "发表评论"
+    "comment": "发表评论",
+    "reauthNavigateTitle": "Confirm your identity",
+    "reauthNavigateMessage": "Confirming your identity with ORCID means leaving this page. Your text is saved as a draft and restored when you return. Attached files will need to be selected again.",
+    "reauthNavigate": "Continue to ORCID"
   },
   "upgrade": {
     "title": "接管您的账户",

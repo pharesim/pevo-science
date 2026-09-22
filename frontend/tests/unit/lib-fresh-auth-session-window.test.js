@@ -1084,3 +1084,83 @@ describe('collisions and suppressed navigation', () => {
     expect(mockMintSessionAuthProof).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('the suppressed refusal can be offered a way through', () => {
+  // A passwordless account's only factor is a full-page navigation, and the
+  // suppressed posture exists to stop that navigation firing over work the
+  // user would lose. Refusing is right; refusing with nothing behind it is
+  // not, because the toast's "then try once more" points at a gate that
+  // refuses identically every time and nothing else in the tab can open a
+  // window. `onReauthRequired` lets the caller state the cost and get an
+  // answer. Only the caller knows what is at stake, so only the caller may
+  // offer it; the gate keeps its toast wherever no offer was made.
+  beforeEach(() => {
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
+  });
+
+  it('asks the caller instead of toasting, and navigates once the caller says yes', async () => {
+    const offer = vi.fn().mockResolvedValue(true);
+
+    expect(await freshAuthWindowReady({ allowRedirect: false, onReauthRequired: offer })).toBe(false);
+
+    expect(offer).toHaveBeenCalledTimes(1);
+    // The refusal was answered, not narrated: a toast here would tell the user
+    // to do the thing the dialog is already asking them about.
+    expect(mockToastStore.show).not.toHaveBeenCalled();
+    // A yes re-acquires with the navigating factor allowed. The gate still
+    // answers false, because the caller must abort the work it was gating;
+    // the page is leaving.
+    expect(mockStartOrcid).toHaveBeenCalledTimes(1);
+    expect(window.location.href).toBe('https://orcid.org/oauth/authorize?x=1');
+  });
+
+  it('refuses in silence when the caller says no', async () => {
+    // A decline is the user's own decision to stop, which is the same shape as
+    // a dismissed password modal: nothing to report.
+    const offer = vi.fn().mockResolvedValue(false);
+
+    expect(await freshAuthWindowReady({ allowRedirect: false, onReauthRequired: offer })).toBe(false);
+
+    expect(offer).toHaveBeenCalledTimes(1);
+    expect(mockToastStore.show).not.toHaveBeenCalled();
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+    expect(window.location.href).toBe('');
+  });
+
+  it('keeps the toast for a caller that offers nothing', async () => {
+    expect(await freshAuthWindowReady({ allowRedirect: false })).toBe(false);
+
+    expect(mockToastStore.show).toHaveBeenCalledWith(
+      'Please confirm your identity again, then try once more.',
+      'error',
+    );
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+  });
+
+  it('is offered for the refusal only, never for another outcome', async () => {
+    // The dispatch table stays the one place that decides which outcomes
+    // speak. This hook intercepts exactly the outcome whose message is a dead
+    // end; everything else still travels through the table.
+    const offer = vi.fn().mockResolvedValue(true);
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+    mockReauthModal.request.mockResolvedValue(REAUTH_PROMPT_BUSY);
+
+    expect(await freshAuthWindowReady({ allowRedirect: false, onReauthRequired: offer })).toBe(false);
+
+    expect(offer).not.toHaveBeenCalled();
+    expect(mockToastStore.show).toHaveBeenCalledWith(
+      'Finish the confirmation already open, then try again.',
+      'error',
+    );
+  });
+
+  it('never reaches a password account, which prompts inline with the work held', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
+    const offer = vi.fn().mockResolvedValue(true);
+
+    expect(await freshAuthWindowReady({ allowRedirect: false, onReauthRequired: offer })).toBe(true);
+
+    expect(offer).not.toHaveBeenCalled();
+    expect(window.location.href).toBe('');
+  });
+});
