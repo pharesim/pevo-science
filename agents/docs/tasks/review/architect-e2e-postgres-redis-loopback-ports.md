@@ -74,3 +74,28 @@ and the `combflow` stack on the same Docker host publishes neither.
   so making dev Redis reachable from the host by default would let any test run wipe the
   dev backend's Redis state. The repo-root `.env` no longer carries a `REDIS_URL` (removed
   2026-09-22), so host-side runs reach Redis only when one is passed on the command line.
+
+## Implementation (architect, 2026-09-22)
+
+Landed in `6b50b6f3`. Scope items 1 and 2 as specified; item 3 done in `fb6569fe`
+(`ui-env-test-example-loopback-urls` moved to `pending/`). Two additions beyond the listed
+scope, both in architect-owned files: the `test-up` banner in `deploy.sh` prints the
+loopback `APP_DATABASE_URL` instead of a `docker inspect` lookup and now also names
+`REDIS_URL` (global-setup only warns when it is missing); the postgres comment in
+`docker-compose.yml` points at the override so "no host port" stays accurate for dev.
+The `test-db-up` banner is unchanged because that command also runs under plain `up`,
+where loopback answers nothing.
+
+Acceptance criteria, all verified on the dev host:
+
+1. After `test-up`: `docker port pevo-postgres-1` prints `5432/tcp -> 127.0.0.1:5432`,
+   `docker port pevo-redis-1` prints `6379/tcp -> 127.0.0.1:6379`; `ss -ltn` shows both
+   bound to 127.0.0.1 only.
+2. After `up`: `docker port` prints nothing for either container, no host listener on
+   5432 or 6379, backend routed back at `pevo_app`.
+3. `global-setup.js` invoked directly with both URLs on 127.0.0.1: test-db reset truncated
+   7 tables, rate-limit reset cleared 1 key under `pevotest:rl:*`, no Redis warning.
+
+Observed while verifying: the local `frontend/.env.test` names `172.0.0.1` for both hosts,
+which is a routable address, not loopback; it needs `127.0.0.1`. Left for the user, since
+nothing in the repo writes that file.
