@@ -1,6 +1,7 @@
 ---
 title: "A new fail-closed outcome must not reuse a sentinel that already means the opposite, or the untouched consumer reads it as reaching"
 date: 2026-09-15
+last_updated: 2026-09-22
 category: conventions
 module: backend/tests/eslint
 problem_type: convention
@@ -191,7 +192,11 @@ The probe that does reach them is adversarial and cross-boundary: for each findi
 
 ### 7. Run the fixture against the PRE-change reader
 
-This is the strongest available signal and it is cheap. If a fixture is green on the new code and **red** on the old code, the change converted an existing red bar into silence. That is strictly worse than a gap that was always there, and it is the finding worth escalating first. Do the comparison in a scratchpad copy at the prior commit rather than with `git checkout` in the shared checkout, which concurrent sibling agents own.
+This is the strongest available signal and it is cheap. If a fixture is green on the new code and **red** on the old code, the change converted an existing red bar into silence. That is strictly worse than a gap that was always there, and it is the finding worth escalating first.
+
+What decides is the fixture's trigger, not the old colour alone. A fixture spelled in ordinary code counts against the change even if the old reader's catch was itself accidental; the fixture in this entry's example is a real migration shape. A fixture that needs a documented misread or an unusual spelling, and that the old reader redded only because a different misread the change removed happened to leave a span open (often through an arm unrelated to the planted violation), is an accidental catch rather than a converted bar, and chasing it reopens the loop. `differential-fuzz-regressions-after-removing-a-compensating-misread-are-triaged-by-trigger.md` has the classification method and the stopping rule.
+
+Do the comparison in a scratchpad copy at the prior commit rather than with `git checkout` in the shared checkout, which concurrent sibling agents own.
 
 ## Why This Matters
 
@@ -314,3 +319,6 @@ Break it at the first line: when a reader gains an outcome, name it.
   by the fork this entry documents, and are true again now that `stopped` exists.
 - `conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` is the
   root convention the whole canary series rests on.
+- `conventions/differential-fuzz-regressions-after-removing-a-compensating-misread-are-triaged-by-trigger.md`
+  qualifies rule 7 for fuzzed differentials: a base red counts against the change
+  when its trigger is ordinary code, not merely because base was red.
