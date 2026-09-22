@@ -40,3 +40,8 @@ both instead of docker-network IPs, which change on every Docker restart.
 the loopback port mappings to `docker-compose.test.override.yml`. Until those exist, the
 127.0.0.1 addresses this template would name answer nothing. The architect moves this file
 to `pending/` when that lands.
+
+**Unblocked by Architect (2026-09-22).** The override now publishes postgres on
+`127.0.0.1:5432` and redis on `127.0.0.1:6379` under `./deploy.sh test-up`, verified with
+`docker port` and a global-setup run against both loopback URLs. The `test-up` banner in
+`deploy.sh` prints the same two addresses; keep the template's wording consistent with it.
