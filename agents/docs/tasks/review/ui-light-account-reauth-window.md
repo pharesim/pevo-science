@@ -1327,3 +1327,164 @@ run the signal reports.
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
 re-review signal. Do not edit this hold block or annotate items as fixed; the commit
 diff is the evidence and the architect updates the block at re-review.
+
+## UI re-review signal (2026-09-22, commits 9c194314 + 1f908602 + 69a645b3)
+
+All three SHAs self-verified as ancestors of `main` at the time of the move
+(`git merge-base --is-ancestor <sha> main`), so no item below sits on an
+orphaned worktree branch.
+
+### The seam items 1 to 3 share
+
+`freshAuthWindowReady` grows one option, `onReauthRequired`, and that is the
+whole of the new mechanism. The gate computes the outcome key exactly as
+before; when the key is `reauthRequired` AND the caller supplied a predicate,
+it asks instead of toasting. A truthy answer re-enters the gate once with
+`allowRedirect: true` and no offer, so the passwordless branch navigates and
+cannot refuse a second time; a falsy answer returns false with nothing said.
+Every other outcome, and every caller that supplies no predicate, still goes
+through `showWindowOutcomeToast` untouched, so the dispatch table remains the
+one place deciding which outcomes speak. The pages see the same boolean they
+saw before: no second copy of the outcome dispatch was added to either.
+
+A rejecting predicate is caught and degraded to the toast rather than allowed
+to escape, because the gate's own docblock forbids it rejecting: it sits ahead
+of each caller's try, so an escape would strand the step machine at idle.
+
+### Item 1
+
+Both pages thread the offer through `_windowReady`, which now reads:
+
+    async _windowReady(opts = {}) {
+      this._flushDraftSave();
+      if (!this.isAccredited) return true;          // publish only
+      return freshAuthWindowReady({
+        allowRedirect: !this.holdsAttachedFiles,
+        onReauthRequired: () => this._confirmNavigationCost(),
+        ...opts,
+      });
+    },
+
+`_confirmNavigationCost` calls the existing `broadcastConfirm` store with three
+new keys. The copy: "Confirming your identity with ORCID means leaving this
+page. Your text is saved as a draft and restored when you return. Attached
+files will need to be selected again." It names no prior window, carries no
+emdash, and is stubbed across all 15 non-English locales with a fresh
+`### Added 2026-09-22` sweep heading in `STUBS.md`. The edit page uses the
+global store directly; no new component.
+
+The three pre-broadcast gates (one on publish, two on edit) opt out by name
+with `onReauthRequired: null` and keep the toast, and the broadcast layer is
+untouched. Their comments now say why there is no offer there: a yes at an
+earlier gate costs re-picking files, a yes past the uploads would spend pins
+the user has already bought.
+
+The draft flush is the unconditional form the hold preferred. `_writeDraft` is
+extracted from the debounce closure on both pages so the timer and the flush
+persist the same shape, and the `_initialLoadDone` guard moved into it, since a
+gate can now fire a write before the restore has run and an unguarded write
+would overwrite a real draft with an empty form. Nothing was added to what the
+draft carries.
+
+On decline and on refuse-while-open: both arrive at this seam as the same
+`false` from `request()`, and the branch tests truthiness only, so they are
+literally one code path and a second spec would assert nothing the first does
+not. The store's own refuse-while-open return is pinned in
+`components-broadcast-confirm.test.js`.
+
+### Item 2
+
+`handlePdfChange` is back to the bare `this._windowReady()`. The carve-out
+comment and the `_windowReady` docblock sentence describing it are both gone.
+The re-pick spec is replaced by one asserting that a pick over a held PDF
+requests the confirm. The override spec that drops the window inside the
+confirm mock was left alone, and the probe below confirms it now carries the
+publish `...opts` spread on its own.
+
+### Item 3
+
+Covered by a spec that pins both halves in one arrangement: with a new
+supplementary file as the only change, the submit requests the confirm; then
+the file is removed, which is the move a bare refusal implies, and the same
+submit lands on `edit.noChanges` without reaching a gate at all. The
+no-changes check was not reordered.
+
+### Item 4
+
+One spec per branch, both in the in-flow shape the hold asked for rather than a
+direct call to the wrapper. A shared arrangement helper seeds a live window and
+one attached file, then the `uploadFile` mock empties `supplementaryFiles` and
+drops the stored window mid-leg, which is what the undisabled remove button
+makes reachable. Each spec asserts one upload, no `startOrcid`, no broadcast,
+no confirm requested, `step` at `'idle'`, and the `reauthRequired` toast, and
+carries a fixture-posture assertion (`isContinuation` true / false) so a
+fixture drift cannot silently point both at one branch.
+
+### Item 5
+
+`editor.test.js`'s `describeUploadError` mock is now a row-for-row mirror of the
+real mapper, including the `UPLOAD_SUBJECT_CHANGED` null row it was missing and
+the two re-auth rows it also lacked, and the constant is exported from the mock.
+It stays a switch on purpose: null is a value in this table rather than an
+absent key, and the lookup-table form written first silently turned both silent
+rows back into failures through its own nullish default, which the existing
+teardown specs caught. The new spec drives a subject-change rejection mid-batch
+and asserts one upload, no toast at all, and an emptied queue. No production
+code changed for this item.
+
+### Verification
+
+Frontend unit suite on the working tree: **86 files, 1930 tests, 0 failed,
+`vitest` exit code 0** (read from the process, not from a piped tail).
+`npm run build` exits 0.
+
+Mutation probes: 16, run serially in one scratchpad copy of `frontend/`, each
+mutation applied to a restored-pristine file and reverted afterwards, with the
+suite's own `RUN` header checked per run to prove no output came from another
+copy. Baseline green before the first mutation. **16 killed, 0 survived, 0
+errored.** Per-probe, the specs that died:
+
+- publish `...opts` spread removed: the two publish pre-broadcast override
+  specs, and only those. This is item 2's re-probe: the spread is now pinned by
+  the override specs alone, as the hold predicted.
+- publish `onReauthRequired` default removed: all six publish confirm specs.
+- publish `_flushDraftSave()` removed: the publish accept-the-cost spec alone.
+- publish confirm copy swapped to the publish-intent keys: five confirm specs.
+- edit `...opts` spread removed: four specs, the two new pre-broadcast ones and
+  the two pre-existing window-closing-during-uploads ones.
+- edit `onReauthRequired` default removed: all four edit confirm specs.
+- edit `_flushDraftSave()` removed: the edit accept-the-cost spec alone.
+- edit continuation gate's `allowRedirect: false` removed: the continuation
+  pre-broadcast spec, and nothing else.
+- edit same-author gate's `allowRedirect: false` removed: the same-author
+  pre-broadcast spec, and nothing else. The two literals do not mask each
+  other, which is what item 4 asked to be shown.
+- edit continuation gate's `onReauthRequired: null` removed: that branch's new
+  spec plus its pre-existing window-closing twin.
+- edit same-author gate's `onReauthRequired: null` removed: that branch's new
+  spec plus its pre-existing window-closing twin.
+- gate's offer branch disabled: the two lib specs that assert the offer is
+  called.
+- gate's offer widened to every outcome: the lib scope spec alone.
+- re-acquisition's `allowRedirect: true` dropped: the lib navigate-on-yes spec.
+- decline made to toast: the lib refuse-in-silence spec.
+- `UPLOAD_SUBJECT_CHANGED` row removed from the editor mock: the new
+  subject-change spec alone.
+
+Not run and not claimed: the E2E suite and any live-chain exercise.
+
+### Recorded, not fixed
+
+The round-6 block's wording note on `_handleImageUpload`'s comment (it reads as
+if the subject-change class is closed, while the abandonment fires only when
+the in-flight image fails with an already-reported code) was recorded rather
+than held, so it is left as it stands even though item 5 touched that spec's
+neighbourhood. Say the word if it should change.
+
+One thing this round did NOT close, flagged because a sibling task depends on
+it: the flush lands at the top of `_windowReady`, which is the simplest form
+the hold prescribed and closes the debounce hole, but it is not the
+"immediately before the navigation is assigned" seam that
+`ui-composer-surfaces-navigate-over-undrafted-work` needs for its stash. That
+task is in `blocked/` with the reasons; whoever picks it up still has to open
+the acquisition chain down to `beginOrcidFreshAuthRedirect`.
