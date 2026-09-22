@@ -107,6 +107,13 @@ function createComponent() {
   comp.$t = (key) => key;
   comp.$watch = vi.fn();
   comp.$nextTick = vi.fn((fn) => fn && fn());
+  // A real Alpine component always has $refs. loadPaperData schedules
+  // _mountEditors through the mocked $nextTick and discards the promise, so
+  // an unset $refs makes that deferred mount dereference undefined and
+  // surface as an unhandled rejection after the test has already passed. An
+  // empty default lets the mount find no editor elements instead. Cases that
+  // need live or stale refs assign their own after construction.
+  comp.$refs = {};
   return comp;
 }
 
@@ -2079,13 +2086,9 @@ describe('editPage draft carries the addressed-review ticks', () => {
     });
   }
 
-  // The shared createComponent() leaves $refs unset, and loadPaperData defers
-  // _mountEditors through the mocked $nextTick; an empty $refs lets that
-  // deferred mount find no editor elements instead of dereferencing undefined.
   function loadedComponent() {
     const comp = createComponent();
     comp._mounted = true;
-    comp.$refs = {};
     return comp;
   }
 
