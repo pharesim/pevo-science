@@ -177,18 +177,18 @@
  *      spelled on the statement's own lines: a `${...}` interpolation anywhere
  *      in it outside a SQL comment (one inside a comment evaluates to comment
  *      text), or a `+` beside its opening or closing quote. The `+` is read
- *      only where that opening quote is found on the head's line, and before
- *      the quote only on that line; the dynamic-SQL entry under KNOWN LIMITS
- *      names the silent joins that leaves. A SET-list fragment carrying the
- *      assignment is caught separately by the fail-closed arm, because no
- *      readable head's statement reaches a constant declared on its own. A
- *      column LIST held in a variable has no such second catcher, since a
- *      list names the column with no `=` after it, and neither, as a rule,
- *      does an `ALTER TABLE accounts` clause: a drop, a rename and a retype
- *      each spell the column with no assignment of their own. (An
- *      `updated_at =` inside a USING expression or a CHECK is read as one,
- *      which is why that is only a rule.) This scan reads the ALTER head for
- *      that reason.
+ *      only where that opening quote is found on the head's line and the read
+ *      stops at the literal's own closing quote, and before the quote only on
+ *      that line; the dynamic-SQL entry under KNOWN LIMITS names the silent
+ *      joins that leaves. A SET-list fragment carrying the assignment is
+ *      caught separately by the fail-closed arm, because no readable head's
+ *      statement reaches a constant declared on its own. A column LIST held
+ *      in a variable has no such second catcher, since a list names the
+ *      column with no `=` after it, and neither, as a rule, does an `ALTER
+ *      TABLE accounts` clause: a drop, a rename and a retype each spell the
+ *      column with no assignment of their own. (An `updated_at =` inside a
+ *      USING expression or a CHECK is read as one, which is why that is only
+ *      a rule.) This scan reads the ALTER head for that reason.
  *      Read-side interpolation is untouched; the recovery lookups themselves
  *      interpolate their window and are SELECTs.
  *
@@ -258,7 +258,8 @@
  *     rule.) So an ALTER whose table is named dynamically (`ALTER TABLE
  *     ${table}`, an `EXECUTE format('ALTER TABLE %I DROP COLUMN updated_at',
  *     'accounts')`), or whose column clause is assembled in any way the
- *     assembled-write scan does not recognise, reds nowhere. That scan
+ *     assembled-write scan does not recognise, reds nowhere unless that
+ *     clause spells an `updated_at =` of its own. That scan
  *     recognises two, in `src` only: a `${...}` interpolation in the
  *     statement's text, and a `+` beside its quote. The `+` is read only
  *     where {@link enclosingQuote} finds the literal's opening quote on the
@@ -272,14 +273,23 @@
  *     after a template from above closes there, since that closing backtick
  *     is read as an opener and the literal's opening one as its close. An
  *     interpolation in either layout is still read, since that test reads the
- *     statement's text and not its quote. A `+` before the opening quote is
- *     also looked for on the head's line alone, so one ending an earlier line
- *     is silent too, though only text ahead of the head can hide there. An
- *     array `.join`, a `.concat` or a `+=` is silent even on the statement's
- *     own line. What makes a text scan sound today is that no write or ALTER
- *     in either tree names its table, or assembles its text, in any of those
- *     ways, that {@link enclosingQuote} finds the opening quote of every
- *     `accounts` head in `src` on the head's line, and that `src` spells no
+ *     statement's text and not its quote. The other half of the bound is
+ *     where the read STOPS: the `+` after the quote is looked for past that
+ *     stop, so it is seen only where the stop was the literal's own closing
+ *     quote. A `'` or a `"` inside the literal that is not its delimiter
+ *     opens a value the read carries to its match, so a literal holding an
+ *     odd one of them runs past its own close and past the join. That is how
+ *     a concatenated quoted identifier is spelled
+ *     (`'UPDATE accounts SET "' + column + '" = now()'`, the same for a
+ *     column list or an ALTER clause), and it is silent in every arm. A `+`
+ *     before the opening quote is also looked for on the head's line alone,
+ *     so one ending an earlier line is silent too, though only text ahead of
+ *     the head can hide there. An array `.join`, a `.concat` or a `+=` is
+ *     silent even on the statement's own line. What makes a text scan sound
+ *     today is that no write or ALTER in either tree names its table, or
+ *     assembles its text, in any of those ways, that every `accounts` head in
+ *     `src` both opens and closes on its own literal's quotes as
+ *     {@link enclosingQuote} and the read find them, and that `src` spells no
  *     ALTER at all — and that a migration doing so would have to reach for
  *     dynamic SQL to write or alter one static column, which is a shape worth
  *     a second look on its own.
@@ -890,13 +900,13 @@ const BOUND_TO_ACCOUNTS_RE = /\b(?:ON|TO)\s+(?:public\.)?accounts\b/i;
  *  side of one. Harmless in a read; refused inside an `accounts` write or ALTER
  *  because each moves part of the statement out of the statement, leaving the
  *  arm that reads it a placeholder: the table-first read where the SET list
- *  should be, the ALTER arm where the column should be. The join is
- *  recognised where it is spelled against the literal and
- *  {@link enclosingQuote} found that literal's opening quote on the head's
- *  line: a `+` closing the head line's text before the opening quote, or
- *  opening the text after the closing quote (on that line, or leading the
- *  next). Where that quote is not found the join is silent, and the
- *  dynamic-SQL entry under KNOWN LIMITS records it. */
+ *  should be, the ALTER arm where the column should be. The join read is a
+ *  `+` closing the head line's text before the literal's opening quote, or
+ *  opening the text after where the read stopped (on that line, or leading
+ *  the next). It is read only where {@link enclosingQuote} found that
+ *  opening quote on the head's line and the read stopped at the literal's
+ *  own closing quote; the dynamic-SQL entry under KNOWN LIMITS records the
+ *  joins that leaves silent. */
 const SQL_INTERPOLATION_RE = /\$\{/;
 const JOINED_BEFORE_RE = /\+\s*$/;
 const JOINED_AFTER_RE = /^\s*\+/;
@@ -2157,11 +2167,13 @@ interface SqlStatement {
  * quote, and a literal that opens and closes ahead of the keyword cannot hand
  * the read a delimiter that truncates it short of the assignment. A keyword
  * enclosed by no string is a migration statement, read to its semicolon, and
- * so is any keyword whose quote {@link enclosingQuote} does not find on its
- * line, such as one inside a template opened on an earlier line. It is capped
- * so an unterminated literal cannot swallow the rest of the file. A read that
- * hits the cap reports no terminator, which is itself asserted on: a
- * statement too long to read whole is a statement this file cannot clear.
+ * so is any keyword {@link enclosingQuote} finds no quote for on its line,
+ * such as one inside a template opened on an earlier line. Where it finds a
+ * quote that is not the keyword's, that one delimits the read instead, which
+ * ends it early or not at all rather than at the statement's own end. It is
+ * capped so an unterminated literal cannot swallow the rest of the file. A
+ * read that hits the cap reports no terminator, which is itself asserted on:
+ * a statement too long to read whole is a statement this file cannot clear.
  *
  * A READ THAT CANNOT REACH ITS OWN TERMINATOR MUST NOT RESOLVE A TABLE. That is
  * the whole of what the span and value handling below is for, and it is the
@@ -2398,12 +2410,14 @@ function accountsColumnWriters(files: Readable[]): Occurrence[] {
 
 /** Whether `statement`, read from its head on `headLine`, is joined to more
  *  text by a `+` spelled against its literal: before the opening quote on the
- *  head's line, or after the closing quote on its line or leading the next.
- *  Both read the literal only where {@link enclosingQuote} found its opening
- *  quote on the head's line. Where it found none (`quoteAt` is -1) the
- *  before-quote test is skipped and the after test looks past the `;` the
- *  read stopped at, so the join is not seen; the dynamic-SQL entry under
- *  KNOWN LIMITS records it. */
+ *  head's line, or after where the read stopped, on that line or leading the
+ *  next. Each half answers to what the read found rather than to the literal.
+ *  The first is skipped where {@link enclosingQuote} found no quote on the
+ *  head's line (`quoteAt` is -1), the second reads past whatever the stop
+ *  was, and a read that reached no terminator answers false outright. So a
+ *  `+` against a literal the read did not stop at is not seen; the
+ *  dynamic-SQL entry under KNOWN LIMITS records the joins that leaves
+ *  silent. */
 function joinedByPlus(code: string[], statement: SqlStatement, headLine: number): boolean {
   if (statement.quoteAt !== -1 && JOINED_BEFORE_RE.test(code[headLine].slice(0, statement.quoteAt))) return true;
   if (statement.closedAt === -1) return false;
@@ -2431,7 +2445,9 @@ interface AssembledWrite {
  *  accounts (${...})` or `ALTER TABLE accounts DROP COLUMN ${...}` leaves
  *  every other arm a placeholder and is reported here or nowhere, and either
  *  one joined in a way this arm does not recognise, a `+` against a template
- *  opened on a line above its head among them, is reported nowhere. That is
+ *  opened on a line above its head among them, is reported nowhere, unless
+ *  its read also reached no terminator, which the every-statement-readable
+ *  arm reds by line. That is
  *  why the ALTER head is read here, and why the dynamic-SQL entry under KNOWN
  *  LIMITS names those joins. */
 function assembledWrites(files: Readable[]): AssembledWrite[] {
