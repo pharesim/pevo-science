@@ -49,11 +49,13 @@ Two legs can produce a non-string there, and neither type-checks what passes:
   `!token || !expiresAt || !absoluteExpiresAt`, then runs `Number.isFinite` over both deadlines
   and `idlePeriodMs`. The DEADLINES are type-checked; the TOKEN gets only a truthiness test. A
   truthy non-string in the window slot is handed back as a proof by `getCachedSessionProof`.
-- **The mint leg.** The mint callback inside `acquireSessionProof` calls `cacheSessionProof` with
-  `issued.fresh_auth_proof` and then returns that value verbatim. Nothing along that path, from the
-  response to the value's return, inspects its type. The one type test the mint path does perform
-  sits in `beginPasswordMintReport`, and it exists to veto a password-factor memo write rather than
-  to qualify a proof.
+- **The mint leg.** At the time, the mint callback inside `acquireSessionProof` called
+  `cacheSessionProof` with `issued.fresh_auth_proof` and then returned that value verbatim. Nothing
+  along that path, from the response to the value's return, inspected its type. The one type test
+  the mint path did perform sat in `beginPasswordMintReport`, and it existed to veto a
+  password-factor memo write rather than to qualify a proof. (The callback now narrows what it
+  RETURNS to a non-empty string or `undefined`, while still writing the raw value; see "Where the
+  eviction lives now" below.)
 
 What happened next used to be self-healing, by accident. The non-string reached
 `uploadFileToIpfs` in `frontend/src/api.js`, whose light-account branch sends
@@ -105,6 +107,24 @@ if (typeof proof !== 'string') {
 (`git log -S clearCachedSessionProof -- frontend/src/lib/fresh-auth.js` recovers the change and the
 round of comment corrections that followed it.) The reviewers who caught it put it in one sentence:
 the guard removed the round-trip without replacing the clear it relied on.
+
+**Where the eviction lives now.** The guard's clear was the whole eviction for one round only. The
+broadcast unwinder `acquisitionAborted` reads the same raw acquisition result and applies the same
+string test, but it never cleared, so a poisoned slot the broadcast surface refused stayed poisoned
+until a page gate or upload pre-flight happened to run the guard. A follow-up moved the eviction
+one level up, into `acquireSessionProof`: `evictUnnamedAcquisition` runs `clearCachedSessionProof()`
+on both the cache-hit leg and the settled-flight leg whenever the result is a non-string the outcome
+vocabulary does not name, before any consumer sees the value. The guard keeps its own
+`clearCachedSessionProof()` as a deliberate restatement, so the gate answers for its refusal without
+a reader having to trust an eviction they cannot see from there. Measured at the current tree in a
+scratchpad copy (the fresh-auth spec files): deleting the guard's clear kills nothing; deleting the
+acquisition-level drop kills five, all broadcast-path specs. The load-bearing clear is the
+acquisition-level one; the eviction spec quoted under Guidance (`the refusal evicts the entry that
+caused it`) is satisfied by either. In the same period the mint
+callback was narrowed to return only a non-empty string (`typeof proof === 'string' && proof`),
+because the redirect sentinel is `null`, a value JSON can carry, and `''` is the one falsy value
+that is also a string. Everything this entry says about WHY the eviction is owed is unchanged; only
+its home moved.
 
 ## Guidance
 
@@ -164,13 +184,15 @@ The second assertion is the one that fails when the eviction is dropped. Without
 only checks `{ ready: false, failed: true }` stays green through the entire regression, because the
 regression is not in the refusal, it is in what the refusal leaves behind.
 
-**Say why a companion clear is or is not gated.** The other `clearCachedSessionProof()` calls in
-this module are wrapped in `if (!guard.tornDown())`, so a departed subject's late response cannot
-wipe a successor's freshly minted window. This one is deliberately ungated: no `await` separates
-the acquisition resolving from the clear, so no teardown-plus-mint can land in between, and the
-entry being evicted is invalid for any subject by the guard's own premise. Where a module's other
-clears are all gated, an ungated one needs that sentence or the next reviewer re-derives it.
-(session history)
+**Say why a companion clear is or is not gated.** The module's one GATED
+`clearCachedSessionProof()`, the remintable-401 eviction in `broadcastWithFreshAuth`, is wrapped in
+`if (!guard.tornDown())`, so a departed subject's late response cannot wipe a successor's freshly
+minted window: a real network round-trip sits between the window it read and the clear it runs.
+The guard's clear and the acquisition-level drop in `evictUnnamedAcquisition` are deliberately
+ungated: no `await` separates the acquisition resolving from either clear, so no teardown-plus-mint
+can land in between, and the entry being evicted is invalid for any subject by the guard's own
+premise. Where a module gates some clears and not others, each ungated one needs that sentence or
+the next reviewer re-derives it. (session history)
 
 **When a guard names a CLASS, a pin on one member can pin the UNREACHABLE member.** The guard says
 `typeof proof !== 'string'`, and the first spec written for it exercised a `Symbol`. A
@@ -255,8 +277,9 @@ next attempt        -> readSessionWindow returns 4242 again  -> same refusal
 ...                 -> until the idle deadline, sign-out, or a new tab
 ```
 
-**The mutation probes that establish each piece is load-bearing**, run in private scratch copies of
-the checkout rather than in the shared tree:
+**The mutation probes that established each piece was load-bearing**, run in private scratch
+copies of the checkout rather than in the shared tree, as measured when the guard's clear was the
+sole eviction:
 
 | Mutation | Specs killed |
 |---|---|
@@ -265,14 +288,18 @@ the checkout rather than in the shared tree:
 | weaken to `proof === undefined` | 3 |
 | delete the guard entirely | 4 |
 
-The first row is the point of the eviction spec: without that spec the row reads 0, and the
-regression this entry documents lands green. The second row is the point of the class table: with
-only the `Symbol` row present it also reads 0.
+The first row was the point of the eviction spec: without that spec the row read 0, and the
+regression this entry documents landed green. Since the eviction moved into
+`evictUnnamedAcquisition`, that row reads 0 even with the spec (either clear satisfies it), and the
+row that reads non-zero is deleting the acquisition-level drop; the eviction is still pinned, by a
+different mutant. The second row is the point of the class table: with only the `Symbol` row present
+it also reads 0.
 
 ```js
 it.each([
   { label: 'a mint response with no proof field', value: undefined },
   { label: 'a numeric proof', value: 4242 },
+  { label: 'a null proof field', value: null },
   { label: 'a sentinel nobody registered', value: Symbol('an outcome nobody registered') },
 ])('an acquisition result the vocabulary does not name refuses the work: $label', ...);
 ```
