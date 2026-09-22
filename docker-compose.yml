@@ -9,7 +9,8 @@ services:
       POSTGRES_USER: pevo
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: pevo_app
-    # No host port — only reachable within Docker network
+    # No host port in dev — only reachable within the Docker network.
+    # docker-compose.test.override.yml publishes 127.0.0.1:5432 under test-up.
     expose:
       - "5432"
     volumes:

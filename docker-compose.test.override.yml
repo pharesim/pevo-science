@@ -3,11 +3,18 @@
 # without touching the internet.
 #
 # Applied on top of docker-compose.yml. Postgres, Redis, and IPFS stay
-# shared with the dev stack. Mailpit and orcid-stub are E2E-only sidecars. The
-# backend container is recreated (compose detects the env-var change), so:
+# shared with the dev stack; under test-up Postgres and Redis are additionally
+# published on 127.0.0.1 (5432, 6379) so the E2E harness's global-setup and
+# global-teardown can reach them from the host at a fixed address instead of
+# a docker-network IP that moves on every Docker restart. Mailpit and
+# orcid-stub are E2E-only sidecars. The backend container is recreated
+# (compose detects the env-var change), as are postgres and redis (compose
+# detects the port-mapping change; their data lives in named volumes), so:
 #
-#   ./deploy.sh test-up   — reconfigures backend to pevo_app_test + Mailpit
-#   ./deploy.sh up        — restores backend to pevo_app (dev routing)
+#   ./deploy.sh test-up   — reconfigures backend to pevo_app_test + Mailpit,
+#                           publishes postgres + redis on loopback
+#   ./deploy.sh up        — restores backend to pevo_app (dev routing),
+#                           drops the loopback ports again
 #
 # Prerequisite: pevo_app_test must already exist and be migrated. Run
 # `./deploy.sh test-db-up` once per machine (idempotent).
@@ -58,6 +65,25 @@ services:
         condition: service_started
       orcid-works-stub:
         condition: service_started
+
+  # Loopback-only host ports for the E2E harness (test-up only). The base
+  # file carries no `ports:` for either service, so the mapping is all this
+  # adds. frontend/tests/e2e/global-setup.js runs the test-db reset against
+  # APP_DATABASE_URL and the rate-limit reset against REDIS_URL, and
+  # global-teardown.js cleans Redis through the same URL; both come from the
+  # gitignored frontend/.env.test and can now name 127.0.0.1. While published,
+  # loopback reaches both pevo_app and pevo_app_test; the harness's
+  # test-db:reset hook and queryAppDb helper refuse any database whose name
+  # does not end in `_test`, and every backend vitest run's tests/setup.ts
+  # flushes `${APP_TAG}:*` when Redis answers, which is why these ports are
+  # not published in dev mode.
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
 
   mailpit:
     image: axllent/mailpit:latest

@@ -243,11 +243,14 @@ cmd_test_up() {
   fi
   log ""
   log "E2E stack is ready. Run Playwright from frontend/:"
-  local pg_ip pw
-  pg_ip=$(docker inspect pevo-postgres-1 --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null || echo "")
+  # The test override publishes postgres and redis on loopback, so the harness
+  # gets a fixed address instead of a docker-network IP that moves on restart.
+  # Both URLs can live in frontend/.env.test (CLI env wins over the file).
+  local pw
   pw=$(grep '^POSTGRES_PASSWORD=' .env | cut -d= -f2)
-  if [ -n "$pg_ip" ] && [ -n "$pw" ]; then
-    echo "  APP_DATABASE_URL=postgresql://pevo:${pw}@${pg_ip}:5432/pevo_app_test \\"
+  if [ -n "$pw" ]; then
+    echo "  APP_DATABASE_URL=postgresql://pevo:${pw}@127.0.0.1:5432/pevo_app_test \\"
+    echo "    REDIS_URL=redis://:<REDIS_PASSWORD from .env>@127.0.0.1:6379 \\"
     echo "    PEVO_TEST_BASE_URL=http://localhost:3001 \\"
     echo "    npm --prefix frontend run test:e2e"
   fi
