@@ -303,11 +303,13 @@ describe('editPage handleSubmit sanitization', () => {
         c => c[0] === 'storage'
       ).length;
 
-      // Every field _scheduleDraftSave persists needs a watcher, or a change
-      // to it never reaches the stored draft.
+      // Every field _writeDraft persists needs a watcher, or a change to it
+      // never reaches the stored draft. The order mirrors that draft object so
+      // a field added to one and not the other reads as a gap.
       expect(comp.$watch.mock.calls.map(([expr]) => expr)).toEqual([
         'title', 'abstract', 'body', 'keywordsText', 'authorName',
-        'authorAffiliation', 'authorOrcid', 'citations', 'addressedReviews',
+        'authorAffiliation', 'authorOrcid', 'newCoAuthors', 'citations',
+        'addressedReviews',
       ]);
       expect(storageListenersAfterInit).toBe(1);
 
@@ -2378,6 +2380,83 @@ describe('editPage draft carries the addressed-review ticks', () => {
     await reopened.loadPaperData();
 
     expect(reopened.addressedReviews).toEqual([]);
+  });
+
+  // A rejected enrichment used to fall through to the restore with `reviews`
+  // still empty. The reconciliation then pruned every saved tick against a
+  // list that only meant the reviews could not be fetched, and the restore
+  // left _initialLoadDone true so the next watched change rewrote the draft
+  // without them: a transient outage permanently lost what the user ticked,
+  // and the checklist card (x-if on reviews.length) was not even rendered to
+  // show it. Failing the load instead leaves the draft untouched and the Retry
+  // card as the way through.
+  it('a rejected enrichment fails the load and leaves the saved ticks alone', async () => {
+    vi.useFakeTimers();
+    try {
+      arrangeLoad([REV_ONE, REV_TWO]);
+      fetchPaperEnrichment.mockRejectedValue(new Error('enrichment unavailable'));
+      localStorage.setItem(DRAFT_KEY, storedDraft({ addressedReviews: [addressed(REV_TWO)] }));
+
+      const comp = loadedComponent();
+      await comp.loadPaperData();
+
+      expect(comp.loadError).toBe('edit.loadError');
+      expect(comp.addressedReviews).toEqual([]);
+      // The flag is the mechanism: the restore never ran, so nothing was
+      // pruned, and _writeDraft stays a no-op for the rest of the visit.
+      expect(comp._initialLoadDone).toBe(false);
+
+      // What a watched change would leave armed on the returning form.
+      comp._scheduleDraftSave();
+      vi.advanceTimersByTime(2000);
+
+      const saved = JSON.parse(localStorage.getItem(DRAFT_KEY));
+      expect(saved.addressedReviews).toEqual([addressed(REV_TWO)]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The post-success clear removes the draft, but a save the debounce still
+  // has armed writes it straight back inside the 1.5 s navigate() delay. The
+  // resurrected draft carries the ticks the revision just addressed, and ticks
+  // alone pass the no-changes check, so the next visit can re-declare
+  // addresses_reviews on an otherwise no-op edit. The form stays interactive
+  // while step is 'broadcasting', and _windowReady's flush is behind us by
+  // then, so a change made there is the one the clear has to answer for.
+  it('the post-success clear cancels a save the debounce still has armed', async () => {
+    vi.useFakeTimers();
+    try {
+      const { invalidatePaperCache } = await import('../../src/api.js');
+      invalidatePaperCache.mockResolvedValue({});
+      arrangeLoad([REV_ONE, REV_TWO]);
+
+      const comp = loadedComponent();
+      await comp.loadPaperData();
+      comp.authorName = 'Alice';
+      comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
+
+      // A keystroke landing while the edit is in flight. $watch is mocked in
+      // this harness, so the scheduler stands in for the watcher it registers.
+      broadcastOps.mockImplementation(async () => {
+        comp.title = 'Retitled while the edit was in flight';
+        comp._scheduleDraftSave();
+        return { tx_id: 'tx' };
+      });
+
+      await comp.handleSubmit();
+
+      expect(comp.step).toBe('success');
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      expect(comp._draftTimer).toBe(null);
+
+      vi.advanceTimersByTime(2000);
+
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      comp.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // A restored tick has to reach the rendered checkbox. The input is not

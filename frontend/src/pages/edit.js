@@ -550,6 +550,7 @@ export function initEditPage() {
       this.$watch('authorName', () => this._scheduleDraftSave());
       this.$watch('authorAffiliation', () => this._scheduleDraftSave());
       this.$watch('authorOrcid', () => this._scheduleDraftSave());
+      this.$watch('newCoAuthors', () => this._scheduleDraftSave());
       this.$watch('citations', () => this._scheduleDraftSave());
       this.$watch('addressedReviews', () => this._scheduleDraftSave());
     },
@@ -580,18 +581,25 @@ export function initEditPage() {
         if (!this._mounted) return;
         if (this.author !== author || this.permlink !== permlink) return;
 
-        if (paperRes.status === 'rejected') {
+        // Both halves are load-blocking. The enrichment half is the
+        // non-obvious one: its reviews are what _restoreDraft reconciles the
+        // saved ticks against, and an empty list there means "could not be
+        // fetched", not "the paper has none". Degrading instead would prune
+        // every saved tick, set _initialLoadDone so the next watched change
+        // rewrites the pruned set to storage, and render no checklist card to
+        // show the loss. Failing to the Retry card costs the draft nothing:
+        // _initialLoadDone stays false, so nothing is pruned and nothing is
+        // written.
+        if (paperRes.status === 'rejected' || enrichmentRes.status === 'rejected') {
           this.loadError = this.$t('edit.loadError');
           return;
         }
 
         this.paper = paperRes.value.data;
 
-        if (enrichmentRes.status === 'fulfilled') {
-          const enrichment = enrichmentRes.value.data || {};
-          this.reviews = enrichment.reviews || [];
-          this.paper.authorship_claims = enrichment.authorship_claims || [];
-        }
+        const enrichment = enrichmentRes.value.data || {};
+        this.reviews = enrichment.reviews || [];
+        this.paper.authorship_claims = enrichment.authorship_claims || [];
 
         this._prefillForm();
         this._restoreDraft();
@@ -738,8 +746,10 @@ export function initEditPage() {
     // A tick only means something while the checklist still offers its review,
     // so the saved set is intersected with the reviews the paper carries rather
     // than trusted. loadPaperData assigns `reviews` from the enrichment
-    // response before it calls _restoreDraft, so the intersection has the
-    // paper's reviews in hand. Iterating `reviews` rather than the saved array
+    // response before it calls _restoreDraft, and fails the load outright when
+    // that response rejected, so the intersection always has the paper's
+    // reviews in hand and never runs against an empty list that only means
+    // they could not be fetched. Iterating `reviews` rather than the saved array
     // also rebuilds each surviving entry as {author, permlink} (collapsing a
     // duplicate) and orders the result like the rendered checklist.
     _reconcileAddressedReviews(saved) {
@@ -807,6 +817,18 @@ export function initEditPage() {
       if (!this._initialLoadDone) return;
       if (this._draftTimer) clearTimeout(this._draftTimer);
       this._draftTimer = setTimeout(() => this._writeDraft(), 2000);
+    },
+
+    // Drop the saved draft and cancel any save the debounce still has armed.
+    // The cancel is the half that is easy to miss: the form stays interactive
+    // through the broadcast, so a change made after _windowReady's flush arms
+    // a timer that would fire inside the 1.5 s navigate() delay and write the
+    // draft straight back. The next visit would then restore it over the
+    // freshly fetched paper, ticks and all, and ticks alone pass the
+    // no-changes check.
+    _clearDraft() {
+      if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }
+      localStorage.removeItem(this.draftKey);
     },
 
     // Persist the draft now and cancel any pending debounce. Called before an
@@ -1305,7 +1327,7 @@ export function initEditPage() {
           if (!this._mounted) return;
 
           this.step = 'success';
-          localStorage.removeItem(this.draftKey);
+          this._clearDraft();
           this._setTimer(() => {
             this.navigate(`/paper/${canonicalAuthor}/${canonicalPermlink}`);
           }, 1500);
@@ -1386,7 +1408,7 @@ export function initEditPage() {
           if (!this._mounted) return;
 
           this.step = 'success';
-          localStorage.removeItem(this.draftKey);
+          this._clearDraft();
           this._setTimer(() => {
             this.navigate(`/paper/${canonicalAuthor}/${canonicalPermlink}`);
           }, 1500);
