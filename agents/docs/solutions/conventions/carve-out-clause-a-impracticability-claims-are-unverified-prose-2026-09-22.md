@@ -39,9 +39,9 @@ tags:
 
 ## Context
 
-Root `CLAUDE.md` "Carve-out for deterministic edge-case coverage" clause (a) requires a mocked test's header to say which real path is impractical and why. That "why" is free prose, checked by exactly one mechanism: a reader believing it. Two headers in the tree give a reason that is false while the mock itself is justified. Both are held for the implementer as of this writing, not fixed.
+Root `CLAUDE.md` "Carve-out for deterministic edge-case coverage" clause (a) requires a mocked test's header to say which real path is impractical and why. That "why" is free prose, checked by exactly one mechanism: a reader believing it. Two headers in the tree gave a reason that is false while the mock itself is justified. The unit instance has since landed its correction; the e2e instance, and the fixture sweep it drags along, remain held for the implementer.
 
-The unit instance, `frontend/tests/unit/lib-ipfs-upload-real-window.test.js`, justifies mocking `uploadFileToIpfs` because it "reaches `crypto.subtle` before its first request, which jsdom does not provide." jsdom provides it: `frontend/tests/unit/harness.test.js` asserts `typeof crypto.subtle.digest` is `'function'` and computes a SHA-256 under the same vitest config. The real blocker sits one call earlier. `uploadFileToIpfs` (`frontend/src/api.js`) hashes the file through `sha256File` (`frontend/src/crypto.js`) before any request, and `sha256File` calls `file.arrayBuffer()` before it touches `crypto.subtle`; jsdom's Blob does not implement `arrayBuffer()`, the gap `frontend/tests/unit/crypto.test.js` records in its own header. A review-time scratchpad probe, `sha256File(new Blob(['x']))`, rejected on `file.arrayBuffer` before `crypto.subtle` was ever reached.
+The unit instance, `frontend/tests/unit/lib-ipfs-upload-real-window.test.js`, justifies mocking `uploadFileToIpfs` because it "reaches `crypto.subtle` before its first request, which jsdom does not provide." The capability is present under the same vitest config: `frontend/tests/unit/harness.test.js` asserts `typeof crypto.subtle.digest` is `'function'` and computes a SHA-256 there. Its provider is not jsdom, whose 25.0.1 `Crypto-impl.js` implements only `getRandomValues` and `randomUUID`; it is Node's webcrypto global, which vitest's jsdom environment leaves in place. The first draft of the correction wrote "jsdom provides it" into the header, a probe refuted that too, and the landed sentence claims presence and names no provider. The real blocker sits one call earlier. `uploadFileToIpfs` (`frontend/src/api.js`) hashes the file through `sha256File` (`frontend/src/crypto.js`) before any request, and `sha256File` calls `file.arrayBuffer()` before it touches `crypto.subtle`; jsdom's Blob does not implement `arrayBuffer()`, the gap `frontend/tests/unit/crypto.test.js` records in its own header. A review-time scratchpad probe, `sha256File(new Blob(['x']))`, rejected on `file.arrayBuffer` before `crypto.subtle` was ever reached.
 
 The e2e instance, `frontend/tests/e2e/non-consent-fresh-auth.spec.js`, says its ORCID test stubs `/api/orcid/callback` because "(no real ORCID OAuth handshake is possible in Playwright)". That parenthetical dates from 2026-05-16, before the in-network `orcid-stub` sidecar in `docker-compose.test.override.yml` (2026-06-09) and the `routeOrcidStubBridge` fixture in `frontend/tests/e2e/fixtures/orcid.js` (2026-06-14). `frontend/tests/e2e/settings-orcid-factor.spec.js` now drives that bridge to a genuine token exchange at the real `/api/orcid/callback`, and the same docblock's clause (c), three paragraphs down, says so. The commit "the header said decrypt, the handler stops a guard earlier" re-emitted the parenthetical while correcting a neighbouring sentence: "refuses at ... the posting-key decrypt" became "the posting-key availability guard that fronts the decrypt; the decrypt itself never runs", which matches `backend/src/routes/custody.ts`, where `if (!account.posting_key_enc || !account.iv_posting)` returns 500 `Posting key not available` before `decryptKey` is called. The correction stopped at the header. The fixture it cites, `frontend/tests/e2e/fixtures/light-account.js`, still says the handler "hits the posting-key decrypt" in its module docblock and that `expectPostGateStop` proves the request "reached the posting-key decrypt" at "the first post-gate step", and two inline comments in the spec still say the broadcast "stopped at the posting-key decrypt". The same phrase also survives in `frontend/tests/e2e/consent-op-fresh-auth.spec.js` and `frontend/tests/unit/fresh-auth-401-retry.test.js`, which cite the fixture; the hold that routed the correction named only the first two sites, so even the sweep that found the gap under-swept.
 
@@ -53,7 +53,7 @@ The week's session history holds the same shape outside carve-outs (session hist
 
 A clause-(a) impracticability claim, and any sentence naming where the code stops, is a claim about the harness or the handler. Run it against the harness's own pins before writing it, and again before accepting it:
 
-1. **Grep the harness and smoke specs for the capability named.** `harness.test.js` pins `crypto.subtle`; `crypto.test.js` pins the `Blob.arrayBuffer()` gap. If a smoke spec asserts present the thing you are about to call absent, the reason is wrong.
+1. **Grep the harness and smoke specs for the capability named.** `harness.test.js` pins `crypto.subtle`; `crypto.test.js` pins the `Blob.arrayBuffer()` gap. If a smoke spec asserts present the thing you are about to call absent, the reason is wrong. A pin proves presence under that config, not provenance: say the capability is present, and attribute it to a library only after reading that library's implementation.
 2. **Check sibling specs for one that already does the "impossible" thing.** `git grep -n routeOrcidStubBridge -- frontend/tests` finds `settings-orcid-factor.spec.js` completing the round-trip the parenthetical rules out.
 3. **When naming where the code stops, read the handler and name the guard that fires**, not the step behind it. In `custody.ts` the seeded row stops at the availability guard; `decryptKey` never runs.
 4. **When a correction lands in a header, grep the phrase across the file, the fixtures the header cites, and the citers.** `git grep -n "posting-key decrypt" -- frontend/tests` returns the fixture's two docblocks, the spec's two inline comments, and the two citing suites. A header fix that leaves the cited fixture saying the opposite creates a contradiction the citation now leads to.
@@ -76,13 +76,13 @@ Nothing mechanical catches this. The `.githooks/pre-commit` anchor gate and `bac
 
 ## Examples
 
-Unit header, before (current tree):
+Unit header, before (as held):
 
 > `uploadFileToIpfs` reaches `crypto.subtle` before its first request, which jsdom does not provide.
 
-After (prescribed, pending):
+After (landed; the appended citation makes the presence claim checkable where it is read):
 
-> `uploadFileToIpfs` hashes the file through `sha256File` before its first request, and `sha256File` calls `file.arrayBuffer()`, which jsdom's Blob does not implement (`crypto.test.js` records the same gap); `crypto.subtle` itself is present.
+> `uploadFileToIpfs` hashes the file through `sha256File` before its first request, and `sha256File` calls `file.arrayBuffer()`, which jsdom's Blob does not implement (`crypto.test.js` records the same gap); `crypto.subtle` itself is present, as `harness.test.js` asserts.
 
 E2e clause (a), before (current tree):
 
