@@ -9,7 +9,11 @@
 # a docker-network IP that moves on every Docker restart. Mailpit and
 # orcid-stub are E2E-only sidecars. The backend container is recreated
 # (compose detects the env-var change), as are postgres and redis (compose
-# detects the port-mapping change; their data lives in named volumes), so:
+# detects the port-mapping change; their data lives in named volumes). That
+# recreate drops other processes' connections to postgres and redis and may
+# move their docker-network IPs, and a `./deploy.sh restart` issued in test
+# mode does the same on its way back to dev routing; deploy.sh warns before
+# each such step. So:
 #
 #   ./deploy.sh test-up   — reconfigures backend to pevo_app_test + Mailpit,
 #                           publishes postgres + redis on loopback

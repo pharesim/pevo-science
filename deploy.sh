@@ -107,6 +107,25 @@ cmd_build() {
   log "Build complete"
 }
 
+# The E2E override publishes postgres and redis on loopback, so their container
+# config differs between dev mode and test mode and compose recreates both on
+# every switch, including a `restart` issued while in test mode. Warn before
+# the step that does it: other processes' connections to them drop and their
+# docker-network IPs may change. Test mode is detected by redis publishing 6379;
+# `$1` is the direction the caller is about to take (`yes` = publish, `no` =
+# unpublish). Silent when the containers do not exist yet.
+warn_infra_bounce() {
+  local want_published="$1" published
+  docker inspect pevo-redis-1 >/dev/null 2>&1 || return 0
+  published=$(docker port pevo-redis-1 6379 2>/dev/null || true)
+  if { [ "$want_published" = yes ] && [ -z "$published" ]; } \
+     || { [ "$want_published" = no ] && [ -n "$published" ]; }; then
+    warn "Switching between dev and test mode recreates postgres and redis:"
+    warn "  other processes' connections to them drop and their docker-network IPs may change."
+    warn "  A sibling test run against them at this moment will fail."
+  fi
+}
+
 cmd_up() {
   check_env
   if [ -n "$LOG_OVERLAY_FLAGS" ]; then
@@ -117,6 +136,7 @@ cmd_up() {
     warn "  Desktop / WSL where the daemon cannot reach the journal), set PEVO_LOG_DRIVER=json-file."
   fi
   log "Starting services..."
+  warn_infra_bounce no
   # --remove-orphans cleans up services introduced by docker-compose.test.override.yml
   # (e.g. mailpit) when switching back from `test-up` to plain `up`.
   $COMPOSE $LOG_OVERLAY_FLAGS up -d --remove-orphans "$@"
@@ -221,7 +241,25 @@ cmd_test_up() {
     err "pevo_app_test does not exist. Run: ./deploy.sh test-db-up"
     exit 1
   fi
+  # Fail fast when something other than our own container already listens on a
+  # loopback port the test override publishes. Compose would stop the running
+  # postgres or redis and then fail to start the replacement, leaving that
+  # service down until `./deploy.sh up`. A port our own container already
+  # publishes means the stack is in test mode already, which is fine. Skipped
+  # when iproute2's ss is not installed.
+  if command -v ss >/dev/null 2>&1; then
+    local svc port
+    for svc in postgres:5432 redis:6379; do
+      port="${svc#*:}"
+      if [ -z "$(docker port "pevo-${svc%%:*}-1" "$port" 2>/dev/null)" ] \
+         && ss -ltn 2>/dev/null | awk -v p=":$port" '$4 ~ p "$"' | grep -q .; then
+        err "Port $port is already bound on the host; test-up publishes ${svc%%:*} on 127.0.0.1:$port. Free the port first."
+        exit 1
+      fi
+    done
+  fi
   log "Starting services with backend routed at pevo_app_test..."
+  warn_infra_bounce yes
   # E2E pins its compose files explicitly and intentionally OMITS $LOG_OVERLAY_FLAGS:
   # the test stack stays on the default json-file driver (E2E needs no retention, and
   # combining the prod journald overlay with the test override is untested). This is the
@@ -242,18 +280,19 @@ cmd_test_up() {
     warn "Backend did not become healthy within 60s — check logs with: ./deploy.sh logs backend"
   fi
   log ""
-  log "E2E stack is ready. Run Playwright from frontend/:"
+  log "E2E stack is ready. Run Playwright from the repo root:"
   # The test override publishes postgres and redis on loopback, so the harness
   # gets a fixed address instead of a docker-network IP that moves on restart.
-  # Both URLs can live in frontend/.env.test (CLI env wins over the file).
-  local pw
-  pw=$(grep '^POSTGRES_PASSWORD=' .env | cut -d= -f2)
-  if [ -n "$pw" ]; then
-    echo "  APP_DATABASE_URL=postgresql://pevo:${pw}@127.0.0.1:5432/pevo_app_test \\"
-    echo "    REDIS_URL=redis://:<REDIS_PASSWORD from .env>@127.0.0.1:6379 \\"
-    echo "    PEVO_TEST_BASE_URL=http://localhost:3001 \\"
-    echo "    npm --prefix frontend run test:e2e"
-  fi
+  # Both URLs can live in frontend/.env.test (CLI env wins over the file). The
+  # quoted heredoc prints the command substitutions literally, so neither
+  # password reaches the terminal; they resolve when the block is pasted from
+  # the repo root, where .env lives and `npm --prefix frontend` already runs.
+  cat <<'EOF'
+  APP_DATABASE_URL="postgresql://pevo:$(grep '^POSTGRES_PASSWORD=' .env | cut -d= -f2-)@127.0.0.1:5432/pevo_app_test" \
+    REDIS_URL="redis://:$(grep '^REDIS_PASSWORD=' .env | cut -d= -f2-)@127.0.0.1:6379" \
+    PEVO_TEST_BASE_URL=http://localhost:3001 \
+    npm --prefix frontend run test:e2e
+EOF
   log ""
   log "Restore dev routing when done: ./deploy.sh up"
 }
@@ -429,8 +468,12 @@ cmd_restart() {
   DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 $COMPOSE build backend
 
   # 2. Ensure infra is up (idempotent); never tear it down. $LOG_OVERLAY_FLAGS
-  #    threads the journald overlay at container-create time.
+  #    threads the journald overlay at container-create time. One exception to
+  #    "idempotent": in test mode postgres and redis carry the loopback port
+  #    mapping the base config lacks, so this step recreates them on the way
+  #    back to dev routing (warn_infra_bounce says so).
   log "Ensuring infrastructure (postgres, redis, ipfs) is up..."
+  warn_infra_bounce no
   $COMPOSE $LOG_OVERLAY_FLAGS up -d postgres redis ipfs
   log "Waiting for postgres to be ready..."
   local retries=30
