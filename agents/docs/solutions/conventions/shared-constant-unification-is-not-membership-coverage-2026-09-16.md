@@ -67,8 +67,9 @@ Verify membership by mutation, in an isolated copy, never the shared checkout:
    `ALTER COLUMN updated_at TYPE ... USING ...`.
 2. With `READ_FROM_HEADS` as committed, `every accounts statement can be read whole` reds and names
    the line.
-3. Drop `ALTER_ACCOUNTS_RE` from the constant, leaving the planted migration in place. All 24 tests
-   pass. The truncated ALTER is invisible.
+3. Drop `ALTER_ACCOUNTS_RE` from the constant, leaving the planted migration in place. The whole
+   suite stays green, exit 0. The truncated ALTER is invisible. (Read the exit code rather than a
+   test count: the arm count has grown since this was first measured.)
 
 Three things had to hold at once for that gap, and all three did:
 

@@ -95,9 +95,11 @@ archiving. Never trust the task's own count.**
   with the specific missed sites listed, or split a follow-up that fixes the
   omissions (reusing the same helper the task introduced, if applicable). Where a
   rot class recurs, the durable fix is a CI diff-gate; until one exists for a given
-  class, the manual independent re-enumeration is the only backstop. (A CI
-  diff-gate for the comment-anchor sub-case has been filed as an architect
-  follow-up.)
+  class, the manual independent re-enumeration is the only backstop. (The
+  comment-anchor sub-case has since gained one: the repo-local `.githooks/pre-commit`
+  diff gate, recorded in `comment-anchor-rot-precommit-diff-gate-2026-06-14.md`. It
+  fires on newly-added lines only and covers that one rot class, so every other
+  completeness class still needs the manual step.)
 
 ## Why This Matters
 

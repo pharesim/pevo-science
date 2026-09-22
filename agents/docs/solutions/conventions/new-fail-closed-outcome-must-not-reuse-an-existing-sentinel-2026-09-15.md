@@ -83,7 +83,7 @@ Mechanically: grep for the sentinel's test, not for the function name. `closedAt
 | `targetTable` reach test | does this head's statement reach the assignment | ran-out only | **broken by the fork** |
 | `joinedByPlus` | is there text after the terminator | neither; it cannot compute without one | sound, and pinned |
 | `every accounts statement can be read whole` | report this statement as unreadable | both | sound, but see rule 5 |
-| `unreadableIn` fixture helper | the same question, for fixtures | both | **still enumerates one head pattern** |
+| `unreadableIn` fixture helper | the same question, for fixtures | both | **enumerated one head pattern of its own** |
 
 Note the fourth row. The grep is what surfaced it, and it is the drift rule 5
 warns about sitting inside the very change that introduced the rule: a helper
@@ -177,6 +177,8 @@ for (const pattern of [ACCOUNTS_STATEMENT_RE, ALTER_ACCOUNTS_RE]) {
 ```
 
 The ALTER head is the one that most needs covering, because `accountsColumnAlterations` is the only scan that sees a column rewrite carrying no assignment and no column list. Every other writer shape has a second walk behind it; a truncated ALTER has none.
+
+Since this was written, the pair has been named as `READ_FROM_HEADS`, and both the arm and the `unreadableIn` fixture helper read it: the helper now delegates to `unreadableStatements` rather than keeping a loop of its own. That closes the mirror drift the fourth row above records, and the set's own docblock argues each walk that deliberately reads a single head instead.
 
 Generalized: for every entry point into the changed reader, ask *"if the read stops early here, which arm reports it?"* If the answer is "none", that entry point is a silent pass.
 

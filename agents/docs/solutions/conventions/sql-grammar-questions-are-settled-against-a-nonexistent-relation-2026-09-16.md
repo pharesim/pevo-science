@@ -209,3 +209,12 @@ ordinary table, and it is exactly the form that moves another column onto the gu
   grammar right can make the match quadratic: admitting an optional paren between two
   unbounded whitespace runs did precisely that here, and was respelled as two alternatives
   with the paren required in one.
+- `backtracking-probe-terminator-must-defeat-the-pattern-tail-2026-09-16.md` is the
+  measurement rung for that same respelling: it is what establishes that the flat reading
+  of the committed spelling was a real measurement rather than a probe that never engaged.
+
+The technique has been applied once more since, on the same head. The word boundary in
+`ONLY\b` is what keeps `ALTER TABLE onlyaccounts` and `ALTER TABLE onlypublic.accounts`
+from counting as writes to this table, and the server is what settles it: it answers that
+the relation `onlyaccounts` does not exist, which is a statement about some other relation.
+An `onlyaccounts` fixture pins that spelling.

@@ -20,7 +20,7 @@ tags: [comment-sweep, hold-block, behavioral-accuracy, convention-enforcement, a
 
 PEvO's hold-cycle workflow for comment-anchor sweeps often ships with a MINIMAL architect prescription — a single banner sentence anchored on the load-bearing behavioral invariant. Implementers are free to expand that anchor into a fuller description, and sometimes do so to add reader value. The canonical self-audit clause (per [[convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17]]) enumerates ROT shapes — round-N markers, slug citations, line-number anchors, SHA refs, date anchors, partial-strip stubs, orphan single-letter prefixes, dangling determiners, bare possessives, dangling prepositions, relative positional anchors — but is silent on behavioral-accuracy drift in the added prose itself.
 
-The supersession-cluster round-3 → round-4 hold (2026-05-20) surfaced the gap. An expanded banner at `backend/tests/routes/continuation-author-gate.test.ts:625-630` added 4 clauses beyond the architect's 1-sentence prescription, and 2 of the 4 drifted from the code at `buildCumulativeAuthorsForChain` and the matching-claim canary's NO-override assertion. Broadened-grep self-audit returned clean, test assertions were unchanged, and only one persona's spot-check-comment-against-code pass caught the imprecisions (single-reviewer, no cross-corroboration).
+The supersession-cluster round-3 → round-4 hold (2026-05-20) surfaced the gap. An expanded banner at `backend/tests/routes/continuation-author-gate.test.ts` (the one opening `Cumulative-union display canaries`) added 4 clauses beyond the architect's 1-sentence prescription, and 2 of the 4 drifted from the code at `buildCumulativeAuthorsForChain` and the matching-claim canary's NO-override assertion. Broadened-grep self-audit returned clean, test assertions were unchanged, and only one persona's spot-check-comment-against-code pass caught the imprecisions (single-reviewer, no cross-corroboration).
 
 ## Guidance
 
@@ -52,7 +52,7 @@ Architect's minimal prescription (round-2 → round-3 hold):
 // union of every hive ever named across the chain, in first-occurrence order.
 ```
 
-Implementer's 5-clause expansion at `backend/tests/routes/continuation-author-gate.test.ts:625-630`:
+Implementer's 5-clause expansion in the `Cumulative-union display canaries` banner of `backend/tests/routes/continuation-author-gate.test.ts`:
 
 ```ts
 // Cumulative-union display canaries — verify detail.authors[] is the

@@ -89,7 +89,7 @@ together. Shapes that were green before the fix, each confirmed by mutation:
   matched position was
 
 The fix is not another pattern. It is a reading layer beneath all of them:
-`blankLine` and `blankFile` walk a file from the top and replace every comment
+`blankLine` and `blankAll` walk a file from the top and replace every comment
 span with spaces of the same length, so reported positions stay true to the
 source line, carrying block-comment, template-literal and dollar-quote state
 across line boundaries while copying quoted and dollar-quoted VALUES through
@@ -112,8 +112,8 @@ and three live defects came from getting that backwards, each in ordinary code:
   template ends. That search runs to the end of the file. The bounded lookahead
   this entry first recorded as the remedy was itself a defect of the same
   family: a bound answers "not a comment" for every block comment longer than
-  it, and reads that comment's prose as live source instead. Thirteen block
-  comments in the scanned trees run past sixty lines, the longest 159, and a
+  it, and reads that comment's prose as live source instead. Block comments in
+  the scanned trees run well past sixty lines, the longest by a wide margin, and a
   `$1..$4` written in the prose of one of them is what opened the phantom span
   in the third bullet below.
 - An unescaped backtick in template text ends the template whatever else is
