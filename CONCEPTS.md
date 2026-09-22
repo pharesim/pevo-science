@@ -709,6 +709,20 @@ One of two or more surfaces the project deliberately keeps parallel, so that a r
 
 Twins arise where one mechanism is bound to several targets: the same orchestration written once per target, with only the target-bound call differing. Parity is enumerated rather than assumed, so an audit names the axis each twin must match on and treats a difference on an unnamed axis as the finding. Parity holds on structure and on invariants; it never holds on explanatory prose. A sentence explaining why a case exists is a claim about the particular value that case pins, so mirroring it across twins propagates whatever it happens to say, true or false. That also makes the twins agree, and agreement is the signal cross-site consistency checks look for, so prose copied under a parity requirement removes the cheapest tell at the same moment it doubles the reach of a mistake. Each twin's explanation is re-derived against its own case; only the shape is copied.
 
+### Mock Carve-out
+
+The project's one exception to its rule that tests run against real infrastructure: a test may replace a dependency with a double only when its own header discharges three obligations, and that header is the compliance artifact.
+*Avoid:* mock exception, mocking policy, test-double allowance.
+
+The obligations are referred to by their clause letters. Under (a) the header names the real path the test cannot take and says why that path is impractical. Under (b) authentication verification stays real wherever verification is what the test is about, so a bypass fixture is admitted only for a test whose subject is the behaviour downstream of it. Under (c) the risk class the double hides is caught by a Real-path Companion named in the header, or a task is filed to add one. The double is for determinism, never convenience. All three are prose, and the mechanical gates check only a citation's shape and whether its path resolves, not whether what it says is true. So each clause is verified against the tree at write time and again at review: the stated impracticability is checked against what the harness already pins and against sibling tests that may do the "impossible" thing, the inventory of doubles is re-derived rather than patched, and the companion is opened to confirm it exercises the risk class. A header that satisfies every gate can still send its reader the wrong way.
+
+### Real-path Companion
+
+A test that exercises, against real infrastructure, the same risk class that a mocked test's double hides, and that the mocked test's header names as the discharge of its third carve-out obligation.
+*Avoid:* companion test, sibling coverage, real-path sibling.
+
+The companion does not need to assert what the mocked test asserts; it needs to run the integrated path so that a failure class the double cannot surface is caught somewhere. Equivalence of risk class, not of assertion, is the bar. The citation is two-sided when it holds: the companion's own header names the mocked test it covers, so a rename or a weakened assertion on either side is visible from both. A companion that skips itself when its environment is incomplete discharges the obligation only on the runs where it actually executes, and that condition belongs in the citing header.
+
 ## Flagged ambiguities
 
 - **Fail-closed in two areas.** The data-availability area uses it for a read path that refuses rather than degrades when its source is unavailable; the engineering-guards area uses it for a scan whose unattributable match becomes a red bar rather than passing as benign. Settled: one principle, two subjects, and neither reading is a synonym for the other. Both say that the uncertain case takes the loud outcome, which for a read is refusing to answer and for a guard is refusing to clear.
