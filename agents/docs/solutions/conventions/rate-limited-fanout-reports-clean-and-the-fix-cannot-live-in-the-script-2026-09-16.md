@@ -303,3 +303,10 @@ check and expensive to carry wrong for four review rounds.
   is the same epistemics one layer down: aggregate evidence proving less than it
   appears, there over branches inside one guard rather than over votes on one
   finding.
+- `parallel-probe-fanout-needs-per-run-artifact-paths-2026-09-22.md`
+  is the precondition beneath guidance point 3. That point makes the unjudged
+  case survive the reduce, which assumes each agent that did report reported its
+  own result; when the fan-out's agents share an output path they do not, and an
+  aggregation with a correct unjudged bucket still totals numbers that belong to
+  the wrong agents. The two are one checklist: per-agent artifact paths first,
+  then a named unjudged outcome in the reduce.

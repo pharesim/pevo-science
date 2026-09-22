@@ -673,6 +673,15 @@ A short dated attestation an implementer appends to a task file when handing wor
 
 Its value is the commit identifiers rather than the prose. They give the reviewer something to run a reachability check against, which is the one failure a diff alone cannot reveal: work done in a throwaway worktree can be committed to a branch the parent never merges, so a named commit outside the main line of history leaves the task reading as complete while part of it exists nowhere the reviewer will look. The block indexes the evidence and does not stand in for it, so a count or a coverage claim asserted only in the block is prose rather than proof, and a reviewer re-derives it from the diff. A hand-off that answers a hold block carries one by convention.
 
+### Worker Fan-out
+
+A parent agent parallelizing one task by spawning several subordinate agents, each working a disjoint slice in its own throwaway checkout, and reconciling their results when they finish.
+*Avoid:* parallel dispatch, subagent fan-out, worker pool.
+
+The parent holds the only view of the whole, which makes three of its duties non-optional. It commits its own in-flight work before dispatching, because the workers branch from whatever it leaves behind and a dirty tree hands them a base nobody reviewed. It reconciles afterwards rather than merely merging, since workers cannot see each other and so solve shared sub-problems independently, converging on nothing: the same helper under two names, the same snippet open-coded in several places at once. That divergence is visible only from the parent's position, and only if it looks for structural sameness rather than checking whether the workers adopted a helper it already knew about. And it confirms the work reached the main line of history, because each worker commits to a branch of its own and one left unmerged leaves a task reading as complete while part of it exists where no reviewer will look.
+
+The isolation is narrower than the word suggests. It covers the tree each worker edits and extends to nothing else they hold in common, so any output path, scratch file, or helper name the brief hands them identically is a channel through which they can still overwrite one another, with results that read as their own.
+
 ## Internationalization
 
 ### Translation Stub

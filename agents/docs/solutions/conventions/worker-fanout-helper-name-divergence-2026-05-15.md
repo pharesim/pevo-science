@@ -23,13 +23,15 @@ related_components:
 
 ## Context
 
-Parallel worker fan-out (architect spawning N `isolation: "worktree"` subagents to touch disjoint files) is the project's standard mechanism for parallelizing independent work. Workers run in isolated worktrees and cannot see each other's outputs. The parent orchestrator runs a convergence sweep after the workers commit, looking for inconsistencies introduced by the parallelism.
+Parallel worker fan-out (architect spawning N `isolation: "worktree"` subagents to touch disjoint files) is the project's standard mechanism for parallelizing independent work. Each worker gets its own tree, so no worker reads another's source mid-flight, and the divergence this entry is about is a consequence of exactly that: workers cannot see the helper a sibling just wrote, so they each write their own. The isolation is of the tree and nothing else, and it does not extend to any other name the workers happen to share; a fan-out whose workers each held a private tree has still cross-contaminated through a shared log path (see Related). The parent orchestrator runs a convergence sweep after the workers commit, looking for inconsistencies introduced by the parallelism.
 
-BE-LOG-SHAPE-CONVERGENCE-SIBLING-FILES round-2 (4 parallel workers touching `signup-verify.test.ts`, `settings.test.ts`, `orcid.test.ts`, `accreditation.test.ts`, `custody.test.ts` — commits `bac0615`, `ade1d20`, `21eb8b7`, `8200b85`) surfaced a failure mode the convergence sweep currently misses: each worker independently created a small helper to filter `logger.error.mock.calls` by `event` field. Result on main:
+BE-LOG-SHAPE-CONVERGENCE-SIBLING-FILES round-2 (4 parallel workers touching `signup-verify.test.ts`, `settings.test.ts`, `orcid.test.ts`, `accreditation.test.ts`, `custody.test.ts` — commits `bac0615`, `ade1d20`, `21eb8b7`, `8200b85`) surfaced a failure mode the convergence sweep currently misses: each worker independently created a small helper to filter `logger.error.mock.calls` by `event` field. Result on main at the time:
 
-- `settings.test.ts:17-29` introduced a named helper `findEvent`.
+- `settings.test.ts` introduced a named helper `findEvent`.
 - `signup-verify.test.ts` introduced a named helper `findEventCall` — identical body, different name.
 - `orcid.test.ts`, `custody.test.ts`, `accreditation.test.ts` open-coded the same 4-line `mock.calls.find((args) => args[0]?.event === ...)` snippet ~28 times across specs (no named helper at all).
+
+Re-checked 2026-09-22, and the two halves moved in opposite directions. The open-coded snippet is gone: no inline `.find(...)` on an `event` field survives anywhere under the route specs, so that cost was paid off. The name divergence was not, and it grew. Three named helpers now live in three files under `backend/tests/routes/` — `findEvent` in the settings spec, `findEventCall` in the signup-verify spec, and a third `findEvent` in an auth log-shape spec that did not exist when this was written — carrying roughly two dozen call sites between them under two different names. The shared helper this entry prescribes was never extracted; the support directory it named holds no log-shape module. So the guidance below is not a historical note. It describes a divergence that is live in the tree right now, and the sweep that would have caught it is still the sweep nobody ran.
 
 The parent's post-fan-out sweep (commit `bc7674e`) correctly caught a separate divergence — the `signRequestBound` worker had used inline `cryptoUtils.sha256(...)` because its base predated a shared-helper extraction — and migrated the affected spec. But the sweep missed `findEvent`/`findEventCall` entirely because the parent's mental model focused on "did the workers all import my freshly-extracted helper?" not "did the workers independently create structurally identical helpers I should consolidate?"
 
@@ -97,7 +99,7 @@ function findEventCall(spy: { mock: { calls: unknown[][] } }, event: string) {
 }
 ```
 
-Convergence sweep action: extract to `backend/tests/support/log-shape-helper.ts` exporting `findLogEvent(spy, event)`; migrate both files to import it.
+Convergence sweep action: create a new module, `backend/tests/support/log-shape-helper.ts`, exporting `findLogEvent(spy, event)`, and migrate both files to import it. That path is the prescription and not a citation: no such module exists in the tree, which is the unpaid half recorded in Context.
 
 Worker C (orcid.test.ts), repeated across 7 specs:
 ```ts
@@ -125,5 +127,9 @@ Different signatures, different domains, different test infrastructure. No conso
 ## Related
 
 - `agents/docs/solutions/conventions/worktree-fanout-orphan-detection-2026-04-29.md` — detection check for the orthogonal failure mode (worker commits land on a branch that never merges back). This learning is the complementary case for content that DID merge but contains parallel-author artifacts.
-- `agents/docs/tasks-archive.md` BE-LOG-SHAPE-CONVERGENCE-SIBLING-FILES (archive when round-3 lands) — concrete instance.
+- `agents/docs/solutions/conventions/parallel-probe-fanout-needs-per-run-artifact-paths-2026-09-22.md`
+  — the other half of the isolation qualifier above. There the workers held private
+  trees and still read each other's results, because the brief pointed all of them at
+  one output path. Together: the tree is isolated because someone isolated it, and
+  every other shared name needs the same treatment on purpose.
 - `agents/docs/solutions/conventions/wrapping-primitive-exhaustive-call-site-audit-2026-04-22.md` — adjacent grep-the-audit principle. The convergence sweep step 3 above (`rg -n '\.find\(\(args\) => args\[0\]\?\.event'`) is a specific application of "grep is the audit, not eyeballs."
