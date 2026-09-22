@@ -1,250 +1,250 @@
-## UI-ENV-TEST-EXAMPLE-LOOPBACK-URLS — Point the .env.test template at the loopback ports (archived 2026-09-22) — completed by the user's direct edit in 4c8d9b45, all three scope items covered, no /ce-code-review run (user-authored, architect read the full diff) ✓
+## UI-EMPTY-STRING-PROOF-READS-AS-READY-WINDOW — An empty-string proof passes every fresh-auth narrowing and arrives as a ready window (archived 2026-09-22) — 2 rounds; production fix at 33e10833 + 3b75bab9 (mint callback narrowed to `typeof proof === 'string' && proof`, three new cases pin it); round-2 hold item (clause-(a) header reason) fixed at 5c563f14; re-review clean ✓
 
-### Architect archive note (2026-09-22)
+### Architect archive note (2026-09-22, round 2)
 
-The template now names `127.0.0.1` for `APP_DATABASE_URL`, adds `REDIS_URL` with a placeholder password and a comment naming the two key families the harness touches (`${APP_TAG}:rl:*` in global-setup, `${APP_TAG}:ipfs:pending:<cid>` in global-teardown) and the warn-and-skip behavior when the value is wrong, and its header says both URLs answer only under `./deploy.sh test-up` and why the literal `127.0.0.1` matters. AC 1 holds (no real secret). AC 2 was verified by the architect on 2026-09-22 by running global-setup against both loopback URLs: test-db reset and rate-limit reset completed with no Redis warning.
+Re-reviewed 5c563f14 via `/ce-code-review` (correctness, project-standards, testing, learnings; adversarial and cross-model not selected for a comment-only diff). Zero findings. The clause-(a) header now names `file.arrayBuffer()` as the blocker; both citations (`crypto.test.js`, `harness.test.js`) resolve and are accurate; no anchor-rot shape introduced. The implementer's correction of the hold's premise is confirmed by three independent reviewer probes: jsdom 25.0.1's `Crypto-impl.js` implements only `getRandomValues`/`randomUUID`, the `crypto` global under vitest's jsdom environment is Node's webcrypto, so "jsdom provides it" was a wrong attribution. The hold's conclusion (crypto.subtle is not the blocker) stands. Hold item 1 FIXED.
 
-### Point the .env.test template at the loopback ports
+Dispositions of the signal block's "For the architect" notes:
+1. `agents/docs/solutions/conventions/carve-out-clause-a-impracticability-claims-are-unverified-prose-2026-09-22.md` carries the same wrong "jsdom provides it" attribution and labels the unit instance "prescribed, pending" although it has now landed. Routed to `/ce-compound-refresh` scoped to that entry (not hand-edited). The entry's e2e ORCID and posting-key-decrypt instances remain open under `ui-non-consent-spec-header-overclaims`.
+2. The vitest exit-1 on `pages-edit.test.js` is closed by e579c8c4, which landed after the hold commit c1e4d844; its own task `ui-edit-spec-unhandled-mount-rejections` sits in review/ for a separate pass. Confirmed.
+
+Informational residuals, no task filed: the header drops `crypto.test.js`'s "in this version" hedge, which is accurate for the pinned `jsdom ^25.0.1` and goes stale only on a major bump; no assertion pins `Blob.prototype.arrayBuffer === undefined` under jsdom, the expected default per the canaries-only-for-untestable-code stance. Compound: no new entry; the learning already exists as the clause-(a) entry and its correction is a refresh.
+
+# An empty-string proof passes every fresh-auth narrowing and arrives as a ready window
 
 **Owner:** ui
-**Created:** 2026-09-22
+**Created:** 2026-09-16
 
-Filed by the backend agent at the user's request.
+Surfaced by the round-4 review of `ui-fresh-auth-shared-dispatch-and-retry-gate`
+while measuring what each falsy value does downstream. Not a defect that round
+introduced: it is the empty-string sibling of the null-proof coercion that
+round 3 landed, and it has been open since the window was built. Recorded in
+that task's re-review signal and filed here on the user's triage, because
+closing it is a code change and that round was prose-only.
 
-## Why
+## What happens
 
-`frontend/.env.test.example` gives `APP_DATABASE_URL` on `localhost:5432` and has no
-`REDIS_URL` entry, although `frontend/tests/e2e/global-setup.js` and `global-teardown.js`
-read `REDIS_URL` from `frontend/.env.test`. Without it, global setup skips the rate-limit
-reset and global teardown skips its Redis cleanup, each with only a warning, so a copy made
-from the template runs E2E without either.
+A mint response carrying `"fresh_auth_proof": ""` reaches the consumers as a
+live window. Every narrowing in the path tests the TYPE, and `''` is a string.
 
-`architect-e2e-postgres-redis-loopback-ports` publishes Postgres and Redis on 127.0.0.1
-under `./deploy.sh test-up`. Once that lands, the template can name fixed addresses for
-both instead of docker-network IPs, which change on every Docker restart.
+1. The mint callback in `acquireSessionProof` ends
+   `return typeof proof === 'string' ? proof : undefined;`. `''` is a string,
+   so it is handed back verbatim.
+2. `evictUnnamedAcquisition`'s predicate opens `typeof proof !== 'string'`, so
+   it short-circuits and never clears.
+3. `ensureSessionWindow`: `acquisitionOutcomeKey('')` is null, and the
+   fail-closed guard is `typeof proof !== 'string'`, so neither fires. The gate
+   returns `{ ready: true, proof: '' }`.
 
-## Scope
+Downstream, no consumer compares against the self-custody `null`. They all test
+truthiness, so `''` is indistinguishable from "this account needs no proof":
 
-1. Add a `REDIS_URL` entry to `frontend/.env.test.example`, as
-   `redis://:<REDIS_PASSWORD from the repo-root .env>@127.0.0.1:6379`, with a comment
-   saying it is the dev Redis published on loopback under `./deploy.sh test-up`, and that
-   the harness uses it only for the `${APP_TAG}:rl:*` reset in global setup and the
-   cleanup in global teardown.
-2. Change the `APP_DATABASE_URL` example host from `localhost` to `127.0.0.1`, so both
-   entries name the address the override binds.
-3. Say in the template's header that both URLs only answer while the stack runs under
-   `./deploy.sh test-up`.
+- `freshAuthWindowReady` returns `true` and shows no toast. The page starts the
+  work.
+- `uploadFile` and `retryOnce` take `if (!proof) return uploadFileToIpfs(file)`,
+  the unproofed call self-custody uses. `api.js` then throws
+  `FRESH_AUTH_REQUIRED` for a light account with no proof. That return sits
+  AHEAD of `uploadFile`'s `try`, so the error escapes as a raw
+  `ApiRequestError` rather than an `UploadSessionError`, no retry runs, and
+  `describeUploadError` falls to its default. The user is told the upload
+  failed, never that re-authentication is what they need, even though the
+  throw carries `reason: 'missing'`, which is a remintable reason.
+- `signer.js` does `if (freshAuthProof) body.fresh_auth_proof = freshAuthProof;`,
+  so the broadcast leaves with the field absent and is refused by the backend a
+  round-trip later.
+- `cacheSessionProof('')` writes the slot, and the next `readSessionWindow`
+  drops the entry on its `!token` test. So the account also pays a fresh
+  re-auth on every single action for as long as the backend keeps answering
+  this way.
 
-## Acceptance criteria
+## Why it is worth closing
 
-1. The template lists both URLs on 127.0.0.1 and carries no real secret.
-2. A `frontend/.env.test` filled in from the template, with the local passwords, lets E2E
-   global setup finish the test-db reset and the rate-limit reset under
-   `./deploy.sh test-up` with no Redis warning.
+The project has already decided this question on the sibling surface. The
+consent-op leg of the ORCID callback refuses an empty-string proof with the
+two-part predicate
+`typeof data.fresh_auth_proof !== 'string' || !data.fresh_auth_proof`, and
+`pages-orcid-callback.test.js` pins it with an `it.each` carrying an explicit
+`empty-string` row beside the `non-string` and `missing` ones. The session-kind
+window path applies only the type half of that predicate, at every one of its
+narrowings. One surface enforces the rule and its sibling does not.
 
-[BLOCKED by Architect] Waits on `architect-e2e-postgres-redis-loopback-ports`, which adds
-the loopback port mappings to `docker-compose.test.override.yml`. Until those exist, the
-127.0.0.1 addresses this template would name answer nothing. The architect moves this file
-to `pending/` when that lands.
+It is reachable only through a backend contract violation, which is exactly the
+reachability the null-proof case had when round 3 held on it and required the
+coercion. The failure mode here is worse than the null case's: null is refused
+(loudly, since the unnamed class now falls through to `failed`), whereas `''`
+is not refused at all and the light account is silently routed down the
+self-custody branch.
 
-**Unblocked by Architect (2026-09-22).** The override now publishes postgres on
-`127.0.0.1:5432` and redis on `127.0.0.1:6379` under `./deploy.sh test-up`, verified with
-`docker port` and a global-setup run against both loopback URLs. The `test-up` banner in
-`deploy.sh` prints the same two addresses; keep the template's wording consistent with it.
+No test would catch a regression here, in either direction.
+`lib-ipfs-upload.test.js` mocks `ensureSessionWindow` wholesale, so the upload
+surface has no coverage of a falsy-but-ready proof arriving from the real
+window.
 
-**Note (architect, 2026-09-22).** The user edited `frontend/.env.test.example` directly: the
-`APP_DATABASE_URL` host is now `127.0.0.1` and a `REDIS_URL` line with a placeholder password
-was added (scope item 2 done, item 1 partly). Once that edit is committed, what remains is
-the `REDIS_URL` comment from scope item 1 and the header sentence from scope item 3. The
-review of the loopback-ports commit also asked that the template keep the literal
-`127.0.0.1`, never `localhost`: the bind is IPv4-only and `localhost` can resolve `::1`
-first for `pg`.
+## Open question for the architect, to settle before implementing
 
-## ARCHITECT-E2E-POSTGRES-REDIS-LOOPBACK-PORTS — Publish Postgres and Redis on loopback in the E2E override (archived 2026-09-22) — implemented by the architect in 6b50b6f3, /ce-code-review (7 reviewers) returned one P2 design call and one P3, both fixed in abfdcc00; base-file redis comment added at archive; ui-env-test-example-loopback-urls unblocked ✓
+Where the refusal belongs. These are not equivalent and the third has
+documentation consequences.
 
-### Architect archive note (2026-09-22)
+1. **The mint callback only** (`typeof proof === 'string' && proof ? proof : undefined`).
+   Smallest change, matches the shape round 3 landed for null, and lands `''`
+   in the same fail-closed guard as every other malformed answer. Leaves the
+   cache leg able to hand back an empty-string token if one is ever written to
+   the slot, though `readSessionWindow`'s `!token` test already drops those.
+2. **The fail-closed guard as well** (`typeof proof !== 'string' || !proof`).
+   Defense in depth, and it makes the gate's contract "no usable proof" rather
+   than "not a string". But the guard's docblock, `evictUnnamedAcquisition`'s
+   docblock and the spec header all describe the class the guard names as the
+   non-string class, and those three passages were just rewritten. Widening
+   the predicate means re-auditing that prose in the same commit.
+3. **`_handleSessionAuth` in `pages/orcid-callback.js` too**, the window slot's
+   other writer. Note for whoever picks up
+   `ui-orcid-callback-session-window-proof-type-check`: that task is scoped to
+   a TYPE check, and a type check alone does not close this hole, because `''`
+   passes it. If both land, the predicate there should be the two-part form the
+   consent-op leg in the same file already uses, not `typeof` alone.
 
-Review verdict: ready with fixes, all applied. #1 (P2, reliability + adversarial, validated): every dev/test mode switch and a restart issued in test mode now recreates postgres and redis; resolved with option (a), a `warn_infra_bounce` line before the recreating step in `up`, `test-up` and `restart` plus the override header. #2 (P3, correctness + adversarial, validated): the banner's angle-bracket REDIS_URL placeholder parsed as a redirection when pasted; the banner now prints both URLs as `$(grep ... .env)` substitutions through a quoted heredoc, so no secret reaches the terminal. Also fixed: the pre-existing "from frontend/" wording and a pre-flight that fails `test-up` when a foreign listener holds 5432 or 6379. Dismissed as residual: a base-config no-ports canary (the base file now carries the why on the redis service instead), restart-during-test-up, the WSL relay question, pg/ioredis reconnect behavior. The user's local `frontend/.env.test` needed `127.0.0.1` in place of `172.0.0.1`; the user updated `frontend/.env.test.example` directly (ui zone) while this archived.
-
-### Publish Postgres and Redis on loopback in the E2E override
-
-**Owner:** architect
-**Created:** 2026-09-22
-
-Filed by the backend agent at the user's request.
-
-## Why
-
-E2E reaches Postgres and Redis through docker-network IPs hardcoded in the gitignored
-`frontend/.env.test` (`APP_DATABASE_URL`, `REDIS_URL`). Those addresses do not stay put:
-
-- Docker assigns them when containers join the network. After the Docker restart at
-  2026-09-21 00:16 UTC, `pevo-ipfs-1` came back on 172.20.0.2, Redis's old address, and
-  Redis on 172.20.0.5. The local `frontend/.env.test` points `REDIS_URL` at 172.20.0.4,
-  which is now `pevo-backend-1`.
-- `./deploy.sh test-up` can recreate the Postgres container, which has moved its IP
-  mid-session before (172.20.0.3 to 172.20.0.7).
-
-A stale `APP_DATABASE_URL` fails global setup's `test-db:reset`, so no spec runs. A stale
-`REDIS_URL` makes global setup skip the rate-limit reset, so signup and recovery specs can
-429, and makes global teardown skip its Redis cleanup. Both skips only warn. The current
-workaround is to look the IPs up with `docker inspect` after `test-up` and pass them on the
-command line for every run.
-
-Neither service publishes a host port today. Nothing on the host listens on 5432 or 6379,
-and the `combflow` stack on the same Docker host publishes neither.
-
-## Scope
-
-1. In `docker-compose.test.override.yml`, add `postgres` and `redis` entries at the same
-   level as `backend` and `mailpit`, each carrying only a loopback port mapping, the way
-   `mailpit` publishes 8025:
-
-   ```yaml
-     postgres:
-       ports:
-         - "127.0.0.1:5432:5432"
-
-     redis:
-       ports:
-         - "127.0.0.1:6379:6379"
-   ```
-
-   Compose merges these into the `docker-compose.yml` definitions, which carry no `ports:`
-   for either service, so the mapping is all they add.
-2. Update the override's header comment. It says Postgres, Redis and IPFS stay shared with
-   the dev stack; it should add that under `test-up` Postgres and Redis are also published
-   on 127.0.0.1 for the E2E harness.
-3. When this lands, move `ui-env-test-example-loopback-urls` from `blocked/` to `pending/`.
+Recommend 1 plus 3, and treat 2 as a separate decision so the prose audit it
+triggers does not ride along silently. The two tasks should be sequenced rather
+than run in parallel: they touch the same handler.
 
 ## Acceptance criteria
 
-1. After `./deploy.sh test-up`, `docker port pevo-postgres-1` prints
-   `5432/tcp -> 127.0.0.1:5432` and `docker port pevo-redis-1` prints
-   `6379/tcp -> 127.0.0.1:6379`.
-2. After `./deploy.sh up`, neither container publishes a port, so dev mode is unchanged.
-3. With both URLs in `frontend/.env.test` on 127.0.0.1, E2E global setup completes the
-   test-db reset and the rate-limit reset with no Redis warning.
+1. A mint response carrying `"fresh_auth_proof": ""` does not produce a ready
+   window. Driven proof-first: the new case is observed RED before the fix.
+2. Whichever narrowings change, the empty-string case is covered by a test that
+   fails if the `&& proof` half is reverted, so the two-part predicate is
+   pinned and not just the type half.
+3. The upload surface gets coverage of a falsy-but-ready proof that does not
+   mock `ensureSessionWindow` away, OR a note in the task recording why the
+   real path is impractical there, per the carve-out in root `CLAUDE.md`.
+4. Any docblock or spec prose describing the guarded class as "the non-string
+   class" is re-audited against whatever predicate lands, in the same commit.
+5. Suite green, build clean.
 
-## Notes
+---
 
-- Adding the mappings recreates both containers on the next `test-up`. Their data lives in
-  the `pgdata` and `redis_data` named volumes.
-- While in test mode, loopback exposes both `pevo_app` and `pevo_app_test`. The harness's
-  `test-db:reset` hook and `queryAppDb` helper refuse any database whose name does not end
-  in `_test`.
-- The user's local `frontend/.env.test` needs its two URLs switched to 127.0.0.1 by hand;
-  nothing in the repo writes that file.
-- Open, not part of this scope: whether to publish the same ports in `docker-compose.yml`
-  too, so host-side backend test runs (root `CLAUDE.md` "Running Tests", which also looks
-  the IPs up with `docker inspect`) get a fixed address. Every backend vitest run loads
-  `backend/tests/setup.ts`, which deletes all `${APP_TAG}:*` keys whenever Redis answers,
-  so making dev Redis reachable from the host by default would let any test run wipe the
-  dev backend's Redis state. The repo-root `.env` no longer carries a `REDIS_URL` (removed
-  2026-09-22), so host-side runs reach Redis only when one is passed on the command line.
+## UI implementation signal (2026-09-16, commits 33e10833 and 3b75bab9)
 
-## Implementation (architect, 2026-09-22)
+Both SHAs verified on `main` with `git merge-base --is-ancestor`. No worktree
+fan-out: the whole change is one file cluster and a fan-out would have collided
+on it.
 
-Landed in `6b50b6f3`. Scope items 1 and 2 as specified; item 3 done in `fb6569fe`
-(`ui-env-test-example-loopback-urls` moved to `pending/`). Two additions beyond the listed
-scope, both in architect-owned files: the `test-up` banner in `deploy.sh` prints the
-loopback `APP_DATABASE_URL` instead of a `docker inspect` lookup and now also names
-`REDIS_URL` (global-setup only warns when it is missing); the postgres comment in
-`docker-compose.yml` points at the override so "no host port" stays accurate for dev.
-The `test-db-up` banner is unchanged because that command also runs under plain `up`,
-where loopback answers nothing.
+### The open question, as settled
 
-Acceptance criteria, all verified on the dev host:
+Option 1 only, on the user's triage. The mint callback in `acquireSessionProof`
+now returns `typeof proof === 'string' && proof ? proof : undefined`. Nothing
+else changed predicate.
 
-1. After `test-up`: `docker port pevo-postgres-1` prints `5432/tcp -> 127.0.0.1:5432`,
-   `docker port pevo-redis-1` prints `6379/tcp -> 127.0.0.1:6379`; `ss -ltn` shows both
-   bound to 127.0.0.1 only.
-2. After `up`: `docker port` prints nothing for either container, no host listener on
-   5432 or 6379, backend routed back at `pevo_app`.
-3. `global-setup.js` invoked directly with both URLs on 127.0.0.1: test-db reset truncated
-   7 tables, rate-limit reset cleared 1 key under `pevotest:rl:*`, no Redis warning.
+Option 2 (widening `ensureSessionWindow`'s fail-closed guard) was declined, and
+the implementation produced positive evidence for that rather than just an
+argument. Reverting the mint narrowing and widening the guard in its place
+passes the two gate-routed cases and still leaves the broadcast red:
+`broadcastWithFreshAuth` never consults the gate, it reads the raw acquisition
+result through `acquisitionAborted`, whose own `typeof proof === 'string'` test
+an empty string satisfies. So the guard placement would have closed two of the
+three symptoms this task names and left the third. The mint placement closes
+all three at their common upstream point, and the guard's class stays the
+non-string one its docblock, `evictUnnamedAcquisition`'s docblock and the spec
+header all describe, so no prose re-audit was triggered.
 
-Observed while verifying: the local `frontend/.env.test` names `172.0.0.1` for both hosts,
-which is a routable address, not loopback; it needs `127.0.0.1`. Left for the user, since
-nothing in the repo writes that file.
+Option 3 (`_handleSessionAuth` in `pages/orcid-callback.js`) was declined as
+already owned. This task's note that the sibling
+`ui-orcid-callback-session-window-proof-type-check` is "scoped to a TYPE check"
+reads that task's title, not its scope: its scope item 1 already prescribes the
+two-part predicate `typeof data.fresh_auth_proof !== 'string' || !data.fresh_auth_proof`
+verbatim. Landing it here would have emptied that task. It is also not needed
+for AC1: a `''` written to the slot by that leg is dropped by
+`readSessionWindow`'s `!token` test before any reader sees it, so it costs a
+wasted re-auth (that task's documented harm) and never produces a ready window.
 
-## BACKEND-ALTER-ACCOUNTS-IF-EXISTS-EVADES-PIN — The ALTER pin does not admit the IF EXISTS spelling (archived 2026-09-22) — 3 hold rounds (4+4+1 items, all FIXED), round 4 review clean; one advisory folded into the note below, round-4 [TODO Architect] items 1 and 2 and round-2 [TODO Architect] items 1, 5 and 6 dismissed at archive ✓
+### Acceptance criteria
 
-### Architect archive note (2026-09-22, round 4)
+1. Met. `ensureSessionWindow` returns `{ ready: false, failed: true }` for a
+   mint carrying `""`. Observed RED first, at both surfaces and for the right
+   reasons: `{ ready: true, proof: '' }` at the gate, and a raw
+   `FRESH_AUTH_REQUIRED` `ApiRequestError` escaping `uploadFile` where an
+   `UPLOAD_REAUTH_FAILED` was expected.
+2. Met, and measured rather than asserted. Reverting only the `&& proof` half in
+   an isolated copy reddens exactly three cases and nothing else: the new
+   session-window case, the new broadcast case, and the new upload case.
+3. Met by coverage, not by the note alternative. New file
+   `frontend/tests/unit/lib-ipfs-upload-real-window.test.js` drives `uploadFile`
+   through the real `lib/fresh-auth.js`, mocking only `api.js` exports and the
+   Alpine stores. Two control cases (a live window reaching the pre-flight as
+   its minted proof, and self-custody still taking the unproofed call) keep the
+   red from being scaffolding failure.
+4. Met by audit, with no edit required. The guard predicate did not change, so
+   every passage naming the non-string class stays true, including
+   `evictUnnamedAcquisition`'s empty-string sentence, whose subject is which
+   value a hypothetical swallow would pick and not what the wire can now
+   produce. Two docblock sentences that the change did falsify were rewritten in
+   the same commit: the mint callback's own, and `acquireSessionProof`'s
+   "without a proof string".
+5. Met. 86 files / 1907 tests green, build clean.
 
-Reviewed at b93a3b04 (with the task move 7213d0ac) via /ce-code-review across
-five lenses: correctness, project-standards, testing, adversarial in-process,
-learnings. Dispatched 5, returned 5, no dead votes. No cross-model pass (pinned
-range; no different-provider CLI on this host). Both commits are ancestors of
-main.
+### Adversarial pass
 
-The one held item landed exactly as prescribed: the test-file delta is the single
-token `single-atom`, non-comment lines byte-identical to the parent, and the
-scoped sentence is TRUE under the reading the round-3 rows define. Verified by
-four independent re-derivations of the signal block's Item 1 table (all 13 rows
-reproduce), a 1433-mutant lookaround-free single-edit sweep (zero red the fourth
-spelling alone, zero red `ONLY (accounts)` alone), and the three unchanged
-sentences checked file-wide against every assertion. `tests/eslint/` 9 files /
-139 tests, exit 0. Anchor gate clean with firing controls.
+Five independent lenses (reachability, mutation, prose, regression, acceptance)
+over 33e10833, each finding refuted by two skeptics. 21 raised, 0 survived; the
+convergent clusters were re-checked by hand rather than trusted to the vote.
 
-One advisory, folded here rather than held (text-only, task-file, architect
-zone): the round-4 [TODO Architect] item 1 argued that excluding lookaround and
-new alternatives is what keeps the paren alternative's two whitespace runs
-matched apart. That sufficiency argument is false: the capture-plus-backreference
-form `(?:ONLY\b(\s*)\(\1?|ONLY\s+)?` brings in neither construct and reds the
-fourth spelling alone, and its mandatory form `(?:ONLY\b(\s*)\(\1|ONLY\s+)?` reds
-`ONLY (accounts)` alone while admitting exactly the symmetric spellings. The
-committed comment sentence is unaffected: a backreference is two edits (a
-capturing wrap plus a new atom) and the rows name neither. The pin is the
-operations the rows name, not the excluded constructs.
+- The load-bearing justification was verified empirically by two lenses on both
+  legs: a `''` token seeded into the slot is dropped by `readSessionWindow`
+  before the deadline checks, on the sessionStorage leg and on the
+  `_memoryWindow` mirror leg alike, and `acquireSessionProof`'s `if (cached)` is
+  a second truthiness gate behind it. `slideSessionWindow` cannot re-introduce
+  one.
+- Four lenses independently raised that a mint which verifies the password but
+  answers `''` no longer refreshes the password-factor memo. Correctly refuted,
+  re-checked by hand: the ORCID-fallback escalation one lens drew from it needs
+  `assumed && mint throws 401`, and a 200-with-empty-proof never reaches that
+  branch. The real delta is one extra status read per acquisition while the
+  backend is violating its contract, which is exactly how a numeric malformed
+  proof already behaved. Recorded here because four lenses tripping on it is
+  evidence it is worth knowing, not evidence it is wrong.
+- The one finding worth acting on came from the mutation lens and is what
+  3b75bab9 closes.
+- Three lenses flagged two slips of mine, both fixed in 3b75bab9: the new test's
+  explanation still described the mint callback as asking what the value IS,
+  the one clause the change falsified, and a rewrapped docblock line ran to 91
+  columns in a block wrapping at 78.
+- No new flakiness: three full-suite runs and ten focused runs of the touched
+  specs surfaced only the known pre-existing absolute-cap clock flake.
 
-Dispositions at archive:
-- Round-4 [TODO Architect] item 1 (lookaround readings of "single-atom"):
-  DISMISSED. The hold defined the term by its rows and the comment fixes it by
-  two worked examples; every counterexample, lookaround or backreference,
-  couples the two runs, which no delete/optional/mandatory/quantifier operation
-  can do. Three lenses converged.
-- Round-4 [TODO Architect] item 2 (the "styles" reading of round-3 item 2):
-  DISMISSED. The prune it rationalises was dismissed in round 3.
-- Round-2 [TODO Architect] item 1 (catalog-qualified `pevo_app.public.accounts`):
-  DISMISSED. No house style spells a three-part name.
-- Round-2 [TODO Architect] items 5 (backslash truncation in `enclosingQuote` /
-  `statementAt`) and 6 (the three sibling heads' quadratic `\(?\s*` spelling):
-  DISMISSED here. Both live in the reader owned by the writer-canary task, which
-  archived on 2026-09-22 with its own residual lists; the reader was rewritten
-  there since round 2 and item 5 was never re-verified against it.
-- No /ce-compound: the lens-versus-probe learning this round re-confirms is
-  already captured in the 2026-09-08 source-discipline entry.
+### Residual for triage, NOT filed as a task
 
-# The ALTER pin does not admit the IF EXISTS spelling
+The reachability lens found the same type-only narrowing on two sibling
+surfaces, and it is confirmed at HEAD: `mintViaPassword` in
+`frontend/src/lib/settings-fresh-auth.js` and in
+`frontend/src/lib/authorship-consent.js` both read
+`typeof proof === 'string' ? proof : FRESH_AUTH_MINT_FAILED`, so a consent-op
+mint answering `''` is delivered to `run()` as a usable proof. Different slot
+from this task's, and the consent-op CACHE is clean on both sides
+(`_handleFreshAuth` guards the write, `getCachedConsentOpProof` drops on
+`!entry.token || typeof entry.token !== 'string'`), so the hole is in the mint
+callbacks only. Surfaced for the user to triage per root `CLAUDE.md` "Code
+Review Findings"; no task file created.
 
-**Owner:** backend
-**Created:** 2026-09-09
+### Sequencing note
 
-Routed out of the round-3 architect review of the `accounts.updated_at` writer
-canary. Pre-existing rather than introduced by that round, so it is filed here
-instead of held there.
+`ui-window-outcome-tally-source-sentence` also edits `fresh-auth.js`, but
+`WINDOW_OUTCOME_BY_SENTINEL`'s and `evictUnnamedAcquisition`'s docblocks only,
+which this change did not touch. No conflict expected.
 
-## Why
+---
 
-`ALTER_ACCOUNTS_RE` in
-`backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`
-admits `ONLY` and a `public.` qualifier but not `IF EXISTS`. A migration
-spelling `ALTER TABLE IF EXISTS accounts RENAME COLUMN updated_at TO touched_at;`
-is not seen by the column-alteration arm and the suite stays green; without the
-clause the same statement reds.
+## Architect re-review (2026-09-22) — HELD PENDING FIXES:
 
-What makes this more than a spelling gap is that the bypass is the repo's own
-house style. Migrations here are written idempotent, so `IF EXISTS` is the form
-an author reaches for by default, not an evasion. The arm exists to catch a
-migration that renames, drops, or retypes the column the `/link` stuck-recovery
-ordering is measured against, and it is blind to the spelling most likely to
-carry that change.
+Reviewed at 33e10833 and 3b75bab9 via `/ce-code-review` (correctness,
+project-standards, testing, adversarial, frontend-races, learnings). The
+production change is correct and pinned: three reviewers independently
+reproduced both mutation claims in isolated copies (reverting `&& proof`
+reddens exactly the three new cases; guard placement instead of mint placement
+leaves only the broadcast case red). 86 files / 1907 tests and a clean build
+confirmed at 3b75bab9. One item holds archive.
 
-Verified by mutation during the round-3 review: with the clause, 21/21 green;
-without it, 1 failure. The `ALTER COLUMN ... TYPE ... USING NOW()` form passes
-too.
-
-## Scope
-
-1. Admit the clause in `ALTER_ACCOUNTS_RE`, between `ALTER TABLE` and the
+1. **The clause-a header in
+   `frontend/tests/unit/lib-ipfs-upload-real-window.test.js` gives a false
+   reason for mocking `uploadFileToIpfs`.** It says the function "reaches
+   `crypto.subtle` before its first request, which jsdom does not provide."
+   jsdom provides it: `tests/unit/harness.test.js` asserts
