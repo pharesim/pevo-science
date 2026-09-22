@@ -806,16 +806,34 @@ export function initEditPage() {
     _scheduleDraftSave() {
       if (!this._initialLoadDone) return;
       if (this._draftTimer) clearTimeout(this._draftTimer);
-      this._draftTimer = setTimeout(() => {
-        const draft = {
-          title: this.title, abstract: this.abstract, body: this.body,
-          keywordsText: this.keywordsText, authorName: this.authorName,
-          authorAffiliation: this.authorAffiliation, authorOrcid: this.authorOrcid,
-          newCoAuthors: this.newCoAuthors, citations: this.citations,
-          addressedReviews: this.addressedReviews, savedAt: Date.now(),
-        };
-        localStorage.setItem(this.draftKey, JSON.stringify(draft));
-      }, 2000);
+      this._draftTimer = setTimeout(() => this._writeDraft(), 2000);
+    },
+
+    // Persist the draft now and cancel any pending debounce. Called before an
+    // acquisition that may navigate: the debounce above means the keystrokes
+    // just before a submit are still only in component state, and a full-page
+    // round-trip would take them with it. Idempotent, so flushing when nothing
+    // is pending costs a write and nothing else.
+    _flushDraftSave() {
+      if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }
+      this._writeDraft();
+    },
+
+    // The draft body, shared by the debounced save and the flush so the two
+    // cannot persist different shapes. The load guard belongs here rather than
+    // only at the scheduler: a flush can fire from a gate before the paper has
+    // loaded, and writing the empty form then would overwrite a real draft
+    // with nothing.
+    _writeDraft() {
+      if (!this._initialLoadDone) return;
+      const draft = {
+        title: this.title, abstract: this.abstract, body: this.body,
+        keywordsText: this.keywordsText, authorName: this.authorName,
+        authorAffiliation: this.authorAffiliation, authorOrcid: this.authorOrcid,
+        newCoAuthors: this.newCoAuthors, citations: this.citations,
+        addressedReviews: this.addressedReviews, savedAt: Date.now(),
+      };
+      localStorage.setItem(this.draftKey, JSON.stringify(draft));
     },
 
     addCoAuthor() {
@@ -862,15 +880,49 @@ export function initEditPage() {
     // same rule). The navigating factor is allowed only while no new file is
     // attached: the worst case is then re-picking the one file being chosen,
     // and the text fields are drafted. Once a file is held, no gate may
-    // navigate. New supplementary files live in component state the draft does
-    // not carry, so a round-trip fired to acquire for a resubmit, or for a
-    // further file, would discard what is attached; a passwordless account is
-    // refused non-destructively and told to re-authenticate instead. `opts`
-    // overrides the decision: the pre-broadcast gates pass
-    // `allowRedirect: false` unconditionally, because by then the uploads are
-    // paid for and their CIDs live in handleSubmit locals.
+    // navigate unasked. New supplementary files live in component state the
+    // draft does not carry, so a round-trip fired to acquire for a resubmit,
+    // or for a further file, would discard what is attached.
+    //
+    // Refusing there is not the end of it. A passwordless account has no other
+    // factor, and nothing else in the tab can open a window for it, so a
+    // refusal with only a toast behind it leaves that account unable to submit
+    // an edit at all while a new file is attached. Removing the files is not
+    // the way out either: on an edit whose only change IS those files, taking
+    // them off makes the form unchanged, and the no-changes check ahead of
+    // this gate stops the submit before it. `onReauthRequired` hands the
+    // refusal back here as a question instead. `opts` overrides both
+    // decisions, and the pre-broadcast gates override both, because past the
+    // uploads the pins are paid for and their CIDs live in handleSubmit
+    // locals.
+    //
+    // The flush is unconditional and sits ahead of every branch. Any gate here
+    // may end in a navigation, the draft save is debounced, and what the user
+    // typed in the seconds before clicking is exactly what a round-trip would
+    // otherwise take with it.
     async _windowReady(opts = {}) {
-      return freshAuthWindowReady({ allowRedirect: !this.holdsAttachedFiles, ...opts });
+      this._flushDraftSave();
+      return freshAuthWindowReady({
+        allowRedirect: !this.holdsAttachedFiles,
+        onReauthRequired: () => this._confirmNavigationCost(),
+        ...opts,
+      });
+    },
+
+    // The cost of the one way through, stated before it is taken. Shares the
+    // publish page's copy through the i18n keys, not the code: the two pages
+    // hold no common component. Worded without reference to a prior window,
+    // because the account may never have held one.
+    //
+    // `request()` resolves false both when the user declines and when another
+    // action's dialog already owns the modal; both mean no navigation, which
+    // is what the caller does with a false either way.
+    async _confirmNavigationCost() {
+      return Alpine.store('broadcastConfirm').request({
+        title: this.$t('confirm.reauthNavigateTitle'),
+        message: this.$t('confirm.reauthNavigateMessage'),
+        confirmLabel: this.$t('confirm.reauthNavigate'),
+      });
     },
 
     // A new supplementary file waiting to be uploaded. Files already on chain
@@ -1204,8 +1256,10 @@ export function initEditPage() {
           // the password factor, which costs a modal: the ORCID factor is a
           // navigation that would discard the completed pins, so it is
           // suppressed and a passwordless account gets a re-authenticate toast
-          // with the form intact instead.
-          if (!await this._windowReady({ allowRedirect: false })) { this.step = 'idle'; return; }
+          // with the form intact instead. No offer is threaded with it: the
+          // earlier gates can ask because a yes costs re-picking files, while
+          // a yes here would spend pins the user has already paid for.
+          if (!await this._windowReady({ allowRedirect: false, onReauthRequired: null })) { this.step = 'idle'; return; }
           if (!this._mounted) return;
 
           this.step = 'broadcasting';
@@ -1294,9 +1348,10 @@ export function initEditPage() {
           };
 
           // See the continuation branch: the margin belongs at the gates, the
-          // broadcast is the last one, and past the uploads the navigating
-          // factor is suppressed so completed pins are never discarded.
-          if (!await this._windowReady({ allowRedirect: false })) { this.step = 'idle'; return; }
+          // broadcast is the last one, past the uploads the navigating factor
+          // is suppressed so completed pins are never discarded, and no offer
+          // is threaded with the suppression for the same reason.
+          if (!await this._windowReady({ allowRedirect: false, onReauthRequired: null })) { this.step = 'idle'; return; }
           if (!this._mounted) return;
 
           this.step = 'broadcasting';

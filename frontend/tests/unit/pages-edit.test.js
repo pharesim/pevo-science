@@ -1991,11 +1991,8 @@ describe('editPage re-auth window ordering', () => {
   // Whether the form holds a new file decides whether a gate may navigate:
   // new supplementary files live in component state, never in the draft, so
   // a full-page ORCID round-trip discards them. Same rule as the publish page.
-  it('a passwordless account resubmitting with a supplementary file attached refuses without navigation and keeps the file', async () => {
-    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
-    mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
-    const comp = unchangedLightComponent();
-    const attached = {
+  function newSupplementary() {
+    return {
       file: { name: 'data.pdf', size: 10, type: 'application/pdf' },
       fileName: 'data.pdf',
       description: '',
@@ -2003,19 +2000,93 @@ describe('editPage re-auth window ordering', () => {
       error: null,
       uploading: false,
     };
+  }
+
+  it('a passwordless account resubmitting with a supplementary file attached is asked, and keeps the file on a decline', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+    mockStores.broadcastConfirm.request.mockResolvedValueOnce(false);
+    const comp = unchangedLightComponent();
+    const attached = newSupplementary();
     comp.supplementaryFiles = [attached];
 
     await comp.handleSubmit();
 
+    expect(mockStores.broadcastConfirm.request).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'confirm.reauthNavigateTitle' }),
+    );
     expect(mockStartOrcid).not.toHaveBeenCalled();
     expect(mockSessionUpload).not.toHaveBeenCalled();
     expect(broadcastOps).not.toHaveBeenCalled();
     expect(comp.supplementaryFiles).toEqual([attached]);
     expect(comp.step).toBe('idle');
-    expect(mockStores.toast.show).toHaveBeenCalledWith(
-      'Please confirm your identity again, then try once more.',
-      'error',
+    // A decline is the user's own choice to stop; the dialog already said
+    // what the toast would.
+    expect(mockStores.toast.show).not.toHaveBeenCalled();
+  });
+
+  it('a passwordless account that accepts the cost navigates, with the draft already written', async () => {
+    // The draft save is debounced, so the last edits before Submit live only
+    // in component state. Confirming sends the tab to ORCID on the promise
+    // that the text comes back, which requires the write to happen before the
+    // round-trip rather than on a timer the navigation cancels.
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    let draftAtOrcid = null;
+    mockStartOrcid.mockImplementation(async () => {
+      draftAtOrcid = localStorage.getItem('pevo-draft-edit-alice-p1');
+      return { redirect_url: 'https://orcid.org/oauth/authorize?x=1' };
+    });
+    mockStores.broadcastConfirm.request.mockResolvedValueOnce(true);
+    vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/edit/alice/p1' } });
+    try {
+      const comp = unchangedLightComponent();
+      comp._initialLoadDone = true;
+      comp.supplementaryFiles = [newSupplementary()];
+      comp.title = 'A New Title';
+
+      await comp.handleSubmit();
+
+      expect(mockStores.broadcastConfirm.request).toHaveBeenCalledTimes(1);
+      expect(mockStartOrcid).toHaveBeenCalledTimes(1);
+      expect(window.location.href).toBe('https://orcid.org/oauth/authorize?x=1');
+      expect(JSON.parse(draftAtOrcid)).toMatchObject({ title: 'A New Title' });
+      expect(mockSessionUpload).not.toHaveBeenCalled();
+      expect(broadcastOps).not.toHaveBeenCalled();
+      expect(comp.step).toBe('idle');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('when the new file is the only change, the offer is the only way out', async () => {
+    // Removing the files is the move a bare refusal implies, and on this
+    // arrangement it is a dead end: the form is then unchanged, and the
+    // no-changes check sits ahead of the gate deliberately so an unchanged
+    // form never costs a round-trip. So the gate has to ask here, or this
+    // edit cannot be made at all.
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+    mockStores.broadcastConfirm.request.mockResolvedValueOnce(false);
+    const comp = unchangedLightComponent();
+    comp.supplementaryFiles = [newSupplementary()];
+
+    await comp.handleSubmit();
+
+    expect(mockStores.broadcastConfirm.request).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'confirm.reauthNavigateTitle' }),
     );
+    expect(comp.step).toBe('idle');
+
+    // The implied alternative, taken: the form is now unchanged and never
+    // reaches a gate at all.
+    comp.supplementaryFiles = [];
+
+    await comp.handleSubmit();
+
+    expect(comp.step).toBe('error');
+    expect(comp.errorMessage).toBe('edit.noChanges');
+    expect(mockStores.broadcastConfirm.request).toHaveBeenCalledTimes(1);
+    expect(mockStartOrcid).not.toHaveBeenCalled();
   });
 
   it('with nothing attached, the entry gate still navigates a passwordless account', async () => {
@@ -2037,6 +2108,77 @@ describe('editPage re-auth window ordering', () => {
     }
   });
 
+  // The pre-broadcast gates override the computed posture with two literals,
+  // and both are load-bearing precisely when the form no longer holds what
+  // the computed posture would have read. The supplementary remove button
+  // carries no disabled binding, so a file removed while its upload leg is in
+  // flight leaves `holdsAttachedFiles` false at the gate with the pins already
+  // paid for. From there the computed posture would allow a navigation that
+  // discards them, and the offer would invite the user to take it. The two
+  // gates sit in mutually exclusive branches, so neither twin can stand in
+  // for the other.
+  function inFlightRemovalArrangement(comp) {
+    sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify({
+      token: 'live-window',
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      absoluteExpiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+      idlePeriodMs: 900_000,
+    }));
+    comp.supplementaryFiles = [newSupplementary()];
+    mockSessionUpload.mockImplementation(async () => {
+      // The user hits remove while the pin is being paid for, and the window
+      // lapses across the same leg.
+      comp.supplementaryFiles = [];
+      sessionStorage.removeItem('pevo_fresh_auth_session_proof');
+      return { data: { cid: 'bafycid123' } };
+    });
+  }
+
+  it('the same-author pre-broadcast gate refuses a file removed mid-upload, and offers nothing', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+    const comp = unchangedLightComponent();
+    comp.title = 'A New Title';
+    inFlightRemovalArrangement(comp);
+    // Fixture-posture proof: this test exercises the same-author branch.
+    expect(comp.isContinuation).toBe(false);
+
+    await comp.handleSubmit();
+
+    expect(mockSessionUpload).toHaveBeenCalledTimes(1);
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+    expect(broadcastOps).not.toHaveBeenCalled();
+    expect(mockStores.broadcastConfirm.request).not.toHaveBeenCalled();
+    expect(comp.step).toBe('idle');
+    expect(mockStores.toast.show).toHaveBeenCalledWith(
+      'Please confirm your identity again, then try once more.',
+      'error',
+    );
+  });
+
+  it('the continuation pre-broadcast gate refuses a file removed mid-upload, and offers nothing', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+    const comp = unchangedLightComponent();
+    mockStores.auth.username = 'bob';
+    comp.authorName = 'Bob';
+    inFlightRemovalArrangement(comp);
+    // Fixture-posture proof: this test exercises the continuation branch.
+    expect(comp.isContinuation).toBe(true);
+
+    await comp.handleSubmit();
+
+    expect(mockSessionUpload).toHaveBeenCalledTimes(1);
+    expect(mockStartOrcid).not.toHaveBeenCalled();
+    expect(broadcastOps).not.toHaveBeenCalled();
+    expect(mockStores.broadcastConfirm.request).not.toHaveBeenCalled();
+    expect(comp.step).toBe('idle');
+    expect(mockStores.toast.show).toHaveBeenCalledWith(
+      'Please confirm your identity again, then try once more.',
+      'error',
+    );
+  });
+
   it('picking more supplementary files with one already attached refuses a passwordless account without navigation and keeps it', async () => {
     mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
     mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
@@ -2045,15 +2187,17 @@ describe('editPage re-auth window ordering', () => {
     comp.supplementaryFiles = [attached];
     const target = { files: [{ name: 'more.csv', size: 10 }], value: 'C:\\fakepath\\more.csv' };
 
+    mockStores.broadcastConfirm.request.mockResolvedValueOnce(false);
+
     await comp.handleSupplementaryFiles({ target });
 
+    expect(mockStores.broadcastConfirm.request).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'confirm.reauthNavigateTitle' }),
+    );
     expect(mockStartOrcid).not.toHaveBeenCalled();
     expect(comp.supplementaryFiles).toEqual([attached]);
     expect(target.value).toBe('');
-    expect(mockStores.toast.show).toHaveBeenCalledWith(
-      'Please confirm your identity again, then try once more.',
-      'error',
-    );
+    expect(mockStores.toast.show).not.toHaveBeenCalled();
   });
 });
 
