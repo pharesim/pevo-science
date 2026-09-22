@@ -234,3 +234,68 @@ known-defect paragraph (all seven claims verified against `ALLOWED_OPS`, the fou
 comment-building surfaces, the gate ordering, and the two pinning tests), the four
 `above`/`below` citations in the file (all the durable carve-out form, a stable
 behavioural name in the noun slot), and clause (b).
+
+---
+
+## Architect re-review (2026-09-22) — HELD PENDING FIXES:
+
+Reviewed at b6866ddc via `/ce-code-review` (correctness, project-standards,
+testing, adversarial, learnings). Every factual claim the commit added checks
+out against HEAD by reading: the custody handler order from the allowlist loop
+through the posting-key availability guard to `decryptKey`; the callback page's
+three actions; the closed clause-(c) citer set; `/start` on `mode=link` running
+the bearer check only; the compose override setting the ORCID client
+unconditionally with `test-up` always layering it. The skip removal is
+evidence-backed and stands. Anchor gate over all 41 added lines: 0 hits. The e2e
+results were judged by reading, not re-run; the one failure recorded above is
+pre-existing and already filed as `ui-orcid-factor-e2e-cache-assertion-key-shape`.
+
+Three items hold archive. All comment-only, all the class this task exists to
+fix: the "decrypt" correction landed in the header and nowhere else it is said,
+and one impossibility rationale outlived the fixture that made it false.
+
+1. **The fixture the header cites still says the decrypt is the stop.** The
+   rewritten header sentence points at `expectPostGateStop` in
+   `fixtures/light-account.js` as the proof that "the decrypt itself never
+   runs". That fixture's module docblock says the handler "then hits the
+   posting-key decrypt and refuses", and the helper's JSDoc says the request
+   "reached the posting-key decrypt" and that its envelope "sits at the first
+   post-gate step". A reader following the citation lands on the opposite
+   claim, and the "first post-gate step" half is wrong on its own: the
+   idempotency block, the pool guard, the row read, the missing-row 401 and the
+   upgrade 403 all sit between the consume and that guard, which the fixture's
+   own docblock half-enumerates two lines earlier. Align both docblocks with the
+   header: the seeded row stops at the posting-key availability guard that
+   fronts the decrypt; the guard's posting-key-unavailable envelope is what
+   `expectPostGateStop` pins; the outer catch's generic envelope would mean a
+   step past the guard threw.
+2. **Two inline comments in the spec keep the pre-fix phrasing.** The vote
+   test's comment at its `expectPostGateStop` call ("stopped at the seeded
+   account's posting-key decrypt") and the publish test's end-state comment
+   ("stopped at the posting-key decrypt once the allowlist admits the bundle")
+   assert the reading the same file's header now denies. Reword both to the
+   availability guard.
+3. **Clause (a)'s stub rationale is stale.** "(no real ORCID OAuth handshake is
+   possible in Playwright)" is offered as the reason the ORCID test stubs
+   `/api/orcid/callback`. It was written before the in-network `orcid-stub`
+   sidecar and `routeOrcidStubBridge` landed; `settings-orcid-factor.spec.js`
+   now completes a genuine token exchange against the real callback through
+   that stub, and this docblock's own clause (c) says so three paragraphs down.
+   State the actual condition: this test stubs the callback at the network
+   layer rather than driving the in-network stub, so the window it caches is
+   test-authored. Clause (c)'s gap sentence remains the disclosure.
+
+Run the pre-commit anchor gate over every replacement line before committing;
+the fixture's docblock is the kind of place a line-number or "the guard below"
+anchor creeps in.
+
+Dismissed at triage, recorded so they are not re-raised:
+
+- The hardened `/start` expectation couples `orcid-link.spec.js`'s real-path
+  test to the shared per-IP start limiter (10 per minute). The suite makes about
+  five real `/start` calls per run under a single worker, the new comment
+  discloses the coupling, and the assertion message carries the 429 body. The
+  trade this task asked for.
+- No mechanical check verifies e2e docblock prose or clause-(c) citations under
+  `frontend/tests`. Already recorded in this task's Notes as out of scope.
+- The three out-of-scope findings recorded above stay as recorded.
