@@ -398,3 +398,124 @@ head. Pre-existing and not about `+`, so it is recorded rather than fixed; the s
 falsifies is the quoted-identifier bullet's "only where no readable head opens earlier in the
 same quoted text". One live `src` head already reads past its backtick (`bridge-queue.ts`,
 the import-queue UPDATE), harmless today because nothing sits between that backtick and its `;`.
+
+## Architect re-review (2026-09-22, round 2) — HELD PENDING FIXES:
+
+Reviewed `b93a3b04..5d44f839` (the five round-2 commits, all ancestors of `main`; the file
+at `5d44f839` is byte-identical to `main`) via `/ce-code-review` across four lenses
+(correctness, project-standards, adversarial, learnings) plus one validator batch that
+re-measured both actionable findings in its own `git archive 5d44f839` copy. The
+cross-model pass did NOT run (only a same-family route is installed on this host), so the
+adversarial lens ran in-process. No reviewer touched a database or the shared checkout.
+Every line number below is a line number in the file AT `5d44f839`.
+
+**What held up, so it is not redone.** Both round-1 items landed and were re-derived by
+execution rather than taken from the signal. Item 1: the bound is stated once in the
+dynamic-SQL KNOWN LIMITS entry, and both the correctness and the adversarial lens
+re-enumerated the whole file and found every other statement of the `+` recognition
+carrying it or deferring to the entry by name (header item 4, `SQL_INTERPOLATION_RE`,
+`enclosingQuote`, `statementAt`, `joinedByPlus`, `assembledWrites`, the join fixture
+comment); the untouched join sentences state neither the recognition nor the
+second-catcher claim. The opened-above `+` plant is 29/29 green, the same-line control
+reds `[concatenation]`, the opened-above `${column}` reds `[interpolation]`. Item 2: the
+three carve-out copies are identical after whitespace normalisation and each is a
+self-sufficient restatement; `assembledWrites` no longer states a universal. AC2, re-run by
+the architect: canary 29/29, all nine `tests/eslint` files 139/139, `npm run typecheck`
+exit 0, `npx eslint` on the file exit 0, no `Errors` line. The soundness clause holds:
+exactly 23 `accounts` heads in `src`, each opening and closing on its own literal's
+quotes (one lens via the TypeScript AST, one via a dump mutant); `src` spells no ALTER.
+The pre-commit anchor gate is zero-hit over the added lines with a firing control, in
+four independent runs; the TypeScript scanner counts the same block comments at base and
+head (54, of which 45 JSDoc), so no docblock truncated itself. Project standards is clean.
+
+The hold is prose only, three items. Each is a sentence this range added, or made newly
+relevant, that the code falsifies or that a sibling sentence now contradicts. The user's
+round-1 decision stands: no code change and no new fixture.
+
+### Item 1 (required). The entry's "unless" clause promises head-anchored catchers for a headless ALTER.
+
+Lines 259-267. The sentence's subject is "an ALTER whose table is named dynamically
+(`ALTER TABLE ${table}`, an `EXECUTE format(...)`), or whose column clause is assembled in
+any way the assembled-write scan does not recognise", and its "unless" clause says such a
+statement reds "under the ALTER arm" when a bare `updated_at` is left in the head's own
+literal, and under the every-statement-readable arm where its read reaches no terminator.
+Both of those arms walk only from heads that match `ALTER_ACCOUNTS_RE` /
+`READ_FROM_HEADS`, which require the literal `accounts`; a dynamically named head is no
+head to either. Measured four times (correctness, adversarial, the validator, the
+architect): `await pool.query(`ALTER TABLE ${table} DROP COLUMN updated_at`)` planted in a
+`src` file leaves the canary 29/29 green, exit 0; the same text with `accounts` in place
+of `${table}` reds `only the column-introducing migration alters accounts.updated_at
+itself`. Only the fail-closed `updated_at =` catcher is head-independent. The error is in
+the unsafe direction: the entry's own `EXECUTE format('ALTER TABLE %I DROP COLUMN
+updated_at', 'accounts')` example is silent although it spells the column, and a reader
+of the entry is told otherwise.
+
+Fix: the entry must say which catchers a dynamically named head can still reach (the
+fail-closed arm, which reads the assignment token and not the head) and which it cannot
+(the ALTER arm and the every-statement-readable arm, which walk from a head that spells
+`accounts`), so the two head-anchored catchers are scoped to the assembled-column-clause
+case and the dynamically named case is named as silent, its `EXECUTE format` example
+included. The standalone "Nor where its read reaches no terminator" sentence takes the
+same scope. Re-measure both plants above and quote the results in the signal block.
+
+### Item 2 (required). The second silent layout is stated for any head literal; only a backtick literal is silent there.
+
+Lines 277-280: "a head whose own literal opens on its line after a template from above
+closes there, since that closing backtick is read as an opener and the literal's opening
+one as its close". The clause presupposes a backtick literal. With a `'` or `"` head
+literal in the same position, `enclosingQuote` finds the carried closing backtick and
+returns it, the read is delimited by that backtick, ends the line inside a value, and the
+every-statement-readable arm reds by line. Measured (adversarial, the validator, the
+architect): a template closing on the head's line followed by
+`const sql = 'UPDATE accounts SET custody = $1, ' + recency + ' WHERE id = $2';` reds
+`every accounts statement can be read whole`; the same layout with a backtick head
+literal is 29/29 green; the same-line backtick control reds `[concatenation]`. The error
+is in the loud direction, and it sits in the sentence that names the layout.
+
+Fix: restrict the named layout to a backtick head literal, and either say what a `'` or
+`"` literal in that position does or leave it to the odd-quote paragraph below it by
+name. Re-measure the two variants and quote them.
+
+### Item 3 (required). Three sibling sentences the new text now contradicts.
+
+Each predates this range and was listed by the backend under "Considered and left" as
+stating neither the `+` recognition nor the second-catcher claim. That reading held at
+round 1; the sentences this range added now name the case each one denies, so each is
+newly relevant. Bound each to the head-line read, or defer to the dynamic-SQL entry by
+name; nothing else in them changes.
+
+- Lines 2151-2152, the `SqlStatement.quoteAt` field: "(-1 in a migration, where there is
+  none)". The rewritten `joinedByPlus` docblock (lines 2420-2429) now says the before-half
+  is skipped where `enclosingQuote` found no quote on the head's line, "`quoteAt` is -1",
+  which is the `src` opened-above case. Measured: an opened-above `src` head has
+  `quoteAt` -1; the closed-above single-quoted layout has `quoteAt` at the carried
+  backtick.
+- Line 913, the `SQL_INTERPOLATION_RE` docblock: "before the literal's opening quote". The
+  code tests the text before whatever quote `enclosingQuote` found (`slice(0,
+  statement.quoteAt)`), and the entry this docblock defers to says that quote may be a
+  template's closing backtick carried from above. Measured (correctness): on the head's
+  own line, `x +` ahead of the carried closing backtick, then a `'`-quoted head joined
+  with `+`, reports `[concatenation]` from the `+` before that backtick, not from
+  anything before the literal's `'`.
+- Line 4758, the join fixture's comment: "A bare `;` inside a template ends nothing: only
+  the enclosing quote does." The rewritten `statementAt` docblock and the entry now say a
+  template opened above its head IS read to its `;`. True of the fixture's own layout
+  (its quote is found on the head's line); bound it to that layout.
+
+### Not held, recorded so it is not re-raised
+
+- "An interpolation in either layout is still read" (line 281) has one narrow exception: in
+  the opened-above layout the read stops at a SQL `;` inside the template, so a `${...}`
+  after that `;` in the same template is silent while the same-line layout reads it.
+  The interpolation sits past the statement's own terminator, so "in the statement" is a
+  defensible reading. Not held.
+- No fixture pins the two named silent layouts, the headless-ALTER silence, or the
+  quoted-identifier idiom. Waived by the round-1 decision; recorded for coverage
+  visibility only.
+
+### The round-2 `[TODO Architect]` gap, triaged by the user (2026-09-22). No action on this task.
+
+The head-line read silencing the fail-closed backstop, and the quoted-identifier bullet's
+falsified "only where no readable head opens earlier in the same quoted text": FILED as
+`backend-head-line-read-silences-fail-closed-backstop`. That file supersedes the entry
+above, so it is not triaged again here.
