@@ -134,8 +134,9 @@ async function resetRateLimitKeys() {
   // Keep the last transport error instead of logging each one. The rejection
   // from connect() is a generic "Connection is closed."; the cause that names
   // the actual problem (WRONGPASS, ECONNREFUSED) only ever arrives on this
-  // event, so the throw below folds it in. Neither message embeds the URL, so
-  // nothing here can print the password.
+  // event, so the rate-limit-reset failure below folds it in. Both of the
+  // messages it interpolates describe the transport, never the connection
+  // string, so neither can carry the password into the thrown error.
   let lastRedisError = null;
   redis.on('error', (err) => {
     lastRedisError = err;

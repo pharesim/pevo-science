@@ -340,13 +340,16 @@ describe('globalTeardown — cleanup ordering (fix #2)', () => {
 
     // Keep cleanup hermetic. IPFS_API_URL and APP_TAG now carry defaults, so
     // unsetting them no longer keeps this off the network: stub the Kubo
-    // unpin call and drop REDIS_URL instead, so neither half opens a socket.
+    // unpin call, and blank REDIS_URL so the ledger half skips instead of
+    // dialing. It must be an empty string, NOT a delete: globalTeardown's own
+    // loadEnvFile repopulates every key absent from process.env, so deleting
+    // REDIS_URL is precisely what lets frontend/.env.test put a live URL back.
     // The assertion here is about ORDER, not about either backend being
     // reachable.
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValue({ ok: true, text: async () => '' });
-    delete process.env.REDIS_URL;
+    process.env.REDIS_URL = '';
 
     let caught;
     try {
@@ -363,6 +366,12 @@ describe('globalTeardown — cleanup ordering (fix #2)', () => {
     // The stubbed unpin was actually reached, so the ordering assertion is
     // not passing vacuously through an early return.
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+    // And the ledger half really skipped rather than opening a socket, which
+    // is what keeps this test hermetic. Asserting the skip is what catches a
+    // regression back to a form loadEnvFile can undo.
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[e2e teardown] REDIS_URL not set. skipping redis key deletion.',
+    );
     fetchSpy.mockRestore();
   });
 });

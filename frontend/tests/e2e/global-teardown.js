@@ -245,6 +245,11 @@ export async function cleanupIpfsPins() {
       await redis.connect();
     } catch (err) {
       console.warn(`[e2e teardown] Redis connect failed: ${err.message}`);
+      // disconnect() before dropping the reference: an un-disconnected client
+      // keeps reconnecting on ioredis's default schedule, which outlives this
+      // function and can hold the runner open. Not quit(), which would
+      // round-trip to a server we never reached.
+      redis.disconnect();
       redis = null;
     }
   } else {
