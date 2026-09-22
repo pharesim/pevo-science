@@ -167,3 +167,85 @@ Notes for review, none of them changes in this diff:
   helper at three of eight sites trades duplication for inconsistency), the
   vestigial `:value` on the checklist checkbox (pre-existing, read by nothing,
   and the E2E locates by `data-testid`), and collapsing the first two new specs.
+
+## Architect re-review (2026-09-22) — HELD PENDING FIXES:
+
+`/ce-code-review` on `1b6af088` + `2d505c2f` (six lenses; standards clean; two
+validated P2s and one advisory). The core change is sound: the reconciler
+cannot emit a tick the checklist does not render, the restore ordering holds,
+`:checked` is the right Alpine shape, and all five criteria are pinned on the
+fulfilled-enrichment path. Three items, all in the same file, then move back to
+`review/`.
+
+1. **Rejected enrichment on the return load prunes every saved tick and the
+   restore-triggered re-save makes the loss permanent** (`edit.js`, the
+   `_restoreDraft` reconcile assignment). `loadPaperData` settles with
+   `Promise.allSettled`; on a rejected enrichment `reviews` stays `[]` and
+   execution still falls through to `_restoreDraft`, so the intersection yields
+   `[]`, the `$watch` microtask fires after `_initialLoadDone = true`, and two
+   seconds later the draft is rewritten without the ticks. The checklist card is
+   `x-if="reviews.length > 0"`, so the returning user sees a form with no
+   checklist and resubmits without `addresses_reviews`: the defect this task
+   exists to close, on a transient 503 at the one moment the enrichment cache
+   has usually expired. This task's Scope says restore only after the paper's
+   reviews have loaded; on this branch they never loaded. The signal block's
+   objection to a `reviews.length` guard (it would resurrect stale ticks on a
+   paper whose reviews are genuinely gone) does not apply to a status guard: a
+   paper with no reviews is a fulfilled response with an empty list, which the
+   intersection still prunes correctly.
+   **Fix:** in `loadPaperData`, treat `enrichmentRes.status === 'rejected'`
+   the way the paper rejection is treated: set `loadError` and return before
+   `_prefillForm()` / `_restoreDraft()`. The existing Retry card is the user's
+   way through, and the draft is neither pruned nor rewritten because
+   `_initialLoadDone` stays false. Add a spec that seeds a draft with ticks,
+   `fetchPaperEnrichment.mockRejectedValue(...)`, runs `loadPaperData`, asserts
+   `loadError` is set and `addressedReviews` is still `[]`, then advances fake
+   timers past the debounce and asserts the stored draft still carries the
+   ticks. Update the reconciler's docblock sentence that says `loadPaperData`
+   assigns `reviews` before it calls `_restoreDraft` so it also states that a
+   rejected enrichment never reaches the restore.
+
+2. **A pending draft-save timer survives the post-success draft clear**
+   (`edit.js`, both `handleSubmit` success branches, the continuation post and
+   the native edit). Each calls `localStorage.removeItem(this.draftKey)` but
+   neither cancels `_draftTimer`; only `destroy()` and `_scheduleDraftSave`'s
+   own reschedule touch it. A save armed by the last watched change fires after
+   the clear when the broadcast plus cache invalidation completes inside the
+   debounce and before the 1.5 s `navigate()` teardown, and the next edit visit
+   restores that draft over the freshly fetched paper. The mechanism predates
+   this diff for every text field; this diff wired the task's own gesture (tick,
+   then submit) into the same timer, and the resurrected ticks alone pass the
+   no-changes check, so a second submit re-declares `addresses_reviews` on an
+   otherwise no-op revision.
+   **Fix:** beside each of the two `removeItem(this.draftKey)` success sites,
+   `if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }`,
+   mirroring `destroy()`. Add a fake-timer spec: arm the debounce (a tick, or
+   `_scheduleDraftSave()` directly with `_initialLoadDone` set), run
+   `handleSubmit` to `step === 'success'`, advance past two seconds, and assert
+   `localStorage.getItem(draftKey)` is still `null`. One spec against the
+   native-edit branch is enough; probe it by reverting that site.
+
+3. **The watcher-enumeration comment states an invariant its pinned list
+   violates** (`pages-edit.test.js`, the reactive-bindings spec). The new
+   comment says every field `_scheduleDraftSave` persists needs a watcher, but
+   the pinned list omits `newCoAuthors`, which `_scheduleDraftSave` persists and
+   `_setupReactiveBindings` never watches (your own notes call it a one-line
+   gap). Close it rather than reword it: add
+   `this.$watch('newCoAuthors', () => this._scheduleDraftSave());` in
+   `_setupReactiveBindings` (the publish page watches its `coAuthors`
+   equivalent the same way) and append `'newCoAuthors'` to the pinned list.
+
+Dismissed at triage, no action: a spec for the `!Array.isArray(saved)` branch
+(preemptive; `Array.isArray(undefined)` cannot throw), the pre-existing
+paper-scoped draft key and multi-tab classes, the mid-submit checkbox, and the
+sub-2s flush before the navigating acquisition (already a held item on the
+re-auth window task).
+
+Verification note for the re-submission: at `2d505c2f`,
+`npx vitest run tests/unit/pages-edit.test.js` reports 81 passed but exits 1
+with three unhandled `TypeError: ... reading 'abstractEditor'` errors. They
+pre-exist at the base (74 passed, exit 1) and are gone on current `main` after
+`e579c8c4` (85 passed, exit 0), so nothing to do here, but read the exit code
+and the Errors line, not the Tests count, when reporting the suite as green.
+Do not cite this hold, its item numbers, or the task slug in code or test
+comments; anchor on the symbols named above.
