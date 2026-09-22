@@ -1,6 +1,7 @@
 ---
 title: "A guard downstream of a rule absorbs that rule's mutants, so mutant-green can mean the net caught it rather than the rule being unpinnable"
 date: 2026-09-18
+last_updated: 2026-09-22
 category: conventions
 module: backend/tests/eslint
 problem_type: convention
@@ -79,6 +80,11 @@ by valid code." Only re-running the same mutant with the guard removed tells the
 guard whose presence or absence no test can detect, and it buys that untestability at the cost of
 making the rules around it untestable too.
 
+**A loud detector is not a net.** An assertion that reds when the reader disagrees with an
+independent oracle hands back no answer in the rule's place, so it cannot rescue a mutant: it turns
+the mutant red. That is the shape to reach for when a rule's damage has to be caught rather than only
+recorded, and it is what this canary later did with TypeScript's parser as the oracle.
+
 **Record the damage a misjudgement causes in prose rather than catching it with a net nothing can
 test.** A KNOWN LIMITS entry naming the shape still misjudged, what it costs, and why neither tree
 spells it is worth more than a guard that silences the same shape invisibly. The next author reading
@@ -103,9 +109,14 @@ The masking also corrupts the record. Once a cluster of conditions reads as "can
 discriminated," the natural next step is to write that conclusion into the file as a documented
 limit, converting a measurement artefact into a permanent and wrong claim about the reader.
 
-And the guard gave nothing back. It could not be discriminated by any valid-code fixture either,
-because with a complete operand list a misjudged division needs a prior that valid TypeScript does
-not produce. The net was catching only mutants, which is to say only the tests.
+And against the fixtures the round had, the guard gave nothing back. None of them could discriminate
+it, because every misjudged division it caught needed a prior the operand list was believed to cover
+completely, so the net was catching only mutants, which is to say only the tests. The list was not in
+fact complete. Later adversarial passes found valid TypeScript priors it does not carry (`x!!`, a
+trailing-dot `1.`, an identifier ending in a combining mark, `f<string>`), and a net like this one
+would have silently rescued some of them. The recommendation stands regardless, because what held in
+the end was neither a longer list nor a net but taking the fact from a parser and detecting
+disagreement loudly (see `canary-reader-takes-typescript-facts-from-the-parser-not-a-hand-written-lexer.md`).
 
 This sharpens a rule this canary's history already carries: deleting a feature and watching its
 dedicated fixture red proves the fixture and the feature are wired together, and nothing more. It
@@ -164,7 +175,9 @@ precedes them, so the prefix `!` of `!/re/.test(v)` still opens a pattern. `PATT
 carries the keyword set behind a lookbehind that keeps out a property of the same name
 (`obj.return / 2` divides) and a name merely ending in one (`noreturn / 2`). `codeBefore` supplies
 the previous line carrying code when a slash leads its own line. The residual misjudgements, and what
-each costs, are written into the KNOWN LIMITS bullet instead of being caught.
+each costs, are written into the KNOWN LIMITS bullet. Any whose damage crosses a line end is now also
+caught, by an arm comparing the reader's template and block state with TypeScript's parser at every
+line end.
 
 A mutant that was green with the guard and reds without it: take the division fixture
 `const half = total! / 2 /* note */;`, which asserts through `scanned` that only the `/* note */`
@@ -211,3 +224,6 @@ the wrong reason and a fixture rescued by a net are both pins that measure nothi
   worth keeping: there the probe never ran the evasion, here the probe ran correctly and the
   observable was masked before any fixture could see it.
 - `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` is the root convention this refines.
+- `canary-reader-takes-typescript-facts-from-the-parser-not-a-hand-written-lexer.md` is where the operand list's incompleteness led: the
+  interpolation close comes from TypeScript's parser, and a loud agreement check catches the damage a
+  misjudged division does across a line end, without masking any pin.

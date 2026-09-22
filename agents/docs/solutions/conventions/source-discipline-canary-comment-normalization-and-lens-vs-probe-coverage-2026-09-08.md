@@ -1,7 +1,7 @@
 ---
 title: "A source-scanning canary must normalize comments before it matches, and a prescribed mutation-probe list can only confirm the items it names"
 date: 2026-09-08
-last_updated: 2026-09-15
+last_updated: 2026-09-22
 category: conventions
 module: backend/tests/eslint + code-review process
 problem_type: convention
@@ -116,10 +116,14 @@ and three live defects came from getting that backwards, each in ordinary code:
   comments in the scanned trees run past sixty lines, the longest 159, and a
   `$1..$4` written in the prose of one of them is what opened the phantom span
   in the third bullet below.
-- An unescaped backtick ends a template whatever else is open. An apostrophe in
-  prose inside a one-line template was being read as opening a string, which
-  swallowed the closing backtick and left the template state inverted for the
-  rest of the file.
+- An unescaped backtick in template text ends the template whatever else is
+  open there. An apostrophe in prose inside a one-line template was being read
+  as opening a string, which swallowed the closing backtick and left the
+  template state inverted for the rest of the file. Inside a `${...}`
+  interpolation, though, a backtick opens a nested template rather than ending
+  the outer one, and applying the rule there inverted the state the other way;
+  that is why the interpolation's extent now comes from TypeScript's own parser
+  (see `canary-reader-takes-typescript-facts-from-the-parser-not-a-hand-written-lexer.md`).
 - A dollar-quote opener has to be an actual dollar-quote opener, and the first
   guard written for this closed only the spelling that had been observed. The
   placeholder-builder idiom this repo writes as a SQL `$` sigil immediately
@@ -154,7 +158,12 @@ Its reach is worth stating precisely rather than overselling, because the
 temptation is to treat it as covering the whole area. It catches the class where
 a span never closes. It does NOT catch the bounded-lookahead class above, whose
 error direction is over-reading: a comment read as live source leaves no span
-open, so the end state is clean while the prose is being scanned as code.
+open, so the end state is clean while the prose is being scanned as code. Nor
+does it catch a state inverted mid-file and put back by a later misread before
+the file ends, which leaves the end state clean over every line between. Where
+the scanned file is TypeScript, that class is caught by comparing the reader's
+template and block state with the TypeScript parser's at every line end, which
+names the first line the two disagree at; see `canary-reader-takes-typescript-facts-from-the-parser-not-a-hand-written-lexer.md`.
 
 ### A prescribed probe list confirms items; only unscripted search tests closure
 
@@ -252,6 +261,10 @@ on a finalized row.
 
 ## Related
 
+- `canary-reader-takes-typescript-facts-from-the-parser-not-a-hand-written-lexer.md`
+  is the next rung for this same reader: the TypeScript facts it depends on come
+  from the parser, and its carried state is asserted against the parser at every
+  line end, which covers the inversion a clean end state cannot show.
 - `source-discipline-canary-detection-must-survive-ordinary-authoring-shapes-2026-08-31.md`
   is the closest neighbour and treats comments as a detection-reach hazard, but
   scopes its fix as a per-scan trailing-comment strip whose safe direction it

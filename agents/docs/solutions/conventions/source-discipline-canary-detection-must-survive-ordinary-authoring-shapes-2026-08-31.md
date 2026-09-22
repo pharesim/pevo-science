@@ -1,6 +1,7 @@
 ---
 title: "Source-discipline canary detection must survive the shapes an ordinary author writes — line wraps, shorthand, comment tails, split imports, helper extraction, literal values"
 date: 2026-08-31
+last_updated: 2026-09-22
 category: conventions
 module: backend/tests + code-review process
 problem_type: convention
@@ -74,7 +75,12 @@ prose. The recurring shapes, each found live:
   scan needs instead is comment NORMALIZATION beneath every pattern: each
   comment span replaced in place by spaces of the same length before any match
   runs, with ambiguous openers resolved toward code so a wrong call costs a red
-  bar rather than a blind spot.
+  bar rather than a blind spot. That holds for an opener whose wrong call stays
+  on its own line. A wrong boundary call on state the reader carries across
+  lines (a template, a regex literal, a block comment) can invert that state
+  and blank code on the lines after it, which is silent; where the scanned
+  language has a parser, that carried state is checked against it (see
+  `canary-reader-takes-typescript-facts-from-the-parser-not-a-hand-written-lexer.md`).
 - **Definition self-satisfaction.** A required-call pattern matches the
   callee's own definition line, so a demand arising INSIDE that function is
   satisfied by its own signature. Every scan needs a definition-line skip for
