@@ -45,3 +45,11 @@ to `pending/` when that lands.
 `127.0.0.1:5432` and redis on `127.0.0.1:6379` under `./deploy.sh test-up`, verified with
 `docker port` and a global-setup run against both loopback URLs. The `test-up` banner in
 `deploy.sh` prints the same two addresses; keep the template's wording consistent with it.
+
+**Note (architect, 2026-09-22).** The user edited `frontend/.env.test.example` directly: the
+`APP_DATABASE_URL` host is now `127.0.0.1` and a `REDIS_URL` line with a placeholder password
+was added (scope item 2 done, item 1 partly). Once that edit is committed, what remains is
+the `REDIS_URL` comment from scope item 1 and the header sentence from scope item 3. The
+review of the loopback-ports commit also asked that the template keep the literal
+`127.0.0.1`, never `localhost`: the bind is IPv4-only and `localhost` can resolve `::1`
+first for `pg`.

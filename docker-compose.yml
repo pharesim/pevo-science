@@ -29,6 +29,10 @@ services:
   redis:
     image: redis:7-alpine
     restart: always
+    # No host port in dev; docker-compose.test.override.yml publishes
+    # 127.0.0.1:6379 under test-up only. Keep dev unpublished: every backend
+    # vitest run's tests/setup.ts flushes `${APP_TAG}:*` in whatever Redis it
+    # reaches, so a host-reachable dev Redis lets any test run wipe dev state.
     command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
     volumes:
       - redis_data:/data

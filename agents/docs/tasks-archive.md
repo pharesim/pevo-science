@@ -1,3 +1,111 @@
+## ARCHITECT-E2E-POSTGRES-REDIS-LOOPBACK-PORTS — Publish Postgres and Redis on loopback in the E2E override (archived 2026-09-22) — implemented by the architect in 6b50b6f3, /ce-code-review (7 reviewers) returned one P2 design call and one P3, both fixed in abfdcc00; base-file redis comment added at archive; ui-env-test-example-loopback-urls unblocked ✓
+
+### Architect archive note (2026-09-22)
+
+Review verdict: ready with fixes, all applied. #1 (P2, reliability + adversarial, validated): every dev/test mode switch and a restart issued in test mode now recreates postgres and redis; resolved with option (a), a `warn_infra_bounce` line before the recreating step in `up`, `test-up` and `restart` plus the override header. #2 (P3, correctness + adversarial, validated): the banner's angle-bracket REDIS_URL placeholder parsed as a redirection when pasted; the banner now prints both URLs as `$(grep ... .env)` substitutions through a quoted heredoc, so no secret reaches the terminal. Also fixed: the pre-existing "from frontend/" wording and a pre-flight that fails `test-up` when a foreign listener holds 5432 or 6379. Dismissed as residual: a base-config no-ports canary (the base file now carries the why on the redis service instead), restart-during-test-up, the WSL relay question, pg/ioredis reconnect behavior. The user's local `frontend/.env.test` needed `127.0.0.1` in place of `172.0.0.1`; the user updated `frontend/.env.test.example` directly (ui zone) while this archived.
+
+### Publish Postgres and Redis on loopback in the E2E override
+
+**Owner:** architect
+**Created:** 2026-09-22
+
+Filed by the backend agent at the user's request.
+
+## Why
+
+E2E reaches Postgres and Redis through docker-network IPs hardcoded in the gitignored
+`frontend/.env.test` (`APP_DATABASE_URL`, `REDIS_URL`). Those addresses do not stay put:
+
+- Docker assigns them when containers join the network. After the Docker restart at
+  2026-09-21 00:16 UTC, `pevo-ipfs-1` came back on 172.20.0.2, Redis's old address, and
+  Redis on 172.20.0.5. The local `frontend/.env.test` points `REDIS_URL` at 172.20.0.4,
+  which is now `pevo-backend-1`.
+- `./deploy.sh test-up` can recreate the Postgres container, which has moved its IP
+  mid-session before (172.20.0.3 to 172.20.0.7).
+
+A stale `APP_DATABASE_URL` fails global setup's `test-db:reset`, so no spec runs. A stale
+`REDIS_URL` makes global setup skip the rate-limit reset, so signup and recovery specs can
+429, and makes global teardown skip its Redis cleanup. Both skips only warn. The current
+workaround is to look the IPs up with `docker inspect` after `test-up` and pass them on the
+command line for every run.
+
+Neither service publishes a host port today. Nothing on the host listens on 5432 or 6379,
+and the `combflow` stack on the same Docker host publishes neither.
+
+## Scope
+
+1. In `docker-compose.test.override.yml`, add `postgres` and `redis` entries at the same
+   level as `backend` and `mailpit`, each carrying only a loopback port mapping, the way
+   `mailpit` publishes 8025:
+
+   ```yaml
+     postgres:
+       ports:
+         - "127.0.0.1:5432:5432"
+
+     redis:
+       ports:
+         - "127.0.0.1:6379:6379"
+   ```
+
+   Compose merges these into the `docker-compose.yml` definitions, which carry no `ports:`
+   for either service, so the mapping is all they add.
+2. Update the override's header comment. It says Postgres, Redis and IPFS stay shared with
+   the dev stack; it should add that under `test-up` Postgres and Redis are also published
+   on 127.0.0.1 for the E2E harness.
+3. When this lands, move `ui-env-test-example-loopback-urls` from `blocked/` to `pending/`.
+
+## Acceptance criteria
+
+1. After `./deploy.sh test-up`, `docker port pevo-postgres-1` prints
+   `5432/tcp -> 127.0.0.1:5432` and `docker port pevo-redis-1` prints
+   `6379/tcp -> 127.0.0.1:6379`.
+2. After `./deploy.sh up`, neither container publishes a port, so dev mode is unchanged.
+3. With both URLs in `frontend/.env.test` on 127.0.0.1, E2E global setup completes the
+   test-db reset and the rate-limit reset with no Redis warning.
+
+## Notes
+
+- Adding the mappings recreates both containers on the next `test-up`. Their data lives in
+  the `pgdata` and `redis_data` named volumes.
+- While in test mode, loopback exposes both `pevo_app` and `pevo_app_test`. The harness's
+  `test-db:reset` hook and `queryAppDb` helper refuse any database whose name does not end
+  in `_test`.
+- The user's local `frontend/.env.test` needs its two URLs switched to 127.0.0.1 by hand;
+  nothing in the repo writes that file.
+- Open, not part of this scope: whether to publish the same ports in `docker-compose.yml`
+  too, so host-side backend test runs (root `CLAUDE.md` "Running Tests", which also looks
+  the IPs up with `docker inspect`) get a fixed address. Every backend vitest run loads
+  `backend/tests/setup.ts`, which deletes all `${APP_TAG}:*` keys whenever Redis answers,
+  so making dev Redis reachable from the host by default would let any test run wipe the
+  dev backend's Redis state. The repo-root `.env` no longer carries a `REDIS_URL` (removed
+  2026-09-22), so host-side runs reach Redis only when one is passed on the command line.
+
+## Implementation (architect, 2026-09-22)
+
+Landed in `6b50b6f3`. Scope items 1 and 2 as specified; item 3 done in `fb6569fe`
+(`ui-env-test-example-loopback-urls` moved to `pending/`). Two additions beyond the listed
+scope, both in architect-owned files: the `test-up` banner in `deploy.sh` prints the
+loopback `APP_DATABASE_URL` instead of a `docker inspect` lookup and now also names
+`REDIS_URL` (global-setup only warns when it is missing); the postgres comment in
+`docker-compose.yml` points at the override so "no host port" stays accurate for dev.
+The `test-db-up` banner is unchanged because that command also runs under plain `up`,
+where loopback answers nothing.
+
+Acceptance criteria, all verified on the dev host:
+
+1. After `test-up`: `docker port pevo-postgres-1` prints `5432/tcp -> 127.0.0.1:5432`,
+   `docker port pevo-redis-1` prints `6379/tcp -> 127.0.0.1:6379`; `ss -ltn` shows both
+   bound to 127.0.0.1 only.
+2. After `up`: `docker port` prints nothing for either container, no host listener on
+   5432 or 6379, backend routed back at `pevo_app`.
+3. `global-setup.js` invoked directly with both URLs on 127.0.0.1: test-db reset truncated
+   7 tables, rate-limit reset cleared 1 key under `pevotest:rl:*`, no Redis warning.
+
+Observed while verifying: the local `frontend/.env.test` names `172.0.0.1` for both hosts,
+which is a routable address, not loopback; it needs `127.0.0.1`. Left for the user, since
+nothing in the repo writes that file.
+
 ## BACKEND-ALTER-ACCOUNTS-IF-EXISTS-EVADES-PIN — The ALTER pin does not admit the IF EXISTS spelling (archived 2026-09-22) — 3 hold rounds (4+4+1 items, all FIXED), round 4 review clean; one advisory folded into the note below, round-4 [TODO Architect] items 1 and 2 and round-2 [TODO Architect] items 1, 5 and 6 dismissed at archive ✓
 
 ### Architect archive note (2026-09-22, round 4)
@@ -140,111 +248,3 @@ Four positives were planted, each answering to exactly one feature:
   grammar-order claim is pinned rather than asserted.
 
 ### Scope 3, the sweep — what it covered, from the code
-
-Nine files under `tests/eslint/`. Exactly one defines SQL regexes of its own:
-this one. No sibling carries an ALTER pattern at all, so there was nothing of
-the same spelling to fix.
-
-- `no-accounts-updated-at-write-outside-signup-finalize.test.ts` — the only
-  SQL-regex file. Head patterns (`ACCOUNTS_STATEMENT_RE`, `UPDATE_TARGET_RE`,
-  `INSERT_TARGET_RE`, `MERGE_TARGET_RE`), column-list patterns
-  (`ACCOUNTS_INSERT_COLUMNS_RE`, `MERGE_INSERT_COLUMNS_RE`,
-  `COPY_COLUMNS_RE`), `ALTER_ACCOUNTS_RE`, `ROUTINE_CREATION_RE`,
-  `BOUND_TO_ACCOUNTS_RE`, plus the lexer and assembly detectors.
-- `no-accred-state-read-missing-id-tiebreaker.test.ts`,
-  `no-custom-id-block-num-floor.test.ts`, `no-bridge-paper-literal.test.ts` —
-  zero regexes each; RuleTester wrappers whose patterns live in
-  `backend/eslint.config.mjs`. Followed there rather than counted clean.
-- `no-custody-claim-derivation-outside-helper.test.ts`,
-  `no-session-consume-without-revocation-epoch.test.ts`,
-  `no-session-proof-mint-outside-reauth-routes.test.ts`,
-  `no-stale-comment-anchors.test.ts`,
-  `no-unresolvable-carve-out-companion-citation.test.ts` — out of class:
-  TypeScript identifiers, comment prose, file paths. Named rather than
-  omitted so the coverage is auditable.
-
-Outside `tests/eslint/`: `cast-hardening-author-index-weight.test.ts`,
-`notification-queries-lateral-guard-canary.test.ts`,
-`excludeSelfReviewWhere-callsite-canaries.test.ts`,
-`window-cte-deterministic-tiebreaker.test.ts` all scan SQL text but anchor on
-clause keywords or literal fragments, not DDL heads. `frontend/tests/unit/eslint/`
-holds no regex constants and no SQL. No DDL pattern anywhere but this file.
-
-### Acceptance criteria
-
-1. **Met.** `ALTER TABLE IF EXISTS accounts DROP COLUMN updated_at;` planted
-   in `002_nullable_email.sql` reds `only the column-introducing migration
-   alters accounts.updated_at itself`, reporting
-   `"002_nullable_email.sql#<module>": 1` against an expected empty entry.
-   Five further spellings red the same way: rename onto the name, retype
-   under all three clauses, the multi-line form, the lower-case clause, and
-   irregular whitespace. Controls naming another column or another table stay
-   green, so the widening does not over-match.
-2. **Met.** Clean tree 21/21, typecheck clean, lint unchanged (one
-   pre-existing warning in `src/lib/author-supersession.ts`, untouched here).
-   The standing anchor canary is green on the new comments.
-3. **Met, and extended.** Deleting the `IF EXISTS` alternative reds exactly
-   one test. So does deleting `ONLY`, so does deleting `public.`, and so does
-   swapping the two clauses into the invalid-SQL order. Each of the four
-   mutants reds one and only one test, so every admitted clause and their
-   order is individually attributable.
-
-Beyond the key set: a fourth `ALTER TABLE IF EXISTS accounts DROP COLUMN
-updated_at;` planted inside the allowed `016_accounts_updated_at.sql` symbol
-raises its tally from 3 to 4 and reds, so the arm refuses a second alteration
-inside an allowed symbol rather than only an unexpected key.
-
-All mutation runs used isolated scratchpad copies of `backend/`; the shared
-checkout was never mutated.
-
-### [TODO Architect] findings surfaced, not fixed
-
-A survey of the same class turned up further gaps in this file and its rule
-host. None were touched — they are outside this task's scope and are for
-triage, not silent repair. Ranked in the chat handoff; the load-bearing ones:
-`BOUND_TO_ACCOUNTS_RE` spells the schema qualifier `(?:public\.)?` where its
-five siblings spell `(?:public\s*\.\s*)?`, which downgrades the unexemptible
-trigger-binding refusal to an exemptible one; `ALTER_ACCOUNTS_RE` still misses
-the `ONLY (accounts)` paren form its three siblings admit, and a quoted
-`"accounts"`; `ALTER MATERIALIZED VIEW accounts RENAME COLUMN` reaches an
-ordinary table on this PostgreSQL, so the keyword anchor is not the only way
-in; `COPY BINARY accounts (...)` evades both COPY arms; and the ALTER arm has
-no read-whole backstop, so a head whose terminator falls past `LITERAL_CAP`
-is dropped silently where an `ACCOUNTS_STATEMENT_RE` head would red.
-
-## Architect review (2026-09-14, round 1) — HELD PENDING FIXES:
-
-Reviewed at commit 6e02acf9 via `/ce-code-review` across five lenses — correctness,
-project-standards, testing, adversarial, learnings — plus the architect's own
-mutation run and an independent validator pass on the two surviving findings.
-6e02acf9 is an ancestor of `main`; no orphan SHA. The cross-model adversarial pass
-did not run (no different-provider CLI installed on this host), so the in-process
-adversarial reviewer held that lens; noted because it means the lens had no
-independent-family corroboration this round.
-
-**The signal block's claims were re-verified by execution, not read.** In an
-isolated scratchpad copy of `backend/`: clean tree 21/21 and `typecheck:tests`
-clean; the AC1 spelling planted in `002_nullable_email.sql` reds the
-column-alteration test with the expected `002_nullable_email.sql#<module>: 1`
-against an empty entry; deleting the `IF EXISTS` alternative reds the IF EXISTS
-fixture, deleting `ONLY` reds the ONLY fixture, deleting `public.` reds the
-`public.` fixture, and swapping the two keyword clauses reds the combined fixture,
-each mutant failing one test; a fourth alteration planted inside the allowed `016`
-symbol raises its tally 3 -> 4 and reds; controls naming another column or another
-table stay green. Scope 3 was re-enumerated from the code rather than taken from
-the note: nine files under `tests/eslint/`, exactly one defining SQL regexes, no
-sibling ALTER pattern, and `backend/eslint.config.mjs` carries none either. Every
-other `ALTER` hit under `backend/tests` is executed fixture DDL, not a detection
-pattern. All three acceptance criteria hold.
-
-The hold is that the round pinned one of the three pairwise orders among the
-pattern's three optional groups, and left a comment that claims more than its line
-delivers. Neither costs a red bar today; both are the same class this task exists
-to close — an alternative that no fixture answers for, and a docblock a future
-author would act on. Verify each item by mutation in a scratch copy (red on the
-mutation, green on restore) and state the probe per item when moving back to
-`review/`.
-
-### Item 1 (required). The schema-qualifier group's position is pinned by nothing.
-
-`ALTER_ACCOUNTS_RE` carries three optional groups, so there are three pairwise
