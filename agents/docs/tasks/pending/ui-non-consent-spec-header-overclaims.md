@@ -289,6 +289,17 @@ Run the pre-commit anchor gate over every replacement line before committing;
 the fixture's docblock is the kind of place a line-number or "the guard below"
 anchor creeps in.
 
+Architect note (2026-09-22, same day, appended after the hold): items 1 and 2
+under-enumerate the sweep. `git grep -n "posting-key decrypt" -- frontend/tests`
+returns two more citers of the fixture that carry the same phrase:
+`frontend/tests/e2e/consent-op-fresh-auth.spec.js` (its header and one inline
+comment) and `frontend/tests/unit/fresh-auth-401-retry.test.js` (its header).
+Reword those alongside the fixture and the two inline comments, so the grep
+returns nothing when the fix lands; that empty result is the evidence for the
+signal block. The corpus entry
+`agents/docs/solutions/conventions/carve-out-clause-a-impracticability-claims-are-unverified-prose-2026-09-22.md`
+records both instances and the sweep step.
+
 Dismissed at triage, recorded so they are not re-raised:
 
 - The hardened `/start` expectation couples `orcid-link.spec.js`'s real-path
