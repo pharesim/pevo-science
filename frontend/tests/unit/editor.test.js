@@ -5,13 +5,28 @@ const mockUploadFile = vi.fn();
 vi.mock('../../src/lib/ipfs-upload.js', () => ({
   uploadFile: (...a) => mockUploadFile(...a),
   UPLOAD_SESSION_TORN_DOWN: 'UPLOAD_SESSION_TORN_DOWN',
-  // Mirrors the real mapper, including the null contract for the
-  // already-reported teardown code (the teardown's own toast is the message).
-  describeUploadError: (err) =>
-    err?.code === 'UPLOAD_SESSION_TORN_DOWN' ? null
-      : err?.code === 'UPLOAD_CANCELLED' ? 'common.uploadCancelled'
-        : err?.code === 'UPLOAD_REAUTH_FAILED' ? 'settings.reauthFailed'
-          : 'common.uploadFailed',
+  UPLOAD_SUBJECT_CHANGED: 'UPLOAD_SUBJECT_CHANGED',
+  // A row-for-row mirror of the real mapper, because what this suite asserts
+  // turns on which rows return null: that is the already-reported contract,
+  // and the editor reads it to decide whether to speak and whether to abandon
+  // the rest of the batch. A mock that mirrored only part of the table let a
+  // real silent code arrive here as an ordinary failure, so the batch drained
+  // on and the suite reported a behavior the product does not have. Every row
+  // is listed for that reason, including the ones no case here exercises yet.
+  // Kept as the real mapper's switch rather than a lookup table: null is a
+  // value here, not an absent row, and every table form has to defend that
+  // against its own default.
+  describeUploadError: (err) => {
+    switch (err?.code) {
+      case 'UPLOAD_CANCELLED': return 'common.uploadCancelled';
+      case 'UPLOAD_REAUTH_FAILED': return 'settings.reauthFailed';
+      case 'UPLOAD_REAUTH_REQUIRED': return 'common.reauthRequired';
+      case 'UPLOAD_REAUTH_BUSY': return 'common.reauthPromptOpen';
+      case 'UPLOAD_SESSION_TORN_DOWN':
+      case 'UPLOAD_SUBJECT_CHANGED': return null;
+      default: return 'common.uploadFailed';
+    }
+  },
 }));
 
 // Minimal Alpine mock used by PevoEditor._handleImageUpload's dynamic import.
@@ -495,6 +510,30 @@ describe('PevoEditor image-upload queue', () => {
       expect(mockUploadFile).toHaveBeenCalledTimes(1);
       expect(toastShow).toHaveBeenCalledTimes(1);
       expect(toastShow).toHaveBeenCalledWith('Session inconsistency detected. Please sign in again.', 'error');
+      expect(stub._imageUploadQueue).toEqual([]);
+      expect(stub._imageUploadDraining).toBe(false);
+    });
+
+    it('a subject change mid-batch abandons the remaining images and adds no toast of its own', async () => {
+      // The other half of the already-reported contract. A cross-tab login as
+      // someone else abandons the upload with its own silent code, and the
+      // remaining images must not drain on: they belong to the subject who
+      // left, and pushing them through would pin them under whoever the tab
+      // now represents. Unlike the teardown twin, nothing needs saying here.
+      // Whatever spoke for the subject change has already spoken, and where
+      // the underlying cancel was the user's own dismissal the silence IS the
+      // decision, so the editor adding a message of its own would be the
+      // double report either way.
+      mockUploadFile.mockRejectedValue(Object.assign(new Error('Session changed. Upload abandoned.'), {
+        code: 'UPLOAD_SUBJECT_CHANGED',
+      }));
+      const stub = makeRealUploadStub();
+
+      stub._imageUploadQueue.push(img('a.png'), img('b.png'), img('c.png'));
+      await stub._drainImageUploadQueue();
+
+      expect(mockUploadFile).toHaveBeenCalledTimes(1);
+      expect(toastShow).not.toHaveBeenCalled();
       expect(stub._imageUploadQueue).toEqual([]);
       expect(stub._imageUploadDraining).toBe(false);
     });
