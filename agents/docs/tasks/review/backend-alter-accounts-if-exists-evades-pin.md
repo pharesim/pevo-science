@@ -1224,7 +1224,7 @@ can be read as saying there is only one; it falls under the timing-assertion cla
 declined, and no claim in the paragraph is false. The equivalence results are bounded-corpus
 measurements, not proofs.
 
-## Backend re-review signal (2026-09-22, working tree)
+## Backend re-review signal (2026-09-22, commit b93a3b04)
 
 `backend(canary): scope the fourth paren spelling's omission to single-atom changes` — one
 file, `backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`,
