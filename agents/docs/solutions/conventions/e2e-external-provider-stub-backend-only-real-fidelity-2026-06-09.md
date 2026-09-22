@@ -1,6 +1,7 @@
 ---
 title: "E2E stub for a dual-actor external provider: prefer backend-only-real fidelity, and hand-roll when the response shape is non-standard"
 date: 2026-06-09
+last_updated: 2026-09-22
 category: conventions
 module: e2e-harness/orcid-stub
 problem_type: convention
@@ -72,6 +73,8 @@ await page.route('**/oauth/authorize*', async (route) => {
 
 The real path stays real: the backend's `/callback` does a genuine `POST /oauth/token` against the stub and mints a real fresh-auth proof. Only the empty authorize redirect, which carries no security-relevant data, is synthesized.
 
+One interception is not enough on its own. The SPA validates the authorize host against its `ORCID_REDIRECT_HOSTS` allowlist (`frontend/src/lib/fresh-auth.js`) before it navigates, so a `redirect_url` pointing at the compose-internal `orcid-stub` host is refused client-side and no `/oauth/authorize` request ever exists for the route above to fulfill. The shared fixture `routeOrcidStubBridge` (`frontend/tests/e2e/fixtures/orcid.js`) therefore intercepts `**/api/orcid/start` first, lets the real handler mint its state, rewrites only the `redirect_url` host to `orcid.org`, and then fulfills the authorize hop as shown. Specs use that fixture rather than copying the single-route example; it is the current implementation of this pattern.
+
 Do NOT host-publish the stub and share one base URL. The browser would be told (in the authorize `redirect_url` the backend builds from `config.orcidBaseUrl`) to navigate to an `orcid-stub` / `host.docker.internal` hostname it cannot resolve. And do NOT split the authorize-base (browser) from the token-base (backend): `config.orcidBaseUrl` is a single value feeding both the `/start` authorize-URL builder and the `/callback` token exchange, so splitting them would require a backend code change purely for tests.
 
 ### Part 2 — Hand-roll the stub when the provider's response shape is non-standard
@@ -111,7 +114,7 @@ Two details are load-bearing:
 
 Off-the-shelf mock OAuth2 servers (e.g. `navikt/mock-oauth2-server`) emit RFC-6749 token JSON and surface claims via `/userinfo` or an `id_token` JWT. Adopting one means coercing it into the bespoke top-level-`orcid` shape (response-template override) plus pinning an image plus mounting a config volume — strictly more moving parts than 20 lines of inline `http`. Model the sidecar on the existing `mailpit` E2E sidecar: E2E-only, compose-network sibling, memory-capped.
 
-No backend code change is needed for the `fresh_auth`/`set_password` modes: `config.orcidBaseUrl`, `config.orcidClientId`, and `config.orcidClientSecret` are already env-overridable (`backend/src/config.ts`). The `signup`/`accredit` modes additionally hit a hardcoded `pub.orcid.org` works URL and are out of scope for this stub.
+No backend code change is needed for the `fresh_auth`/`set_password` modes: `config.orcidBaseUrl`, `config.orcidClientId`, and `config.orcidClientSecret` are already env-overridable (`backend/src/config.ts`). The `signup`/`accredit` modes additionally hit the works-count fetch (`countExternalWorks`); its base is also env-overridable (`config.orcidApiBaseUrl`, `ORCID_API_BASE_URL`) and is served in E2E by a second hand-rolled sidecar, `orcid-works-stub` (`docker-compose.test.override.yml`), built on the same pattern.
 
 ## Why This Matters
 
@@ -137,7 +140,7 @@ Apply the **hand-rolled stub** decision when:
 Do NOT apply this when:
 
 - The provider is touched only by the backend (no browser hop to reconcile — just point `config.*BaseUrl` at the stub).
-- The flow depends on a hardcoded provider URL the config doesn't override (e.g. the `pub.orcid.org` works URL used by `signup`/`accredit`) — that needs a separate decision.
+- The flow depends on a hardcoded provider URL the config doesn't override — that needs a separate decision. (ORCID's works URL was once this case; it has been env-overridable and stubbed by `orcid-works-stub` since the sidecar landed.)
 - An off-the-shelf mock already speaks the exact shape your client parses, in which case the coercion cost disappears and adopting it may be cleaner.
 
 This is a real compose sidecar (live container), NOT an in-process mock — it sits outside the unit/integration mock carve-out governed by `test-mock-carve-out-clause-c-2026-05-04.md`.

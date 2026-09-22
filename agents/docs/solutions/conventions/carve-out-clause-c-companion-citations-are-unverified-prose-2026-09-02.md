@@ -1,6 +1,7 @@
 ---
 title: "Carve-out clause-(c) companion citations are unverified prose: resolve the path and grep the risk-class token, at write time and at review"
 date: 2026-09-02
+last_updated: 2026-09-22
 category: conventions
 module: backend/tests
 problem_type: convention
@@ -79,11 +80,11 @@ It does not reach any of these, each of which is a genuine clause-(c) gap:
 
 Read without that scoping, the dismissal rule suppresses exactly this finding class, and a reviewer or a review persona can wave through the next false citation by invoking settled convention. Absence is not difference. Establish that the companion covers the risk class first; only then is a disagreement about assertion shape a dismissal.
 
-### A canary is possible, and does not exist yet
+### A canary is possible, and now exists
 
 This class is mechanically checkable, which is the actionable part. The shape: scan every `.ts` under `backend/tests/`, extract each clause-(c) companion citation, resolve each named path, assert it exists, and assert its contents contain the risk-class token the mocked test names. Fail the suite otherwise. It belongs beside `backend/tests/eslint/no-stale-comment-anchors.test.ts` as a standing vitest canary, for the reason that one exists: silent rot needs a red bar, not a grep nobody remembers to run.
 
-The honest obstacles, none of them solved today:
+That canary landed the day this entry was written, as `backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`, and its own docblock records how each obstacle below was taken: the structured `Real-path companion:` line is the checkable form, with a reverse `Real-path companion for:` form so a suite can declare itself the companion and the link is resolved from both ends; the unconverted free-prose backlog is carried as a per-file deficit pin that can only ratchet down, so the whole tree is scanned from the first day without failing every legacy header; and wrapped docblock lines are rejoined before any citation is parsed. The obstacles as they stood at write time:
 
 - **Free prose is not resolvable.** The canary needs the citation in a structured, greppable form: a `Real-path companion:` line per companion, naming an exact repo-relative path and the token it covers.
 
@@ -98,7 +99,7 @@ The honest obstacles, none of them solved today:
 - **Token presence is necessary, not sufficient.** The check catches the rot classes actually observed. It does not catch "the companion asserts it, but weakly". That remains a review judgement under the 2026-05-04 entry.
 - **The follow-up-task branch of clause (c) cannot be checked this way.** Task files archive and `tasks-archive.md` trims, so a task-slug citation is a dead pointer by construction, and per the comment-anchor convention must not appear in test source at all. Those citations should name the uncovered risk class in behavioural terms and nothing else.
 
-Do not describe this canary as existing. It is a proposal.
+What the canary still cannot see is prose without the label: an unlabelled sentence that names a suite category rather than a file is invisible to it, which is why the write-time and review-time verification above stays in force beside it.
 
 ## Why This Matters
 
@@ -130,7 +131,7 @@ Do not describe this canary as existing. It is a proposal.
 
 **The correct companion had announced itself.** `backend/tests/middleware/verifyHiveSignature-reissuedat-roundtrip.test.ts` opens by declaring itself the carve-out clause-(c) real-path companion that pins the actual round-trip. It drives a genuine reissue through `POST /api/auth/recover/verify`, reads `sessions_invalidated_at` back from Postgres, asserts the decoded token's `reissuedAt` equals that epoch-ms, and asserts a control token minted in the same integer second without the claim is rejected with `SESSION_INVALIDATED`. It even documents which regression it catches deterministically and which only probabilistically, and warns against relying on it for the latter. The companion knew what it was. Two other files pointed elsewhere. The one-sided link is the defect.
 
-**Current state.** Both mocked headers now name `verifyHiveSignature-reissuedat-roundtrip.test.ts`, `verifyHiveSignature-reissuedat-orcid-roundtrip.test.ts`, and `custody-upgrade.test.ts` for the `SESSION_INVALIDATED` and `reissuedAt` risk classes. Each stamps a real epoch against real Postgres and then presents a pre-rotation bearer token to the real middleware. One un-greppable pointer deliberately survives in the fail-closed header, where happy-path JWT acceptance is still attributed to the settings password-reset suites as a category: the claim is true, and no single file is the obvious referent. It is a standing example of the shape this entry argues against, and a concrete unit of the 111-file migration.
+**Current state.** Both mocked headers now name `verifyHiveSignature-reissuedat-roundtrip.test.ts`, `verifyHiveSignature-reissuedat-orcid-roundtrip.test.ts`, and `custody-upgrade.test.ts` for the `SESSION_INVALIDATED` and `reissuedAt` risk classes. Each stamps a real epoch against real Postgres and then presents a pre-rotation bearer token to the real middleware. One un-greppable pointer deliberately survived for a while in the fail-closed header, where happy-path JWT acceptance was attributed to the settings password-reset suites as a category: the claim was true, and no single file was the obvious referent. It has since been converted to a structured citation naming `verifyHiveSignature-authmethod.test.ts` for that risk class, which is what the migration looks like one header at a time.
 
 ### Method note: one sweep pass is not enough for a prose class
 
@@ -148,7 +149,7 @@ The transferable part: search the code token, not the prose. `SESSION_INVALIDATE
 - `agents/docs/solutions/conventions/test-mock-carve-out-clause-c-2026-05-04.md` is the definitional ancestor. It settles what clause (c) means and owns the reviewer checklist. This entry adds the precondition upstream of that test, and scopes its dismissal rule: "does not assert the same thing" covers a companion that asserts something different, not one that asserts nothing, names no resolvable file, or mocks the surface it is cited for.
 - `agents/docs/solutions/conventions/coverage-claim-downgrade-requires-codebase-search-2026-05-21.md` is the prior instance of this exact falsehood, where a header named a companion that mocked the same surface. It prescribes a manual search at the downgrade moment. This entry is the recurrence: that procedure was in force and two further false citations landed anyway, which is the argument for a resolver rather than more discipline.
 - `agents/docs/solutions/conventions/comment-anchor-rot-precommit-diff-gate-2026-06-14.md` is the precedent for turning a prose-hygiene convention into a mechanical gate, and the source of the constraints the proposed canary must satisfy. Note the shape difference: that gate is a regex over added lines, while a companion-citation canary must resolve a path and then grep the target file.
-- `agents/docs/solutions/conventions/universal-mock-inventory-must-be-re-derived-not-incrementally-patched-2026-06-11.md` is the clause-(a) sibling of this defect. Both are unverified prose inside the same header, and both are cured by re-deriving the claim from ground truth. A header can be false in its mock inventory and in its companion citation independently; audit both.
+- `agents/docs/solutions/conventions/universal-mock-inventory-must-be-re-derived-not-incrementally-patched-2026-06-11.md` and `agents/docs/solutions/conventions/carve-out-clause-a-impracticability-claims-are-unverified-prose-2026-09-22.md` are the clause-(a) siblings of this defect, one for the mock inventory and one for the stated impracticability reason. All three are unverified prose inside the same header, and all three are cured by re-deriving the claim from ground truth. A header can be false in its mock inventory, in its impracticability reason, and in its companion citation independently; audit all three.
 - `agents/docs/solutions/conventions/real-path-companion-dismissal-criteria-2026-05-11.md` governs the other branch of clause (c), where a reasoned dismissal stands in for a companion. A dismissal reasoned against a companion that does not cover the named risk class is unsound, so confirming the citation is a precondition for applying those criteria.
 - `agents/docs/solutions/conventions/docblock-anchor-stable-symbols-not-line-numbers-2026-05-15.md` is the general comment-rot rule. This entry is the special case where the rotting comment is load-bearing for a convention rather than merely informative.
 - `agents/docs/solutions/conventions/tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` states the outcome at stake: a mocked test whose companion citation is dead has no integrated-path mutation coverage at all.

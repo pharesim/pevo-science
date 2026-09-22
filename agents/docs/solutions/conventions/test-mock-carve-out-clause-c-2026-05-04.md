@@ -1,6 +1,7 @@
 ---
 title: Test-mock carve-out clause (c) is risk-class equivalence, not literal-mirror — and the mock-target scope covers shared helpers, third-party libs, and observability surfaces
 date: 2026-05-04
+last_updated: 2026-09-22
 category: conventions
 module: backend/tests
 problem_type: convention
@@ -130,7 +131,7 @@ The two tests catch different mutation classes. Together they cover the integrat
 
 `backend/tests/routes/app-ssr-discipline-canon.test.ts` mocks `hiveClient.database.call` and pins the canon-lowering transform across 4 discipline shapes — mixed-case + whitespace-padded → canon-lowered; absent / whitespace-only / non-string → `about` omitted (risk class: transform-logic mutations at `paperDisciplineField()`).
 
-The filed follow-up `agents/docs/tasks/pending/backend-app-ssr-real-path-companion.md` (P3) specifies a real-path SSR smoke test: pick an existing all-lowercase corpus paper, issue `GET /en/paper/:author/:permlink` against real Hive API + HAF, assert the ScholarlyArticle JSON-LD block is present with `about` matching the on-chain value (risk class: wiring mutations — import reverted, branch short-circuited, helper bypassed).
+The filed follow-up specified a real-path SSR smoke test, since implemented as `backend/tests/routes/app-ssr-discipline-real-path.test.ts`: pick an existing all-lowercase corpus paper, issue `GET /en/paper/:author/:permlink` against real Hive API + HAF, assert the ScholarlyArticle JSON-LD block is present with `about` matching the on-chain value (risk class: wiring mutations — import reverted, branch short-circuited, helper bypassed).
 
 The mocked test cannot detect wiring mutations (the mock resolves the helper at module load, so a missing call site still hits the mock). The real-path companion cannot detect transform mutations on an all-lowercase corpus (input = output). Together they cover both axes. The implementer's signal block argued "vacuous on the current corpus, so the mocked spec is the load-bearing regression net" and treated that as license to skip the companion entirely — that argument is valid for the transform axis only; the wiring axis still required the companion, satisfied here via the filed-task alternative of clause (c).
 

@@ -1,6 +1,7 @@
 ---
 title: Universal mock-inventory claims must be re-derived from the full vi.mock set, not patched incrementally
 date: 2026-06-11
+last_updated: 2026-09-22
 category: conventions
 module: backend/tests
 problem_type: convention
@@ -82,3 +83,4 @@ The rewrite names every factory and characterizes the wrapper honestly. When the
 - [[test-mock-carve-out-clause-c-2026-05-04]] — the carve-out framework whose clause (a) headers carry these inventories and require them to be truthful.
 - [[hold-block-must-not-contradict-convention-docs-2026-04-22]] — hold items prescribing inventory fixes must use the re-derive phrasing, not "add the missing element."
 - [[carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02]] — the clause-(c) sibling of this defect. Both are unverified prose inside the same carve-out header, and a header can be false in its mock inventory and in its companion citation independently; audit both in one pass.
+- [[carve-out-clause-a-impracticability-claims-are-unverified-prose-2026-09-22]] — the other clause-(a) sibling: the inventory can be complete while the one-sentence reason given for why an item must be mocked is false.
