@@ -1,3 +1,119 @@
+## Eleven learnings name one canary, and the cite graph between them is partial (archived 2026-09-23) — decided: catalog README, no suffix on new filenames; no implementer rounds
+
+### Architect decision (2026-09-23)
+
+Shape chosen: a catalog `README.md` at `agents/docs/solutions/README.md`, with a section for the
+canary listing the eleven and the question each answers, ordered by date. Not a hub entry: a hub is
+a refresh candidate every pass, fits neither track template, and duplicates the `CONCEPTS.md` term
+"Source-discipline canary", which already carries the cluster's substance in prose. Not a header
+block in the canary: the file is backend zone, the newest entries came from all three roles, and
+the refresh never edits product code, so the author of entry twelve usually could not maintain it.
+The catalog is the one artifact in the store the refresh maintains mechanically (rows rewritten on
+rename, move, consolidate, delete). `/ce-compound` has no catalog handling, so the obligation to
+add a row lives in root `CLAUDE.md` "Documented Solutions", which every run reads: the run that
+writes the entry appends the row in the same commit, and the architect reconciles at each refresh.
+A backend task (`backend-canary-docblock-points-at-solutions-catalog`) adds a stable pointer from
+the canary's docblock to the catalog section, by path only, so it never changes when an entry lands.
+
+Category shape: not a signal. One artifact attracting many entries is the norm in a flat store of
+224; `routes/papers.ts` is named in 61 and the canary in 11, rank 15. Directory moves would break
+code citations the refresh does not rewrite. The decision is written in the README's header, which
+is where a refresh meets it; the observation itself stays report-only and is dismissed against it.
+
+Filename suffix: new entries carry none, per the creation skill's explicit rule (plugin updated
+2026-08-31; the five undated names all date 2026-09-22, and a dated one landed today, which is the
+flip-flop). The 219 dated names are not renamed. No citation anywhere used the wrong spelling for
+any of the five. Recorded in the README and in `CLAUDE.md`.
+
+Graph evidence: 55 pairs among the eleven, 8 mutual, 15 one-way, 32 silent; one hop from a door
+reaches a median of 3 siblings; following links transitively reaches 9 or 10 from every door but
+the oldest, which cites none of the others. The frontmatter already groups the set (`module`
+containing `backend/tests/eslint` on 13 entries in five spellings; tag `canary-tests` on 15); the
+spellings were left alone, the catalog names them as query keys.
+
+**Owner:** architect
+**Created:** 2026-09-23
+
+Filed by backend out of the `/ce-compound-refresh` pass over the `backend/tests/eslint`
+cluster, at the user's direction. Two investigation batches raised it independently and
+neither would recommend a shape, because neither had evidence for one. The refresh applied
+its per-doc edits and left this open.
+
+## Why
+
+Eleven entries under `agents/docs/solutions/conventions/` name
+`backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`. That
+is the most-documented artifact in the store, out of 224 convention entries, and it is
+still accreting at roughly one entry per review round.
+
+Each entry is individually well-differentiated. The refresh tested every merge candidate
+against the retrieval-value test and every one failed it: the entries answer genuinely
+different questions about the same file (should this fact be hand-lexed, how are the
+parser's per-line answers consumed, how is a cost probe read, how is a bound described in
+prose, what does a differential's regression list mean, which assertion shape is
+fail-closed, and so on). Consolidation is the wrong instrument here and the refresh did
+not apply it.
+
+What is weak is retrieval and the cross-reference graph, not the content:
+
+- A maintainer who arrives with "why is my canary green" meets eleven doors into one room,
+  and the door they pick decides which siblings they learn about, because each entry
+  cross-references a different subset.
+- The graph is partial in both directions. The refresh closed two gaps it had evidence
+  for, and left others standing: the fail-closed sentinel entry and the restated-bound
+  entry describe the same reader's machinery and are mutually silent.
+- Three of the eleven landed within the last week, so whatever shape is chosen has to
+  survive the next round rather than describe this one.
+
+## Scope
+
+1. Decide whether this cluster wants a shape beyond per-entry cross-links, and say which
+   on the evidence rather than on taste. The two candidates the refresh surfaced are a hub
+   entry for the file's learning ladder, and a standing "read these together" block in the
+   canary's own header. They are not equivalent: a hub is one more entry that can itself go
+   stale, while a header block sits in the file every implementer already opens and is
+   maintained by whoever edits the canary.
+2. If the answer is neither, say so in a form later refreshes can read, so the question is
+   not re-raised every pass. The category-shape observation is report-only for a refresh,
+   which means it returns until something settles it.
+3. Whichever shape is chosen, decide who maintains it when entry twelve lands, and where
+   that obligation is written down.
+4. Consider whether this is a category-shape signal rather than a per-file one. If one
+   artifact can accrete eleven entries in a directory of 224, the question of when
+   `conventions/` wants sub-structure is the general form, and it is the architect's to
+   answer.
+
+## Acceptance criteria
+
+1. A decision is recorded where the next refresh will meet it, naming which shape was
+   chosen and why the alternatives were not.
+2. If a shape is adopted, it exists: the hub entry, or the header block, with the eleven
+   entries reachable from it.
+3. The decision says what happens when the next entry on this file lands.
+
+## Notes
+
+The eleven at filing time:
+
+- `a-parsers-line-is-not-the-readers-line-unless-built-from-the-same-split`
+- `a-readers-bound-restated-at-n-sites-reads-as-sufficient-at-each`
+- `backtracking-probe-terminator-must-defeat-the-pattern-tail`
+- `belt-and-braces-guard-absorbs-upstream-mutation-pins`
+- `canary-reader-takes-typescript-facts-from-the-parser-not-a-hand-written-lexer`
+- `differential-fuzz-regressions-after-removing-a-compensating-misread-are-triaged-by-trigger`
+- `new-fail-closed-outcome-must-not-reuse-an-existing-sentinel`
+- `shared-constant-unification-is-not-membership-coverage`
+- `source-discipline-canaries-must-assert-at-call-site-not-file-granularity`
+- `source-discipline-canary-comment-normalization-and-lens-vs-probe-coverage`
+- `sql-grammar-questions-are-settled-against-a-nonexistent-relation`
+
+A related observation, same pass, that may or may not belong with this decision: five of
+the 224 convention entries carry no date suffix in their filename, all written on
+2026-09-22, by all three roles. The `/ce-compound` skill instructs no suffix while the
+corpus overwhelmingly carries one, nothing enforces either, and each run's context
+analyzer resolves the conflict on its own. Cross-links are by filename, so the store now
+has two spellings a citation can take.
+
 ## UI-HASPASSWORD-FACTOR-RESOLUTION-DIVERGENCE — Reconcile the hasPassword re-auth factor resolution across surfaces (archived 2026-09-23) — 5 rounds; consolidation at 5cd378dc + 6a1ac9f1; holds landed at ab5a2fac + bc3d6095 (r2), 46463131 (r3), e8948317 + a8e54b2b + 44f7b27b + 9d617808 (r4); round-5 re-review clean ✓
 
 ### Architect archive note (2026-09-23, round 5)
@@ -132,119 +248,3 @@ which resets module state, so this is tidiness rather than a live bug.
 Landed at `5cd378dc` (+ a comment-tightening follow-up commit).
 
 Scope grew by one surface. The task enumerates four resolvers; the code had
-five. `pages/paper-detail.js` carried its own `_hasPassword` lazy memo
-(`=== true` strict, `catch → false`) feeding `withAuthorshipFreshAuth`, whose
-falsy branch is `beginAuthorshipOrcidFreshAuth` — the same destructive
-full-page redirect, on the surface where losing page state costs the most.
-It is included in the unification.
-
-What landed:
-
-- `accountUsesPasswordFactor()` in `lib/fresh-auth.js` is the single resolver.
-  It owns the status fetch, the per-username memo, and the failure direction
-  (`hasPassword !== false`), so the unknown-status fallthrough is decided in one
-  place rather than restated per consumer. The old private `accountHasPassword`
-  tri-state is gone; `acquireSessionProof` consumes the new predicate.
-- The `hasPassword` field is removed from the fresh-auth ctx entirely. Settings,
-  admin, and paper-detail pass `{ custody, username }` only, so those surfaces
-  can no longer diverge on factor selection — they do not participate in it.
-  `admin.js` no longer fetches the email status at all (import dropped);
-  `paper-detail.js` no longer imports `fetchEmailStatus`, and `_authCtx()` is
-  now synchronous.
-- Both orchestrators (`settings-fresh-auth.js`, `authorship-consent.js`) call
-  the resolver at BOTH the initial mint and the 401 retry gate, so those two
-  cannot drift from each other either.
-- `set_password` keeps its ORCID-only branch, restated as the deliberate
-  exception: it short-circuits before the resolver is consulted, so the account
-  status is never read for it.
-- `auth.disconnect()` calls the new `clearPasswordFactorMemo()` alongside the
-  proof caches (the task's Notes suggestion).
-
-Acceptance criteria:
-
-1. One resolver, consumed by settings / admin / settings-fresh-auth — and also
-   by authorship-consent and paper-detail. Verified by grep: the only
-   `hasPassword` reads left in `frontend/src/` are inside the resolver itself
-   and `settings.js`'s rendering of the set-a-password section, which is not
-   factor selection.
-2. Covered at both layers. Lib: "an unavailable account status falls through to
-   the password prompt, never the ORCID redirect" and its authorship sibling.
-   Page: settings' "hands the orchestrator custody and username only, even when
-   the status fetch failed", which drives the real `loadEmailStatus()` failure
-   fallback first.
-3. Covered by "an unavailable status still leaves set_password on the ORCID
-   factor" and "set_password never consults the account status at all", plus the
-   pre-existing ORCID-only cases. The E2E `settings-orcid-factor.spec.js`
-   real-backend-minted-proof round-trip passes.
-4. Covered by the `password-factor memo` describe block in
-   `lib-fresh-auth-session-window.test.js` (positive memoized once, negative
-   re-checked, different username not inherited, explicit clear, failed status
-   never memoized) plus `auth.test.js` "drops the password-factor memo on
-   disconnect".
-
-Verification:
-
-- `npx vitest run` — 78 files, 1665 tests, all pass. The 3 `pages-edit.test.js`
-  unhandled rejections (`$refs.abstractEditor`) reproduce on a stashed tree and
-  are unrelated.
-- `npm run build` clean.
-- E2E on a freshly reset `pevo_app_test`, `settings.spec.js` +
-  `settings-orcid-factor.spec.js` + `authorship-consent-actions.spec.js` +
-  `non-consent-fresh-auth.spec.js`: **10 passed / 1 failed**. The same batch on
-  a clean DB at the parent commit gives the identical **10 passed / 1 failed**,
-  failing the same test, so there is no regression.
-
-Pre-existing failure worth its own triage (NOT introduced here, and not fixed
-here): `settings-orcid-factor.spec.js` "the fresh_auth callback caches the proof
-under (set_password, username, '')" asserts the cached consent-op entry deep-
-equals a five-field object, but `cacheConsentOpProof` has written
-`authorIndex: null, claimer: null` since the per-slot credit-op cache extension
-(`90fc5d2d`). The spec's assertion is stale, not the code.
-
-One adjacent issue left alone, flagged for triage: `settings.js`
-`loadEmailStatus()` still substitutes `{ hasEmail: false, custody: 'self',
-hasPassword: false }` when the status fetch fails. That no longer affects factor
-selection, but it does drive RENDERING — a failed fetch shows the "set a
-password" section to an account that may already have one. Changing what the
-page renders on a failed fetch is a separate decision from factor resolution, so
-it is out of this task's scope.
-
----
-
-## Architect re-review (2026-08-31) — HELD PENDING FIXES:
-
-Reviewed via `/ce-code-review` on `5cd378dc` and `6a1ac9f1` (frontend paths only), seven
-reviewer personas plus architect direct verification.
-
-**The consolidation itself is correct, complete, and well executed.** Independently
-confirmed rather than taken from the implementation note: `accountHasPassword` is gone
-tree-wide, the `hasPassword` ctx field is gone from all three builders, `admin.js` and
-`paper-detail.js` dropped their status-fetch imports, `_authCtx()` is synchronous with
-its one call site correctly un-awaited, and a search for a sixth resolver across every
-`custody` branch in `frontend/src` found none. The tri-state fold is right at every call
-site: unknown lands in the password branch, never the ORCID one. Finding the fifth
-resolver in `paper-detail.js` that the task did not enumerate was good work, and it was
-the surface where losing page state costs most.
-
-All four acceptance criteria are covered by tests that were actually run, and the
-`set_password` short-circuit provably precedes the resolver: a test asserts the status
-fetch is never called for it. Project standards came back clean, including the
-pre-commit hook's own anchor logic replayed over the added lines.
-
-The load-bearing assumption was verified rather than assumed: both password-factor mint
-routes read `password_hash` and 401 before issuing any proof, with an argon2 sentinel
-burn equalizing wall time, so the client's speculative-password posture opens no
-state-C timing oracle.
-
-Five items. The theme is that the unified resolver inherited responsibilities the five
-scattered ones never had, and two of them are not yet met.
-
-### Item 1 — a passwordless account dead-ends when the status is unavailable
-
-This is a consequence of the failure direction this task specified, so it is the
-architect's item as much as the implementer's. With the status fetch unavailable, the
-resolver returns "uses password", `mintViaPasswordFactor` prompts, the backend 401s the
-null hash, it re-prompts once, and the action ends at a terminal failure. There is no
-ORCID fallback, so change-email, delete-account and every authorship consent op dead-end
-for exactly the accounts whose only registered factor is the one not being offered.
-Before this change those surfaces routed to ORCID and completed.
