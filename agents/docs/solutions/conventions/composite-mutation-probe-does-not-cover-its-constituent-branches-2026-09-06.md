@@ -1,7 +1,7 @@
 ---
 title: "A composite mutation probe proves the mechanism is load-bearing as a whole, not that each branch, operand, or short-circuiting arm is individually covered"
 date: 2026-09-06
-last_updated: 2026-09-22
+last_updated: 2026-09-23
 category: conventions
 module: frontend/tests/unit/eslint/enclosing-symbol.js + architect re-review intake
 problem_type: convention
@@ -40,6 +40,14 @@ When a guard, hook, or canary is defended by a mutation probe, do not stop at "d
 
 1. Enumerate every decision point in the code under test: every `if`, every operand of a boolean expression, every arm of a guard clause or short-circuiting `&&` / `||`.
 2. For each decision point, find (or write) the probe whose outcome flips when THAT operand alone is mutated, with every other operand held at whatever value the probe already gives it.
+
+   One caveat on "that operand alone", for the case where the operand was added by a past fix rather
+   than written fresh. If that same fix also deleted a guard the addition made redundant, undoing only
+   the addition leaves a hybrid that never shipped: the deleted guard is still gone, so the code reaches
+   a state neither version allowed, and it can fail there loudly enough to satisfy the assertion by a
+   route that has nothing to do with the operand. Reconstruct the state that actually existed before the
+   fix, both parts together, and treat a green result as a question about the mutant before reading it as
+   a gap. `mutation-probe-must-reconstruct-the-pre-fix-shape-2026-09-23.md` works that case through.
 3. Pay particular attention to short-circuiting expressions where a fallback can silently subsume an earlier test. If every existing probe that reaches a guard also satisfies the fallback condition on its own, the earlier test is decorative.
 
 Concretely, from the two branches above:
@@ -91,6 +99,7 @@ Do not extend this to guards with a single decision point (nothing to discrimina
 - `control-pair-pins-only-varied-axis-enumerate-mutation-space-2026-06-12.md` is the closest methodological cousin, one level down: a present-or-absent control pair proves only the axis it varies and misses operator weakenings of a single comparison. It also supplies the preemptive-hardening narrowing this entry adopts.
 - `eslint-custom-rule-unwrap-arms-need-compound-form-canary-2026-05-16.md` is the closest prior art in the same domain: a branch inside a custom-rule resolver reads as covered while the test actually reaches it by another path. The mechanism differs (visitor descent rather than boolean short-circuit); the lesson that reaching a guard is not proof of reaching a branch of it is the same.
 - `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` is the root principle this family specializes. The contribution here is that revert-verifying the WHOLE mechanism does not transfer to any ONE of its constituent branches.
+- `mutation-probe-must-reconstruct-the-pre-fix-shape-2026-09-23.md` is the third axis under that same root principle, and the one that bounds this entry's per-operand method. Where this entry asks whether each operand is individually discriminated, that one asks whether the mutant standing in for an operand is a version of the code that ever existed. Its failure direction is the opposite of this entry's: it does not overstate coverage, it invents a gap, so a per-operand check that comes back green on an added-and-deleted pair is checked against it before the branch is called unprobed.
 - `source-discipline-canaries-must-assert-at-call-site-not-file-granularity-2026-08-26.md`, `fail-closed-does-not-transfer-from-set-equality-to-pairing-canaries-2026-08-31.md`, and `source-discipline-canary-detection-must-survive-ordinary-authoring-shapes-2026-08-31.md` are the three rungs governing what a source-discipline canary collects, compares, and detects over the tree. This entry sits one layer beneath all three: it governs the probes over the shared resolver machinery those canaries are built on.
 - `behavior-change-coverage-gap-not-preemptive-hardening-2026-06-10.md` is the standing triage default this entry is scoped against.
 - The frontend resolver is a deliberate hand-port of `backend/tests/support/enclosing-symbol.ts`, ratified as dialect divergence rather than consolidated. A branch-coverage gap found in one dialect's shared logic is worth checking against the other.

@@ -1,6 +1,7 @@
 ---
 title: Tests must fail when the code under test is mutated — revert-verify every load-bearing spec
 date: 2026-04-22
+last_updated: 2026-09-23
 category: conventions
 module: backend
 problem_type: convention
@@ -27,6 +28,8 @@ Every test added to protect a specific code-level property MUST be verified to f
 
 The verification is cheap — revert the single LOC or commit the test is about, re-run the test, confirm it fails, restore, confirm it passes. The cost of skipping it: a green test suite that silently admits the regression it claims to catch.
 
+When what the spec protects landed as a commit rather than one line, revert the whole commit. A commit can span coupled hunks, characteristically one that adds a condition and one that deletes what the addition made redundant, and reverting a hand-picked subset of them is not reverting the commit. It builds a state that never shipped, and such a state can pass for reasons the property has nothing to do with, which reads as a gap in a test that was fine. Take the prior version wholesale rather than flipping back whichever line looks like the change. See `agents/docs/solutions/conventions/mutation-probe-must-reconstruct-the-pre-fix-shape-2026-09-23.md`.
+
 ## Why
 
 The 2026-04-22 architect review pass surfaced four tests across three tasks that pass today but would also pass on revert:
@@ -40,7 +43,7 @@ All four were caught by adversarial / testing reviewers asking "would a revert f
 
 ## How to apply
 
-1. **Before committing a new spec**, locally revert the LOC the spec is about and re-run the spec. Confirm it fails. Restore and confirm it passes. In this shared checkout the restore step is destructive: confirm `git status` is clean for the target file immediately before every `git checkout -- <file>` / `git restore <file>`, because a sibling agent's unstaged edit on that path is unrecoverable once discarded (see `git-checkout-head-destroys-coresident-unstaged-2026-05-11.md`).
+1. **Before committing a new spec**, locally revert the LOC the spec is about and re-run the spec. Where the change the spec covers spans more than one hunk, take the prior version of the file wholesale instead, so the mutant is a revision that really existed. Confirm it fails. Restore and confirm it passes. In this shared checkout the restore step is destructive: confirm `git status` is clean for the target file immediately before every `git checkout -- <file>` / `git restore <file>`, because a sibling agent's unstaged edit on that path is unrecoverable once discarded (see `git-checkout-head-destroys-coresident-unstaged-2026-05-11.md`).
 2. **When hold-block items ask for a test**, the re-review signal must explicitly state: "confirmed the spec fails on revert of `<file:line>`." The attestation names the probe so the architect can replay it cheaply; it does not discharge the architect's own check. Re-review-signal coverage prose in this repo is repeatedly wrong, so the architect re-runs or re-reads the cited revert rather than accepting the sentence.
 3. **Prefer exact assertions over bounded ones** when the claim is exact. `toBe(1)` over `toBeLessThanOrEqual(1)`; `toHaveBeenCalledTimes(N)` over `toHaveBeenCalled()`.
 4. **Grep-verify filter fragments** used in `mock.calls.filter(c => sql.includes('X'))` against production source — if `X` isn't actually in the code, the filter is dead.
@@ -51,5 +54,6 @@ All four were caught by adversarial / testing reviewers asking "would a revert f
 
 - `agents/docs/solutions/conventions/mock-guard-assertion-must-verify-call-shape-2026-04-21.md` — closest prior art. Generalizes here: mock-shape gap is one instance of "test cannot fail when property is broken."
 - `agents/docs/solutions/conventions/verify-library-claims-before-load-bearing-security-margins-2026-04-22.md` — sibling from the same review pass. That doc grounds library-behavior claims; this doc grounds test-regression-protection claims. Both are cheap point-in-time verifications.
+- `agents/docs/solutions/conventions/mutation-probe-must-reconstruct-the-pre-fix-shape-2026-09-23.md` — the fidelity extension: this doc's procedure assumes the change under revert is one atomically revertible unit. That doc covers the case where it is not, and where a partial revert therefore produces a green run that reads as missing coverage rather than as a malformed mutant.
 - `agents/docs/solutions/conventions/control-pair-pins-only-varied-axis-enumerate-mutation-space-2026-06-12.md` — the non-revert extension: a passing revert probe covers binary removal of the property, but operator and granularity weakenings of the protecting comparison can survive every revert-verified spec. Enumerate the comparison's mutation space and place a control on each weakening boundary.
 - `agents/docs/solutions/conventions/source-discipline-canary-comment-normalization-and-lens-vs-probe-coverage-2026-09-08.md` — the coverage ceiling: revert-verify is a floor per spec, not a closure proof for a guard. A prescribed list of mutation probes confirms the items it names; establishing that a guard is closed needs an unscripted adversarial search with independent refutation.
