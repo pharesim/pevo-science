@@ -519,3 +519,185 @@ The head-line read silencing the fail-closed backstop, and the quoted-identifier
 falsified "only where no readable head opens earlier in the same quoted text": FILED as
 `backend-head-line-read-silences-fail-closed-backstop`. That file supersedes the entry
 above, so it is not triaged again here.
+
+## Backend round-3 signal (2026-09-23, commits baa8b6d8, aec8f24d, 00c12124, d0c5f95e, 140df650, e49f25f2)
+
+All six are ancestors of `main` (`git merge-base --is-ancestor` checked) and touch only
+`backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`. Prose
+only: `git diff 5d44f839 HEAD` over the file shows no non-comment line. The file was
+byte-identical to `5d44f839` when this round started, so the hold's line numbers resolved.
+
+`baa8b6d8` is the hold's three items. The other five are corrections to it. Five adversarial
+falsification passes ran over the range, each lens required to demonstrate a wrong sentence
+with a plant AND a control, and every candidate re-measured independently by two confirmers
+in their own `git archive` copies. The rate was 13, 6, 3, 3, 2, narrowing each round, and by
+the last two rounds every finding was one defect class: a consequent written without a
+condition the same paragraph already carries.
+
+### Item 1. The two subjects split, and what a dynamically named head can reach
+
+The entry's "unless" clause offered the ALTER arm and the every-statement-readable arm as
+catchers for a statement whose table is named dynamically. Both walk from a head and every
+head in `READ_FROM_HEADS` wants the literal `accounts`, so neither can fire there. The entry
+now separates the assembled-column-clause case, which keeps all three catchers, from the
+dynamically named case, and names the entry's own `EXECUTE format` example as silent
+although it spells the column.
+
+Four corrections followed, each measured:
+
+- Replacing the whole name is not the only way past the head-anchored arms. The patterns
+  admit one literal `public\s*\.\s*` and nothing else, so `ALTER TABLE ${schema}.accounts`,
+  the search-path-safe DDL spelling, matches neither although it spells the name in full.
+- A name the dynamic part only SUFFIXES is still a head: the patterns end at `accounts\b`
+  and a `$` or a `%` is a word boundary.
+- The fail-closed arm is not the only catcher answering to the assignment token;
+  `columnAssignments` feeds the writer arms too, and what it reaches is a property of the
+  read. The paragraph now states three buckets: the fail-closed arm where no readable head
+  reaches the assignment, the writer arms where an `accounts` head does, and nothing at all
+  where the reaching head names another table.
+- The USING/CHECK carve-out the file keeps in three other places was dropped from the
+  "carries no assignment" sentence and is restored, with the retype's outcome routed through
+  the same three buckets rather than asserted as fail-closed.
+
+### Item 2. The second silent layout wants a backtick head literal
+
+The layout is stated for a BACKTICK head literal, which is the only one whose own opening
+quote closes the carried backtick. A `'` or `"` head literal in the same position is read to
+that carried backtick, its own closing quote opens a value, and the line ends inside it, so
+the read stops and the every-statement-readable arm reds by line whether or not anything is
+joined, with a `+` ending the carried template's text read as a join on top of it.
+
+Corrections: the read meets that backtick more often than "never". Two things on the head's
+line close it early and restore the silence, a backtick INSIDE the head literal and one more
+unpaired quote of the literal's own kind, and the text is then truncated where the read
+closed. What that truncation hides was also over-stated. It hides the write from the arms
+walked from THAT head; a second `accounts` head past the truncation starts its own read, and
+the walk from the assignment token still reaches an `updated_at =` out there. What is left
+quiet is a write carrying no assignment and opening no head of its own, and the enumeration
+of those was missing COPY.
+
+### Item 3. The three sibling sentences
+
+- `SqlStatement.quoteAt`: -1 is what `enclosingQuote` found none for, not a migration marker,
+  and a found quote need not be the head literal's. Corrected three times after that: the
+  enumeration was missing its third member, the closed-above BACKTICK head literal whose two
+  backticks cancel; "every migration head in the tree" over-generalised, since that function
+  runs per line and a head after an unclosed `'` at depth zero gets that quote; and the
+  depth-zero qualifier needed adding, since the function seeds its depth at LINE ENTRY and
+  skips every column inside a span, with the `$$`-opener carve-out holding only for a `src`
+  head, which is the only one with a literal ahead of the opener.
+- `SQL_INTERPOLATION_RE`: the before-half is measured from whichever quote that function
+  found, not from the literal's opening quote. Corrected once more: the anchor list is open,
+  since a value's quote takes the same slot where the head's line begins inside a value, and
+  a `+` in the SQL text ahead of it is then read as a join that joins nothing.
+- The join fixture's comment: what suspends the `;` is `enclosingQuote` finding a quote, not
+  the template's own quote opening on the head's line. Corrected twice: the read reaching a
+  `;` needs the span carrying the head to stay open as well, which with the mid-value case is
+  the pair `SqlStatement.stopped` enumerates while the cap is the other answer; and a cap-hit
+  read lends its table only as far as the last line it read, so a write past the cap answers
+  to whatever head does reach it.
+
+### Acceptance evidence
+
+All from scratch copies (`git archive <sha> backend`, `node_modules` and `.env` symlinked,
+`tests/setup.ts` stubbed). The shared checkout was never mutated by a probe; plants went to
+`backend/src/zz-probe*.ts` or `backend/migrations/zz9_probe.sql` inside the copy and were
+deleted after each run.
+
+- Item 1, both plants re-measured at the round's HEAD:
+  ``await pool.query(`ALTER TABLE ${table} DROP COLUMN updated_at`)`` in a `src` file leaves
+  the canary 29/29 green, exit 0; the same text with `accounts` reds
+  `only the column-introducing migration alters accounts.updated_at itself`. The entry's own
+  `EXECUTE format('ALTER TABLE %I DROP COLUMN updated_at', 'accounts')` in a migration is
+  29/29 green, while `format('ALTER TABLE accounts DROP COLUMN %I', 'updated_at')` reds the
+  ALTER arm and the every-statement-readable arm. A dynamic-head retype and a dynamic-head
+  rename carrying no assignment are each 29/29 green; one carrying
+  `CHECK (updated_at = created_at)` reds the fail-closed arm.
+- Item 1's corrections: `ALTER TABLE ${schema}.accounts DROP COLUMN updated_at` is 29/29
+  green against a `public.accounts` control that reds the ALTER arm.
+  `ALTER TABLE accounts${suffix} DROP COLUMN updated_at` reds the ALTER arm AND the assembled
+  arm, against a static `accounts_2026` control that is 29/29 green.
+  `ALTER TABLE ${table} ALTER COLUMN c TYPE text USING (updated_at = 1)` reds the fail-closed
+  arm standalone, and is 29/29 green under a reaching `UPDATE sessions` head.
+  A planted `COPY accounts (email, updated_at) FROM STDIN;` reds
+  `only the column-introducing migration writes accounts.updated_at, table-first`.
+- Item 2, the two variants the hold asked for, plus the clause they license: a closed-above
+  layout with a `'` head literal reds `every accounts statement can be read whole`; the same
+  layout with a backtick head literal is 29/29 green; the same-line backtick control reds
+  `[concatenation]`. The `"` spelling behaves as the `'` one, and the `'` spelling with no
+  join at all still reds the readable arm, which is what "whether or not anything is joined"
+  rests on. The two quieting shapes are 29/29 green: a backtick inside the head literal, and
+  one more unpaired apostrophe later on the line, the latter against a control differing only
+  in `it's` versus `it is`. A second `accounts` head past the truncation reds both writer
+  arms, against an `UPDATE sessions` twin that leaves them green.
+- Item 3: a `+` ending the text before the CARRIED backtick reds `[concatenation]`, while one
+  glued to the head literal's own `'` does not. An opened-above head whose template holds
+  `UPDATE accounts SET custody = $1; SET updated_at = NOW()` has its read stopped at the bare
+  `;` and reds `every updated_at assignment resolves to the table it writes`; the same text
+  with the head on its own line reads the whole template and reds both writer arms.
+  Direct `statementAt` probes: opened-above `quoteAt` -1 with the read running past the
+  template's closing backtick to the `;`; closed-above single-quoted `quoteAt` 12, the
+  carried backtick's column, against the literal's own `'` at 27, `stopped` true;
+  closed-above BACKTICK head literal `enclosingQuote` null and `quoteAt` -1, the third case;
+  same-line backtick its own quote; migration -1. A head inside a `DO $$` body with a `'`
+  open ahead of it on its line measures `quoteAt` -1, while the same head at depth zero
+  measures that quote's column; a MIGRATION head sharing its line with the `$$` opener stays
+  quote-free at -1 while the `src` twin returns its own template's backtick. A cap-hit read
+  has `lastLine` 40 at `LITERAL_CAP` 40 with `stopped` false, and `targetTable` for an
+  assignment past the cap returns `accounts` where that write spells its own head and
+  `<unresolved>` where it does not.
+- AC2: the clean tree is 29/29 on the canary and 139/139 across all 9 `tests/eslint` files at
+  each of the six commits, `ALLOWED_COLUMN_ALTERATIONS` is byte-identical to `5d44f839`
+  (`016: 3`), and `npm run typecheck` and `npx eslint` on the file both exit 0 with no
+  `Errors` line.
+- AC3 (the round-1 pin) is unchanged: this round adds no fixture and no assertion, so the
+  widening pinned at `43545ee4`/`72f1196d` still reds under its mutants.
+- The repo's `pre-commit` anchor gate over the whole range's added lines is zero-hit, with
+  `ALLOW_MARKER` set explicitly and the control line firing. The block-comment count is 290
+  at `5d44f839` and 290 at HEAD, so no docblock truncated itself.
+
+Verification: workflows `wf_7d9c53ef-303` (a whole-file audit of the three claim classes,
+four lenses plus two refuters per candidate), then `wf_52ea351f-9bf`, `wf_091f0f4d-8d7`,
+`wf_ba6e23ea-d4c`, `wf_d2e55de0-405` and `wf_530ee09d-550`, the five falsification passes.
+Backend did not run code review (`agents/backend/CLAUDE.md` assigns `/ce-code-review` to the
+architect).
+
+### Considered and left, with the reason
+
+The opening audit flagged three sites in the round-2 range that state the `+` recognition:
+the file header's item 4, the `joinedByPlus` docblock and the `enclosingQuote` docblock. They
+are NOT changed. The round-2 re-review re-enumerated the whole file and recorded each as
+carrying the bound or deferring to the dynamic-SQL entry by name, and two independent
+refuters each agreed the wording survives on its own scope: `joinedByPlus` corrects itself in
+its next sentence ("Each half answers to what the read found rather than to the literal"), and
+header item 4's following clause is the accurate hedge. Changing them would overturn a
+completed architect verification on a lens's opinion rather than on a measurement. Flagged
+here so the architect can rule otherwise; the architect's own item 3 held line 913 and not
+these, which reads as a deliberate distinction.
+
+### [TODO Architect] Pre-existing gaps the whole-file audit found, recorded rather than acted on
+
+Each is outside the round-3 hold, predates the reviewed range, and was measured with a
+control. None is triaged here.
+
+1. (medium) `BOUND_TO_ACCOUNTS_RE` spells the bare literal, so a trigger bound to
+   `ON "accounts"` leaves `boundToAccounts` false and falls through to the exemptible arm.
+   That falsifies the header's "A trigger or rule bound to `accounts` is refused outright,
+   with no exemption" and the exemption list's "cannot be listed here at all". Measured: with
+   its key added to `ROUTINES_THAT_CANNOT_REACH_ACCOUNTS` the whole file goes 29/29 green.
+   Adjacent to `backend-trigger-bind-qualifier-admits-no-spacing`, which already carries the
+   qualifier-spacing half.
+2. (low) A dynamically named INSERT naming the column in its list is silent in every arm, so
+   the entry's "make both identifiers dynamic ... and nothing fires at all" names the wrong
+   sufficient condition, and "caught in either spelling" a few lines above is unqualified.
+   Measured: `format('INSERT INTO %I (username, updated_at) VALUES (%L, now())', 'accounts',
+   'x')` in a migration is 29/29 green, the literal-table control reds two arms.
+3. (low) The quoted-identifier bullet's two-case taxonomy misses a third: an
+   `ALTER TABLE "accounts" DROP COLUMN updated_at` carries no assignment token either and is
+   29/29 green, against an unquoted control that reds the ALTER arm.
+4. (low) `unreadableStatements`'s docblock gives truncation as the only way a read hides an
+   ALTER from the one arm that sees it. A bare `;` inside a template whose head has no quote
+   found terminates the read early, so `closedAt` is set, that arm stays silent, and the ALTER
+   past the `;` is a silent pass. Measured, with the same-line control reding the ALTER arm.
+   Related to `backend-head-line-read-silences-fail-closed-backstop`, which covers the
+   fail-closed half of the same mechanism.
