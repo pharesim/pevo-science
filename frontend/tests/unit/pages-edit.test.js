@@ -313,9 +313,20 @@ describe('editPage handleSubmit sanitization', () => {
       ]);
       expect(storageListenersAfterInit).toBe(1);
 
+      // init() kicks loadPaperData() off without awaiting it, so its load is
+      // still in flight here and _loadInFlight is still set. Retrying against
+      // that state returns at loadPaperData's entry guard, which would prove
+      // the no-duplication assertions against a call that never ran. Let
+      // init's own load settle first, so the retry is a real second load. The
+      // flag clears a few microtask ticks out, so poll tighter than
+      // vi.waitFor's 50ms default rather than pay a fixed 50ms for it.
+      await vi.waitFor(() => expect(comp._loadInFlight).toBe(false), { interval: 1 });
+      expect(fetchPaper).toHaveBeenCalledTimes(1);
+
       // Retry: simulate the user clicking the Retry button after a
       // (hypothetical) load error.
       await comp.loadPaperData();
+      expect(fetchPaper).toHaveBeenCalledTimes(2);
 
       const watchCallsAfterRetry = comp.$watch.mock.calls.length;
       const storageListenersAfterRetry = addEventListenerSpy.mock.calls.filter(
@@ -810,6 +821,70 @@ describe('editPage handleSubmit sanitization', () => {
     await pending;
     expect(comp.step).not.toBe('error');
     expect(comp.errorMessage).toBe('');
+  });
+
+  // The load path is the only production caller of _mountEditors: a
+  // successful loadPaperData schedules it through $nextTick, and it reads
+  // $refs.abstractEditor / $refs.bodyEditor to build one editor per ref. The
+  // _mountEditors teardown-during-init guard block invokes _mountEditors
+  // directly, so nothing there observes that a load schedules a mount at all.
+  //
+  // Two mechanics shape every case here. _mountEditors latches
+  // _editorsInitialized before it reads $refs and returns early once the flag
+  // is set, so a load that runs with empty refs latches it with zero editors
+  // and refs assigned afterwards are inert: refs go in before the load, never
+  // after. And loadPaperData discards the promise _mountEditors returns, so
+  // awaiting the load resolves before the mount's dynamic import does: wait
+  // on the mount's own effect, not on the load. Each wait here polls tighter
+  // than vi.waitFor's 50ms default, which would otherwise charge a fixed 50ms
+  // for a state that settles a few microtask ticks away. The timeout is left
+  // at its default, so what a wait costs when the state never arrives, and
+  // therefore how a broken mount surfaces, is unchanged.
+  describe('a successful load mounts the editors', () => {
+    beforeEach(() => {
+      mockCreateEditor.mockClear();
+    });
+
+    it('builds one editor per ref present when the load runs', async () => {
+      fetchPaper.mockResolvedValue({ data: { author: 'alice', permlink: 'p1', body: '', json_metadata: '{}' } });
+      fetchPaperEnrichment.mockResolvedValue({ data: {} });
+
+      const comp = createComponent();
+      comp._mounted = true;
+      const abstractEl = {};
+      const bodyEl = {};
+      comp.$refs = { abstractEditor: abstractEl, bodyEditor: bodyEl };
+
+      await comp.loadPaperData();
+      await vi.waitFor(() => expect(mockCreateEditor).toHaveBeenCalledTimes(2), { interval: 1 });
+
+      expect(mockCreateEditor.mock.calls[0][0]).toBe(abstractEl);
+      expect(mockCreateEditor.mock.calls[1][0]).toBe(bodyEl);
+      expect(comp._editorsInitialized).toBe(true);
+    });
+
+    // What createComponent's empty $refs default produces, not just that it
+    // does not throw. A mount that creates nothing leaves no effect to wait
+    // on, so this case wraps _mountEditors to observe the scheduled mount
+    // settling; that also makes a load which schedules no mount fail here
+    // rather than pass vacuously.
+    it('builds no editor when the refs are the harness default', async () => {
+      fetchPaper.mockResolvedValue({ data: { author: 'alice', permlink: 'p1', body: '', json_metadata: '{}' } });
+      fetchPaperEnrichment.mockResolvedValue({ data: {} });
+
+      const comp = createComponent();
+      comp._mounted = true;
+      const scheduledMount = comp._mountEditors.bind(comp);
+      let mountSettled = false;
+      comp._mountEditors = async () => { await scheduledMount(); mountSettled = true; };
+
+      await comp.loadPaperData();
+      await vi.waitFor(() => expect(mountSettled).toBe(true), { interval: 1 });
+
+      expect(mockCreateEditor).not.toHaveBeenCalled();
+      expect(comp._abstractEditor).toBeNull();
+      expect(comp._bodyEditor).toBeNull();
+    });
   });
 
   // _mountEditors awaits a dynamic import
