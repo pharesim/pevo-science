@@ -379,3 +379,77 @@ its comment now names `_writeDraft` (which holds the field list) rather than
   behavior change, and a partial two-of-three extraction leaves an
   inconsistent trio. Both lenses graded it optional. Available as a one-commit
   follow-up once that task clears review.
+
+## Architect re-review (2026-09-23) — HELD PENDING FIXES:
+
+`/ce-code-review` on `fa4b4cf7` (seven lenses; standards, races and reliability
+clean; two validated P2s, merged here into one item). All three round-1 items
+are FIXED: each was re-probed independently by at least two lenses (the true
+pre-fix guard shape restored, the `clearTimeout` removed from `_clearDraft()`,
+`$watch('newCoAuthors', ...)` removed) and each probe dies to its named spec;
+both operands of the merged `||` guard have their own discriminating spec.
+One item, same file, then move back to `review/`.
+
+1. **A landed broadcast can still leave the flushed draft behind, ticks
+   included** (`edit.js`, both `handleSubmit` success branches). `_windowReady`
+   flushes the draft through `_flushDraftSave()` right before every broadcast
+   leg, and in both branches `_clearDraft()` is reached only after
+   `await invalidatePaperCache(...)` and a second `if (!this._mounted) return;`.
+   If the user leaves the page while the broadcast is in flight, or the
+   invalidate rejects (expired light-account token, the invalidate limiter, a
+   network blip), the edit is on chain and the draft stays. The next visit
+   restores the ticks over a paper whose reviews are already addressed; the
+   no-changes check ends with `&& this.addressedReviews.length === 0`, so ticks
+   alone admit a no-op resubmit that re-declares `addresses_reviews` (or posts
+   a duplicate continuation). In the rejected-invalidate case the page also
+   shows `common.editFailed` for an edit that landed. Probed twice
+   independently in scratchpad copies: `comp.destroy()` inside the
+   `broadcastOps` mock left `addressedReviews` in the stored draft with
+   `broadcastOps` called once; `invalidatePaperCache.mockRejectedValue(...)`
+   left the same draft with `step === 'error'`; a reopened page restored the
+   tick and a second `handleSubmit` reached `success` with `broadcastOps`
+   called twice. The `_mounted` gates predate this task; `fa4b4cf7` swapped
+   `removeItem` for `_clearDraft()` at the same position, so the designated
+   clear still sits behind unchanged exits. This is the resurrection class
+   round-1 item 2 closed, reached through two neighbouring exits.
+   **Fix:** capture `const draftKey = this.draftKey;` before the first `await`
+   in `handleSubmit` (the getter reads router params, which an unmount can
+   change), and in BOTH branches cancel `_draftTimer` and
+   `localStorage.removeItem(draftKey)` immediately after the
+   `=== FRESH_AUTH_REDIRECT_PENDING` check, before `invalidatePaperCache` and
+   independent of `_mounted`. A `_clearDraft(key = this.draftKey)` parameter
+   is one way; the later `_clearDraft()` beside `step = 'success'` may stay as
+   an idempotent no-op. The REDIRECT_PENDING check stays first so a pending
+   redirect keeps its draft. Do not add a try/catch around
+   `invalidatePaperCache`: that changes what the user sees on a failed
+   invalidation and is a separate decision held by the architect.
+   **Specs, both in `pages-edit.test.js`:** (a) beside `the post-success clear
+   cancels a save the debounce still has armed`, a spec whose `broadcastOps`
+   mock calls `comp.destroy()` before resolving `{ tx_id }` and asserts
+   `localStorage.getItem(DRAFT_KEY)` is null after `await comp.handleSubmit()`
+   (today it holds the tick); (b) a continuation-post variant of the existing
+   cancel spec, with `mockStores.auth.username` set to a co-author so
+   `isContinuation` is true and the continuation branch runs, asserting
+   `_draftTimer === null` and the draft key absent. Today reverting only the
+   continuation-post call to a bare `removeItem` leaves the file green (87/87,
+   reproduced by three lenses), because every `handleSubmit` spec in the ticks
+   block authenticates as `alice` against `alice`'s paper; the round-1 "one
+   spec is enough" was written before both sites were going to move. Probe
+   each new spec by reverting its own site, per branch.
+
+Dismissed at triage, no action: the synchronous-writer window between
+`_clearDraft()` and the 1.5 s navigate (`handleSupplementaryFiles` flush or a
+double submit; debounced writers are cancelled by `destroy()`), the load-time
+draft arm (Alpine watchers fire in a microtask after `_initialLoadDone = true`,
+pre-existing), the Retry card's single affordance, an `arrangeLoad([])` prune
+spec, discriminating the `||` guard from the catch-path fail-closed, and the
+hand-maintained enumeration lists. Two items stay open with the architect and
+are not part of this hold: a try/catch around `invalidatePaperCache`, and the
+same clear-without-cancel shape on `publish.js`'s success path.
+
+Verification note: the round-1 baseline holds at `fa4b4cf7`
+(`pages-edit.test.js` 87 passed, exit 0, no Errors line, in an isolated copy).
+A sibling UI task is editing `pages-edit.test.js` in the shared checkout right
+now (load-path mount coverage); build on whatever it lands rather than
+reverting it. Do not cite this hold, its item numbers, or the task slug in code
+or test comments; anchor on the symbols named above.
