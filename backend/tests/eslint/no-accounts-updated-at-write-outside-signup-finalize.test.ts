@@ -329,7 +329,8 @@
  *     where the read closed, so a write past that point is hidden from the
  *     arms walked from THAT head. It is not hidden from a second `accounts`
  *     head sitting past the truncation, which starts a read of its own and
- *     carries the write to both writer arms, nor from the walk that starts at
+ *     carries the write to the table-first arm, and to the column-first one
+ *     where it spells an assignment, nor from the walk that starts at
  *     the assignment token: an `updated_at =` out there reds the fail-closed
  *     arm where no nearer head reaches it, and where one naming another table
  *     does, it is bucketed there and nothing reds, which is the same
@@ -2218,8 +2219,12 @@ function bareTable(name: string): string {
  *  found on the head line, which is the one the read took for its delimiter.
  *  That is -1 wherever it found none, which takes a head with no quote open
  *  ahead of it on its own line at dollar-quote depth zero. That function skips
- *  every column inside a span, so a head in a `DO` body is quote-free to it
- *  however its own line reads. The heads that answer to it: every `accounts`
+ *  every column inside a span, and seeds its depth at LINE ENTRY, so a head in
+ *  a `DO` body is quote-free to it wherever its line is ENTERED inside that
+ *  span. A head sharing its line with the `$$` that opens the body is not: the
+ *  columns ahead of that opener are at depth zero and are read, so its own
+ *  template's backtick is returned instead. The heads that answer to it: every
+ *  `accounts`
  *  head the migration scans read today, though a migration head at depth zero
  *  is not quote-free by construction and one sitting after an unclosed `'` on
  *  its line is read to that quote instead of
@@ -4841,7 +4846,9 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // reaches one only inside the cap, and only while no line ends mid-value
     // and the span carrying the head stays open. Those last two are the set
     // {@link SqlStatement.stopped} enumerates; running out of cap or out of
-    // file is the other answer, and such a read still lends its table. The
+    // file is the other answer, and such a read still lends its table, out as
+    // far as the last line it read. Past the cap it reaches nothing, so a
+    // write there reds the fail-closed arm as a stopped read's would. The
     // dynamic-SQL entry under KNOWN LIMITS names the heads it finds no quote
     // for.
     const twoInOne = asCode(['  await q(`UPDATE accounts SET custody = $1; SET updated_at = NOW()`);']);
