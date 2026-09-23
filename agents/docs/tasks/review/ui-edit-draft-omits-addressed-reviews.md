@@ -249,3 +249,133 @@ pre-exist at the base (74 passed, exit 1) and are gone on current `main` after
 and the Errors line, not the Tests count, when reporting the suite as green.
 Do not cite this hold, its item numbers, or the task slug in code or test
 comments; anchor on the symbols named above.
+
+
+## UI re-review signal (2026-09-23, commit fa4b4cf7)
+
+`fa4b4cf7` self-verified as an ancestor of `main` (`git merge-base
+--is-ancestor`). No worktree fan-out; single-session inline work. A sibling
+backend commit landed on top of it during the session, which is why it is not
+HEAD.
+
+### Item 1 — a rejected enrichment no longer reaches the restore
+
+`loadPaperData`'s rejection guard now covers both halves of the
+`Promise.allSettled` pair and returns before `_prefillForm()` / `_restoreDraft()`,
+so `_initialLoadDone` stays false and the stored draft is neither pruned nor
+rewritten. The Retry card is the way through, unchanged.
+
+The two guards were merged into one condition rather than stacked, because their
+bodies were identical; the rationale comment above the merged guard carries the
+enrichment half. With a rejection now returning early, the
+`if (enrichmentRes.status === 'fulfilled')` wrapper had one reachable status left
+and was unwrapped.
+
+Consistency note, not a change in this diff: `paper-detail.js` degrades on the
+same failure and offers its own retry affordance. The edit page blocks instead
+because its reconciliation reads that list, and an empty list there is
+indistinguishable from "this paper has no reviews". The cost is real and
+accepted: the 503 this endpoint is documented to surface when the walker
+wall-clock budget is exhausted now holds the edit form behind a Retry rather than
+rendering it without the checklist. Checked against the running dev backend that
+the ordinary path is unaffected: `/enrichment` returns HTTP 200 for each of the
+three papers `/api/papers` lists, including papers with zero reviews, which is a
+fulfilled response with an empty list and still prunes correctly.
+
+Spec `a rejected enrichment fails the load and leaves the saved ticks alone`
+seeds a draft carrying a tick, rejects `fetchPaperEnrichment`, runs
+`loadPaperData`, and asserts `loadError`, `addressedReviews` still `[]`, and
+`_initialLoadDone` still false; it then arms the scheduler and advances past the
+debounce to assert the stored draft still carries the tick.
+
+`_reconcileAddressedReviews`'s docblock now states both halves: `loadPaperData`
+assigns `reviews` before it calls `_restoreDraft`, and fails the load outright
+when that response rejected, so the intersection never runs against an empty list
+that only means the reviews could not be fetched.
+
+### Item 2 — the post-success clear cancels the armed debounce
+
+Both success branches call a new `_clearDraft()`, which cancels `_draftTimer` and
+then removes the draft.
+
+Deviation from the prescription, raised deliberately rather than quietly: the
+hold asked for the inline `if (this._draftTimer) { ... }` guard beside each
+`removeItem`, mirroring `destroy()`. That exact line already exists in `destroy()`
+and in `_flushDraftSave()`; two more copies would make four. The named method
+states the clear-and-cancel gesture once and both call sites read as a single
+gesture. Behavior is identical, and a probe still has one site to revert.
+`destroy()` and `_flushDraftSave()` were deliberately left alone: the latter
+belongs to the re-auth window task still in flight, and a shared cancel helper
+across all four sites is a change to that task's surface.
+
+Reproducing the defect took one correction worth recording. `_windowReady`
+flushes unconditionally at the submit entry gate, so a timer armed by a keystroke
+before Submit is already cancelled by the time the broadcast runs; a spec written
+that way passes against the unfixed code, which is what the first draft of this
+spec did. The reachable window is between that flush and the success: the form
+stays interactive through `step === 'broadcasting'`. The spec now arms the
+scheduler from inside the `broadcastOps` mock, and asserts `_draftTimer` is null
+after `step === 'success'` and the draft still absent two seconds later.
+
+### Item 3 — `newCoAuthors` watcher
+
+The gap was wider than a missing row: `updateNewCoAuthor` writes
+`this.newCoAuthors[index][field]`, so every keystroke into a co-author's name,
+hive, orcid or affiliation was equally undrafted, not just `addCoAuthor`'s push.
+Alpine's `$watch` deep-reads the watched value, so one registration covers all of
+them.
+
+`_setupReactiveBindings` registers `$watch('newCoAuthors', ...)`, positioned so
+the watcher list mirrors the field order of the `_writeDraft` draft object; the
+enumeration spec's pinned list gained `'newCoAuthors'` in the same position and
+its comment now names `_writeDraft` (which holds the field list) rather than
+`_scheduleDraftSave`, and states the mirror as the reason the order matters.
+
+### Verification
+
+- `pages-edit.test.js`: 87 passed, 0 failed, exit 0, no Errors line (85 before).
+  Full frontend unit suite: 86 files / 1933 tests passed, exit 0.
+  `npm run build` clean (standing chunk-size and dhive direct-`eval` warnings
+  only). All run in the checkout; `git status` clean afterwards apart from the
+  two files this commit carries.
+- Mutation probes, one scratchpad copy per mutant off the committed tree, repo
+  checkout never mutated:
+
+  | reverted site | tests that die |
+  |---|---|
+  | the enrichment arm of the load guard, with the `fulfilled` wrapper restored (the true pre-fix shape) | the rejected-enrichment spec |
+  | the `clearTimeout` line inside `_clearDraft` (the `removeItem` stays) | the post-success-clear-cancels spec |
+  | `$watch('newCoAuthors', ...)` | the watcher-enumeration spec |
+  | `addressedReviews` in the `_writeDraft` object | the debounced-save spec, plus the tick-change spec |
+  | `$watch('addressedReviews', ...)` | the tick-change spec, plus the watcher-enumeration spec |
+  | the restore line in `_restoreDraft` | restore, drop-stale, resubmit, post-success-clear-of-ticks |
+  | the `reviews` intersection in `_reconcileAddressedReviews` | drop-stale only |
+  | the `:checked` binding | the checkbox spec |
+  | the `isReviewAddressed` body | the checkbox spec |
+
+  Honest negative result from that run: reverting only the `||` arm of the merged
+  guard, while leaving the unwrapped `enrichmentRes.value.data` read in place,
+  leaves the suite green. That mutant is not the pre-fix shape: the unwrapped read
+  throws on a rejected settle and the outer catch sets the same `loadError`, so
+  the page still fails closed. It is recorded because it is a real property of the
+  unwrapped form, not because the assertion is unpinned; the pre-fix shape in the
+  table above kills it.
+- E2E not re-run. The diff adds no markup and touches no `type="submit"` element,
+  so the dominant pre-existing strict-mode failure class is unchanged, and the one
+  new runtime branch (enrichment rejected) is not reachable in that environment:
+  the prior round's run showed the checklist rendering and `check()` passing, and
+  the dev backend serves `/enrichment` 200 today. Running the dance would also
+  swap the shared stack into test mode under whatever sibling agent is using it.
+  Say the word and it gets run.
+- No new i18n keys, so no `STUBS.md` entry.
+- Simplify pass (three lenses: reuse, quality, efficiency). Efficiency clean;
+  quality reports no correctness bug. Reuse and quality converged on one
+  finding, triaged by the user as skip-and-record: the `_draftTimer` cancel
+  line now appears three times, in `destroy()`, in `_clearDraft()` and in
+  `_flushDraftSave()`, and both lenses proposed extracting a
+  `_cancelDraftTimer()` used by all three. Skipped because the fix edits
+  `_flushDraftSave()`, which belongs to the light-account re-auth window task
+  still in `review/`, so it widens this diff into that task's surface for no
+  behavior change, and a partial two-of-three extraction leaves an
+  inconsistent trio. Both lenses graded it optional. Available as a one-commit
+  follow-up once that task clears review.
