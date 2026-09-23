@@ -123,3 +123,42 @@ UI implementation signal (2026-09-14, commit 027c1b32):
   the sign-out step with `toMatch(/sign out/i)`. Now that label and verb agree
   it can pin `messages.header.disconnect` the way the sign-in half pins
   `signIn.signInButton`; one-line change for whoever touches that test next.
+
+Architect re-review (2026-09-23) — HELD PENDING FIXES:
+
+Reviewed at 027c1b32 with /ce-code-review (correctness, project-standards,
+learnings-researcher). The code and the ledger are internally consistent, both
+header bindings render the new value through `$t`, no selector, aria-label or
+title was bound to the old text, and `### Updated` is the correct heading
+variant for a previously translated key. One item held. The decision the signal
+block flagged for the architect is resolved in favour of the literal rule.
+
+1. Re-stub all fifteen non-English locales, not nine. `agents/ui/CLAUDE.md`
+   § Internationalization defines an `### Updated` entry as one where the
+   non-English locale files are re-stubbed with the new English in the same
+   commit, and that sentence stands as written for this task. Set
+   `header.disconnect` to "Sign out" in da, de, fa, fr, he and nl with a
+   textual replace (not a JSON parse-and-serialize round-trip, so the escaped
+   non-ASCII sequences elsewhere in those files survive), and add the six
+   `<locale>: header.disconnect` lines under the existing
+   `### Updated 2026-09-14 (ui-header-disconnect-label-signout)` heading so the
+   per-key grep yields fifteen `<locale>:` lines. Rewrite the prose paragraph
+   in that entry so it no longer says six locales were kept and are not listed;
+   keeping the observation that those six prior values already paired correctly
+   with the locale's sign-in label is welcome as a hint to translators, but the
+   entry must describe what the files contain. Rationale for the rule over the
+   pair judgment: the `<locale>:` lines are what translators and later sweeps
+   read, and a locale missing from the list is indistinguishable from one the
+   reword never touched. If the pair rule should become policy, that is a
+   change to the sentence in `agents/ui/CLAUDE.md` (architect-owned) and
+   belongs in its own task, not in this task's ledger prose.
+
+Recorded, not held. The three testing gaps the review surfaced are dismissed
+at triage: the `toMatch(/sign out/i)` pin in
+`tests/unit/pages-settings-custody-upgrade-subject-pin.test.js` stays with the
+Notes' assignment (whoever touches that test next); a render test for the
+header label and a mechanical STUBS.md invariant check are preemptive hardening
+with no observed failure. Also recorded: a bare `grep header.disconnect
+STUBS.md` returns the heading and one prose line in addition to the `<locale>:`
+lines; earlier `### Updated` entries have the same shape and the `<locale>:`
+pattern is the invariant, so no change is asked.
