@@ -141,11 +141,17 @@ proxy, which is exactly what `{}.abstractEditor` evaluates to. So `{}` is behavi
 
 The pre-fix exit 1 was an inverted tripwire rather than coverage. Reverting the `$nextTick` mount
 scheduling in `loadPaperData()` made the pre-fix tree exit 0: the rejection fired only because the
-mount wiring was present and working, not because any test asserted the mount succeeded. No test in
-the file asserts that a successful `loadPaperData()` schedules `_mountEditors()` and populates the
-editors from `$refs`; a Mutation Probe that reverts the scheduling line survives before and after
-this fix. That coverage gap is separate follow-up work, tracked as a pending ui task, and it is why
-the fix loses nothing: the signal it removed was never one anybody could have acted on as a failure.
+mount wiring was present and working, not because any test asserted the mount succeeded. At the time
+of this fix no test in the file asserted that a successful `loadPaperData()` schedules
+`_mountEditors()` and populates the editors from `$refs`, and a Mutation Probe reverting the
+scheduling line survived on both sides of it. That is why the fix lost nothing: the signal it
+removed was never one anybody could have acted on as a failure.
+
+That coverage gap has since been closed. The spec's `a successful load mounts the editors` describe
+drives the real load path with refs present and with the harness default, so the same probe now
+kills instead of surviving. Writing those assertions turned out to need a technique of its own,
+because the discarded promise defeats both obvious ways of awaiting the mount:
+`agents/docs/solutions/conventions/waitfor-poll-required-for-nexttick-scheduled-effect-assertions.md`.
 
 `frontend/src/pages/publish.js` shares the shape (`init()` schedules
 `this.$nextTick(() => { this._mountEditors(); })`, and its `_mountEditors()` reads
@@ -194,6 +200,9 @@ deferred method without the harness picking it up.
 
 ## Related Issues
 
+- `agents/docs/solutions/conventions/waitfor-poll-required-for-nexttick-scheduled-effect-assertions.md`: the
+  follow-up this entry called for. It answers how to assert on the mount whose deferral is described here,
+  and closes the coverage gap the Why This Works section records.
 - `agents/docs/solutions/conventions/vitest-retry-fire-and-forget-side-effect-poisoning-2026-05-04.md`: closest existing
   entry by mechanism family (an unawaited production async call becomes a latent vitest hazard whose
   fix lives in the test environment). Moderate overlap; different substrate (DB side effects under
