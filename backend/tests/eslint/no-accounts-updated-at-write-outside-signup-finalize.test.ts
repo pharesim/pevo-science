@@ -264,16 +264,29 @@
  *     rather than for an assignment. Nor where its read reaches no terminator,
  *     which the every-statement-readable arm reds by line. The ALTER arm and
  *     the every-statement-readable arm are both walked from a head, and every
- *     head in {@link READ_FROM_HEADS} wants the literal `accounts`, so neither
- *     of them reaches an ALTER whose TABLE is named dynamically: `ALTER TABLE
+ *     head in {@link READ_FROM_HEADS} wants the literal `accounts`, so what
+ *     puts a statement past both is a head spelling none: `ALTER TABLE
  *     ${table}` and an `EXECUTE format('ALTER TABLE %I DROP COLUMN
  *     updated_at', 'accounts')` are no head to either, however plainly they
- *     spell the column. The fail-closed arm is the one catcher that answers to
- *     the assignment token rather than to a head, so it is all a dynamically
- *     named ALTER can reach: one carrying an `updated_at =` reds there, and a
- *     drop, a rename or a retype carrying none reds nowhere. Both the
- *     `${table}` and the `%I` spellings are silent in every arm today, while
- *     the same statement with `accounts` in its head reds the ALTER arm.
+ *     spell the column. Replacing the WHOLE name is what that takes. A name
+ *     the dynamic part only SUFFIXES is still a head, since the patterns end
+ *     at `accounts\b` and a `$` or a `%` is a word boundary: an
+ *     `ALTER TABLE accounts${suffix}` or a `format('ALTER TABLE accounts%I
+ *     ...')` reds the ALTER arm exactly as `accounts` does, and the
+ *     interpolated spelling reds the assembled arm beside it, while the static
+ *     `accounts_2026` is silent in both.
+ *     What is left for a head spelling no literal `accounts` is the walk from
+ *     the assignment token, {@link columnAssignments}, which starts at an
+ *     `updated_at =` and looks UPWARD for a head rather than being walked from
+ *     one. What it reaches is a property of the read, not of the shape. Such
+ *     an ALTER reds the fail-closed arm where no readable head above reaches
+ *     its assignment, and reds the writer arms instead where an `accounts`
+ *     head does; where the head that reaches it names some other table, the
+ *     assignment is bucketed there and nothing reds at all. A drop, a rename
+ *     or a retype carries no assignment for that walk to start from, so it
+ *     reds nowhere. A whole-name `${table}` or `%I` spelling therefore reaches
+ *     no arm that answers to an `accounts` head or to an assignment, while the
+ *     same statement with `accounts` in its head reds the ALTER arm.
  *     The assembled-write scan recognises two, in
  *     `src` only: a `${...}` interpolation in the statement's text, and a `+`
  *     beside its quote. The `+` before the quote is read only where
@@ -287,16 +300,24 @@
  *     backtick ending a `const sql =` line, the head starting the next), and a
  *     head whose own BACKTICK literal opens on its line after a template from
  *     above closes there, since that closing backtick is read as an opener and
- *     the head literal's opening one as its close. The second layout needs the
- *     backtick to be silent at all: a `'` or a `"` head literal in that same
+ *     the head literal's opening one as its close. The second layout
+ *     ordinarily needs the backtick: a `'` or a `"` head literal in that same
  *     position closes nothing against the carried backtick, so
- *     {@link enclosingQuote} returns that backtick and the read takes it for a
- *     delimiter it never meets. Such a read begins inside the head's own
- *     literal and takes that literal's remaining quotes for value markers, so
- *     the line ends inside a value and the read stops, which the
- *     every-statement-readable arm reds by line whether or not anything is
- *     joined, and a `+` ending the carried template's text is read as a join
- *     on top of it. An interpolation in either silent layout is still read,
+ *     {@link enclosingQuote} returns that backtick and the read carries it as
+ *     a delimiter. Such a read begins INSIDE the head's own literal, so that
+ *     literal's closing quote opens a value, and where nothing later on the
+ *     line closes that value the line ends inside it and the read stops, which
+ *     the every-statement-readable arm reds by line whether or not anything is
+ *     joined; a `+` ending the carried template's text is read as a join on
+ *     top of it. Two things on the head's line make the read close early and
+ *     go quiet again instead: a backtick INSIDE the head literal, which is the
+ *     delimiter the read is carrying, and one more unpaired quote of the head
+ *     literal's own kind, which closes the value and lets the read reach that
+ *     backtick. An apostrophe in a template later on the line is the ordinary
+ *     spelling of the second. Either way the statement's text is truncated
+ *     where the read closed and a write past that point is hidden from every
+ *     arm, which is the silent direction, and neither is a shape this tree
+ *     writes today. An interpolation in either silent layout is still read,
  *     since that test reads the statement's text and not its quote.
  *     The other half of the bound is where the read STOPS, and it governs the
  *     `+` AFTER the quote alone: that one is looked for past the stop, wherever
@@ -932,10 +953,13 @@ const BOUND_TO_ACCOUNTS_RE = /\b(?:ON|TO)\s+(?:public\.)?accounts\b/i;
  *  `+` closing the head line's text before the quote {@link enclosingQuote}
  *  found there, or opening the text after where the read stopped (on that
  *  line, or leading the next). The first needs that function to have found a
- *  quote at all, and is measured from whichever one it found: the head
- *  literal's own opening quote ordinarily, and a template's closing backtick
- *  where one carried from an earlier line closes ahead of the literal, which
- *  leaves a `+` glued to the literal's own quote unread. The second answers to
+ *  quote at all, and is measured from whichever one it found, which is the
+ *  head literal's own opening quote only where nothing ahead of the head on
+ *  that line left another open. A template's closing backtick carried from an
+ *  earlier line takes its place, and so does a value's quote where the head's
+ *  line begins inside a value. Then a `+` glued to the literal's own quote
+ *  goes unread, while one ending the text ahead of that other quote is read as
+ *  a join, which for SQL text is a `+` joining nothing. The second answers to
  *  the stop, wherever it landed. The dynamic-SQL entry under KNOWN LIMITS
  *  records the joins that leaves silent. */
 const SQL_INTERPOLATION_RE = /\$\{/;
@@ -2172,11 +2196,14 @@ function bareTable(name: string): string {
  *  column of its terminator on that line (-1 when the read hit the cap or the
  *  end of the file first), and the column of the quote {@link enclosingQuote}
  *  found on the head line, which is the one the read took for its delimiter.
- *  That is -1 wherever it found none: a migration, which has no quote, and a
- *  `src` head inside a template opened on an earlier line, whose own backtick
- *  that function does not see. Where it found a quote that is not the head
- *  literal's, a template from above closing on the head's line among them,
- *  this holds that quote's column rather than the literal's. */
+ *  That is -1 wherever it found none, which takes a head no quote on its own
+ *  line encloses: every migration head in the tree, a `src` head inside a
+ *  template opened on an earlier line, whose own backtick that function does
+ *  not see, and a `src` head whose own BACKTICK literal opens after a template
+ *  from above closes on that line, where the two backticks cancel and it finds
+ *  nothing. Where it found a quote that is not the head literal's, a template
+ *  from above closing ahead of a `'` or `"` literal among them, this holds
+ *  that quote's column rather than the literal's. */
 interface SqlStatement {
   text: string;
   lastLine: number;
@@ -4782,10 +4809,11 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     const afterPlaceholder = asCode(['  const p = `$${idx}`;', '  `UPDATE accounts SET a = 1 /* and the marker */ , updated_at = NOW()`,']);
     expect(afterPlaceholder[1]).toContain('              ');
     expect(assignmentIndex(afterPlaceholder[1])).toBeGreaterThan(-1);
-    // A bare `;` inside a template ends nothing where the template's own quote
-    // opens on the head's line, as it does here: that quote delimits the read.
-    // A head in a template opened on an EARLIER line has no quote found for it
-    // and is read to its `;` instead, per the dynamic-SQL entry in KNOWN LIMITS.
+    // A bare `;` inside a template ends nothing where {@link enclosingQuote}
+    // finds a quote on the head's line, as it does here: that quote delimits
+    // the read. Where it finds none the read looks for the `;` instead, and
+    // reaches one only inside the cap and while no line ends mid-value. The
+    // dynamic-SQL entry under KNOWN LIMITS names the heads it finds none for.
     const twoInOne = asCode(['  await q(`UPDATE accounts SET custody = $1; SET updated_at = NOW()`);']);
     expect(writesColumn(statementAt(twoInOne, 0, twoInOne[0].indexOf('UPDATE')).text)).toBe(true);
     // A COPY loads the named columns with no assignment and no INSERT keyword.
