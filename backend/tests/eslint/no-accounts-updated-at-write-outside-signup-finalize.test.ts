@@ -2221,9 +2221,11 @@ function bareTable(name: string): string {
  *  ahead of it on its own line at dollar-quote depth zero. That function skips
  *  every column inside a span, and seeds its depth at LINE ENTRY, so a head in
  *  a `DO` body is quote-free to it wherever its line is ENTERED inside that
- *  span. A head sharing its line with the `$$` that opens the body is not: the
- *  columns ahead of that opener are at depth zero and are read, so its own
- *  template's backtick is returned instead. The heads that answer to it: every
+ *  span. A `src` head sharing its line with the `$$` that opens the body is
+ *  not: the columns ahead of that opener are at depth zero, so the template
+ *  literal holding the body is read there and its backtick is returned
+ *  instead. A migration head in the same position has no such literal ahead of
+ *  it and stays quote-free. The heads that answer to it: every
  *  `accounts`
  *  head the migration scans read today, though a migration head at depth zero
  *  is not quote-free by construction and one sitting after an unclosed `'` on
@@ -4848,7 +4850,9 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // {@link SqlStatement.stopped} enumerates; running out of cap or out of
     // file is the other answer, and such a read still lends its table, out as
     // far as the last line it read. Past the cap it reaches nothing, so a
-    // write there reds the fail-closed arm as a stopped read's would. The
+    // write there answers to whatever head does reach it: its own, where it
+    // spells one, and no head at all otherwise, which reds the fail-closed arm
+    // as a stopped read's would. The
     // dynamic-SQL entry under KNOWN LIMITS names the heads it finds no quote
     // for.
     const twoInOne = asCode(['  await q(`UPDATE accounts SET custody = $1; SET updated_at = NOW()`);']);
