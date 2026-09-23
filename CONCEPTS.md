@@ -528,6 +528,13 @@ A distinct credential a PEvO account has registered that can prove control of it
 
 A re-auth or recovery proof authenticates only if it matches a factor the account has actually registered: a passwordless account cannot prove by password, an account with no linked ORCID cannot prove by ORCID, and the seed phrase proves possession only when its derived key matches the on-chain account. The seed phrase is specifically an upgrade and recovery factor, not a general session-auth factor.
 
+### Factor Resolution
+
+The client-side decision of which registered auth factor to offer for a re-auth act, made once per tab by a single resolver that every surface consults rather than each surface guessing on its own.
+*Avoid:* factor selection, hasPassword check.
+
+Password wins when both factors are registered, because its prompt is inline while the ORCID factor is a full-page navigation that discards page state. The answer carries a confidence: **observed** when it came from the account's status, **assumed** when that status was unavailable and the resolver fell through to the password prompt so the platform, not the client, rejects a genuinely passwordless account. Only an explicit "no password" answer ever routes to the navigating factor; an unknown one never does. The confidence matters at exactly one point: a rejected password mint. Under an observed factor the rejection is a typo and earns one re-prompt; under an assumed factor it is at least as likely "no password registered", so the action is handed to the ORCID factor instead of dead-ending at a second prompt (or refused without navigating when the caller holds work the navigation would discard). A successful password mint is stronger evidence than the status read and is remembered for the tab, so a rate-limited status does not turn a proven password back into a guess; two consecutive rejections at the verifying route outrank that memory and retire it, so a password dropped elsewhere (a recovery with no new password in another tab) is re-read on the next action instead of prompted for until a page reload. The one action that sets a password from nothing is the deliberate exception: it takes the ORCID factor without consulting the status, since its account has no password by definition.
+
 ### Fresh-auth Proof
 
 A per-critical-action cryptographic proof that the acting user controls a currently registered auth factor, required on top of (never replaced by) the session token, so that a stolen session alone can never perform a critical action.

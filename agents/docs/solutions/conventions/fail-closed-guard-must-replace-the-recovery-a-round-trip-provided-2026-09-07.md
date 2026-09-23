@@ -159,9 +159,12 @@ precisely the one that cannot help.
 are not alike. `_acquireInFlight` releases its slot in a `finally`, so it self-heals on the next
 call. The window cache releases on nothing a caller does: it drops when its own deadline passes or
 when the entry is unreadable, and otherwise waits for an explicit `clearCachedSessionProof()`. And
-`_passwordFactorMemo` has one call site outside its own definition, the subject scrub in
-`frontend/src/auth.js`. A short-circuit added upstream of a mint is harmless for the first and
-strands the other two. Check the release mechanism, not the intuition that "a retry will sort it
+`_passwordFactorMemo` has two call sites outside its own definition: the subject scrub in
+`frontend/src/auth.js`, and the mint route's own eraser in `mintViaPasswordFactor`, which retires
+the memo on a second consecutive rejection of the password. That second eraser is itself recovery
+that lives in a round-trip's error path, so it is exactly the kind a guard upstream of the mint
+would delete. A short-circuit added upstream of a mint is harmless for the first and strands the
+other two. Check the release mechanism, not the intuition that "a retry will sort it
 out". (session history)
 
 The matching test shape is cheap and should be standard for this class of guard: assert not just
