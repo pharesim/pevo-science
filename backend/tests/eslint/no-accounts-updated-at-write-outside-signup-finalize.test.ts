@@ -292,7 +292,9 @@
  *     nothing for that walk to start from and it reds nowhere; the carve-out
  *     above holds here too, and an `updated_at =` inside a USING expression or
  *     a CHECK is read as an assignment like any other, so a dynamically named
- *     retype carrying one reds the fail-closed arm. Subject to that, a
+ *     retype carrying one is read from that token and lands in whichever of
+ *     the three buckets its reaching head puts it in, the same as any other
+ *     assignment. Subject to that, a
  *     head-dynamic or schema-dynamic spelling reaches no arm that answers to
  *     an `accounts` head or to an assignment, while the same statement with a
  *     literal `accounts` in its head reds the ALTER arm.
@@ -324,14 +326,18 @@
  *     literal's own kind, which closes the value and lets the read reach that
  *     backtick. An apostrophe in a template later on the line is the ordinary
  *     spelling of the second. Either way the statement's text is truncated
- *     where the read closed, so a write past that point is hidden from every
- *     arm walked from the head. It is not hidden from the walk that starts at
- *     the assignment token: an `updated_at =` out there resolves to no
- *     reaching head and reds the fail-closed arm, which leaves a write
- *     carrying none, an INSERT or MERGE column list or an ALTER clause, as
- *     what goes quiet. That is the silent direction, and neither quieting
- *     shape is one this tree writes today. An interpolation in either silent
- *     layout is still read,
+ *     where the read closed, so a write past that point is hidden from the
+ *     arms walked from THAT head. It is not hidden from a second `accounts`
+ *     head sitting past the truncation, which starts a read of its own and
+ *     carries the write to both writer arms, nor from the walk that starts at
+ *     the assignment token: an `updated_at =` out there reds the fail-closed
+ *     arm where no nearer head reaches it, and where one naming another table
+ *     does, it is bucketed there and nothing reds, which is the same
+ *     misattribution the ALTER paragraph above names. What is left quiet is a
+ *     write carrying no assignment and opening no head of its own: an INSERT,
+ *     MERGE or COPY column list, or an ALTER clause. That is the silent
+ *     direction, and neither quieting shape is one this tree writes today. An
+ *     interpolation in either silent layout is still read,
  *     since that test reads the statement's text and not its quote.
  *     The other half of the bound is where the read STOPS, and it governs the
  *     `+` AFTER the quote alone: that one is looked for past the stop, wherever
@@ -2211,9 +2217,12 @@ function bareTable(name: string): string {
  *  end of the file first), and the column of the quote {@link enclosingQuote}
  *  found on the head line, which is the one the read took for its delimiter.
  *  That is -1 wherever it found none, which takes a head with no quote open
- *  ahead of it on its own line: every `accounts` head the migration scans read
- *  today, though a migration head is not quote-free by construction and one
- *  sitting after an unclosed `'` on its line is read to that quote instead of
+ *  ahead of it on its own line at dollar-quote depth zero. That function skips
+ *  every column inside a span, so a head in a `DO` body is quote-free to it
+ *  however its own line reads. The heads that answer to it: every `accounts`
+ *  head the migration scans read today, though a migration head at depth zero
+ *  is not quote-free by construction and one sitting after an unclosed `'` on
+ *  its line is read to that quote instead of
  *  to its `;`, a `src` head inside a template opened on an earlier line, whose
  *  own backtick that function does
  *  not see, and a `src` head whose own BACKTICK literal opens after a template
@@ -4829,10 +4838,12 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // A bare `;` inside a template ends nothing where {@link enclosingQuote}
     // finds a quote on the head's line, as it does here: that quote delimits
     // the read. Where it finds none the read looks for the `;` instead, and
-    // reaches one only inside the cap, while no line ends mid-value, and while
-    // the span carrying the head stays open, which is the set
-    // {@link SqlStatement.stopped} enumerates. The dynamic-SQL entry under
-    // KNOWN LIMITS names the heads it finds no quote for.
+    // reaches one only inside the cap, and only while no line ends mid-value
+    // and the span carrying the head stays open. Those last two are the set
+    // {@link SqlStatement.stopped} enumerates; running out of cap or out of
+    // file is the other answer, and such a read still lends its table. The
+    // dynamic-SQL entry under KNOWN LIMITS names the heads it finds no quote
+    // for.
     const twoInOne = asCode(['  await q(`UPDATE accounts SET custody = $1; SET updated_at = NOW()`);']);
     expect(writesColumn(statementAt(twoInOne, 0, twoInOne[0].indexOf('UPDATE')).text)).toBe(true);
     // A COPY loads the named columns with no assignment and no INSERT keyword.
