@@ -100,3 +100,94 @@ init + N loadPaperData calls") is then true of what the test does.
    0, with no existing test removed or weakened; the `_mountEditors
    teardown-during-init guard` block is untouched.
 4. The full unit suite exits 0.
+
+## UI implementation signal (2026-09-23, commit 48e6e320)
+
+Both items landed in one commit against
+`frontend/tests/unit/pages-edit.test.js`, 75 insertions and 0 deletions.
+Nothing under `frontend/src/` changed. Every probe ran in an isolated
+scratchpad copy of `frontend/`; the shared checkout was never mutated and
+never used for a probe run.
+
+**Item 1** is a new `a successful load mounts the editors` describe, placed
+immediately above the `_mountEditors teardown-during-init guard` block, with
+two cases that both drive the real `loadPaperData` path:
+
+- `builds one editor per ref present when the load runs` assigns both refs
+  before the load, then asserts `createEditor` at two calls with the two
+  elements and `_editorsInitialized` true.
+- `builds no editor when the refs are the harness default` is the optional
+  second case, which is what turns `createComponent`'s empty `$refs` from
+  "does not throw" into an asserted state.
+
+**Item 2** waits for init's own load to settle before the retry, pins
+`fetchPaper` at 1 call there and at 2 after the retry. The `$watch`
+expression list and the storage-listener counts are unchanged.
+
+### Proof-first, before the change (baseline 87 passed, exit 0)
+
+| probe | result |
+|---|---|
+| delete the `$nextTick` mount-scheduling block in `edit.js` | SURVIVED, 87 passed, exit 0 |
+| rename the template's `x-ref="abstractEditor"` | SURVIVED, 87 passed, exit 0; `grep -rn 'x-ref' tests/unit/` has no matches |
+| populate `createComponent`'s `$refs` default | SURVIVED, 87 passed, exit 0 |
+| instrument the retry | `fetchPaper` at 1 call before and 1 after; `_loadInFlight` still `true` at the retry |
+
+### After the change (89 passed, exit 0), re-run against the committed tree
+
+| probe | result |
+|---|---|
+| delete the `$nextTick` mount-scheduling block in `edit.js` | KILLED, 2 failed / 87 passed, exit 1 |
+| populate `createComponent`'s `$refs` default | KILLED, 1 failed / 88 passed, exit 1 |
+| remove the two settle-wait lines from the retry test | KILLED, 1 failed / 88 passed, exit 1 |
+
+### Acceptance criteria
+
+1. Deleting the `$nextTick` block fails these two tests:
+   `editPage handleSubmit sanitization > a successful load mounts the editors > builds one editor per ref present when the load runs`
+   (`expected "spy" to be called 2 times, but got 0 times`) and
+   `editPage handleSubmit sanitization > a successful load mounts the editors > builds no editor when the refs are the harness default`
+   (`expected false to be true`). Both fail through a `vi.waitFor` timeout at
+   roughly 1s each.
+2. `fetchPaper` is asserted at 1 call after init settles and at 2 after the
+   retry. Removing only the settle-wait makes the 2-call assertion fail with
+   `got 1 times`, and the `$watch` and storage-listener count assertions still
+   pass under that mutant, which is the vacuity the wait closes. Those count
+   assertions are unchanged and still pass.
+3. `npx vitest run tests/unit/pages-edit.test.js`: 89 passed, no `Errors`
+   line, exit 0. The diff has no deletions, so no existing test was removed or
+   weakened, and the `_mountEditors teardown-during-init guard` block still
+   holds its original four cases.
+4. Full frontend unit suite in a two-level isolated copy: 86 files, 1935
+   passed, no `Errors` line, vitest exit 0. The +2 against the pre-change 1933
+   is exactly the two new cases.
+
+### Simplify pass
+
+Three reviewers ran against the diff. Quality: nothing to flag. Reuse: one
+finding, the new block's local `mockCreateEditor.mockClear()` is a no-op
+because the outer `beforeEach` already calls `vi.clearAllMocks()`. Verified
+by removing it in a copy, 89 still passed, and skipped anyway: the adjacent
+`_mountEditors teardown-during-init guard` block carries the same local clear,
+and dropping it from one of two neighbouring mount describes trades a dead
+line for an inconsistency. Efficiency: the three `vi.waitFor` calls each paid
+a fixed 50ms on the green path, tripling the file from ~80ms to ~243ms.
+Applied: a 1ms poll interval at all three sites, measured back to ~87ms. The
+timeouts are left at the default, and all three kills above were re-measured
+after the change.
+
+### Two notes for triage, neither in scope here
+
+1. The `x-ref` rename stays uncovered. It is listed under item 1's
+   consequences, but the prescribed fix does not reach it: closing it needs an
+   assertion over `editPageTemplate` pairing each `x-ref` name against the
+   `$refs` key `_mountEditors` reads, which is a different kind of test from
+   the two prescribed. Left for the architect to decide.
+2. `loadPaperData` schedules the mount as
+   `$nextTick(() => { this._mountEditors(); })`, a block-bodied arrow, so the
+   mount promise is discarded at the callback and not only at `$nextTick`.
+   Capturing it through a patched `$nextTick` yields `undefined`, measured
+   before settling on the two mechanisms the tests use. That is why case 1
+   waits on the mount's effect and case 2 wraps `_mountEditors` to observe
+   completion: a plain assertion in case 2 would run before the dynamic import
+   had resolved and pass vacuously.
