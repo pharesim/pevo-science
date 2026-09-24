@@ -191,3 +191,57 @@ after the change.
    waits on the mount's effect and case 2 wraps `_mountEditors` to observe
    completion: a plain assertion in case 2 would run before the dynamic import
    had resolved and pass vacuously.
+
+## Architect re-review (2026-09-24) — HELD PENDING FIXES:
+
+`/ce-code-review` on `48e6e320` ran six lenses (correctness, project-standards,
+testing, learnings, adversarial in-process, frontend-races) plus one
+independent validator. AC1 to AC3 reproduced against `git archive 48e6e320` by
+four lenses independently: baseline 89 passed / exit 0, and the three claimed
+kills exact (delete the `$nextTick` block 2 failed; populate the `$refs`
+default 1 failed; remove the settle-wait 1 failed with `got 1 times`), with
+eight back-to-back real-timer runs at 89/89. AC4 confirmed by the architect in
+a two-level copy of the reviewed commit: 86 files, 1935 passed, exit 0.
+Standards, learnings and races lenses were clean. Two items, both in
+`frontend/tests/unit/pages-edit.test.js` only, one commit:
+
+1. **Pin that the mount is routed through `$nextTick`.** The new describe's
+   header says a successful `loadPaperData` "schedules it through `$nextTick`",
+   but neither case asserts it. `createComponent`'s `$nextTick` mock runs its
+   callback synchronously, so replacing the
+   `this.$nextTick(() => { this._mountEditors(); });` block in `edit.js` with a
+   bare `this._mountEditors();` survives the whole spec (probe: 89 passed,
+   exit 0), while deleting the block is killed. Two independent reviewers and
+   the validator each measured this. In
+   `builds one editor per ref present when the load runs`, after the
+   `_editorsInitialized` assertion add
+   `expect(comp.$nextTick).toHaveBeenCalledTimes(1);`. `loadPaperData` holds
+   `edit.js`'s only `$nextTick` call site, so the count is exact. Proof-first
+   in an isolated copy: the unwrap mutant survives before and fails after with
+   `expected "spy" to be called 1 times, but got 0 times`; the unmutated spec
+   stays green. For the record, the two lenses disagreed on today's production
+   consequence (the `await import('../editor.js')` yields after Alpine's
+   reactive flush, so the unwrapped call would still find the refs until a
+   later refactor also drops the dynamic import); the hold rests on the test
+   claiming more than it asserts, not on a live defect.
+
+2. **Pin the template side of the ref pairing.** Your triage note 1 is
+   accepted as a hold item rather than a separate task. Renaming
+   `x-ref="abstractEditor"` in `editPageTemplate` survives the spec because no
+   test reads the template. Case 1 already pins the code side (populated refs
+   under the keys `abstractEditor` / `bodyEditor` yield the two `createEditor`
+   calls, so `_mountEditors` reads exactly those `$refs` keys); add the
+   template side as a short case in or beside the same describe asserting
+   `editPageTemplate` contains both `x-ref="abstractEditor"` and
+   `x-ref="bodyEditor"`. `editPageTemplate` is already imported by the spec.
+   Proof-first: the template rename survives before and fails after.
+
+Constraints unchanged: nothing under `frontend/src/` changes; the harness
+`$nextTick` mock stays synchronous (do not make it deferred to satisfy item 1);
+comment anchors on stable symbols only. Signal block: cite both mutant results
+before and after, the spec count and exit code, and the full unit suite exit
+code. Triage note 2 (the discarded mount promise) stays dismissed. Seen and
+not held, for your judgement or a later task: the mixed-ref state (exactly one
+ref present) is uncovered, so coupling the two guards would survive; the retry
+test's first load succeeds while the production Retry exists only after a
+failed load; `createEditor`'s options object is unasserted on the load path.
