@@ -227,6 +227,15 @@
  * fail-closed resolution arm spans both trees, because an unattributable
  * write matters more in a migration, not less.
  *
+ * A RED BAR MAY BE THE READER'S, NOT A THIRD WRITER'S, and so may a green one
+ * or a slow run. What is recorded about this reader elsewhere, none of it
+ * about the column, is catalogued in `agents/docs/solutions/README.md` under
+ * a section headed by this file's own path: the comment blanking, the parser
+ * it is compared with at every line end, the fail-closed sentinels, the cost
+ * probes and the triage of a differential, among others. That section is read
+ * before the reader is changed, and it is cited in place of its entries
+ * because a list goes stale at the next entry and nothing copies it back here.
+ *
  * KNOWN LIMITS, stated here rather than discovered later:
  *
  *   - Detection is TEXTUAL: the comment blanking in {@link blankLine}, the
