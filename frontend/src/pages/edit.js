@@ -826,9 +826,14 @@ export function initEditPage() {
     // draft straight back. The next visit would then restore it over the
     // freshly fetched paper, ticks and all, and ticks alone pass the
     // no-changes check.
-    _clearDraft() {
+    //
+    // The key is passed in rather than read from the draftKey getter, which
+    // derives from the router params: handleSubmit clears from positions an
+    // unmount can already have reached, and by then the params name whatever
+    // the user navigated to. Callers capture the key before their first await.
+    _clearDraft(key) {
       if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }
-      localStorage.removeItem(this.draftKey);
+      localStorage.removeItem(key);
     },
 
     // Persist the draft now and cancel any pending debounce. Called before an
@@ -1101,6 +1106,11 @@ export function initEditPage() {
       // must take a flat paper snapshot up front to be fully safe.
       const isContinuation = this.isContinuation;
       const ownPost = this.userPostInChain;
+      // Capture the draft key for the same reason, one position later in the
+      // sequence: the clear that spends it runs past awaits an unmount can
+      // interleave with, and the draftKey getter reads the router params, which
+      // by then name whatever the user navigated to.
+      const draftKey = this.draftKey;
 
       // Leave 'idle' synchronously, before the first await. `isSubmitting`
       // derives from `step`, and it is what disables the submit button — across
@@ -1310,15 +1320,26 @@ export function initEditPage() {
             }],
           ];
           const continuationResult = await broadcastWithFreshAuth(username, continuationOps, { allowRedirect: false });
-          if (!this._mounted) return;
           if (continuationResult === FRESH_AUTH_REDIRECT_PENDING) {
             // FRESH_AUTH_REDIRECT_PENDING covers the ORCID redirect-in-flight
             // case (the page navigates away) and the 403 username_mismatch
             // disconnect+toast case (no navigation). Reset the step so the UI
-            // does not hang at 'broadcasting' in the latter.
+            // does not hang at 'broadcasting' in the latter. A pending redirect
+            // is not a landed post, so it keeps its draft: the round-trip is
+            // exactly what the draft exists to survive.
+            if (!this._mounted) return;
             this.step = 'idle';
             return;
           }
+
+          // The post is on chain, so the draft is spent — drop it here, ahead
+          // of both exits that stand between this point and the clear beside
+          // step = 'success'. An unmount takes the `_mounted` guard below, and a
+          // rejecting invalidation throws to the terminal catch; either one left
+          // the flushed draft behind a landed post, and a restored tick alone
+          // passes the no-changes check on the next visit.
+          this._clearDraft(draftKey);
+          if (!this._mounted) return;
 
           // Invalidate cache for the canonical paper
           const canonicalAuthor = this.paper.canonical_author || this.paper.author;
@@ -1327,7 +1348,10 @@ export function initEditPage() {
           if (!this._mounted) return;
 
           this.step = 'success';
-          this._clearDraft();
+          // Idempotent after the post-broadcast clear, and kept for the window
+          // that clear cannot see: the invalidation is an await the form stays
+          // interactive across.
+          this._clearDraft(draftKey);
           this._setTimer(() => {
             this.navigate(`/paper/${canonicalAuthor}/${canonicalPermlink}`);
           }, 1500);
@@ -1391,13 +1415,19 @@ export function initEditPage() {
             }],
           ];
           const editResult = await broadcastWithFreshAuth(username, editOps, { allowRedirect: false });
-          if (!this._mounted) return;
           if (editResult === FRESH_AUTH_REDIRECT_PENDING) {
             // See continuationResult branch above for rationale; same
-            // semantics on the in-place edit path.
+            // semantics on the in-place edit path, draft included.
+            if (!this._mounted) return;
             this.step = 'idle';
             return;
           }
+
+          // See the continuation branch: the edit is on chain, so the draft is
+          // spent before the `_mounted` guard or the invalidation can end this
+          // function without it.
+          this._clearDraft(draftKey);
+          if (!this._mounted) return;
 
           // Cache invalidation keys off the canonical root, not the
           // edit target — the paper-detail endpoint resolves any chain
@@ -1408,7 +1438,9 @@ export function initEditPage() {
           if (!this._mounted) return;
 
           this.step = 'success';
-          this._clearDraft();
+          // See the continuation branch: idempotent, kept for the interactive
+          // window the invalidation await opens.
+          this._clearDraft(draftKey);
           this._setTimer(() => {
             this.navigate(`/paper/${canonicalAuthor}/${canonicalPermlink}`);
           }, 1500);

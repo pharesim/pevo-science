@@ -2313,7 +2313,11 @@ describe('editPage draft carries the addressed-review ticks', () => {
     return comp;
   }
 
-  function arrangeLoad(reviews) {
+  // `paperExtra` merges into the paper the detail endpoint returns, for the
+  // fields a case needs beyond the single-post default: `authors` is the one
+  // the continuation case wants, since _prefillForm seats the broadcaster from
+  // that cumulative-union list.
+  function arrangeLoad(reviews, paperExtra = {}) {
     fetchPaper.mockResolvedValue({
       data: {
         author: 'alice',
@@ -2325,6 +2329,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
         title: 'Old Title',
         body: '## Abstract\n\nold abstract\n\n---\n\nold body',
         json_metadata: JSON.stringify({ pevotest: { version: 1 } }),
+        ...paperExtra,
       },
     });
     fetchPaperEnrichment.mockResolvedValue({ data: { reviews } });
@@ -2524,6 +2529,86 @@ describe('editPage draft carries the addressed-review ticks', () => {
       expect(comp.step).toBe('success');
       expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
       expect(comp._draftTimer).toBe(null);
+
+      vi.advanceTimersByTime(2000);
+
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      comp.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The clear sat behind two exits the landed broadcast has already passed:
+  // the _mounted gate and the cache invalidation. Leaving the page while the
+  // broadcast is in flight takes the first of them, and the edit is on chain
+  // with the flushed draft still in storage. The next visit restores ticks the
+  // revision already addressed, and ticks alone pass the no-changes check, so
+  // an otherwise no-op resubmit re-declares addresses_reviews.
+  it('an unmount during the broadcast still drops the draft the landed edit spent', async () => {
+    const { invalidatePaperCache } = await import('../../src/api.js');
+    invalidatePaperCache.mockResolvedValue({});
+    arrangeLoad([REV_ONE, REV_TWO]);
+
+    const comp = loadedComponent();
+    await comp.loadPaperData();
+    comp.authorName = 'Alice';
+    comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
+
+    let draftDuringBroadcast = null;
+    broadcastOps.mockImplementation(async () => {
+      draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+      comp.destroy();
+      return { tx_id: 'tx' };
+    });
+
+    await comp.handleSubmit();
+
+    expect(broadcastOps).toHaveBeenCalledTimes(1);
+    // Non-vacuous: the gate's flush wrote the ticked draft, so the clear past
+    // the broadcast has something to drop.
+    expect(JSON.parse(draftDuringBroadcast).addressedReviews).toEqual([addressed(REV_ONE)]);
+    expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+  });
+
+  // Twin of the unmount-during-broadcast case on the other branch arm, and it
+  // takes the other exit.
+  // The continuation and same-author legs are mutually exclusive, so a fixture
+  // resolving isContinuation false proves nothing about this one. A rejecting
+  // invalidation is the exit the clear beside step = 'success' cannot serve:
+  // the throw carries execution past it into the terminal catch with the
+  // continuation post already on chain.
+  it('the continuation post drops the draft when the cache invalidation rejects', async () => {
+    vi.useFakeTimers();
+    try {
+      const { invalidatePaperCache } = await import('../../src/api.js');
+      invalidatePaperCache.mockRejectedValue(new Error('invalidate unavailable'));
+      arrangeLoad([REV_ONE, REV_TWO], {
+        authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }],
+      });
+
+      const comp = loadedComponent();
+      mockStores.auth.username = 'bob';
+      await comp.loadPaperData();
+      comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
+      // Fixture-posture proof: this test exercises the continuation branch.
+      expect(comp.isContinuation).toBe(true);
+
+      // A keystroke landing while the post is in flight, arming the debounce
+      // past the gate's flush. $watch is mocked in this harness, so the
+      // scheduler stands in for the watcher it registers.
+      broadcastOps.mockImplementation(async () => {
+        comp.title = 'Retitled while the continuation was in flight';
+        comp._scheduleDraftSave();
+        return { tx_id: 'tx' };
+      });
+
+      await comp.handleSubmit();
+
+      expect(broadcastOps).toHaveBeenCalledTimes(1);
+      expect(comp.step).toBe('error');
+      expect(comp._draftTimer).toBe(null);
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
 
       vi.advanceTimersByTime(2000);
 
