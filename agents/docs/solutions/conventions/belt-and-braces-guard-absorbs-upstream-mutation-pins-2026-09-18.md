@@ -1,7 +1,7 @@
 ---
 title: "A guard downstream of a rule absorbs that rule's mutants, so mutant-green can mean the net caught it rather than the rule being unpinnable"
 date: 2026-09-18
-last_updated: 2026-09-22
+last_updated: 2026-09-24
 category: conventions
 module: backend/tests/eslint
 problem_type: convention
@@ -78,7 +78,10 @@ by valid code." Only re-running the same mutant with the guard removed tells the
 
 **Prefer a pinned rule over an unpinnable net.** A guard no valid-code fixture can discriminate is a
 guard whose presence or absence no test can detect, and it buys that untestability at the cost of
-making the rules around it untestable too.
+making the rules around it untestable too. This holds for a net that exists only to catch the rule's
+failures. Where the second layer has a domain of its own, some inputs reach it and the rule does not,
+so it is discriminable after all and the probe's input is what has to move; see
+`discriminating-spec-must-select-an-exit-only-the-probed-layer-serves.md`.
 
 **A loud detector is not a net.** An assertion that reds when the reader disagrees with an
 independent oracle hands back no answer in the rule's place, so it cannot rescue a mutant: it turns
@@ -91,7 +94,8 @@ spells it is worth more than a guard that silences the same shape invisibly. The
 the limit knows what they are trading; the next author reading the guard sees only a green suite.
 
 **Widen the rule in the same change that removes the net.** Removing the guard without completing the
-rule it protected trades a masked pin for a real silent pass. The two moves belong together.
+rule it protected trades a masked pin for a real silent pass. The two moves belong together. Both
+presuppose removal is the remedy, which it is only when the net has no exclusive domain.
 
 ## Why This Matters
 
@@ -145,7 +149,10 @@ The shapes that should trigger a re-measurement:
   language being scanned.
 
 It does not apply to a guard catching a shape the rule was never responsible for, since there is no
-neighbouring pin to mask. The test is whether the guard and the rule can fail on the same input.
+neighbouring pin to mask. The test is whether the guard and the rule can fail on the same input. Read
+that test as covering every input the rule decides: a guard that rescues the rule on some inputs and
+not others is not this entry's case, because an input on which only the rule runs discriminates it
+without removing anything.
 
 ## Examples
 
@@ -227,3 +234,8 @@ the wrong reason and a fixture rescued by a net are both pins that measure nothi
 - `canary-reader-takes-typescript-facts-from-the-parser-not-a-hand-written-lexer.md` is where the operand list's incompleteness led: the
   interpolation close comes from TypeScript's parser, and a loud agreement check catches the damage a
   misjudged division does across a line end, without masking any pin.
+
+- `discriminating-spec-must-select-an-exit-only-the-probed-layer-serves.md` is the partial-overlap case this entry's remedy does not fit. There the second
+  layer covers exits the first does not, so it is not a net rescuing a rule but a defence with a
+  domain of its own: both stay, and the probe moves to an input only the upstream one serves. The
+  fork between the two entries is whether any input reaches the upstream layer alone.

@@ -1,7 +1,7 @@
 ---
 title: "A composite mutation probe proves the mechanism is load-bearing as a whole, not that each branch, operand, or short-circuiting arm is individually covered"
 date: 2026-09-06
-last_updated: 2026-09-23
+last_updated: 2026-09-24
 category: conventions
 module: frontend/tests/unit/eslint/enclosing-symbol.js + architect re-review intake
 problem_type: convention
@@ -39,7 +39,7 @@ The same module had already been held once for exactly this defect class: two br
 When a guard, hook, or canary is defended by a mutation probe, do not stop at "deleting the mechanism reddens some test." That only proves the composite depends on the mechanism as a whole; it says nothing about any individual condition, operand, or short-circuiting arm. Verify coverage per decision point instead:
 
 1. Enumerate every decision point in the code under test: every `if`, every operand of a boolean expression, every arm of a guard clause or short-circuiting `&&` / `||`.
-2. For each decision point, find (or write) the probe whose outcome flips when THAT operand alone is mutated, with every other operand held at whatever value the probe already gives it.
+2. For each decision point, find (or write) the probe whose outcome flips when THAT operand alone is mutated, with every other operand held at whatever value the probe already gives it. Holding everything else still assumes nothing else can produce the observable. When a second site in the same sequence can, the held value is what absorbs the mutant, and the probe's input has to move as well as the mutated operand (`discriminating-spec-must-select-an-exit-only-the-probed-layer-serves.md`).
 
    One caveat on "that operand alone", for the case where the operand was added by a past fix rather
    than written fresh. If that same fix also deleted a guard the addition made redundant, undoing only
@@ -104,3 +104,5 @@ Do not extend this to guards with a single decision point (nothing to discrimina
 - `behavior-change-coverage-gap-not-preemptive-hardening-2026-06-10.md` is the standing triage default this entry is scoped against.
 - The frontend resolver is a deliberate hand-port of `backend/tests/support/enclosing-symbol.ts`, ratified as dialect divergence rather than consolidated. A branch-coverage gap found in one dialect's shared logic is worth checking against the other.
 - `docblock-literal-comment-close-example-self-truncates-and-reopens-a-second-comment-2026-09-22.md` finds a second blind spot in the same module, one layer up: a green suite and a passing `node --check` do not surface a docblock whose own illustrative comment-close characters truncate it. Same pattern as the composite-probe gap here, a trusted check that is blind to the class, on the docblock prose rather than the probe coverage.
+
+- `discriminating-spec-must-select-an-exit-only-the-probed-layer-serves.md` bounds this entry's held-constant clause from the other side. Holding every other operand still is right when nothing else can produce the observable; when a second site in the same sequence can, that held value absorbs the mutant and the probe's input has to move too.

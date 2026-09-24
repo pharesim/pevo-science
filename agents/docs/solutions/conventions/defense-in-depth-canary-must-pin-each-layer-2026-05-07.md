@@ -1,6 +1,7 @@
 ---
 title: Defense-in-depth canaries must pin each layer — bypassing the upstream gate to test the downstream branch leaves the upstream invariant unprotected
 date: 2026-05-07
+last_updated: 2026-09-24
 category: conventions
 module: backend
 problem_type: convention
@@ -46,6 +47,8 @@ The failure is especially insidious because the canary suite *looks complete*: i
 ## Fix shape — the upstream-guard canary
 
 For every downstream canary that force-feeds past layer N, add a companion canary whose mock distinguishes "layer N present" from "layer N absent" and asserts the right outcome in each state.
+
+The discriminators below all vary a mock on whether the upstream layer is intact. Where the two layers are instead two points of one linear sequence, nothing is bypassed and no mock varies: the discriminator is the fixture's exit, chosen so that only the upstream point runs. See `discriminating-spec-must-select-an-exit-only-the-probed-layer-serves.md`, which also records a layer kept on a stated argument with no pin of its own, an open gap by this entry's rule.
 
 For a SQL guard, the discriminator inspects the live SQL string for the predicate (analogous to the existing `/'type'/.test(sql)` discriminator pattern for `validPevoPaperWhere`):
 

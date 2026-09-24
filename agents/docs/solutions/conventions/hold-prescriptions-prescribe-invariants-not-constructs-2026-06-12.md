@@ -1,6 +1,7 @@
 ---
 title: "Hold-block fix prescriptions prescribe invariants, not constructs — the prescribed construct is a hypothesis the implementer verifies"
 date: 2026-06-12
+last_updated: 2026-09-24
 category: conventions
 module: agent-coordination
 problem_type: convention
@@ -12,6 +13,7 @@ applies_when:
   - "Implementer deviates from the prescribed construct on semantic-equivalence grounds and documents the deviation with a site comment and signal-block note"
   - "Re-reviewer at round-N intake encounters a signal block flagging a deviation from the hold-block prescription and must decide whether to re-hold for prescription compliance or verify equivalence"
   - "A prescribed rewrite would eliminate NULL-preserving semantics (e.g. replacing a correlated scalar subquery with a JOIN that filters non-matching rows)"
+  - "A hold prescribes a TEST shape rather than an implementation construct (arrange this, assert that, model it on the existing spec named X) and the implementer must check the shape discriminates its own site before writing it"
 related_components:
   - database
   - documentation
@@ -133,3 +135,5 @@ In the incident, re-review dispatched two independent session-model reviewers (c
 - [`hold-item-completion-structural-vs-behavioral-2026-05-12.md`](hold-item-completion-structural-vs-behavioral-2026-05-12.md) — parallel epistemics at the other end of the cycle: that entry governs how implementers verify hold-item *closure*; this entry governs how architects *write* hold prescriptions. Together they bound the hold cycle's epistemic discipline.
 - [`architect-hold-block-risk-class-separation-2026-05-07.md`](architect-hold-block-risk-class-separation-2026-05-07.md) — same authoring moment, orthogonal axis: that entry governs how to *compose* hold blocks across risk classes; this entry governs the granularity of individual fix prescriptions.
 - [`acceptance-criteria-forward-looking-pins-not-pre-post-differentials-2026-06-06.md`](acceptance-criteria-forward-looking-pins-not-pre-post-differentials-2026-06-06.md) — the same "specify invariants, not artifacts" principle applied to task acceptance criteria; this entry is its hold-prescription analog.
+
+- [`discriminating-spec-must-select-an-exit-only-the-probed-layer-serves.md`](discriminating-spec-must-select-an-exit-only-the-probed-layer-serves.md) — this entry applied to a prescribed TEST shape rather than a SQL construct: the hold named a variant of an existing spec, the implementer measured that the shape could not discriminate its own site, deviated, and raised it in the signal block.
