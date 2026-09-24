@@ -453,3 +453,147 @@ A sibling UI task is editing `pages-edit.test.js` in the shared checkout right
 now (load-path mount coverage); build on whatever it lands rather than
 reverting it. Do not cite this hold, its item numbers, or the task slug in code
 or test comments; anchor on the symbols named above.
+
+## UI re-review signal (2026-09-24, commit dbd18dc4)
+
+`dbd18dc4` self-verified as an ancestor of `main` (`git merge-base
+--is-ancestor`). No worktree fan-out; single-session inline work. The sibling UI
+task the hold named (edit-spec load-path mount coverage) had already landed at
+`48e6e320`, and this commit builds on it rather than reverting it.
+
+### Item 1 — the clear now runs where the broadcast lands
+
+Both branch arms drop the draft immediately after the
+`FRESH_AUTH_REDIRECT_PENDING` check, before `invalidatePaperCache` and
+independent of `_mounted`, so neither the unmount exit nor the rejecting
+invalidation can end `handleSubmit` with the edit on chain and the draft still
+in storage.
+
+Making the clear `_mounted`-independent needed one reordering the prescription
+implies but does not spell out: `if (!this._mounted) return;` sat *above* the
+`FRESH_AUTH_REDIRECT_PENDING` check, so a clear placed after that check would
+still have been behind the guard. The guard moved inside the REDIRECT_PENDING
+block and is re-taken after the clear. The redirect check therefore still comes
+first, which is what keeps a pending redirect's draft: on that path the return
+is unchanged, and the only difference for an unmounted component is that
+`step = 'idle'` is skipped exactly as it was before.
+
+`_clearDraft` takes the key as an argument and `handleSubmit` captures it beside
+the existing `isContinuation` / `ownPost` captures, before the first await.
+Deviation from the prescription, small and deliberate: the parameter is required
+rather than defaulted to `this.draftKey`. All four call sites are in
+`handleSubmit` and all four pass the captured key, so a default would be dead
+from the moment it was written, and a reader who saw one would reasonably think
+some caller relied on the getter.
+
+The clear beside `step = 'success'` stays in both arms, as the hold allows. It
+is a genuine no-op on every path the specs reach (probe m05 below), and it is
+kept only for the interactive window the `invalidatePaperCache` await opens,
+which is the same class the hold dismissed at triage on the grounds that
+`destroy()` cancels debounced writers. No try/catch was added around
+`invalidatePaperCache`.
+
+### Specs
+
+Both new specs were written and observed failing before any change to
+`edit.js`: the native one on the surviving ticked draft
+(`'{"title":"Old Title",…addressedReviews":[{"author":"carol"…' to be null`),
+the continuation one on a live `Timeout` object where `_draftTimer` should be
+null.
+
+(a) `an unmount during the broadcast still drops the draft the landed edit spent`
+sits beside the existing cancel spec on the native-edit arm, calls
+`comp.destroy()` inside the `broadcastOps` mock before it resolves `{ tx_id }`,
+and asserts the draft key is null afterwards. It reads the stored draft from
+inside that mock first, so the assertion is non-vacuous: the gate's flush really
+had written a draft carrying the tick.
+
+(b) `the continuation post drops the draft when the cache invalidation rejects`
+is the continuation-arm twin, with `mockStores.auth.username` set to a co-author
+so `isContinuation` is true (asserted in the spec as a fixture-posture proof).
+Deviation, raised rather than buried: the hold describes (b) as a plain
+continuation variant of the existing cancel spec, but that shape does not
+discriminate its own site. With the fix in place the clear beside
+`step = 'success'` is still reached on a fulfilled invalidation, so a spec that
+only arms the debounce and reaches success passes with or without the new
+continuation clear. (b) therefore takes the rejecting-invalidation exit the
+hold's own evidence names, which the success-side clear cannot serve. It arms
+the debounce inside `broadcastOps` as prescribed and asserts `_draftTimer` is
+null, the draft key is absent, and the draft is still absent two seconds later.
+
+`arrangeLoad` grew one optional `paperExtra` argument so (b) can seat a real
+co-author list; every existing caller is unchanged.
+
+### Verification
+
+- `pages-edit.test.js`: 91 passed, 0 failed, exit 0, no Errors line (89 before).
+  Full frontend unit suite: 86 files / 1937 tests passed, exit 0.
+  `npm run build` clean (standing chunk-size and dhive direct-`eval` warnings
+  only). `git status` carried only this commit's two files.
+- Mutation probes, fifteen of them, one throwaway scratchpad copy per mutant
+  built by `git archive dbd18dc4`; the repo checkout was never mutated and
+  `git status` was clean before and after. The base copy was confirmed at
+  91/91 exit 0 before any mutant ran. Both prior rounds' tables were re-run in
+  full, not just the new sites.
+
+  | reverted site | tests that die |
+  |---|---|
+  | the native-edit early clear, true pre-fix shape (guard hoisted back above the redirect check) | the unmount spec, alone |
+  | the continuation early clear, true pre-fix shape | the rejecting-invalidation spec, alone |
+  | both early clears at once | both new specs; the existing cancel spec survives |
+  | the `clearTimeout` line inside `_clearDraft` | the existing cancel spec, plus the rejecting-invalidation spec |
+  | `localStorage.removeItem(key)` inside `_clearDraft` | four: both new specs, the existing cancel spec, the post-success-clear-of-ticks spec |
+  | the enrichment arm of the load guard, with the `fulfilled` wrapper restored | the rejected-enrichment spec |
+  | `$watch('newCoAuthors', ...)` | the watcher-enumeration spec |
+  | `addressedReviews` in the `_writeDraft` object | the debounced-save and tick-change specs, plus the unmount spec |
+  | `$watch('addressedReviews', ...)` | the tick-change spec, plus the watcher-enumeration spec |
+  | the restore line in `_restoreDraft` | restore, drop-stale, resubmit, post-success-clear-of-ticks |
+  | the `reviews` intersection in `_reconcileAddressedReviews` | drop-stale only |
+  | the `:checked` binding | the checkbox spec |
+  | the `isReviewAddressed` body | the checkbox spec |
+
+  Per-arm discrimination is the row that matters for this round: reverting one
+  branch's early clear kills that branch's spec and nothing else, in both
+  directions.
+
+  Three honest results from that run, none of them an unpinned assertion:
+
+  - Reverting `_clearDraft`'s key parameter back to the `this.draftKey` getter
+    kills nothing. The harness never changes `$store.router.params` mid-submit,
+    so the capture defends a real-browser navigation the unit suite cannot
+    stage. Recorded rather than papered over; a spec that mutated the router
+    store inside the `broadcastOps` mock would pin it, and it is available on
+    request.
+  - Reverting the clear beside `step = 'success'` to a bare `removeItem` (its
+    timer cancel dropped) also kills nothing, which is the measured form of the
+    hold's own "idempotent no-op". Kept deliberately, per the hold.
+  - Reverting `addressedReviews` out of `_writeDraft` kills three specs, not the
+    two the earlier table lists. The extra death is the new unmount spec, whose
+    non-vacuity assertion reads `addressedReviews` back out of the flushed
+    draft. Benign over-kill, not a new coupling.
+
+  The two assertions inside the continuation spec are pinned by different
+  mutants: the `_draftTimer` one dies to the `clearTimeout` revert and to the
+  continuation early-clear revert, and the draft-absence one dies to the
+  `removeItem` revert. Vitest stops at the first failing assertion, so no single
+  mutant exercises both.
+- E2E not re-run. The diff adds no markup: `git show dbd18dc4 -- frontend/src/pages/edit.js`
+  has zero added lines containing a tag, an Alpine directive or `type="submit"`,
+  so the dominant pre-existing strict-mode failure class is untouched, and
+  neither new runtime branch (unmount mid-broadcast, rejecting invalidation) is
+  reachable in that environment. Running the dance would also swap the shared
+  stack into test mode under whatever sibling agent is using it. Say the word
+  and it gets run.
+- No new i18n keys, so no `STUBS.md` entry.
+- Simplify pass (three lenses: reuse, quality, efficiency). All three clean, no
+  findings. The reuse lens confirmed the `_cancelDraftTimer()` extraction was
+  correctly not re-raised, `_flushDraftSave()` being the reason it stays
+  skipped, and that `arrangeLoad`'s new merge parameter follows the
+  `storedDraft(extra)` idiom already in the file. The quality lens was asked
+  specifically to adjudicate the guard reordering and traced all four
+  arm-by-exit combinations: the two redirect-pending cases are unchanged
+  (mounted and unmounted both end the same way), and the only behavior
+  differences are the two this commit targets. The efficiency lens noted the
+  second `_clearDraft` does not even reach `clearTimeout`, since the first
+  nulled `_draftTimer`, so the kept backstop costs one falsy property check and
+  a `removeItem` on an absent key.
