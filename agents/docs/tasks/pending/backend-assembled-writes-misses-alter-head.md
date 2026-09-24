@@ -701,3 +701,155 @@ control. None is triaged here.
    past the `;` is a silent pass. Measured, with the same-line control reding the ALTER arm.
    Related to `backend-head-line-read-silences-fail-closed-backstop`, which covers the
    fail-closed half of the same mechanism.
+
+## Architect re-review (2026-09-24, round 3) — HELD PENDING FIXES:
+
+Reviewed `5d44f839..e49f25f2` (the six round-3 commits, all ancestors of `main`) via
+`/ce-code-review` across four lenses (correctness, project-standards, adversarial, learnings)
+plus one validator batch that re-measured all three surviving findings in its own
+`git archive e49f25f2` copy. The cross-model pass did NOT run (only a same-family route is
+installed on this host), so the adversarial lens ran in-process. No reviewer touched a
+database or the shared checkout. Every line number below is a line number in the file AT
+`e49f25f2`. A sibling commit (`cffe3a4a`, the catalog-pointer task) landed nine header lines
+while this review ran, so at `f65e38b7` the same text sits nine lines lower.
+
+**What held up, so it is not redone.** All three round-2 items landed and were re-derived by
+execution rather than taken from the signal. Item 1: lines 259-271 scope the ALTER arm and
+the every-statement-readable arm (the "Nor where its read reaches no terminator" sentence
+included) to the accounts-head assembled-clause case, name `ALTER TABLE ${table}`, the
+`EXECUTE format` example and the schema-dynamic spelling as no head to either, and 283-290
+give the assignment-token walk its three buckets. Item 2: 312-318 restrict the second silent
+layout to a BACKTICK head literal and say what a `'` or `"` literal does there. Item 3:
+`SqlStatement.quoteAt` (2218-2221), `SQL_INTERPOLATION_RE` (974-977) and the join fixture's
+comment (4845-4847) are each bound to what `enclosingQuote` found. Eight architect plants,
+all matching the signal: `ALTER TABLE ${table}` and `${schema}.accounts` are silent (29/29,
+exit 0) against `accounts` and `public.accounts` controls that red the ALTER arm;
+`accounts${suffix}` reds the ALTER arm AND the assembled arm; the closed-above layout with a
+`'` head literal reds the readable arm, the backtick twin is silent, and the same-line
+backtick control reds `[concatenation]`. AC2, re-run by the architect from a
+`git archive e49f25f2` copy: canary 29/29, all nine `tests/eslint` files 139/139,
+`npm run typecheck` and `npx eslint` on the file exit 0, no `Errors` line;
+`ALLOWED_COLUMN_ALTERATIONS` is byte-identical (`016: 3`). The pre-commit anchor gate is
+zero-hit over the 121 added lines with a firing control. The TypeScript scanner counts 54
+block comments (45 JSDoc) at both ends and zero parse diagnostics; the signal's 290/290 is a
+different count, and the invariant it stands for holds either way. Project standards is
+clean: every `{@link}` target exists, and `the carve-out above` / `the ALTER paragraph
+above` satisfy the convention's "restate it" clause. The adversarial lens re-enumerated the
+corpus at `e49f25f2`: 23 `accounts` heads in `src`, each with `enclosingQuote` finding its
+own literal's quote and the read closing there; no `ALTER` under `backend/src`; 15 migration
+heads, all `quoteAt` -1; the pattern boundaries hold for `${schema}.accounts`,
+`%I.accounts`, `${prefix}accounts` and `accounts_2026` (no head) against `public.accounts`,
+`accounts${suffix}` and `accounts%I` (the ALTER head). Every catcher the new prose promises
+and the lenses probed does fire, except the one in item 1.
+
+The hold is prose only, three items, and all three are one defect class: a consequent
+written without a condition the mechanism requires, which is the class the round-3 signal
+itself named. The user's round-1 decision stands: no code change, no new fixture. Land the
+three as one commit, item 1 first, and quote each item's plant and control in the signal.
+
+### Item 1 (required). The accounts-head assembled-clause sentence promises the fail-closed arm unconditionally.
+
+Lines 259-262: an ALTER whose head spells `accounts` but whose column clause is assembled in
+a way the assembled scan does not recognise "reds nowhere unless the statement still spells
+the column: an `updated_at =` reds under the fail-closed arm". Measured three times
+(correctness, adversarial, the validator), two plant shapes: an `UPDATE sessions` template
+opened on an earlier line with no `;` after its closing backtick, then
+`const clause = 'ADD CONSTRAINT stamped CHECK (updated_at = created_at)';` joined to
+`'ALTER TABLE accounts '` by `.concat` (the correctness plant joins a USING retype by an
+opened-above `+` instead), planted in `src`, leaves the canary 29/29 green, exit 0, with
+`columnAssignments` bucketing the clause under `sessions`. The same file with a `;` after the
+sessions backtick, or with the sessions block removed, reds
+`every updated_at assignment resolves to the table it writes`, exit 1. Cause: the walk from
+the assignment token stops at the NEAREST reaching head, and an ALTER head is no
+`HEAD_PATTERNS` head, so the ALTER's own `accounts` spelling never enters `targetTable`'s
+answer; where the reaching head names another table, nothing reds at all. The error is in
+the unsafe direction. The consequent's words existed at base, but this range rewrote the
+sentence's subject and, at 283-290 of the same entry, added the correctly conditioned
+three-bucket form for the dynamic-head case, so the sentence now contradicts its own
+paragraph. The mechanism is pre-existing and belongs to
+`backend-head-line-read-silences-fail-closed-backstop`; the unconditioned promise is this
+range's.
+
+Fix: state the accounts-head case's `updated_at =` outcome as the same three buckets the
+dynamic-head paragraph already gives (the fail-closed arm where no readable head reaches the
+fragment, the writer arms where an `accounts` head does, nothing where a head naming another
+table does), or defer to that `columnAssignments` paragraph by name. The bare-`updated_at`
+ALTER-arm clause beside it is correct and stays. Optional companion, pre-existing from round
+2 and NOT required: the `assembledWrites` docblock (2534-2536) carries the same flat
+fail-closed consequent for a SET-list fragment; fix it in the same pass or leave it, and say
+which. Re-measure the `.concat` plant and its `;` control and quote both.
+
+### Item 2 (required). The DO-body `$$` sentence omits the same-line-backtick condition.
+
+Lines 2224-2227, the `SqlStatement.quoteAt` docblock: "A `src` head sharing its line with
+the `$$` that opens the body is not [quote-free]: the columns ahead of that opener are at
+depth zero, so the template literal holding the body is read there and its backtick is
+returned instead." True only where the template's own opening backtick is on the head's
+line. `enclosingQuote` reads the head's line from column 0 with nothing open, so with the
+template opened on the line above (`await q(\`` then `DO $$ BEGIN UPDATE accounts ...` on
+the next line, the `$$` opening ON that line) it returns null, `quoteAt` is -1, and the read
+reaches its `;`. Measured three times: the opened-above plant is 29/29, exit 0; the same
+statement with the template opened on the head's line reds
+`every accounts statement can be read whole`, `quoteAt` 10, `stopped` true. The same list's
+next item ("a `src` head inside a template opened on an earlier line ... quote-free") gives
+the opposite answer for a head that is both. The error is in the loud direction; the
+sentence was added by `e49f25f2`.
+
+Fix: condition the sentence on the template literal's opening backtick sharing the head's
+line ahead of the opener, and say that the opened-above layout stays quote-free for the same
+reason the migration twin does (no literal ahead of the opener on that line). Re-measure the
+two layouts and quote `enclosingQuote` / `quoteAt` for each.
+
+### Item 3 (required). "Either way the statement's text is truncated" holds for the first quieting shape only.
+
+Lines 328-330 and 337-340. After naming the two shapes that make a closed-above `'` or `"`
+head's read close early rather than stop (a backtick inside the head literal; one more
+unpaired quote of the literal's own kind later on the line), the paragraph says "Either way
+the statement's text is truncated where the read closed, so a write past that point is
+hidden from the arms walked from THAT head", and counts an INSERT column list among what is
+left quiet. For the second shape the read passes the head literal's closing quote as a value
+opener, closes the value at the later apostrophe and ends at that template's backtick, so
+its text holds the WHOLE head literal and what follows: nothing is truncated and nothing in
+the statement is hidden. Measured (adversarial, the validator):
+`x\`; await q('INSERT INTO accounts (email, updated_at) VALUES ($1, now())'); const m = \`it's\`;`
+after a template opened above reds `the accounts writers found table-first are the same two`,
+exit 1, with `statementAt`'s text ending at column 95 against the literal's close at 76; the
+`verify_token` control is 29/29. The first shape does truncate: an INSERT list past an inner
+backtick is silent in every arm. Loud direction, wording only; the paragraph is new text.
+
+Fix: scope the truncation sentence and the "What is left quiet" set to the first shape, and
+say what the second does instead (the read over-runs the literal to the carried backtick and
+lends the head's read whatever sits between). Re-measure both shapes with the INSERT list
+and quote each.
+
+### Dismissed by the user in triage (2026-09-24), recorded so it is not re-raised
+
+All anchor-50 or red-bar-either-way, and none changes an outcome:
+
+- 322: "a `+` ending the carried template's text is read as a join" holds only where that
+  `+` is on the head's line; the bound is stated at 354-357, not in this sentence.
+- 324: "go quiet again": the after-half `+` past an early close is still read as
+  `[concatenation]`, so only the readable arm goes quiet.
+- 330-333: a second `accounts` head past the truncation carries the write to the
+  column-first arm only where its own read reaches the assignment; where it is stopped, the
+  fail-closed arm reds instead.
+- 4854: the past-the-cap enumeration omits a nearer reaching head naming another table,
+  which buckets the write silently; a contrived layout.
+- 288: a reaching COPY head is an `ACCOUNTS_STATEMENT_RE` head but no `HEAD_PATTERNS` head,
+  so it reds table-first while the column-first walk climbs past it.
+- 2233-2235: the quoteAt list item "a `src` head inside a template opened on an earlier
+  line" is -1 only while no `'` or `"` is left open ahead of the head on that line; the
+  paragraph's opening sentence carries that condition.
+- 292 and 337: `the carve-out above` and `the ALTER paragraph above` carry no ALL-CAPS
+  identifier but restate what they point at, which the convention accepts.
+
+### Learnings
+
+No new entry. This round is the third recurrence, on the same file, of
+`agents/docs/solutions/conventions/a-readers-bound-restated-at-n-sites-reads-as-sufficient-at-each.md`
+(its guidance to write a bound as a necessary condition is items 1 and 2 exactly). The
+architect folds the recurrence into that entry via `/ce-compound-refresh` at archive.
+
+### The four `[TODO Architect]` gaps in the round-3 signal
+
+Pending architect triage with the user; the outcome is appended below this block.
