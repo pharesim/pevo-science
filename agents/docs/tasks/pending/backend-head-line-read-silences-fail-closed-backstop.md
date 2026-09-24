@@ -73,3 +73,26 @@ from not being.
 The `+` join's own silence under the same layout is recorded in the dynamic-SQL KNOWN
 LIMITS entry by the user's decision and is not reopened here. The routine arms' tree is
 `backend-routine-arms-read-migrations-only`.
+
+## Architect note (2026-09-24): two more cases of the same read, added to this task's scope
+
+Routed here from the round-3 review of `backend-assembled-writes-misses-alter-head`, by
+user triage. Both were measured by the backend's round-3 whole-file audit with a control,
+and both belong to the mechanism this task already covers.
+
+1. The quoted-identifier bullet's taxonomy has a third case. `ALTER TABLE "accounts" DROP
+   COLUMN updated_at` carries no assignment token, so the fail-closed backstop has nothing
+   to start from, and the quoted head matches no `READ_FROM_HEADS` pattern, so the ALTER
+   arm does not see it either: 29/29 green against an unquoted control that reds the ALTER
+   arm. The bullet reasons about quoted identifiers for the writer scans only. Whichever
+   way Scope item 1 goes, the bullet must name the ALTER clause as the case with no
+   assignment-token backstop at all, or the read must be widened to cover it; say which.
+2. The `unreadableStatements` docblock gives truncation as the only way a read hides an
+   ALTER from the one arm that sees it. A bare `;` inside a template whose head
+   `enclosingQuote` finds no quote for (the opened-above layout this task is about) ends
+   the read early with `closedAt` set, so that arm stays silent, and an ALTER clause past
+   the `;` in the same template is a silent pass: measured, with the same-line control
+   reding the ALTER arm. This is the ALTER-arm half of the read this task covers for the
+   fail-closed arm. If Scope item 1 closes the silence (the quote-less read ends where the
+   template ends), check this arm by fixture as Scope item 3 already asks; if it names the
+   silence, the `unreadableStatements` docblock must name the early `;` beside truncation.

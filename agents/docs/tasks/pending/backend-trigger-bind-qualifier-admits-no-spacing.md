@@ -124,3 +124,25 @@ an exemption naming `<unnamed>` does and does not cover), or make the code true 
 sentence (refuse an exemption key whose name is `UNNAMED_ROUTINE`), and say which you
 chose and why. If you change the code, pin it with a fixture that reds when the refusal
 is removed.
+
+## Architect note (2026-09-24): the quoted bind target is in scope, and the header's guarantee is falsified
+
+Routed here from the round-3 review of `backend-assembled-writes-misses-alter-head`, by
+user triage, because it is the same pattern and the same exemption path. The "Deferred"
+section above left a quoted bind target as an architect call; this is that call, and the
+answer is: cover it in this task.
+
+The backend's round-3 whole-file audit measured it: `BOUND_TO_ACCOUNTS_RE` spells the bare
+literal, so a trigger bound `ON "accounts"` leaves `boundToAccounts` false and falls through
+to the exemptible arm, and with its key added to `ROUTINES_THAT_CANNOT_REACH_ACCOUNTS` the
+whole file goes 29/29 green. That falsifies two sentences, not one: the header's "A trigger
+or rule bound to `accounts` is refused outright, with no exemption" and the exemption list's
+"cannot be listed here at all".
+
+Either of the two options the Deferred section names is acceptable. If the target is
+widened to read the quoted spelling (the way `ACCOUNTS_INSERT_COLUMNS_RE` tolerates a quoted
+alias), pin it with a fixture that reds when the tolerance is removed, and the two sentences
+stand. If the quoted bind is named as a limit instead, both sentences must carry the bound
+in place: "refused outright" and "cannot be listed here at all" are true of the bare and
+schema-qualified spellings only. Say which you chose and why. Either way, AC1's mutation
+demonstration and the spaced-dot fixture are unchanged by this note.

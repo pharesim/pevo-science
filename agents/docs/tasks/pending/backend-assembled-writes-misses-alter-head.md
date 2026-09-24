@@ -850,6 +850,19 @@ No new entry. This round is the third recurrence, on the same file, of
 (its guidance to write a bound as a necessary condition is items 1 and 2 exactly). The
 architect folds the recurrence into that entry via `/ce-compound-refresh` at archive.
 
-### The four `[TODO Architect]` gaps in the round-3 signal
+### The four `[TODO Architect]` gaps in the round-3 signal, triaged by the user (2026-09-24). No action on this task.
 
-Pending architect triage with the user; the outcome is appended below this block.
+1. `BOUND_TO_ACCOUNTS_RE` and a quoted bind target `ON "accounts"`: APPENDED to
+   `backend-trigger-bind-qualifier-admits-no-spacing` as an architect note. Same pattern,
+   same exemption path; that task's own "Deferred" section had left the quoted target as an
+   architect call, and this is that call.
+2. A dynamically named INSERT naming the column: DISMISSED on the user's canary bar. Neither
+   tree spells a dynamically named INSERT, so the pre-existing "caught in either spelling" is
+   wrong only for a shape the corpus does not write; the class of the `NOT_A_TABLE` DDL
+   words dismissed in round 1.
+3. The quoted-identifier `ALTER TABLE "accounts"` as a third case of that bullet: APPENDED
+   to `backend-head-line-read-silences-fail-closed-backstop` as an architect note, since
+   that task already owns the bullet's falsified sentence.
+4. The `unreadableStatements` docblock's truncation-only account of a hidden ALTER: APPENDED
+   to `backend-head-line-read-silences-fail-closed-backstop` as an architect note; it is the
+   ALTER-arm half of the mechanism that task covers for the fail-closed arm.
