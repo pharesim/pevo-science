@@ -245,3 +245,52 @@ not held, for your judgement or a later task: the mixed-ref state (exactly one
 ref present) is uncovered, so coupling the two guards would survive; the retry
 test's first load succeeds while the production Retry exists only after a
 failed load; `createEditor`'s options object is unasserted on the load path.
+
+## UI re-review signal (2026-09-28, commit 42763cc7)
+
+Both hold items landed in one commit against
+`frontend/tests/unit/pages-edit.test.js` only, 14 insertions and 0 deletions.
+Nothing under `frontend/src/` changed; the harness `$nextTick` mock is
+untouched and still synchronous. Every probe ran in an isolated scratchpad
+copy (mutants applied per-copy, one copy per probe); the shared checkout was
+never mutated and never used for a probe run.
+
+Baseline drift note: the pre-change spec runs at 91 passed, not the hold's
+89, because sibling commit `dbd18dc4` (draft-spend coverage) added two cases
+to this spec after the review. The drift is outside the mount describes and
+both mutants still SURVIVED at 91 passed / exit 0, so the hold's vacuity
+claims held on the current tree.
+
+**Item 1** - `builds one editor per ref present when the load runs` now
+asserts `expect(comp.$nextTick).toHaveBeenCalledTimes(1)` directly after the
+`_editorsInitialized` assertion, with a comment anchored on `$nextTick` /
+`loadPaperData` stating the exact-count rationale.
+
+- Before: unwrap mutant (replace the `$nextTick` block in `edit.js` with a
+  bare `this._mountEditors();`) SURVIVED, 91 passed, exit 0.
+- After: KILLED, 1 failed / 91 passed, exit 1, failing
+  `editPage handleSubmit sanitization > a successful load mounts the editors
+  > builds one editor per ref present when the load runs` with
+  `expected "spy" to be called 1 times, but got 0 times`.
+
+**Item 2** - new case `declares the x-ref names _mountEditors reads in the
+template`, inside the same describe, asserts `editPageTemplate` contains
+both `x-ref="abstractEditor"` and `x-ref="bodyEditor"`.
+
+- Before: renaming `x-ref="abstractEditor"` in `edit.js` SURVIVED, 91
+  passed, exit 0.
+- After: KILLED, 1 failed / 91 passed, exit 1, failing the new case with
+  `expected '...' to contain 'x-ref="abstractEditor"'`.
+
+Spec after the change: 92 passed (91 plus the one new case; item 1 adds an
+assertion to an existing case), no Errors line, exit 0. Full frontend unit
+suite in a two-level isolated copy (frontend plus
+`backend/src/lib/authMessage.ts`, both node_modules symlinked): 86 files,
+1938 passed, no Errors line, exit 0. The count reconciles exactly: 1935 at
+the reviewed SHA, +2 from `dbd18dc4`, +1 here. The session-window flake did
+not occur.
+
+Simplify pass: three reviewers (reuse, quality, efficiency) over the diff,
+zero findings. The quality lens independently re-verified that `edit.js`
+holds exactly one `this.$nextTick(` call site, the invariant item 1's exact
+count rests on.
