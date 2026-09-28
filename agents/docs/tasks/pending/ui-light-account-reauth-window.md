@@ -1527,3 +1527,108 @@ today. Its three call sites are all on the password factor, where this dialog
 never appears, and the one ORCID e2e test covers the callback's return leg
 rather than a gate refusal. Worth remembering if an ORCID-factor e2e spec is
 ever added on a surface that holds a file.
+
+---
+
+## Architect re-review (2026-09-28, round 7) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on `9c194314` + `1f908602` + `69a645b3` + `15ba14ee`
+(frontend paths only, inspected at the pinned head), six reviewer personas plus a
+learnings pass and an independent validator batch over the surviving findings.
+`edit.js` and `pages-edit.test.js` have drifted on main since the reviewed head
+(sibling edit-page tasks); every item below was re-checked against main.
+
+**All five round-6 items are verified genuinely landed, and this is the second
+consecutive round where every per-site probe claim in the signal held under
+independent re-probing.** Correctness and adversarial each re-ran probe suites in
+scratchpad copies (baselines 262/262 green): the offer fires only on the
+`reauthRequired` key with a truthy predicate, explicit null and undefined both keep
+the toast, decline and refuse-while-open both end silent with no navigation, and the
+re-entry strips the predicate so no second offer can fire; the publish opts spread is
+now pinned by the override specs alone, as round 6 predicted; the per-branch
+pre-broadcast twins genuinely discriminate (each null-literal mutant kills only its
+own branch's specs); the no-changes check was not reordered; and the editor mock is a
+row-for-row mirror of the real mapper. Project-standards came back fully clean (the
+new copy is state-neutral and emdash-free across all 16 locales, the STUBS.md sweep is
+complete, no anchor rot on added lines), the vocabulary table remains the one place
+deciding which outcomes speak, and the account-state check passes: the diff changes
+only whether the client navigates, never what proof a request carries (§ 6.4 / § 6.5
+invariant #1 untouched).
+
+For the record, two signal claims are inexact but not false: the two edit null-literal
+kill sets are supersets of the named specs (each also kills a pre-existing spec), and
+publish's override pin is carried by pre-existing pre-broadcast specs rather than a
+new one. Neither weakens the verification.
+
+Five items, all small. Items 1 and 2 survived independent validation; items 3 to 5 are
+anchor-50 advisories the user elected to fold in at triage.
+
+### Item 1 — pin the publish-side load guard in `_writeDraft`
+
+Deleting `if (!this._initialLoadDone) return;` inside `_writeDraft` leaves every suite
+green (probe-verified independently by two lenses, validator-confirmed). The docblock
+names the regression it defends: a gate-fired flush before the restore would overwrite
+a real draft with an empty form, and publish's empty-form branch even removes the key.
+The edit side gained a pinning spec on main from the sibling mount-coverage task after
+the reviewed head; publish remains unpinned. The guard is defensive at this head
+(publish restores synchronously in init), so this is parity coverage for a named
+reordering regression, chosen over the default-dismiss at triage. Add one publish
+spec: seed a real draft in localStorage, leave `_initialLoadDone` false, invoke
+`_flushDraftSave()`, assert the stored draft is unchanged and the key still present.
+
+### Item 2 — the ordering describe's comment still says every gate refuses
+
+`pages-publish.test.js`'s block comment "once a file is held, every gate refuses a
+passwordless account non-destructively and says so" is now false: the entry and
+file-selection gates ask via the confirm dialog, and only the pre-broadcast gate
+refuses with the toast. The test directly below it is titled "is asked, and keeps the
+file on a decline". One-line reword distinguishing the asking gates from the
+pre-broadcast refusal.
+
+### Item 3 — gate the confirm's answer on `_mounted`
+
+`_confirmNavigationCost` returns the store's answer unconditionally, so a confirm
+resolving after the page unmounts would re-acquire with navigation allowed and send a
+dead page to ORCID. Return the answer gated on `this._mounted` (both pages) so a stale
+yes degrades to the silent refusal a decline produces. Spec per page: a confirm that
+resolves true after the component is destroyed calls no `startOrcid` and assigns no
+navigation.
+
+### Item 4 — re-flush on a truthy answer
+
+The flush runs at the top of `_windowReady`, before the confirm dialog opens, so
+keystrokes typed while the dialog is open live only in component state and a yes
+navigates without them, breaking the copy's promise that the text is saved. In
+`_confirmNavigationCost` (both pages), flush again when the answer is truthy, before
+returning it. Spec per page: text set on the component between gate entry and the
+confirm resolving is present in the draft read at the `startOrcid` boundary.
+
+### Item 5 — name the no-unasked-navigation invariant at both ends
+
+Two modules jointly guarantee the offer path cannot navigate without asking:
+`ensureSessionWindow`'s custody-light early-return is the only thing keeping the
+broadcast-confirm store's non-light auto-resolve(true) unreachable from the
+`onReauthRequired` re-entry, and neither site names the other (correctness and
+adversarial converged on this). Comment-only: at the custody check in
+`ensureSessionWindow` and at the non-light auto-resolve in the broadcast-confirm
+store, name the counterpart by exported symbol and state that the offer path relies on
+the custody check preceding any `reauthRequired` outcome. Anchor on symbols per the
+comment conventions; no positional forms.
+
+### Dismissed / validator-rejected / residuals, recorded
+
+The confirm-helper duplication across the two pages was rejected by the validator as a
+documented-deliberate preference (the sharing is through the i18n keys; the pages hold
+no common component); consolidation stays optional. Also recorded, not held: trimming
+the near-identical rationale paragraphs across four docblocks; the publish
+remove-on-empty branch's missing spec; the assumed-password fallback opening a
+password prompt after an offer that promised ORCID (design note; shares ground with
+the blocked composer-surfaces task's acquisition seam); confirm-request specs pinning
+only the title key; refuse-while-open silence verified by composition rather than a
+store-through spec; the unconditional flush also running at the pre-broadcast gate,
+where an unmount during uploads could write a stale draft (narrow); and a harmless
+localStorage leak across edit ordering specs.
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
+re-review signal. Do not edit this hold block or annotate items as fixed; the commit
+diff is the evidence and the architect updates the block at re-review.
