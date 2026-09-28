@@ -597,3 +597,71 @@ co-author list; every existing caller is unchanged.
   second `_clearDraft` does not even reach `clearTimeout`, since the first
   nulled `_draftTimer`, so the kept backstop costs one falsy property check and
   a `removeItem` on an absent key.
+
+## Architect re-review (2026-09-28) — HELD PENDING FIXES:
+
+`/ce-code-review` on `dbd18dc4` (seven lenses; standards clean; two validated
+P2s). The round-2 item is FIXED: both arms' early clears were re-probed
+independently (per-arm reverts kill exactly their own spec, re-run in a
+scratchpad copy off the reviewed commit), the captured key and the guard
+relocation were verified against the pre-image, and the rejecting-invalidation
+exit was confirmed as the only shape that can discriminate the continuation
+arm's early clear. Two items, then move back to `review/`.
+
+1. **A keystroke during a rejecting invalidation resurrects the spent draft**
+   (`edit.js`, the terminal catch of `handleSubmit`). The early clear runs
+   before `await invalidatePaperCache(...)`, and the form stays interactive
+   across that await, which is what the comment beside the kept success-side
+   clear says. A watched-field change inside the window re-arms the 2s
+   debounce; a rejecting invalidation then skips the success-side clear into
+   the terminal catch, which cancels nothing, and `_writeDraft` re-persists
+   the draft, ticks included, behind the landed post. The next visit restores
+   ticks that alone pass the no-changes check: the resurrection class this
+   task closes, through the one exit still open. Rejections correlate with
+   slow or timing-out networks, which is when the window is widest. Three
+   lenses converged on this independently.
+   **Fix:** declare a `landed` local beside the `draftKey` capture in
+   `handleSubmit`, set it true immediately after each arm's early
+   `_clearDraft(draftKey)`, and in the terminal catch, before the
+   `step = 'error'` write, run `if (landed) this._clearDraft(draftKey);`.
+   That cancels a timer armed during the invalidation await and re-removes
+   the item. Do NOT add a try/catch around `invalidatePaperCache`; that
+   decision stays reserved with the architect, and this fix does not need it.
+   A user who keeps typing at `step = 'error'` can still re-arm the watchers
+   afterwards; that wider closure belongs to the same reserved decision and
+   is out of scope here.
+   **Spec:** arm the debounce inside a rejecting `invalidatePaperCache` mock
+   (NOT the broadcast mock, whose timer the early clear cancels), reach the
+   terminal catch, assert `_draftTimer` is null and the draft key absent, and
+   still absent after advancing past the debounce. Probe by reverting the
+   catch-side clear alone: the existing specs must survive that revert while
+   the new one dies.
+
+2. **The redirect-pending keep-draft invariant is unpinned**
+   (`pages-edit.test.js`). The light-custody specs that reach the
+   redirect-pending branch assert `step === 'idle'` but none asserts the
+   draft SURVIVES, and the unmounted variant is uncovered. Hoisting the early
+   clear above the `FRESH_AUTH_REDIRECT_PENDING` check (destroying the draft
+   the ORCID round-trip exists to protect) or dropping the relocated
+   `_mounted` guard therefore leaves the whole file green. Confirmed by an
+   independent validation pass.
+   **Fix:** one spec per arm, or one parameterised over both: resolve the
+   post-gate broadcast to `FRESH_AUTH_REDIRECT_PENDING`, assert `step`
+   becomes `'idle'` while the stored draft is retained; add the unmounted
+   variant asserting the early return leaves both `step` and the draft
+   untouched. Probe by hoisting the early clear above the pending check and,
+   separately, by reverting the relocated guard; each mutant must die to the
+   new specs.
+
+Dismissed at triage, no action: the quick-return/two-tab restore outracing
+the in-flight clear (the multi-tab class dismissed at round 1), the
+keystroke-after-error watcher re-arm (reserved invalidation-UX decision), the
+arm-by-exit cross product (symmetric code), the unpinned captured-key
+deviation (accepted gap, recorded in the discriminating-spec solutions
+entry), and the plain-success-path clear-before-invalidation timing.
+
+Verification note: `frontend/vitest.config.js` sets `restoreMocks: true`, so
+per-spec mock implementations do not leak between tests; no fixture change
+needed. At archive time, refresh the discriminating-spec solutions entry
+against the final code shape. Do not cite this hold, its item numbers, or the
+task slug in code or test comments; anchor on the symbols named above.
