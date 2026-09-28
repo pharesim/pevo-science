@@ -1111,6 +1111,13 @@ export function initEditPage() {
       // interleave with, and the draftKey getter reads the router params, which
       // by then name whatever the user navigated to.
       const draftKey = this.draftKey;
+      // True once either branch's broadcast is on chain and its post-broadcast
+      // _clearDraft has run. The terminal catch reads it: the cache
+      // invalidation is an await the form stays interactive across, so a
+      // watched change there re-arms the debounce after that clear, and a
+      // rejecting invalidation would otherwise leave the timer to write the
+      // spent draft back behind the landed post.
+      let landed = false;
 
       // Leave 'idle' synchronously, before the first await. `isSubmitting`
       // derives from `step`, and it is what disables the submit button — across
@@ -1339,6 +1346,7 @@ export function initEditPage() {
           // the flushed draft behind a landed post, and a restored tick alone
           // passes the no-changes check on the next visit.
           this._clearDraft(draftKey);
+          landed = true;
           if (!this._mounted) return;
 
           // Invalidate cache for the canonical paper
@@ -1427,6 +1435,7 @@ export function initEditPage() {
           // spent before the `_mounted` guard or the invalidation can end this
           // function without it.
           this._clearDraft(draftKey);
+          landed = true;
           if (!this._mounted) return;
 
           // Cache invalidation keys off the canonical root, not the
@@ -1446,6 +1455,13 @@ export function initEditPage() {
           }, 1500);
         }
       } catch (err) {
+        // A rejecting cache invalidation lands here with the post already on
+        // chain and its draft already spent: re-clear, so a debounce a
+        // keystroke armed across that await cannot write the spent draft
+        // back (see _clearDraft). Ahead of the `_mounted` guard for the same
+        // reason the post-broadcast clears are: the draft outlives the
+        // component. Pre-broadcast throws keep their draft — nothing landed.
+        if (landed) this._clearDraft(draftKey);
         if (!this._mounted) return;
         this.step = 'error';
         // Sanitization pattern (see executeUpgrade() in settings.js).

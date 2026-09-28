@@ -2079,6 +2079,138 @@ describe('editPage re-auth window ordering', () => {
     );
   });
 
+  // A broadcast leg that resolves to the redirect-pending sentinel has landed
+  // nothing, so the draft the entry gate flushed is what survives the
+  // round-trip or the refusal — the draft-keep half of the invariant whose
+  // step-goes-idle half the remintable-401 specs above pin. The
+  // post-broadcast clear sits below the pending check precisely so this path
+  // cannot reach it, and the four cases here are what hold it there: one per
+  // branch arm, mounted and unmounted.
+  it('same-author posture: the redirect-pending broadcast keeps the flushed draft', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify({
+      token: 'live-window',
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      absoluteExpiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+      idlePeriodMs: 900_000,
+    }));
+    broadcastOps.mockRejectedValueOnce(Object.assign(new Error('FRESH_AUTH_REQUIRED'), {
+      status: 401, code: 'FRESH_AUTH_REQUIRED', details: { reason: 'expired' },
+    }));
+    // A draft left behind by an earlier case must not stand in for this
+    // spec's own entry-gate flush.
+    localStorage.removeItem('pevo-draft-edit-alice-p1');
+
+    const comp = unchangedLightComponent();
+    comp._initialLoadDone = true;
+    comp.title = 'Retitled Before The Refusal';
+    // Fixture-posture proof: this test exercises the same-author branch.
+    expect(comp.isContinuation).toBe(false);
+
+    await comp.handleSubmit();
+
+    expect(comp.step).toBe('idle');
+    expect(JSON.parse(localStorage.getItem('pevo-draft-edit-alice-p1')))
+      .toMatchObject({ title: 'Retitled Before The Refusal' });
+    localStorage.removeItem('pevo-draft-edit-alice-p1');
+  });
+
+  it('continuation posture: the redirect-pending broadcast keeps the flushed draft', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify({
+      token: 'live-window',
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      absoluteExpiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+      idlePeriodMs: 900_000,
+    }));
+    broadcastOps.mockRejectedValueOnce(Object.assign(new Error('FRESH_AUTH_REQUIRED'), {
+      status: 401, code: 'FRESH_AUTH_REQUIRED', details: { reason: 'expired' },
+    }));
+    localStorage.removeItem('pevo-draft-edit-alice-p1');
+
+    const comp = unchangedLightComponent();
+    mockStores.auth.username = 'bob';
+    comp._initialLoadDone = true;
+    comp.authorName = 'Bob';
+    comp.title = 'Retitled Before The Refusal';
+    // Fixture-posture proof: this test exercises the continuation branch.
+    expect(comp.isContinuation).toBe(true);
+
+    await comp.handleSubmit();
+
+    expect(comp.step).toBe('idle');
+    expect(JSON.parse(localStorage.getItem('pevo-draft-edit-alice-p1')))
+      .toMatchObject({ title: 'Retitled Before The Refusal', authorName: 'Bob' });
+    localStorage.removeItem('pevo-draft-edit-alice-p1');
+  });
+
+  it('same-author posture: redirect-pending on an unmounted component leaves step and draft untouched', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify({
+      token: 'live-window',
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      absoluteExpiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+      idlePeriodMs: 900_000,
+    }));
+    localStorage.removeItem('pevo-draft-edit-alice-p1');
+
+    const comp = unchangedLightComponent();
+    comp._initialLoadDone = true;
+    comp.title = 'Retitled Before The Refusal';
+    expect(comp.isContinuation).toBe(false);
+
+    // The user leaves while the broadcast is in flight and the window turns
+    // out closed server-side: the pending-sentinel return must take the early
+    // return, not write step on the departed component or touch its draft.
+    broadcastOps.mockImplementationOnce(async () => {
+      comp.destroy();
+      throw Object.assign(new Error('FRESH_AUTH_REQUIRED'), {
+        status: 401, code: 'FRESH_AUTH_REQUIRED', details: { reason: 'expired' },
+      });
+    });
+
+    await comp.handleSubmit();
+
+    expect(broadcastOps).toHaveBeenCalledTimes(1);
+    expect(comp.step).toBe('broadcasting');
+    expect(JSON.parse(localStorage.getItem('pevo-draft-edit-alice-p1')))
+      .toMatchObject({ title: 'Retitled Before The Refusal' });
+    localStorage.removeItem('pevo-draft-edit-alice-p1');
+  });
+
+  it('continuation posture: redirect-pending on an unmounted component leaves step and draft untouched', async () => {
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify({
+      token: 'live-window',
+      expiresAt: new Date(Date.now() + 900_000).toISOString(),
+      absoluteExpiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+      idlePeriodMs: 900_000,
+    }));
+    localStorage.removeItem('pevo-draft-edit-alice-p1');
+
+    const comp = unchangedLightComponent();
+    mockStores.auth.username = 'bob';
+    comp._initialLoadDone = true;
+    comp.authorName = 'Bob';
+    comp.title = 'Retitled Before The Refusal';
+    expect(comp.isContinuation).toBe(true);
+
+    broadcastOps.mockImplementationOnce(async () => {
+      comp.destroy();
+      throw Object.assign(new Error('FRESH_AUTH_REQUIRED'), {
+        status: 401, code: 'FRESH_AUTH_REQUIRED', details: { reason: 'expired' },
+      });
+    });
+
+    await comp.handleSubmit();
+
+    expect(broadcastOps).toHaveBeenCalledTimes(1);
+    expect(comp.step).toBe('broadcasting');
+    expect(JSON.parse(localStorage.getItem('pevo-draft-edit-alice-p1')))
+      .toMatchObject({ title: 'Retitled Before The Refusal', authorName: 'Bob' });
+    localStorage.removeItem('pevo-draft-edit-alice-p1');
+  });
+
   // Whether the form holds a new file decides whether a gate may navigate:
   // new supplementary files live in component state, never in the draft, so
   // a full-page ORCID round-trip discards them. Same rule as the publish page.
@@ -2620,6 +2752,101 @@ describe('editPage draft carries the addressed-review ticks', () => {
       await comp.handleSubmit();
 
       expect(broadcastOps).toHaveBeenCalledTimes(1);
+      expect(comp.step).toBe('error');
+      expect(comp._draftTimer).toBe(null);
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+
+      vi.advanceTimersByTime(2000);
+
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      comp.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The post-broadcast clear closes the unmount and rejecting-invalidation
+  // exits, but the form stays interactive across the invalidation await
+  // itself: a keystroke there re-arms the debounce AFTER that clear ran, and
+  // a rejection then skips the success-side clear into the terminal catch.
+  // Without the catch's own clear the timer fires two seconds later and
+  // writes the spent draft back behind the landed edit — rejections correlate
+  // with slow networks, which is when that window is widest.
+  it('a keystroke during the rejecting invalidation cannot resurrect the spent draft', async () => {
+    vi.useFakeTimers();
+    try {
+      const { invalidatePaperCache } = await import('../../src/api.js');
+      arrangeLoad([REV_ONE, REV_TWO]);
+
+      const comp = loadedComponent();
+      await comp.loadPaperData();
+      comp.authorName = 'Alice';
+      comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
+      // Fixture-posture proof: this test exercises the same-author branch.
+      expect(comp.isContinuation).toBe(false);
+
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      // The keystroke lands inside the invalidation await: past the
+      // post-broadcast clear, ahead of the rejection. $watch is mocked in
+      // this harness, so the scheduler stands in for the watcher it
+      // registers. The timer handle is captured rather than asserted here —
+      // an assertion throwing inside the mock would be swallowed by the
+      // terminal catch it feeds.
+      let timerDuringInvalidation = null;
+      invalidatePaperCache.mockImplementation(async () => {
+        comp.title = 'Retitled while the invalidation was in flight';
+        comp._scheduleDraftSave();
+        timerDuringInvalidation = comp._draftTimer;
+        throw new Error('invalidate unavailable');
+      });
+
+      await comp.handleSubmit();
+
+      // Non-vacuous: the debounce really was armed inside the window.
+      expect(timerDuringInvalidation).not.toBe(null);
+      expect(comp.step).toBe('error');
+      expect(comp._draftTimer).toBe(null);
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+
+      vi.advanceTimersByTime(2000);
+
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      comp.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Twin on the continuation arm: the catch is shared, but each arm records
+  // the landed broadcast for it independently, so a fixture reaching the
+  // catch through the same-author leg proves nothing about this one.
+  it('the continuation post drops a draft re-armed during the rejecting invalidation', async () => {
+    vi.useFakeTimers();
+    try {
+      const { invalidatePaperCache } = await import('../../src/api.js');
+      arrangeLoad([REV_ONE, REV_TWO], {
+        authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }],
+      });
+
+      const comp = loadedComponent();
+      mockStores.auth.username = 'bob';
+      await comp.loadPaperData();
+      comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
+      // Fixture-posture proof: this test exercises the continuation branch.
+      expect(comp.isContinuation).toBe(true);
+
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      let timerDuringInvalidation = null;
+      invalidatePaperCache.mockImplementation(async () => {
+        comp.title = 'Retitled while the invalidation was in flight';
+        comp._scheduleDraftSave();
+        timerDuringInvalidation = comp._draftTimer;
+        throw new Error('invalidate unavailable');
+      });
+
+      await comp.handleSubmit();
+
+      expect(timerDuringInvalidation).not.toBe(null);
       expect(comp.step).toBe('error');
       expect(comp._draftTimer).toBe(null);
       expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
