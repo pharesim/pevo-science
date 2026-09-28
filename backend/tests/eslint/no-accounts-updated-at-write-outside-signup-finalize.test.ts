@@ -181,11 +181,13 @@
  *      on that line; the one after it is looked for past where the read
  *      stopped, so a join behind that stop is not seen. The dynamic-SQL entry
  *      under KNOWN LIMITS names the silent joins those leave. A SET-list
- *      fragment carrying the assignment is caught separately by the fail-closed
- *      arm where no readable head's statement reaches the constant declaring
- *      it; a read from an earlier head that runs on to that declaration
- *      buckets the assignment there instead, and the dynamic-SQL entry under
- *      KNOWN LIMITS gives the three buckets. A column LIST held in a variable
+ *      fragment carrying the assignment is caught separately by the
+ *      fail-closed arm where the COLUMN-FIRST walk finds no head above the
+ *      declaration, or the NEAREST head it finds — it never climbs past that
+ *      one — has a read that does not reach it; where that nearest head's
+ *      read runs on to the declaration, the assignment is bucketed under its
+ *      table instead, and the dynamic-SQL entry under KNOWN LIMITS gives the
+ *      three buckets. A column LIST held in a variable
  *      has no such second catcher,
  *      since a list names the column with no `=` after it, and neither, as a
  *      rule, does an `ALTER TABLE accounts` clause: a drop, a rename and a
@@ -273,14 +275,20 @@
  *     nowhere unless the statement still spells the column, and spelling it
  *     is necessary rather than enough. A bare `updated_at` left in the head's
  *     own literal reds under the ALTER arm, which asks for the name rather
- *     than for an assignment. An `updated_at =` in the assembled fragment
- *     answers to the walk from the assignment token instead, and an ALTER
- *     head is no {@link HEAD_PATTERNS} head, so the ALTER's own `accounts`
- *     spelling never enters that walk's answer: the fragment lands in the
- *     same three buckets the {@link columnAssignments} paragraph below gives
- *     for a head spelling no literal `accounts` — the fail-closed arm where
- *     no readable head reaches it, the writer arms where an `accounts` head
- *     does, and nothing at all where the reaching head names another table.
+ *     than for an assignment — asks the read's TEXT, so only while the head's
+ *     read still holds the name: the first quieting shape of the closed-above
+ *     layout below closes the read inside the literal, and a name past that
+ *     close is out of this arm's sight. An `updated_at =` in the assembled
+ *     fragment answers to the walk from the assignment token instead, and an
+ *     ALTER head is no {@link HEAD_PATTERNS} head, so the ALTER's own
+ *     `accounts` spelling never enters that walk's answer: the fragment lands
+ *     in the three buckets the {@link columnAssignments} paragraph below
+ *     gives. That walk consults the NEAREST head at or above the assignment
+ *     and never climbs past it, so the fail-closed arm reds where that one
+ *     head's read does not reach the fragment or no head sits above at all,
+ *     the writer arms red where it reaches and names `accounts`, and where it
+ *     reaches naming another table the assignment is bucketed there and
+ *     nothing reds at all.
  *     The other way out of silence is a read reaching no terminator,
  *     which the every-statement-readable arm reds by line. The ALTER arm and
  *     the every-statement-readable arm are both walked from a head, and every
@@ -303,11 +311,14 @@
  *     What is left for a head spelling no literal `accounts` is the walk from
  *     the assignment token, {@link columnAssignments}, which starts at an
  *     `updated_at =` and looks UPWARD for a head rather than being walked from
- *     one. What it reaches is a property of the read, not of the shape. Such
- *     an ALTER reds the fail-closed arm where no readable head above reaches
- *     its assignment, and reds the writer arms instead where an `accounts`
- *     head does; where the head that reaches it names some other table, the
- *     assignment is bucketed there and nothing reds at all. A drop, a rename
+ *     one. It consults the NEAREST head at or above the assignment and never
+ *     climbs past it, and whether that one head's read spans the assignment
+ *     is a property of the read, not of the shape. Such an ALTER reds the
+ *     fail-closed arm where the walk finds no head at all, or the nearest
+ *     one's read does not reach its assignment — even while a farther head's
+ *     read does — and reds the writer arms instead where the nearest head
+ *     reaches it and names `accounts`; where it reaches it naming some other
+ *     table, the assignment is bucketed there and nothing reds at all. A drop, a rename
  *     or a retype spells no assignment of its own, as a rule, so there is
  *     nothing for that walk to start from and it reds nowhere; the carve-out
  *     above holds here too, and an `updated_at =` inside a USING expression or
@@ -353,8 +364,12 @@
  *     literal's closing quote opened a value, that unpaired quote closed it,
  *     and the read over-runs the literal to the backtick it closes at,
  *     lending the head's read whatever sits between — the text holds the
- *     whole head literal, so nothing in the statement is hidden from the
- *     arms walked from that head. A write the first shape hides is not
+ *     whole head literal, so no write in the statement is hidden from the
+ *     arms that read that text. The `+` test does not read it: its halves
+ *     look ahead of the quote and past the close, so a `+` inside the
+ *     over-run — the one beside the head literal's own closing quote among
+ *     them — is on neither side it reads and joins silently.
+ *     A write the first shape hides is not
  *     hidden from a second `accounts`
  *     head sitting past the truncation, which starts a read of its own and
  *     carries the write to the table-first arm, and to the column-first one
@@ -2251,13 +2266,18 @@ function bareTable(name: string): string {
  *  every column inside a span, and seeds its depth at LINE ENTRY, so a head in
  *  a `DO` body is quote-free to it wherever its line is ENTERED inside that
  *  span. A `src` head sharing its line with the `$$` that opens the body is
- *  not, where the template literal holding the body OPENS on that line: the
- *  columns ahead of that opener are at depth zero, so the literal is read
- *  there and its backtick is returned instead. A template opened on an
- *  earlier line puts its backtick where this function never reads, so unless
- *  something else opens a quote ahead of the `$$` on the head's own line,
- *  that head stays quote-free. A migration head sharing its line with the
- *  opener has no such literal ahead of it and stays quote-free the same way. The heads that answer to it: every
+ *  not, where the template literal holding the body OPENS on that line and
+ *  its backtick is read AS an opener: the columns ahead of that opener are at
+ *  depth zero, so that backtick is read there and returned. Where a template
+ *  from above CLOSES on that line first, its carried backtick is the opener
+ *  read there and the body literal's own backtick its close — the two cancel,
+ *  the same cancellation the heads-that-answer list below records for a
+ *  head's own literal — and the head is quote-free after all. A template
+ *  opened on an earlier line puts its backtick where this function never
+ *  reads, so unless something else LEAVES a quote open ahead of the `$$` on
+ *  the head's own line, that head stays quote-free. A migration head sharing
+ *  its line with the opener has no such literal ahead of it and stays
+ *  quote-free the same way. The heads that answer to it: every
  *  `accounts`
  *  head the migration scans read today, though a migration head at depth zero
  *  is not quote-free by construction and one sitting after an unclosed `'` on
@@ -2564,11 +2584,13 @@ interface AssembledWrite {
  *  read from every head in {@link READ_FROM_HEADS}.
  *
  *  One assembled shape has a second catcher: a SET list held in a variable
- *  spells an assignment, and where no readable head reaches the fragment the
- *  fail-closed arm reds on it. What reaches it is a property of the read, not
- *  of the shape — a read from an earlier head that runs on to the fragment
- *  buckets its assignment there instead, and the dynamic-SQL entry under
- *  KNOWN LIMITS gives the three buckets. A column list held in a variable spells none, and
+ *  spells an assignment, and where the walk from that assignment finds no
+ *  head above, or the NEAREST head it finds has a read that does not reach
+ *  the fragment, the fail-closed arm reds on it. The walk never climbs past
+ *  that nearest head, and whether its read spans the fragment is a property
+ *  of the read, not of the shape: where it runs on to the fragment, the
+ *  assignment is bucketed under its table instead, and the dynamic-SQL entry
+ *  under KNOWN LIMITS gives the three buckets. A column list held in a variable spells none, and
  *  neither, as a rule, does an `ALTER TABLE accounts` clause: a drop, a
  *  rename and a retype each spell the column with no assignment of their
  *  own. (An `updated_at =` inside a USING expression or a CHECK is read as
