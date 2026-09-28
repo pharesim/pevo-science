@@ -861,6 +861,10 @@ describe('editPage handleSubmit sanitization', () => {
       expect(mockCreateEditor.mock.calls[0][0]).toBe(abstractEl);
       expect(mockCreateEditor.mock.calls[1][0]).toBe(bodyEl);
       expect(comp._editorsInitialized).toBe(true);
+      // The mount is routed through $nextTick, not called inline:
+      // loadPaperData holds edit.js's only $nextTick call site, so an
+      // exact count of one also pins that no second dispatch path exists.
+      expect(comp.$nextTick).toHaveBeenCalledTimes(1);
     });
 
     // What createComponent's empty $refs default produces, not just that it
@@ -884,6 +888,16 @@ describe('editPage handleSubmit sanitization', () => {
       expect(mockCreateEditor).not.toHaveBeenCalled();
       expect(comp._abstractEditor).toBeNull();
       expect(comp._bodyEditor).toBeNull();
+    });
+
+    // Template side of the ref pairing. The `builds one editor per ref
+    // present when the load runs` case pins the code side (_mountEditors
+    // reads exactly the abstractEditor / bodyEditor $refs keys), so
+    // asserting editPageTemplate carries both x-ref names makes a rename
+    // on either side of the pairing fail one of the two.
+    it('declares the x-ref names _mountEditors reads in the template', () => {
+      expect(editPageTemplate).toContain('x-ref="abstractEditor"');
+      expect(editPageTemplate).toContain('x-ref="bodyEditor"');
     });
   });
 
