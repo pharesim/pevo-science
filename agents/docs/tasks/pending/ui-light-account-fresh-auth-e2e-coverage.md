@@ -236,3 +236,107 @@ are open, and either closes this:
 
 The architect has not chosen between them; the implementer should take whichever the
 fixture cost supports and say which, and why, in the signal block.
+
+---
+
+## Architect re-review (2026-09-28) — HELD PENDING FIXES:
+
+Reviewed via `/ce-code-review` on `58ad7918` + `306d84f4` (frontend paths only,
+inspected at the pinned head; three touched files have since drifted on main and every
+held item below was re-checked against main), seven reviewer personas plus a learnings
+pass. **The review is clean at the primary tier and every acceptance criterion is
+verified genuinely met.** Independently confirmed rather than taken from the signal:
+every pinned envelope, ordering, and wire shape matches the real handlers (the
+post-gate stop is the unique first post-gate refusal in `custody.ts`; the allowlist
+403 fires before the gate as the docblock claims; the reason vocabulary matches the
+backend's failure mapping); each tampered/replay/kind control reddens on its
+advertised regression class, so no control passes vacuously; the seeded row matches
+ARCHITECTURE § 6.1 state A on all six dimensions; clause-(b) claims hold
+(`verifyHiveSignature` runs real on the Bearer path); and the eight corrected
+clause-(c) headers are accurate at the reviewed head. The items below are small-item
+polish; nothing architectural.
+
+**Resolved by the architect, no implementer action (closes the 2026-09-15 note
+above):** the sixth header's disposition is the stated-gap acceptance. The
+mid-flight-scrub risk class has no real-path companion, `lib-fresh-auth-teardown.test.js`
+says so honestly, and this task records that as accepted; no scrub-leg e2e will be
+built. Scope item 4 / AC 4 are discharged for that header as-is.
+
+**Also settled at triage (2026-09-28), context for item 1:** the absence of an
+accreditation check on `POST /api/custody/broadcast` is design intent, now recorded in
+ARCHITECTURE's "Accredited-Only Data Policy" write-gate bullet: light-account signup
+gates on the same criteria accreditation uses, so every product-created light account
+automatically qualifies, and the upload-token check is resource gating. Separately,
+the surfaced allowlist defect is now filed as
+`backend-custody-allowlist-comment-options`; the known-defect pin in the comment test
+stays until that task lands.
+
+### Item 1 — align the fixture's accreditation sentence with the settled rationale
+
+`fixtures/light-account.js`'s module docblock states "the broadcast handler performs
+no accreditation check" as a bare fact, which reads as a discovered gap. Extend the
+sentence to carry the why, per the ARCHITECTURE write-gate bullet: signup already
+establishes accreditation qualification for every product-created light account, so
+the broadcast performs no accreditation check by design, and the upload pre-flight's
+check is resource gating. Two sentences at most.
+
+### Item 2 — cover the new password in global-teardown's trace credential scan
+
+The scan pins the literal `E2eTestPass1`; the new `TEST_PASSWORD`
+(`E2eFreshAuthPass1`) does not substring-match it. Both current specs disable traces,
+so nothing leaks today; the gap is the backstop for a future importer of
+`seedLightAccount` that forgets `test.use({ trace: 'off' })`. Add the one entry to the
+scan list next to the existing known-test-password arm.
+
+### Item 3 — narrow the gate-refusal reason lists to what is reachable
+
+`expectGateRefusal` calls accept reason sets wider than the single reason the backend
+can produce for that arrangement: the tampered vote control and the tampered
+pre-flight control accept `['missing', 'expired', 'malformed']`, and the consent-op
+replay accepts `['expired', 'missing']`. Two lenses traced the backend's failure
+mapping: a tampered proof reads back as a lookup miss and a spent proof as expired,
+both surfacing `expired`. Verify against `backend/src/lib/fresh-auth.ts` first, then
+narrow each list to the reason(s) actually reachable, so a reason-classification
+regression cannot hide inside the accepted set. Status and code pins stay as they are.
+
+### Item 4 — the RUN_SUFFIX comment misstates the Playwright retry model
+
+"a Playwright retry (which re-runs beforeAll but not module scope)" is wrong: a retry
+runs in a fresh worker process, so module scope re-runs too. The retry index plus the
+timestamp are what keep each attempt's seeded rows distinct. Reword in both spec files
+that carry the comment.
+
+### Item 5 — the consent header attributes SPA-external controls to the orchestrator
+
+`lib-authorship-consent.test.js`'s clause-(c) paragraph reads as if the spent-replay
+and kind_mismatch refusals exercise the orchestrator; they are driven through
+Playwright's request fixture, outside the SPA, so the orchestrator's handling of a
+refused consent-op broadcast still has no real-path companion. Reword to attribute
+the controls to the backend surface and state that remaining gap explicitly. The
+sentence survives on current main (the file drifted after the reviewed head), so
+apply against main.
+
+### Dismissed at triage, recorded
+
+- The vote test driving `handleVote` via `page.evaluate` instead of clicking the
+  rendered control: the wire-contract assertion is the point; affordance clicks are
+  other specs' job.
+- Migrating the four sibling specs' local seed/boot-mock copies onto the new fixtures,
+  and consolidating the repeated docblock rationale: optional follow-up scope, not
+  this task.
+
+### Residuals accepted, recorded for the archive
+
+The seeded light row (custody='light', no posting key) matches § 6.1 state A but is a
+shape no production transition produces, so the post-gate-stop mechanism couples three
+spec files to `custody.ts`'s defensive branch (loud failure direction). The publish
+test's borrowed-researcher row leaks until the next reset if a run dies before
+afterAll (test DB only, guarded by `assertTestDatabase`). The e2e layer induces no
+`username_mismatch`, `target_mismatch`, or missing-proof refusal (backend integration
+tests cover all three; the headers disclose the absences). The upload-token per-account
+limiter can 429 under full-suite retries on the borrowed username. Seeded usernames
+exceed Hive's 16-character format and pass only while no route validates shape.
+
+**When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
+re-review signal. Do not edit this hold block or annotate items as fixed; the commit
+diff is the evidence and the architect updates the block at re-review.
