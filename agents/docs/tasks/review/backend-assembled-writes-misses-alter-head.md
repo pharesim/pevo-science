@@ -866,3 +866,136 @@ architect folds the recurrence into that entry via `/ce-compound-refresh` at arc
 4. The `unreadableStatements` docblock's truncation-only account of a hidden ALTER: APPENDED
    to `backend-head-line-read-silences-fail-closed-backstop` as an architect note; it is the
    ALTER-arm half of the mechanism that task covers for the fail-closed arm.
+
+## Backend round-4 signal (2026-09-28, commits bd8e7d06, 3e02dc27, b49ceb14)
+
+All three are ancestors of `main` (`git merge-base --is-ancestor` checked) and touch only
+`backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`. Prose
+only: `git diff f65e38b7 b49ceb14` over the file shows zero non-comment changed lines.
+
+`bd8e7d06` is the hold's three items in one commit, item 1 first, as prescribed. The other
+two are corrections after adversarial verification, the same shape as rounds 2 and 3: the
+first pass confirmed six falsifications of `bd8e7d06`'s own sentences (each with a plant AND
+a control, each re-measured by two independent confirmers), fixed in `3e02dc27`; the second
+pass confirmed one further defect in two variants at the four rewritten sites, fixed in
+`b49ceb14`.
+
+### The hold's items, and the two companions
+
+- Item 1 landed with the three-bucket form and the `{@link HEAD_PATTERNS}` /
+  `{@link columnAssignments}` anchors. The OPTIONAL COMPANION in the `assembledWrites`
+  docblock was FIXED in the same pass, and header item 4's because-clause with it: all three
+  statements of the fail-closed second-catcher claim carried the same universal the entry now
+  bounds, and the round-1 rule is that sibling statements of one claim carry one hedge.
+- Item 2 landed conditioned on the body template OPENING on the head's line; corrections
+  below added the read-as-an-opener condition.
+- Item 3 landed with the truncation sentence and the left-quiet set scoped to the first
+  quieting shape and the over-run stated for the second.
+- The hold's "The bare-`updated_at` ALTER-arm clause beside it is correct and stays" was
+  itself falsified by measurement (below); the clause now carries the read's-text bound.
+  Hold prescriptions are in scope per the standing convention.
+
+### Acceptance evidence, all from scratch copies (`git archive <sha> backend`, node_modules
+and .env symlinked, `tests/setup.ts` stubbed; the shared checkout never mutated)
+
+- Item 1's prescribed plant and control: the `.concat` ALTER clause behind an
+  `UPDATE sessions` template with no `;` after its closing backtick is 29/29 green, exit 0
+  (the sessions read runs on and buckets the CHECK's `updated_at =` under sessions); the same
+  file with the `;` reds `every updated_at assignment resolves to the table it writes`,
+  exit 1. Bucket 2 measured too: the opened-above head as `UPDATE accounts` reds BOTH writer
+  arms (`the accounts writers found column-first are exactly the two signup finalizes`,
+  `the accounts writers found table-first are the same two`) with the fail-closed arm green.
+  The SET-list-fragment twin (header item 4 / assembledWrites): no-`;` plant green, `;`
+  control reds the fail-closed arm.
+- Item 2's two layouts: opened-above 29/29 green with `enclosingQuote` null / `quoteAt` -1 /
+  `stopped` false / `closedAt` 58; same-line reds `every accounts statement can be read
+  whole` with `enclosingQuote` `{char: backtick, at: 10}` (the backtick in `await q(` at
+  col 10), `quoteAt` 10, `stopped` true, `closedAt` -1.
+- Item 3's two shapes with the INSERT list: the inner-backtick shape is 29/29 green (the
+  list is truncated away); its control without the inner backtick reds the readable arm
+  (plus table-first, since the untruncated list is visible, consistent); the odd-quote shape
+  reds `the accounts writers found table-first are the same two` alone, with the direct
+  probe showing `closedAt` 91 past the literal's close at 72 and the text holding the whole
+  INSERT; its `verify_token` control is 29/29 green.
+- AC2 at `bd8e7d06` and `3e02dc27`, each measured in its own copy: canary 29/29, all nine
+  `tests/eslint` files 139/139, `npm run typecheck` and `npx eslint` on the file exit 0,
+  `ALLOWED_COLUMN_ALTERATIONS` byte-identical to `5d44f839` (016 at 3), zero TypeScript
+  parse diagnostics and 54 block comments at every end. At `b49ceb14`: 139/139 exit 0 in a
+  fresh copy, eslint and typecheck exit 0.
+- AC3 is unchanged: no fixture or assertion was touched in any of the three commits, so the
+  round-1 pins still red under their mutants.
+- The pre-commit anchor gate: standalone zero-hit proofs over the added lines of `bd8e7d06`
+  (42 lines) and `3e02dc27` (54 lines), each in a throwaway repo with a copied hooks dir and
+  a firing one-line control (`the rule below` + task-slug redirect rejected, verbatim FAILED
+  output captured); `b49ceb14` passed the live hook at commit with the gate on.
+
+### The six confirmed falsifications of `bd8e7d06`, fixed in `3e02dc27`
+
+Each was demonstrated with a plant and a minimal control by its finder and independently
+re-measured by two confirmers (2/2 confirmed each):
+
+1. The quoteAt DO-body sentence lacked the read-AS-an-opener condition: a template from
+   above CLOSING on the head's line first cancels the body literal's backtick (the pair
+   cancel, `enclosingQuote` null, plant green) where the sentence predicted the backtick
+   returned and a loud read stop. Fixed by naming the cancellation, the same one the
+   heads-that-answer list records for a head's own literal; "opens a quote" in the
+   opened-above sentence became "LEAVES a quote open".
+2. The shape-2 sentence's "nothing in the statement is hidden from the arms walked from
+   that head" was false for the assembled arm: `joinedByPlus` reads positions (ahead of the
+   quote, past the close), so a `+` inside the over-run — beside the head literal's own
+   closing quote — joins silently (`ALTER TABLE accounts ' + clause` behind a carried
+   backtick with a later apostrophe: green; the same line without the carried prefix reds
+   `[concatenation]`). Scoped to the arms that read the text, with the `+` exception stated.
+3. The bare-`updated_at` ALTER-arm promise was silenced by the first quieting shape: a
+   backtick inside the head's own literal ahead of the name closes the read early
+   (`closedAt` at the inner backtick, text truncated before the name), and the rename reds
+   nowhere; the control without the carried prefix reds the ALTER arm. The clause now asks
+   the read's TEXT and names the shape that cuts the name away.
+4-6. The fail-closed bucket conditions at header item 4, the KNOWN LIMITS three-bucket
+   clause and the `assembledWrites` docblock quantified over readable heads that reach the
+   fragment; `targetTable` consults only the NEAREST head-bearing line and never climbs past
+   it. An interposed one-line `UPDATE widgets` (or a stopped `INSERT INTO papers` with an
+   odd quote) between a reaching sessions head and the fragment turns the predicted silence
+   into a fail-closed red; removing the interposed line restores the predicted bucketing.
+   All four sites (the three plus the `columnAssignments` paragraph they defer to) now state
+   the walk in the nearest-head form, matching `targetTable`'s own docblock.
+
+### The second pass, fixed in `b49ceb14`, and the truncation disclosure
+
+The second falsification pass (two of three lenses returned, both measurement agents
+returned) confirmed all six fixes landed and filed one further defect, two variants, four
+sites: the walk starts AT the assignment's own line — a head there LEFT of the assignment
+counts, so "finds no head above" was the wrong condition (plant: `UPDATE widgets` head on
+the declaration's own line, no head above, fragment bucketed silently while the stated
+condition held; control with the fragment alone reds fail-closed) — and on that line a head
+to the RIGHT of the assignment is invisible to the walk (plant: the accounts head right of
+the assignment in a two-declarator line is climbed past to a farther widgets head, green;
+the swapped-declarator control reds fail-closed). All four sites now carry the
+left-of-assignment rider from `targetTable`'s docblock.
+
+DISCLOSURE: the second pass was stopped early at the user's rate-limit warning. Its four
+findings carry their finders' measured plants and controls (verbatim red names and exit
+codes) and two lenses converged on the same defect, but the two-confirmer replication that
+every round-1 finding got did NOT run for them, and the third lens (sibling-consistency
+across the four rewritten sites and the neighbouring docblocks) did not return. The backend
+judged the fix safe because it copies `targetTable`'s own reviewed docblock wording; the
+architect's re-review is the replication.
+
+### Considered and left, with the reason
+
+- Multi-backtick interference between a carried close and the body opener (an odd stray
+  backtick leaves a quote open): governed by the quoteAt paragraph's opening sentence and
+  the LEAVES-a-quote-open hedge, the condition-carried-in-paragraph class the round-3
+  triage dismissed at its own items.
+- A NOT_A_TABLE match interposed between fragment and reaching head (probed: `DO UPDATE
+  SET` line is no head, walk unaffected, green) and the nested-template ordering for the
+  cancellation sentence (probed: the OPENS-first ordering returns the body backtick, and
+  "closes on that line first" excludes it): both measured consistent, nothing filed.
+- Header item 4's `+`-recognition wording, `joinedByPlus` and `enclosingQuote` docblocks:
+  untouched, per the round-3 ruling that they survive on their own scope.
+
+Verification: workflows `wf_701e4c10-3a4` (pass 1: five measurement agents including AC2
+and the anchor gate, four falsification lenses, two confirmers per deduped candidate, 21
+agents, zero errors) and `wf_b8f5c0fa-d9d` (pass 2, stopped early as disclosed). Backend
+did not run code review (`agents/backend/CLAUDE.md` assigns `/ce-code-review` to the
+architect).
