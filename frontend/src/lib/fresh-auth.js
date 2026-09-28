@@ -652,9 +652,9 @@ export function cacheConsentOpProof(
 // argue: the read, the type test and the removal are adjacent synchronous
 // statements in one function body. No await separates them, so a subject
 // teardown cannot land between the entry this sees and the slot it clears, and
-// the successor-pays-a-re-auth harm that gates the sibling clears in
-// `broadcastWithFreshAuth` has no shape to take here. The tokenless and TTL
-// drops it joins are ungated on the same grounds.
+// the successor-pays-a-re-auth harm that gates the module's one gated clear —
+// the 401 eviction in `broadcastWithFreshAuth` — has no shape to take here.
+// The tokenless and TTL drops it joins are ungated on the same grounds.
 //
 // The refusal a user can act on lives at the write instead, in the
 // `/orcid/callback` fresh-auth handler, which is the only producer of this slot
@@ -973,10 +973,7 @@ export function abandonInFlightAcquisitions() {
 // happened to run the evicting one. The upload pre-flight is not a third such
 // reading: `windowProof` (lib/ipfs-upload.js) calls `ensureSessionWindow` and
 // refuses through its OUTCOME, so it inherited the guard's clear from the start
-// and was never a reader that could strand a value. The THREE-site tally at
-// `WINDOW_OUTCOME_BY_SENTINEL` is a different and equally correct count: it
-// tallies who acts on an outcome, which the page gate and the upload pre-flight
-// both do, not who reads the raw result.
+// and was never a reader that could strand a value.
 //
 // The value travels on unchanged: refusing is still each consumer's own, and a
 // swallow would have to pick the value to swallow into. Every falsy candidate
@@ -988,10 +985,12 @@ export function abandonInFlightAcquisitions() {
 // uses. `null` is the registered redirect member, so a swallow into it would
 // manufacture the misread the mint callback's narrowing exists to prevent.
 //
-// Ungated, unlike the sibling clears in `broadcastWithFreshAuth`. Those hold a
-// real round-trip between the window they read and the clear they run, so a
-// teardown landing inside it leaves the successor's freshly minted entry in the
-// slot and dropping it would charge them a re-auth that was never theirs.
+// Ungated, unlike the module's one gated clear, the 401 eviction in
+// `broadcastWithFreshAuth`. That eviction holds a real round-trip — the
+// broadcast whose rejection it answers — between the window it read and the
+// clear it runs, so a teardown landing inside it leaves the successor's
+// freshly minted entry in the slot and dropping it would charge them a
+// re-auth that was never theirs.
 // Nothing here has that shape: the cache leg reads and clears in adjacent
 // synchronous statements, and every teardown boundary a flight crosses resolves
 // FRESH_AUTH_CANCELLED, a registered outcome this check never fires on —
@@ -1134,10 +1133,13 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
 // ---------------------------------------------------------------------------
 // The window-outcome vocabulary and its shared dispatch.
 //
-// `acquireSessionProof` resolves to a proof string or to one of the sentinels
-// below, and three independently owned sites consume the result: the page gate
-// `freshAuthWindowReady`, the broadcast unwinder `acquisitionAborted`, and the
-// upload pre-flight `windowProof` (lib/ipfs-upload.js). This map is THE
+// `acquireSessionProof` resolves to a proof string, to one of the sentinels
+// below, or to an unnamed value outside the vocabulary that every consumer
+// refuses rather than trusts (`acquireSessionProof`'s docblock names those
+// values). The broadcast unwinder `acquisitionAborted` reads that raw result
+// directly; the page gate `freshAuthWindowReady` and the upload pre-flight
+// `windowProof` (lib/ipfs-upload.js) act on the outcome object
+// `ensureSessionWindow` derives from it. This map is THE
 // registration point for the vocabulary: `ensureSessionWindow` derives its
 // outcome object from the key, the toast dispatch below carries the message
 // (or deliberate silence) each outcome owes the user, and the vocabulary-driven
@@ -1213,11 +1215,16 @@ const WINDOW_OUTCOME_TOASTS = Object.freeze({
   },
 });
 
-// The one dispatch behind every site that consumes an acquisition outcome, so
-// none of them carries a copy of its own. Silent for outcomes whose table row
-// is null and for a null key (a ready outcome, or a value outside the
-// vocabulary). The localization and the show come from `toastLocalized`, shared
-// with the module's non-vocabulary messages.
+// The shared dispatch for the outcome vocabulary's toasts. Its callers — the
+// page gate `freshAuthWindowReady`, the broadcast unwinder
+// `acquisitionAborted`, and the refuse-while-open exit `promptBusy` — pass
+// only the outcome key; the copy and the speak-or-stay-silent decision live
+// in `WINDOW_OUTCOME_TOASTS`, so no caller can drift on either. The upload
+// pre-flight `windowProof` (lib/ipfs-upload.js) reports the same vocabulary
+// through its upload error codes instead, never through this dispatch. Silent
+// for outcomes whose table row is null and for a null key (a ready outcome,
+// or a value outside the vocabulary). The localization and the show come from
+// `toastLocalized`, shared with the module's non-vocabulary messages.
 export function showWindowOutcomeToast(outcomeKey) {
   const spec = outcomeKey ? WINDOW_OUTCOME_TOASTS[outcomeKey] : null;
   if (!spec) return;
