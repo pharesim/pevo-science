@@ -294,3 +294,59 @@ Simplify pass: three reviewers (reuse, quality, efficiency) over the diff,
 zero findings. The quality lens independently re-verified that `edit.js`
 holds exactly one `this.$nextTick(` call site, the invariant item 1's exact
 count rests on.
+
+## Architect re-review (2026-09-28) — HELD PENDING FIXES:
+
+`/ce-code-review` on `42763cc7` ran four lenses (correctness,
+project-standards, testing, learnings; adversarial not triggered by a
+14-line test-only diff). Zero findings at any severity: both round-1 items
+landed as prescribed, and three lenses independently reproduced every probe
+claim from isolated copies of the reviewed commit (baseline 92 passed /
+exit 0, stable under shuffled seeds; unwrap mutant killed with the exact
+claimed message; both x-ref renames killed; dispatch-reroute mutants killed;
+anchor gate 0 hits over the 14 added lines with a 4/4 positive control; the
+89-to-91 baseline drift reconciles to sibling commit `dbd18dc4` exactly as
+the signal block stated). This hold is comment wording only. Two items, both
+in `frontend/tests/unit/pages-edit.test.js`, one comment-only commit, no
+assertion or behavior changes:
+
+1. **Narrow the over-broad clause above the `$nextTick` count assertion.**
+   In `builds one editor per ref present when the load runs`, the comment's
+   closing clause says the exact count "also pins that no second dispatch
+   path exists". Measured false in its broad reading: a second inline
+   `_mountEditors()` call added beside the `$nextTick` dispatch survives all
+   92 cases, because the `_editorsInitialized` latch absorbs the duplicate
+   before any observable effect. Narrow the claim to what the assertion
+   witnesses: how many `$nextTick` dispatches the tested load performs (e.g.
+   end the sentence at "call site", or close with "so the exact count pins
+   the load's single dispatch"). The sentence's first half and the "only
+   `$nextTick` call site" rationale are accurate and stay. The replacement
+   prose must itself pass the anchor conventions: stable symbols only, and
+   no universal claim broader than what an assertion enforces.
+2. **Re-scope the describe header's quantifier.** The header of
+   `a successful load mounts the editors` opens "Two mechanics shape every
+   case here"; the new template case (placed inside the describe, as the
+   round-1 hold's "in or beside" allowed) drives no load, reads no refs and
+   waits on nothing, so "every case here" is no longer true. Narrow the
+   quantifier to the load-driven cases (e.g. "every load-driven case here").
+   The later "Each wait here" sentence quantifies over waits, not cases, and
+   stays as is.
+
+Dismissed at this triage, for the record: the testing lens's
+callback-capture hardening (the exact count cannot distinguish
+mount-inside-callback from inline-mount-plus-stray-tick; dismissed as
+speculative hardening, consistent with round 1's seen-and-not-held posture),
+and the remaining unit-tier gaps (negative routing on a rejected load;
+`createEditor` options unasserted on the load path; the template pin being
+textual, with the e2e `waitForEditorsMounted` helper as the chain backstop).
+The publish-page twin surface (same `$nextTick` mount shape, same two
+x-refs, no pins in its spec) is filed separately as
+`ui-publish-spec-mount-and-xref-pins`. At archive, the architect runs
+`/ce-compound-refresh` on
+`agents/docs/solutions/conventions/waitfor-poll-required-for-nexttick-scheduled-effect-assertions.md`,
+whose claim that the x-ref rename still survives, and whose counts, this
+diff made stale.
+
+Signal block for the re-review: quote the two revised comment lines, give
+the spec run result (pass count, no Errors line, exit code), and confirm the
+diff is comment-only (diff stat).
