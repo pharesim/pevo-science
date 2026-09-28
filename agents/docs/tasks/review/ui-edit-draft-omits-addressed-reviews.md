@@ -665,3 +665,116 @@ per-spec mock implementations do not leak between tests; no fixture change
 needed. At archive time, refresh the discriminating-spec solutions entry
 against the final code shape. Do not cite this hold, its item numbers, or the
 task slug in code or test comments; anchor on the symbols named above.
+
+## UI re-review signal (2026-09-29, commit 01b17cfc)
+
+`01b17cfc` self-verified as an ancestor of `main` (`git merge-base
+--is-ancestor`). No worktree fan-out; single-session inline work. Sibling
+backend commits landed on top during and after the session, which is why it
+is not HEAD.
+
+### Item 1 — the terminal catch re-clears when the broadcast landed
+
+`handleSubmit` declares `let landed = false` beside the `draftKey` capture,
+sets it true immediately after each arm's post-broadcast
+`_clearDraft(draftKey)`, and the terminal catch runs
+`if (landed) this._clearDraft(draftKey);`, which cancels a timer armed
+during the invalidation await and re-removes the item. Pre-broadcast throws
+still keep their draft: `landed` is false on every path that has landed
+nothing.
+
+Placement, spelled out rather than left implicit: the hold asks for the
+clear before the `step = 'error'` write, and it sits one line earlier still,
+ahead of the catch's `if (!this._mounted) return;`. The corner that decides
+it: a timer that fires before an unmount is not cancelled by `destroy()`
+(nothing is pending any more), so a catch entered unmounted after that write
+must still re-clear, exactly the reason the post-broadcast clears are
+`_mounted`-independent.
+
+Two specs rather than the one the hold prescribes, raised deliberately: the
+`landed` marker is per-arm, so a same-author-only spec leaves a revert of
+the continuation arm's marker green — the per-arm class the previous round's
+own finding established. Both specs arm the scheduler inside a rejecting
+`invalidatePaperCache` mock (not the broadcast mock, whose timer the
+post-broadcast clear cancels), capture the timer handle inside the mock as
+the non-vacuity proof, and assert `_draftTimer` null, the draft key absent,
+and still absent past the debounce. Both were written first and observed
+failing at the reviewed base on a live `_draftTimer` after the catch.
+
+### Item 2 — the keep-draft invariant pinned per arm, mounted and unmounted
+
+Four specs in the re-auth ordering describe, beside the remintable-401
+refusal twins whose staging they reuse (light custody, passwordless, a live
+seeded window, the broadcast leg rejecting 401 remintable so the real
+fresh-auth refusal resolves the sentinel — no shortcut broadcast mock
+resolving null). The mounted pair asserts `step === 'idle'` with the entry
+gate's flushed draft still in storage; the unmounted pair destroys the
+component inside the rejecting broadcast mock and asserts the early return
+leaves `step` at `'broadcasting'` and the draft untouched.
+
+Non-vacuity: each spec removes any stored draft first and reads a
+spec-distinctive title back out of storage afterwards, so a draft leaked by
+an earlier case in the same describe (one such leak pre-exists) cannot stand
+in for the entry-gate flush.
+
+### Verification
+
+- `pages-edit.test.js`: 98 passed, 0 failed, exit 0, no Errors line (92
+  before: round 3's 91 plus one from the sibling mount-coverage commit that
+  landed after it). Full frontend unit suite: 86 files / 1944 tests, exit 0.
+  `npm run build` clean (standing chunk-size and dhive direct-`eval`
+  warnings only). `git status` carried only this commit's two files; the
+  stderr stack traces the rejecting-invalidation specs print are the catch's
+  own `console.warn` sanitization logging, not failures.
+- Mutation probes: 21 runs, one throwaway scratchpad copy per mutant built
+  by `git archive 01b17cfc`, repo checkout never mutated and `git status`
+  clean before and after; the unmutated baseline copy confirmed 98/98 exit 0
+  first. Both prior rounds' tables re-run in full plus seven new sites:
+
+  | reverted site | tests that die |
+  |---|---|
+  | the catch-side clear alone | both re-arm-during-invalidation specs, and nothing else |
+  | the native arm's `landed` marker | the native re-arm spec, alone |
+  | the continuation arm's `landed` marker | the continuation re-arm spec, alone |
+  | the native early clear hoisted above the pending check | the native mounted and unmounted keep-draft specs |
+  | the continuation early clear hoisted above the pending check | the continuation mounted and unmounted keep-draft specs |
+  | the native pending block's relocated `_mounted` guard | the native unmounted keep-draft spec, alone |
+  | the continuation pending block's relocated `_mounted` guard | the continuation unmounted keep-draft spec, alone |
+  | the native-edit early clear, true pre-fix shape | the unmount spec, plus the native re-arm spec |
+  | the continuation early clear, true pre-fix shape | the rejecting-invalidation spec, plus the continuation re-arm spec |
+  | both early clears at once | those four; the existing cancel spec survives |
+  | the `clearTimeout` inside `_clearDraft` | the cancel spec, the rejecting-invalidation spec, both re-arm specs |
+  | `localStorage.removeItem(key)` inside `_clearDraft` | six: those four plus the unmount and post-success-clear-of-ticks specs |
+  | the enrichment arm of the load guard, `fulfilled` wrapper restored | the rejected-enrichment spec |
+  | `$watch('newCoAuthors', ...)` | the watcher-enumeration spec |
+  | `addressedReviews` in the `_writeDraft` object | the debounced-save, tick-change and unmount specs |
+  | `$watch('addressedReviews', ...)` | the tick-change and watcher-enumeration specs |
+  | the restore line in `_restoreDraft` | restore, drop-stale, resubmit, post-success-clear-of-ticks |
+  | the `reviews` intersection in `_reconcileAddressedReviews` | drop-stale only |
+  | the `:checked` binding | the checkbox spec |
+  | the `isReviewAddressed` body | the checkbox spec |
+
+  Per-arm discrimination holds in both new families: each `landed` marker,
+  hoisted clear, and dropped guard kills exactly its own arm's spec(s) and
+  nothing else. Honest delta from the earlier tables: the two true-pre-fix
+  arm shapes and the `_clearDraft`-half reverts now also kill the re-arm
+  specs, because those shapes remove or starve the catch-side clear too —
+  benign over-kill, not a new coupling.
+- E2E not re-run: the diff adds no markup (zero added lines carrying a tag,
+  an Alpine directive, or `type="submit"`), and the new runtime branch (a
+  keystroke during a rejecting invalidation) is not reachable in that
+  environment. Running the dance would also swap the shared stack into test
+  mode under whatever sibling agent is using it. Say the word and it gets
+  run.
+- No new i18n keys, so no `STUBS.md` entry.
+- Simplify pass (three lenses: reuse, quality, efficiency). Efficiency
+  clean; quality and reuse clean on `edit.js` (both independently confirmed
+  the `landed` local is minimal and the new comments pass the anchor
+  conventions) and converged on the same optional test-file extractions: a
+  shared seeded-window-proof helper (nine inline sites file-wide, four in
+  this diff) and a remintable-401 error factory (six sites, four in this
+  diff), plus an arrangement helper for the re-arm twins. All graded
+  optional by their lenses; skipped because each is a file-wide sweep whose
+  partial form leaves the file inconsistent, the same trade the earlier
+  compare-helper dismissal settled. Available as a follow-up commit on
+  request.
