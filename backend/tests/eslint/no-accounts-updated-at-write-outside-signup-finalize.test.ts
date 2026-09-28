@@ -182,8 +182,9 @@
  *      stopped, so a join behind that stop is not seen. The dynamic-SQL entry
  *      under KNOWN LIMITS names the silent joins those leave. A SET-list
  *      fragment carrying the assignment is caught separately by the
- *      fail-closed arm where the COLUMN-FIRST walk finds no head above the
- *      declaration, or the NEAREST head it finds — it never climbs past that
+ *      fail-closed arm where the COLUMN-FIRST walk finds no head at or above
+ *      the declaration (its own line counting only left of the assignment),
+ *      or the NEAREST head it finds — it never climbs past that
  *      one — has a read that does not reach it; where that nearest head's
  *      read runs on to the declaration, the assignment is bucketed under its
  *      table instead, and the dynamic-SQL entry under KNOWN LIMITS gives the
@@ -283,8 +284,9 @@
  *     ALTER head is no {@link HEAD_PATTERNS} head, so the ALTER's own
  *     `accounts` spelling never enters that walk's answer: the fragment lands
  *     in the three buckets the {@link columnAssignments} paragraph below
- *     gives. That walk consults the NEAREST head at or above the assignment
- *     and never climbs past it, so the fail-closed arm reds where that one
+ *     gives. That walk consults the NEAREST head at or above the assignment —
+ *     on the assignment's own line only a head to its LEFT — and never
+ *     climbs past it, so the fail-closed arm reds where that one
  *     head's read does not reach the fragment or no head sits above at all,
  *     the writer arms red where it reaches and names `accounts`, and where it
  *     reaches naming another table the assignment is bucketed there and
@@ -311,8 +313,10 @@
  *     What is left for a head spelling no literal `accounts` is the walk from
  *     the assignment token, {@link columnAssignments}, which starts at an
  *     `updated_at =` and looks UPWARD for a head rather than being walked from
- *     one. It consults the NEAREST head at or above the assignment and never
- *     climbs past it, and whether that one head's read spans the assignment
+ *     one. It consults the NEAREST head at or above the assignment — on the
+ *     assignment's own line only a head to its LEFT, since a statement
+ *     opened after the assignment cannot contain it — and never climbs past
+ *     it, and whether that one head's read spans the assignment
  *     is a property of the read, not of the shape. Such an ALTER reds the
  *     fail-closed arm where the walk finds no head at all, or the nearest
  *     one's read does not reach its assignment — even while a farther head's
@@ -2585,7 +2589,8 @@ interface AssembledWrite {
  *
  *  One assembled shape has a second catcher: a SET list held in a variable
  *  spells an assignment, and where the walk from that assignment finds no
- *  head above, or the NEAREST head it finds has a read that does not reach
+ *  head at or above it (its own line counting only left of the assignment),
+ *  or the NEAREST head it finds has a read that does not reach
  *  the fragment, the fail-closed arm reds on it. The walk never climbs past
  *  that nearest head, and whether its read spans the fragment is a property
  *  of the read, not of the shape: where it runs on to the fragment, the
