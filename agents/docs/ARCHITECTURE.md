@@ -90,6 +90,9 @@ PEvO defines its objects (papers, reviews, comments, bridge papers) by **author 
 This stance is distinct from the **write-gate** (root `CLAUDE.md` "Accreditation is the trust layer"), which restricts publishing/reviewing/commenting/voting on the write path to accredited accounts:
 
 - **Write-gate (integrity invariant):** the platform itself only helps accredited users author PEvO objects. Anyone can post `APP_TAG`-tagged content directly to Hive, but PEvO won't help them.
+
+  Enforcement lives at signup plus the read layer, not per-broadcast. Light-account signup gates on the same criteria accreditation uses (a whitelisted institutional email or a valid ORCID iD), so every product-created light account automatically qualifies for accreditation; a light-custody accounts row that is not accreditation-qualified is reachable only by seeding the database directly, which test fixtures do. `POST /api/custody/broadcast` therefore performs no accreditation check by design: such a check would re-verify what signup already established, add a HAF read to every broadcast, and refuse legitimately qualified accounts sitting in the attestation-indexing lag window. The accreditation check on `POST /api/ipfs/upload-token` is resource gating (pinning costs the platform), not the trust layer. The read-gate and the per-domain rules below are what keep any out-of-band unaccredited write inert.
+
 - **Read-gate (ontological boundary):** PEvO API endpoints filter to PEvO objects. An on-chain `APP_TAG`-tagged Hive comment authored by a non-vouched account is invisible to PEvO surfaces because it isn't a PEvO object, regardless of how its metadata is shaped.
 
 Accreditation status is itself **public** (queryable via `GET /api/accreditations`, the `active_accreditations` table, and on-chain `custom_json` accreditation attestations). The read-gate is not hiding confidentiality; it is enforcing object identity.
