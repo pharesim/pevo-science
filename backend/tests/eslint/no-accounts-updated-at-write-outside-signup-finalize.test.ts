@@ -238,17 +238,28 @@
  * `backend/src`, recursively (the shared `sourcesUnder` collects the first
  * spelling, {@link moduleResourcesUnder} the other three), every `.sql`
  * resource under the same tree ({@link sqlResourcesUnder}, read as SQL), and
- * every `.sql` file at the top of `backend/migrations`. Every module the
- * build can compile into the `dist` the image runs is in that set:
- * `tsconfig.json` includes the whole of `src` and sets no `allowJs`, so a
- * `.js` placed there is neither compiled nor shipped, and is not scanned
+ * every `.sql` file at the top of `backend/migrations`. Every TypeScript
+ * module the build can compile into the `dist` the image runs is in that
+ * set: `tsconfig.json` includes the whole of `src` and sets no `allowJs`, so
+ * a `.js` placed there is neither compiled nor shipped, and is not scanned
  * either, while a `.tsx` compiles only while it is free of JSX (no `jsx`
- * option is set) and is scanned whether or not it would build. The
- * containment runs one way on purpose: a file scanned in vain costs a red
- * bar at worst, and a file shipped unscanned is the silent direction this
- * statement of the roots exists to close. Excluded, deliberately: every tree
- * that does not ship. Test code
- * under `backend/tests` is one such tree; `backend/scripts` is the one that
+ * option is set) and is scanned whether or not it would build. That is a
+ * claim about TypeScript modules and nothing wider: `resolveJsonModule` lets
+ * the build emit an imported `.json` into the same `dist`, no walker
+ * collects one, and the `resolveJsonModule` entry under KNOWN LIMITS records
+ * what re-opens that. The shared walker follows a symbolic link and the two
+ * local ones do not; the symlink entry under KNOWN LIMITS records that edge.
+ * The containment
+ * runs one way on purpose: a file scanned in vain costs a red bar at worst,
+ * and a file shipped unscanned is the silent direction this statement of
+ * the roots exists to close. Excluded, deliberately: every other tree, and
+ * each excluded tree either does not ship or ships only data that no scan
+ * reads as statements. Test code under `backend/tests` and the maintenance
+ * code under `backend/scripts` do not ship; `backend/data`, the built
+ * frontend under `backend/public` and the production `node_modules` do, as
+ * files the application reads or serves rather than as SQL it runs. Only the
+ * modules under `backend/src` and the files under `backend/migrations` reach
+ * the database as executable statements. `backend/scripts` is the tree that
  * LOOKS like a scan candidate and is not, and the `backend/scripts` entry
  * under KNOWN LIMITS records why, and what re-opens the question.
  *
@@ -642,6 +653,35 @@
  *     connects to the application database and WRITES rows is a new root,
  *     and admitting it means a walker that collects that script's own
  *     extension, not just a root list growing a directory.
+ *   - `tsconfig.json` sets `resolveJsonModule`, so a `.json` under `src` that
+ *     compiled code imports is emitted verbatim into the shipped `dist`, and
+ *     no walker collects `.json`. A statement kept in one and handed to a
+ *     query by the module that imports it (`pool.query(q.touch)`) is read by
+ *     no arm: the module spells no statement, and the file that does is never
+ *     scanned. No `.json` exists under `src` today, and a collector for an
+ *     extension with nothing to collect would read as coverage it is not,
+ *     which is the argument the `backend/scripts` entry makes. The re-open
+ *     condition: a tracked `.json` under `src` holding statement text that
+ *     application code reads is a new root, and admitting it means a
+ *     collector for that extension feeding the scanned set.
+ *   - The two local walkers, {@link sqlResourcesUnder} and
+ *     {@link moduleResourcesUnder}, read regular files and directories only:
+ *     a directory entry that is a symbolic link is neither, so a linked
+ *     module or a linked directory under `src` is not walked by them, while
+ *     the build compiles and ships it, and the shared `.ts` walker, which
+ *     follows links, would read the same file spelled `.ts`. No symbolic
+ *     link exists under `backend/src` today. The re-open condition: a linked
+ *     module or directory under `src`, at which point the local walkers
+ *     follow links the way the shared one does.
+ *   - Runtime DDL spelled inside a scanned MODULE is read by no arm. The
+ *     routine arm, which refuses a trigger, rule or stored routine bound to
+ *     `accounts`, walks the SQL files only (the migrations and any `.sql`
+ *     resource under `src`), so a `CREATE FUNCTION` or
+ *     `CREATE TRIGGER` targeting `accounts` held in a module's SQL string, and
+ *     run from there, installs a writer this file never sees. Application
+ *     code installing a trigger at runtime is not a shape an author writes by
+ *     accident, and the accident-not-evasion scope entry of this list covers
+ *     it.
  *   - The scans read the shapes an author writes by accident, not the ones an
  *     author writes to evade a test. A writer determined to get past them can.
  *
@@ -677,7 +717,8 @@
  * matching nothing and the canary enforces nothing.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import ts from 'typescript';
 import {
@@ -2907,8 +2948,16 @@ function moduleResourcesUnder(root: string): ScannedSource[] {
   return out;
 }
 
+/** Every TypeScript module under `root` in any spelling the build compiles:
+ *  the shared `.ts` walk and {@link moduleResourcesUnder} together. The union
+ *  is a function of its own so the walker-fixture spec can hand it a planted
+ *  tree and see exactly what the canary's `sources` would hold. */
+function codeSourcesUnder(root: string): ScannedSource[] {
+  return [...sourcesUnder(root), ...moduleResourcesUnder(root)];
+}
+
 const srcRoot = path.resolve(__dirname, '..', '..', 'src');
-const sources = readable([...sourcesUnder(srcRoot), ...moduleResourcesUnder(srcRoot)]);
+const sources = readable(codeSourcesUnder(srcRoot));
 const migrations = readable([
   ...migrationSources(path.resolve(__dirname, '..', '..', 'migrations')),
   ...sqlResourcesUnder(srcRoot),
@@ -2927,6 +2976,55 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     expect(migrations.map((m) => m.rel)).toContain(
       Object.keys(ALLOWED_WRITER_MIGRATIONS)[0].split('#')[0],
     );
+  });
+
+  it('the local walkers collect every compiled spelling and every .sql resource, recursively, and the writer arms name each plant', () => {
+    // Today's tree holds no `.mts`, `.cts`, `.tsx` or `.sql` under `src`, so
+    // both local walkers legitimately return nothing there, and the
+    // plausibility spec cannot tell that apart from a walker whose extension
+    // test, recursion or merge into `sources` was lost. A planted tree can.
+    const tmp = mkdtempSync(path.join(tmpdir(), 'pevo-updated-at-walker-'));
+    try {
+      const dir = path.join(tmp, 'a', 'b');
+      mkdirSync(dir, { recursive: true });
+      const writer = [
+        'export async function touch(pool: { query: (sql: string) => Promise<unknown> }) {',
+        '  await pool.query(`UPDATE accounts SET updated_at = NOW() WHERE id = 1`);',
+        '}',
+        '',
+      ].join('\n');
+      for (const ext of ['ts', 'mts', 'cts', 'tsx']) writeFileSync(path.join(dir, `writer.${ext}`), writer);
+      // Not compiled (no `allowJs`), so not collected.
+      writeFileSync(path.join(dir, 'writer.js'), writer);
+      writeFileSync(path.join(dir, 'writer.sql'), 'UPDATE accounts SET updated_at = now() WHERE id = 1;\n');
+
+      const code = codeSourcesUnder(tmp);
+      expect(code.map((s) => s.rel).sort()).toEqual([
+        'a/b/writer.cts',
+        'a/b/writer.mts',
+        'a/b/writer.ts',
+        'a/b/writer.tsx',
+      ]);
+      const sql = sqlResourcesUnder(tmp);
+      expect(sql.map((s) => s.rel)).toEqual(['a/b/writer.sql']);
+
+      const codeWriters = {
+        'a/b/writer.cts#touch': 1,
+        'a/b/writer.mts#touch': 1,
+        'a/b/writer.ts#touch': 1,
+        'a/b/writer.tsx#touch': 1,
+      };
+      const plantedCode = readable(code);
+      expect(countsOf(columnAssignments(plantedCode).get('accounts') ?? [])).toEqual(codeWriters);
+      expect(countsOf(accountsColumnWriters(plantedCode))).toEqual(codeWriters);
+
+      const sqlWriters = { [`a/b/writer.sql#${MODULE_SCOPE}`]: 1 };
+      const plantedSql = readable(sql);
+      expect(countsOf(columnAssignments(plantedSql).get('accounts') ?? [])).toEqual(sqlWriters);
+      expect(countsOf(accountsColumnWriters(plantedSql))).toEqual(sqlWriters);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('the reader finishes every file it reads with no span left open', () => {
