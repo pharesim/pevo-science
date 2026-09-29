@@ -162,3 +162,27 @@ with no observed failure. Also recorded: a bare `grep header.disconnect
 STUBS.md` returns the heading and one prose line in addition to the `<locale>:`
 lines; earlier `### Updated` entries have the same shape and the `<locale>:`
 pattern is the invariant, so no change is asked.
+
+UI re-review signal (2026-09-29, commit 13eaa4dc):
+
+- Hold item 1 landed in commit 13eaa4dc on main. Self-verified:
+  `git merge-base --is-ancestor 13eaa4dc main` passes, and
+  `git show --numstat` lists STUBS.md plus the six locale files with
+  exactly one changed line each, so the escaped non-ASCII sequences
+  elsewhere in those files are untouched (textual replace, no JSON
+  round-trip).
+- da, de, fa, fr, he and nl now hold "Sign out". All sixteen locale
+  files parse and `header.disconnect` is "Sign out" in every one.
+- The six `<locale>: header.disconnect` lines sit in alphabetical
+  order under the existing `### Updated 2026-09-14
+  (ui-header-disconnect-label-signout)` heading;
+  `grep -cE '^[a-z]{2}: header\.disconnect$'` on STUBS.md returns 15.
+- The entry prose now states that all fifteen non-English locales are
+  re-stubbed and listed, and keeps the sign-in / sign-out pair
+  observation as a translator hint naming the six prior values as
+  restoration candidates, per the hold's allowance.
+- Verification: `tests/unit/i18n.test.js` 31/31 green;
+  `tests/unit/components-header.test.js` and
+  `tests/unit/pages-settings-custody-upgrade-subject-pin.test.js`
+  24/24 green, exit 0. No browser pass this round: only JSON values
+  changed and the `$t` binding was verified in the prior round.
