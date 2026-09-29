@@ -898,3 +898,131 @@ extends the round-3 refresh note), and the per-arm `landed` marker read by a
 terminal catch placed ahead of the unmount guard is a `/ce-compound`
 candidate. Do not cite this hold, its item numbers, or the task slug in code
 or test comments; anchor on the symbols named above.
+
+## UI re-review signal (2026-09-29, commits 23d72b81 and 323b550b)
+
+Both SHAs self-verified as ancestors of `main` (`git merge-base
+--is-ancestor`). No worktree fan-out; single-session inline work.
+`23d72b81` carries the fix and the specs. `323b550b` is a two-line
+comment-grammar fix the simplify pass surfaced.
+
+### Item 1: the measured default, not the `finally` deviation
+
+Each arm now runs `_clearDraft(draftKey)` directly after
+`await invalidatePaperCache(...)`, ahead of that arm's `_mounted` guard. The
+clear beside `step = 'success'` and its "kept for the interactive window"
+comments are gone. The post-broadcast early clears, the `landed` markers and
+the terminal catch clear are unchanged, so items 2 and 3 pin the catch-side
+clear as prescribed, not a `finally`. No `_draftSpent` barrier and no
+try/catch around the invalidation.
+
+Specs, one per arm: `an unmount across a resolving invalidation drops the
+draft a fired save wrote back` and its continuation twin. Inside a
+RESOLVING invalidation mock each spec types, schedules, advances fake timers
+2s so the save FIRES, reads the rewritten draft back as the non-vacuity
+proof, calls `destroy()`, and resolves. It then asserts one broadcast and the
+draft key null. Both were written first and observed failing at the
+reviewed base on the surviving rewritten draft (`expected
+'{"title":"Retitled while the invalida…' to be null`). They were the only
+two red specs out of 103.
+
+### Item 2: one same-author witness
+
+`a broadcast that fails before landing keeps the flushed draft` uses a
+plain `broadcastOps` rejection with no fresh-auth shape. It asserts one
+broadcast, `invalidatePaperCache` not called, `step === 'error'`, and the
+stored draft still carrying the flushed title and the tick. One spec, not
+twins, by choice: the `if (landed)` guard sits before either arm's marker,
+so the unconditional-clear mutant is the same code change whichever arm
+routes into the catch.
+
+### Item 3: the fired-then-unmounted catch, with the router shift
+
+`a catch entered unmounted after the debounce fired drops the rewritten
+draft by its captured key` stages this sequence inside a rejecting
+invalidation: type, schedule, advance 2s so the save fires, non-vacuity
+read, `destroy()`, then throw. It asserts `step` stayed `'broadcasting'` and
+the draft key is null. The optional router shift was taken: inside the mock
+the params move to `bob/p9` and that paper's draft is seeded, and the spec
+asserts that draft survives byte for byte. So it also pins the captured-key
+rationale at the catch site. `finally` restores the router params.
+
+### Item 4: the continuation unmount twin
+
+`an unmount during the continuation broadcast still drops the draft the
+landed post spent` runs with co-author posture asserted via
+`isContinuation`. The broadcast mock reads the stored draft first
+(non-vacuity), calls `destroy()`, and resolves `{ tx_id }`. The spec
+asserts one broadcast and the draft key null.
+
+Two neighbouring test comments named the dropped success-side clear
+("the clear beside step = 'success'", "the success-side clear"). Both now
+say "the clear after the invalidation await".
+
+### Verification
+
+- `pages-edit.test.js`: 103 passed, 0 failed, exit 0, no Errors line (98
+  before). Full frontend unit suite: 86 files / 1950 tests, exit 0.
+  `npm run build` clean (standing chunk-size and dhive direct-`eval`
+  warnings only). `git status` carried only this commit's two files.
+- Mutation probes: 26 mutants plus an unmutated baseline, one copy each,
+  built by `git archive 23d72b81 frontend` with node_modules symlinked. The
+  repo checkout was never mutated. Each anchor was asserted by count before
+  it was replaced. Baseline 103/103, exit 0. Every mutant killed.
+
+  | reverted site | tests that die |
+  |---|---|
+  | continuation post-invalidation clear moved below its guard | the continuation resolving-invalidation spec, alone |
+  | native post-invalidation clear moved below its guard | the native resolving-invalidation spec, alone |
+  | continuation post-invalidation clear deleted | the continuation resolving-invalidation spec, alone |
+  | native post-invalidation clear deleted | the native resolving-invalidation spec, alone |
+  | catch clear made unconditional | the pre-landing broadcast-failure spec, alone |
+  | catch clear swapped below the catch's `_mounted` guard | the fired-then-unmounted catch spec, alone |
+  | catch clear reading `this.draftKey` instead of the captured key | the fired-then-unmounted catch spec, alone |
+  | continuation early clear deleted (`landed` kept) | the continuation unmount-during-broadcast twin, alone |
+  | native early clear deleted (`landed` kept) | the native unmount-during-broadcast spec, alone |
+  | catch clear removed | both rejecting re-arm specs, plus the fired-then-unmounted catch spec |
+  | continuation `landed` marker removed | the continuation re-arm spec, alone |
+  | native `landed` marker removed | the native re-arm spec, plus the fired-then-unmounted catch spec |
+  | continuation early clear hoisted above the pending check | the continuation mounted and unmounted keep-draft specs |
+  | native early clear hoisted above the pending check | the same-author mounted and unmounted keep-draft specs |
+  | continuation pending block's relocated `_mounted` guard removed | the continuation unmounted keep-draft spec, alone |
+  | native pending block's relocated `_mounted` guard removed | the same-author unmounted keep-draft spec, alone |
+  | the `clearTimeout` inside `_clearDraft` | the cancel spec, the continuation rejecting-invalidation spec, both re-arm specs |
+  | `localStorage.removeItem(key)` inside `_clearDraft` | ten: every draft-absence spec in the ticks describe |
+  | the enrichment arm of the load guard, `fulfilled` wrapper restored | the rejected-enrichment spec |
+  | `$watch('newCoAuthors', ...)` | the watcher-enumeration spec |
+  | `addressedReviews` in the `_writeDraft` object | debounced-save, tick-change, both unmount-during-broadcast specs, the pre-landing failure spec |
+  | `$watch('addressedReviews', ...)` | the tick-change and watcher-enumeration specs |
+  | the restore line in `_restoreDraft` | restore, drop-stale, resubmit, post-success-clear-of-ticks |
+  | the `reviews` intersection in `_reconcileAddressedReviews` | drop-stale only |
+  | the `:checked` binding | the checkbox spec |
+  | the `isReviewAddressed` body | the checkbox spec |
+
+  Each of this round's sites is discriminated per arm and per exit. Every
+  new-site mutant kills exactly its own spec and nothing else. The item 1
+  specs are the only kill for the post-invalidation clears, whether moved
+  or deleted. The item 4 twin is now the only kill for the continuation
+  early clear. That clear had no pin at `01b17cfc`.
+
+  Changes from the earlier tables, all expected:
+  - The native `landed` revert now also kills the item 3 spec, which routes
+    through the same-author arm.
+  - The `addressedReviews`-in-`_writeDraft` revert kills five specs. Both
+    unmount twins and the pre-landing spec read the tick back as their
+    non-vacuity proof.
+  - The two "true pre-fix arm shape" rows are subsumed by the per-arm
+    delete and hoist rows, so they were not re-run as separate mutants.
+- E2E not re-run. The diff adds no markup: zero added lines carry a tag, an
+  Alpine directive or `type="submit"`. The new runtime branch (an unmount
+  while the invalidation is pending) is also not reachable in that
+  environment, and the dance would swap the shared stack into test mode
+  under any sibling using it. It can be run on request.
+- No new i18n keys, so no `STUBS.md` entry.
+- Simplify pass, three lenses (reuse, quality, efficiency), scoped to
+  `23d72b81`. Reuse and efficiency found nothing. Efficiency confirmed the
+  success path still runs `_clearDraft` twice, as before. Quality confirmed
+  that no stale "success-side clear" wording remains and that the new
+  comments pass the anchor rules. It raised one nit, a garbled sentence in
+  the continuation unmount twin's header comment, fixed in `323b550b`. The
+  re-run gave 103 passed, exit 0.
