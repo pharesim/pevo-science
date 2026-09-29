@@ -778,3 +778,123 @@ in for the entry-gate flush.
   partial form leaves the file inconsistent, the same trade the earlier
   compare-helper dismissal settled. Available as a follow-up commit on
   request.
+
+## Architect re-review (2026-09-29) — HELD PENDING FIXES:
+
+`/ce-code-review` on `01b17cfc` (seven lenses; standards clean including the
+comment-anchor sweep of all added comment lines; independent validator batch
+confirmed 4/4 findings with empirical reproductions). Both round-3 items are
+FIXED: every kill claim in the signal block was re-measured independently by
+at least two lenses (per-arm `landed` markers, per-arm hoisted clears and
+dropped guards, the catch-clear revert), the keep-draft specs reach the real
+fresh-auth refusal resolution, and both flagged deviations hold on the merits
+(the pre-guard catch placement serves a real corner; per-arm re-arm twins are
+justified because a shared-catch spec proves only the arm it routes through).
+Four items, then move back to `review/`.
+
+1. **The resolve twin of the closed exit still leaks the spent draft**
+   (`edit.js`, both arms, the `if (!this._mounted) return;` after
+   `await invalidatePaperCache(...)`). The catch clear closed the REJECT half
+   of the re-arm window; on a RESOLVING invalidation that guard sits above
+   the success-side `_clearDraft(draftKey)`, so a draft written during the
+   await (the 2s debounce firing, or the synchronous
+   `handleSupplementaryFiles` -> `_windowReady` -> `_flushDraftSave` flush)
+   survives when the user leaves before the invalidation settles. The next
+   visit restores spent ticks that alone pass the no-changes check: the
+   resurrection class this task closes, through the last open exit, and the
+   await can hang up to the 30s request timeout. Probed independently three
+   times (runtime staging, a 16-cell arm x fired-timer x unmount x
+   resolve/reject matrix with exactly this one leaking cell per arm, and the
+   validator's reproduction); the reject twin of the same staging ends null.
+   **Invariant to land:** every `handleSubmit` exit reached after the
+   broadcast landed leaves the stored draft absent, the unmounted return
+   after a resolving invalidation included. **Measured default:** move each
+   arm's clear to directly after the invalidation await, ahead of the
+   `_mounted` guard (mirroring the catch clear's own outlives-the-component
+   rationale), and drop the now-subsumed clear beside `step = 'success'`
+   together with its kept-for-the-interactive-window comments; verified
+   98/98 green with the full matrix clean. A `finally`-based shape
+   (`if (landed) this._clearDraft(draftKey)` on the try) is an acceptable
+   deviation with rationale; it removes the catch-side clear site and
+   re-shapes items 2 and 3, so say so explicitly in the signal if taken. Do
+   NOT reach for a `_draftSpent` write barrier here; that construct belongs
+   to the reserved invalidation decision still held by the architect.
+   **Specs, per arm:** arm the writer inside a RESOLVING
+   `invalidatePaperCache` mock (fake timers advanced past the debounce so it
+   FIRES, non-vacuity read captured, `destroy()` inside the mock, then
+   resolve) and assert the draft key is null. Probe by reverting the moved
+   clear per arm: each mutant must die to its own arm's new spec.
+
+2. **The `landed`-false half of the catch has no witness** (`edit.js`, the
+   `if (landed)` guard in the terminal catch). Making the clear
+   unconditional passes all 98 specs, so the comment's invariant
+   "Pre-broadcast throws keep their draft" is unpinned; a regression deletes
+   the user's flushed draft on a failed upload or broadcast. Measured
+   independently five times. **Fix:** spec(s) staging a plain broadcast
+   rejection (no fresh-auth shape): assert one broadcast call,
+   `invalidatePaperCache` not called, `step === 'error'`, and the stored
+   draft still carrying the flushed title and tick. Per-arm twins match the
+   file's idiom; one same-author spec is mechanically sufficient since the
+   guard sits before either arm's marker — implementer's choice, state it in
+   the signal. Probe: the unconditional-clear mutant dies to the new spec(s)
+   while every existing spec survives.
+
+3. **A catch entered unmounted after the debounce has FIRED is untested**
+   (`edit.js`, the catch clear and the catch's `_mounted` guard). Swapping
+   the clear below the guard passes all 98 specs, though the placement
+   comment names exactly this corner: a timer that fires before the unmount
+   leaves nothing pending for `destroy()` to cancel, and the rewritten
+   draft must still be removed. The re-arm twins run mounted and only ARM
+   the timer, so storage is already empty when the catch runs and only the
+   cancel half of the catch clear is pinned. **Fix:** one same-author spec
+   under fake timers: inside the rejecting invalidation mock, type,
+   `_scheduleDraftSave()`, advance past the debounce so it fires, capture
+   the non-vacuity read, `destroy()`, then throw; assert `step` stayed
+   `'broadcasting'` and the draft key is null. Optionally shift the router
+   params inside the mock and seed the other paper's draft to pin the
+   captured-key rationale at this site too. The invariant survives item 1's
+   shape choice: under the `finally` deviation the same spec pins the
+   `finally`'s clear and the placement half is moot — record that in the
+   signal rather than skipping silently. Probe: the swapped-order mutant
+   (or, under the deviation, the `finally` clear removed) dies to the new
+   spec alone.
+
+4. **The continuation arm's early clear lost its only pin to this diff**
+   (`edit.js`, the continuation arm's post-broadcast `_clearDraft`). The new
+   catch clear absorbed the rejecting-invalidation exit that round-3's
+   continuation spec used to discriminate this site, and only the
+   same-author arm has an unmount-during-broadcast spec: deleting the
+   continuation early clear, or restoring its true pre-fix guard shape, now
+   passes 98/98. **Fix:** add the continuation twin of `an unmount during
+   the broadcast still drops the draft the landed edit spent`: co-author
+   posture asserted via `isContinuation`, the broadcast mock reads the
+   stored draft first (non-vacuity), `destroy()`, resolve `{ tx_id }`;
+   assert one broadcast and the draft key null. Probe: deleting the
+   continuation early clear dies to the new spec alone.
+
+Dismissed at triage, no action: the stale unmounted catch clear deleting a
+successor visit's draft on the shared key (advisory, same shape as the
+pre-existing post-broadcast clear; the write-barrier and savedAt-scoping
+ideas belong to the reserved invalidation decision), the post-error writer
+re-arm including the file-attach flush (same reserved decision, unchanged by
+this diff), the unpinned late clears beside `step = 'success'` (pre-existing
+and default-dismissed; item 1's measured default removes them anyway), the
+mounted keep-draft specs' missing broadcast-count and refusal-toast asserts
+(optional hardening), the captured-`draftKey` rationale at the non-catch
+clear sites (accepted gap, recorded in the discriminating-spec solutions
+entry; item 3's optional router shift covers the catch site), the fabricated
+401 shape in the keep-draft specs (matches `signer.js#broadcastOps`'s real
+construction), and the throwing-storage catch corner (unreachable
+per-document storage semantics; the `finally` deviation closes it
+incidentally).
+
+Verification note: baseline at `01b17cfc` is 98 passed, exit 0, no Errors
+line, in an isolated copy. A sibling UI task was editing
+`pages-edit.test.js` in the shared checkout during this review; build on
+whatever it lands rather than reverting it. At archive time,
+`/ce-compound-refresh` the discriminating-spec solutions entry (two of its
+measurement rows and its late-clear sentence are stale at `01b17cfc`; this
+extends the round-3 refresh note), and the per-arm `landed` marker read by a
+terminal catch placed ahead of the unmount guard is a `/ce-compound`
+candidate. Do not cite this hold, its item numbers, or the task slug in code
+or test comments; anchor on the symbols named above.
