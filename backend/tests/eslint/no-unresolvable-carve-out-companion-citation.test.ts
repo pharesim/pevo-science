@@ -169,19 +169,24 @@
  *     dash-or-space run absorbs; no word is broken inside itself here, and the
  *     gap is recorded, not closed.
  *
- *   - A near-miss whose own QUALIFIER carries an abbreviation is dropped by
- *     the same sentence-break refusal. Written `Real-path (e.g. <a backticked
- *     path>) companion: covered`, the span breaks at the full stop inside
- *     `e.g.`, because a backtick follows it and a backtick is not a lower-case
- *     letter; `(i.e. (routes/foo.test.ts))` breaks the same way before its
- *     parenthesis. The
+ *   - A near-miss whose own QUALIFIER carries a phrase break is dropped by
+ *     the same sentence-break refusal. The trigger set is the refusal's own,
+ *     not abbreviations: any `.`, `;`, `!` or `?` followed by one whitespace
+ *     and anything that is not an ASCII lower-case letter, wherever it falls
+ *     inside the qualifier. An abbreviation before a backtick is one member
+ *     (`Real-path (e.g. <a backticked path>) companion: covered` breaks at
+ *     the full stop inside `e.g.`), `(i.e. (routes/foo.test.ts))` breaks the
+ *     same way before its parenthesis, and no abbreviation is needed at all:
+ *     a semicolon joining two backticked paths, a two-sentence qualifier,
+ *     `(SQL; HAF)` and `(mocked? No, ...)` all break the same way. The
  *     span stops inside the qualifier, so the block yields labels=0 and
  *     unparsed=0 and is dropped, exactly as the far-colon escape above is.
  *     Closing the whole family means firing the refusal only before a capital,
  *     which was measured and declined: it accuses an honest header in the
  *     corpus and moves a backlog pin. Recorded by the `abbrevNearMiss` probe,
- *     which pins the gap at its current width so that widening it later is a
- *     visible probe edit rather than a silent change of recall.
+ *     which pins the gap at its current width, at one abbreviation member and
+ *     one semicolon member, so that widening it later is a visible probe edit
+ *     rather than a silent change of recall.
  *
  * WHY COMMENTS, MOCK BODIES AND TITLES DO NOT COUNT (arm 4). Risk-class tokens
  * appear constantly in prose, including prose that pins the OPPOSITE of the
@@ -886,7 +891,11 @@ const QUALIFIER = String.raw`(?:(?!(?:${STOP_WORDS})(?![\w-]))[(\[\x60'"*_]{0,4}
  * it fails for want of `companion`, so the cost is set by how many partitions
  * the quantifiers admit between them. EVERY run in the label is therefore
  * bounded: `{0,4}` between the words, the emphasis run on either side of the
- * qualifier slot, and, in QUALIFIER above, a qualifier word and its wrappers.
+ * qualifier slot, the tag name in the markup alternative (`{1,16}`, clear of
+ * every HTML element name), and, in QUALIFIER above, a qualifier word and its
+ * wrappers. The tag name could not partition even unbounded, sitting between
+ * literal `<` and `>`, so its bound exists to make this sentence true by
+ * construction rather than to remove a cost.
  * The word's bound is `{1,64}`, comfortably clear of the longest exported
  * symbol name in `backend/src` (42 characters), so a qualifier that names an
  * identifier is never refused; a hyphenated compound is longer still and
@@ -905,18 +914,26 @@ const QUALIFIER = String.raw`(?:(?!(?:${STOP_WORDS})(?![\w-]))[(\[\x60'"*_]{0,4}
  * is constant per starting position, measured flat from 6400 to 120,000
  * characters. A canary slow enough to look hung gets disabled, which is why
  * the separator-run timing spec puts a run of each of those shapes through
- * both `labelCount` and `citationsIn`, at two lengths, shortest first, so that
- * a regression fails in seconds rather than never returning.
+ * both `labelCount` and `citationsIn`, at three lengths, shortest first. The
+ * lengths are not interchangeable: the worst regression class, QUALIFIER's
+ * trailing separator reverted to `[\s-]+`, does not return at 6400 at all,
+ * and a synchronous regex cannot be pre-empted by a test timeout, so only the
+ * shortest pass turns that hang into a failure in seconds; quadratic growth
+ * is invisible at the shortest length and needs the middle one; the cheapest
+ * shapes grow so slowly that only the longest exposes them.
  */
 const LABEL_SRC =
-  String.raw`real[\s-]{0,4}path[\s-]{0,4}(?:[*_\x60]{1,4}[\s-]{0,4})?${QUALIFIER}{0,2}(?:<[a-z]+>|[*_\x60]{1,4})?companions?(?:\(s\))?`;
+  String.raw`real[\s-]{0,4}path[\s-]{0,4}(?:[*_\x60]{1,4}[\s-]{0,4})?${QUALIFIER}{0,2}(?:<[a-z]{1,16}>|[*_\x60]{1,4})?companions?(?:\(s\))?`;
 
 /** Anything that keeps a phrase going: a comma, a bracket, the dots inside a
  *  filename. Not a sentence break, which ends the phrase and begins an
  *  unrelated one, and without which "runs on the real path. The
  *  companion: covered" reads as a claim. (The longer spelling, "the companion
- *  suites pin it:", is held off by the room after the noun rather than by the
- *  refusal, so it demonstrates the window and not this rule.) Load-bearing now
+ *  suites pin it:", is held off by each arm on its own: the refusal ends the
+ *  span at `. T` before the room after the noun is ever consulted, and that
+ *  room alone is too tight for the fourteen characters between its noun and
+ *  its colon. It therefore demonstrates neither arm in isolation, which is
+ *  why the probes use the short spelling.) Load-bearing now
  *  that the span is matched across the wraps of a whole block rather than
  *  within one line.
  *
@@ -941,8 +958,11 @@ const LABEL_SRC =
  *  Firing only before a capital would let prose above a `(c)` clause marker
  *  reach the claim below it, and that narrowing was measured against the
  *  corpus: it accuses an honest header and moves a backlog pin. What the
- *  breadth costs is the abbreviation near-miss recorded in the header's list
- *  of gaps left open on purpose. */
+ *  breadth costs is the phrase-break near-miss family recorded in the
+ *  header's list of gaps left open on purpose: a qualifier carrying any of
+ *  `.`, `;`, `!` or `?` before a whitespace and a non-lower-case character,
+ *  an abbreviation before a backtick and a semicolon joining two backticked
+ *  paths alike. */
 const CLAIM_SPAN = String.raw`(?:(?![.;!?]\s(?![a-z]))[^\n])`;
 
 /** A plain lower-case word as a pattern source that matches in ANY casing
@@ -1907,6 +1927,14 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     // what makes this an assertion about the CASING rather than the group.
     expect(unparsedClaims(' (c) REAL-PATH (also routes/foo.test.ts) COMPANION(S)xxxxxxxx: covered')).toHaveLength(1);
     expect(unparsedClaims(' (c) Real-path (also routes/foo.test.ts) companion(s)xxxxxxxx: covered')).toHaveLength(1);
+    // The bare plural `S` is the same kind of second literal and needs its own
+    // class, and it shows the same way, once the room after it is spent: with
+    // `[Ss]` matching the `S` the eight characters of slack still reach the
+    // colon, and with a lower-case-only `s?` they have to cover the `S` as
+    // well and fall one short. The lower-case twin is caught either way, which
+    // again makes this an assertion about the CASING rather than the group.
+    expect(unparsedClaims(' (c) REAL-PATH (also routes/foo.test.ts) COMPANIONSxxxxxxxx: covered')).toHaveLength(1);
+    expect(unparsedClaims(' (c) Real-path (also routes/foo.test.ts) companionsxxxxxxxx: covered')).toHaveLength(1);
     // Casing does not defeat the refusal either, which is the one thing
     // omitting the flag buys: a capital after the stop still ends the phrase
     // whatever the casing of the words around it.
@@ -1927,14 +1955,18 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     // accuses a header in the corpus into the bargain.
     expect(unparsedClaims('preserved real-path because every spec issues a call. (c) Real-path SQL companion: x')).toHaveLength(0);
     // What the breadth costs, recorded rather than closed: a near-miss whose
-    // own qualifier carries an abbreviation breaks at the abbreviation's full
-    // stop, because what follows it is a backtick or a parenthesis rather than
-    // a lower-case letter, and the claim is dropped unaudited. The header
-    // lists this among the gaps left open on purpose; these two pin its
-    // current width, so widening it later cannot happen silently.
+    // own qualifier carries a phrase break, any of `.`, `;`, `!` or `?`
+    // followed by a whitespace and a non-lower-case character, breaks there
+    // and the claim is dropped unaudited. An abbreviation before a backtick or
+    // a parenthesis is one member; a semicolon joining two backticked paths
+    // needs no abbreviation at all and pins the gap at a non-abbreviation
+    // member. The header lists this family among the gaps left open on
+    // purpose; these three pin its current width, so widening it later cannot
+    // happen silently.
     for (const abbrevNearMiss of [
       ' (c) Real-path (e.g. `backend/tests/routes/foo.test.ts`) companion: covered',
       ' (c) Real-path (i.e. (routes/foo.test.ts)) companion: covered',
+      ' (c) Real-path (see `a.test.ts`; `b.test.ts`) companion: covered',
     ]) {
       expect(unparsedClaims(abbrevNearMiss), abbrevNearMiss).toHaveLength(0);
       expect(labelCount(abbrevNearMiss), abbrevNearMiss).toBe(0);
@@ -2295,30 +2327,47 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     // A section underline or separator written directly against `real-path` is
     // the adversarial input: the label partitions that run between its own
     // quantifiers and explores every partition before it fails for want of
-    // `companion`. A 400-dash run was too short to show it. Bounding only the
-    // dash-or-space runs left the match quadratic in a DASH run (6400 dashes:
-    // about 9s through `labelCount`, about 19s through `citationsIn`), and
-    // leaving a qualifier's wrappers or the emphasis run before it unbounded
-    // moved the same cost onto UNDERSCORES, ASTERISKS and BACKTICKS, where it
-    // is worse, since an underscore is both a word character and an emphasis
-    // character. So every shape is run, and each is run at two lengths.
+    // `companion`. Bounding only the dash-or-space runs left the match
+    // quadratic in a DASH run (6400 dashes: about 9s through `labelCount`,
+    // about 19s through `citationsIn`), and leaving a qualifier's wrappers or
+    // the emphasis run before it unbounded moved the same cost onto
+    // UNDERSCORES, ASTERISKS and BACKTICKS, where it is worse, since an
+    // underscore is both a word character and an emphasis character. Each
+    // shape is a `[prefix, run]` pair, because no suffix-only shape puts a
+    // LONG homogeneous separator run behind an emphasis character: the mixed
+    // run's own leading `_` does reach the `[\s-]{0,4}` INSIDE the emphasis
+    // group, but hands it at most one dash before the next emphasis
+    // character, so nothing in that slot grows with the run. The two prefixed
+    // shapes, `real-path_` before a dash run and `real-path*` before a space
+    // run, are the ones that put a whole run in that slot, and they are what
+    // pin that bound.
     //
-    // TWO LENGTHS, SHORT FIRST, and the order is the point. These failures
-    // differ in cost by orders of magnitude, and a canary that hangs gets
-    // disabled as surely as a slow one: unbounded, a 100,000-dash run does not
-    // return at all, while 6400 costs about eight seconds and fails. The short
-    // pass therefore aborts the spec on the expensive regressions before the
-    // long pass runs, and the long pass catches the cheap ones, where an
-    // unbounded emphasis run costs about 53ms at 6400 (green under any bound
-    // this side of flaky) and about 4.4s at 100,000. Bounded, the slowest
-    // shape measures about 2ms at either length and does not grow between
-    // them, so the threshold sits two orders of magnitude clear of green.
+    // THREE LENGTHS, SHORT FIRST, and each exists for a regression class the
+    // others miss. These failures differ in cost by orders of magnitude, and
+    // a canary that hangs gets disabled as surely as a slow one. The SHORTEST
+    // pass exists for the class that stops returning at the middle length:
+    // reverting QUALIFIER's trailing separator `[\s-]{1,4}` to `[\s-]+` gives
+    // no verdict at 6400 in 90s, and vitest's testTimeout cannot pre-empt a
+    // synchronous regex, so without this pass the whole file hangs instead of
+    // failing; at 400 the same revert fails in two to three seconds while the
+    // committed pattern stays in single-digit milliseconds on every shape. The
+    // MIDDLE pass catches quadratic growth the shortest cannot see: the
+    // qualifier word-class revert is green at 400 and fails at 6400 in about
+    // ten seconds. The
+    // LONG pass catches the cheap shapes, where an unbounded emphasis run
+    // costs about 53ms at 6400 (green under any bound this side of flaky) and
+    // about 4.4s at 100,000. Bounded, every shape stays in single-digit
+    // milliseconds at every length on this host, so the threshold sits well
+    // over an order of magnitude clear of green.
     // `citationsIn` is timed as well as `labelCount` because `forwardPattern`
     // and `reversePattern` embed the same `LABEL_SRC` and run first on every
     // block.
-    for (const runLength of [6_400, 100_000]) {
-      for (const sep of ['-', '_', '*', '`', 'a-', 'a_', '_-*`']) {
-        const adversarial = `real-path${sep.repeat(Math.ceil(runLength / sep.length))}x`;
+    for (const runLength of [400, 6_400, 100_000]) {
+      for (const [prefix, sep] of [
+        ['', '-'], ['', '_'], ['', '*'], ['', '`'], ['', 'a-'], ['', 'a_'], ['', '_-*`'],
+        ['_', '-'], ['*', ' '],
+      ] as const) {
+        const adversarial = `real-path${prefix}${sep.repeat(Math.ceil(runLength / sep.length))}x`;
         for (const [name, run] of [
           ['labelCount', (): void => expect(labelCount(adversarial)).toBe(0)],
           ['citationsIn', (): void => expect(citationsIn(adversarial)).toHaveLength(0)],
@@ -2326,7 +2375,7 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
           const start = performance.now();
           run();
           const elapsed = performance.now() - start;
-          expect(elapsed, `${name} took ${elapsed.toFixed(1)}ms on a ${runLength}-character run of ${JSON.stringify(sep)}`)
+          expect(elapsed, `${name} took ${elapsed.toFixed(1)}ms on a ${runLength}-character run of ${JSON.stringify(sep)}${prefix ? ` prefixed ${JSON.stringify(prefix)}` : ''}`)
             .toBeLessThan(250);
         }
       }
