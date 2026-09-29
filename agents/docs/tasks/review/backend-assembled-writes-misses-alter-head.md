@@ -1090,3 +1090,145 @@ No new entry. Items 1 and 2 are the fourth recurrence, on this file, of
 `agents/docs/solutions/conventions/a-readers-bound-restated-at-n-sites-reads-as-sufficient-at-each.md`,
 whose body does not yet carry the assignment-walk material. The architect folds the
 recurrence into that entry via `/ce-compound-refresh` at archive, per the round-3 note.
+
+## Backend round-5 signal (2026-09-29, commit 57afcc63)
+
+The commit is an ancestor of `main` (`git merge-base --is-ancestor` checked) and touches
+only `backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`.
+Prose only: `git diff 67361efe 57afcc63` over the file (this round's whole diff; the file
+started byte-identical to the round-4 result plus `67361efe`, the scan-roots sibling)
+shows zero non-comment changed lines, verified mechanically. Both hold items AND all
+corrections landed in this ONE commit, as prescribed: the adversarial verification ran
+BEFORE committing rather than after, which is why this round lacks the
+hold-items-then-corrections commit chain of rounds 2 to 4.
+
+One verification workflow ran over the working tree (`wf_bb8556a5-403`, 18 agents, zero
+errors): five measurement agents, three falsification lenses each required to demonstrate
+with a plant AND a control, and two independent confirmers per deduped candidate, all in
+their own scratch copies. Five falsifications were confirmed, every one 2/2; four were
+fixed in the commit and one is recorded below for the architect. The correctness lens
+returned no findings; the five came from the adversarial and sibling-consistency lenses.
+
+### Item 1. Reach stated against the assignment token
+
+Header item 4, the three-bucket clause and the `assembledWrites` docblock now state the
+condition against the assignment, and the three-bucket clause pins what the walk asks:
+POSITION, not text — the nearest head's read reaches the assignment where it did not give
+up and ended past where the `updated_at` token begins (a later line, or the token's own
+line either right of it or at no terminator at all). The hold's plant and control,
+re-measured at 57afcc63 in a scratch copy:
+
+- PLANT (an `UPDATE widgets` template opened on an earlier line, no `;` after its closing
+  backtick, then a fragment spelling `SET b = 2;` with `updated_at = now()` on the next
+  line): reds `every updated_at assignment resolves to the table it writes`,
+  1 failed | 28 passed, exit 1.
+- CONTROL (that `;` changed to `,`, the read then spans the assignment): 29 passed,
+  exit 0.
+- Bucket 2 measured positively: the control shape with `UPDATE accounts` reds BOTH writer
+  arms (`the accounts writers found column-first are exactly the two signup finalizes`,
+  `the accounts writers found table-first are the same two`), 2 failed | 27 passed,
+  exit 1.
+
+### Item 2. The disjunct covers the walk's domain
+
+The fail-closed disjunct now reads `where the walk finds no head at all`, matching the
+ALTER paragraph's sibling clause; the own-line-left slot sits inside the domain the same
+sentence already states. Re-measured at 57afcc63:
+
+- PLANT (a widgets head LEFT of the assignment on its own line, nothing above, read
+  spanning the assignment — one line,
+  `` const s = `UPDATE widgets SET a = 1, updated_at = now() WHERE id = 1;`; ``):
+  29 passed, exit 0, where the old `no head sits above at all` wording promised a
+  fail-closed red.
+- CONTROL (the fragment alone, no head anywhere): reds
+  `every updated_at assignment resolves to the table it writes`, 1 failed | 28 passed,
+  exit 1.
+
+### Corrections the verification pass forced, fixed in the same commit
+
+1. The hold-prescribed rewrite itself overclaimed `the writer arms red` (plural) for
+   bucket 2, and the round-4-reviewed ALTER-paragraph sibling carried the same plural.
+   The walk buckets on position while the table-first arm answers to its own read of the
+   TEXT, so a terminator landing between the `updated_at` token and its `=` satisfies the
+   walk and not that arm. Both sites now split the consequent — the column-first arm reds
+   on the bucket; the table-first arm only while the text still spells the write — with
+   the ALTER paragraph deferring to the three-bucket sentence by name. Hold prescriptions
+   are in scope per the standing convention. Measured at 57afcc63:
+   - PLANT `export enum ProbeSql { "UPDATE accounts SET updated_at" = 1, }` (the enum
+     member's closing `"` is the read's terminator, landing between the token and its
+     `=`, inside the optional-quote slot of `COLUMN_ASSIGNMENT_RE`): reds the
+     column-first arm ALONE, 1 failed | 28 passed, exit 1 — table-first and fail-closed
+     both green.
+   - CONTROL (the `=` moved inside the quotes): reds BOTH writer arms,
+     2 failed | 27 passed, exit 1.
+   The same boundary re-worded bucket 1: `closes before its assignment` became `ends
+   before its updated_at token`, since the plant's read closes before the `=` yet
+   resolves.
+2. Three pre-existing comment sites stated the walk as a universal over heads above:
+   the `targetTable` docblock (`provided the statement that head opens reaches the
+   assignment's line`, an if-form its own inline comment contradicts), the
+   `UNRESOLVED_TABLE` one-liner (`when no statement head above it reaches it`), and the
+   `unresolvedIn` helper docblock (`that no readable head reaches`). The walk stops at
+   the NEAREST head found and never climbs past, so a write whose nearest head does not
+   reach it is labeled even while a farther readable head's read spans it. All three now
+   state the nearest-head bound. Measured at 57afcc63:
+   - PLANT (a near non-reaching head under a far reaching one: an `UPDATE far_table`
+     backtick template holding `; UPDATE near_table SET b = 2 ;` on its middle line and
+     `, updated_at = NOW()` on its last): reds
+     `every updated_at assignment resolves to the table it writes`,
+     1 failed | 28 passed, exit 1, although the far head's read spans the assignment.
+   - CONTROL (the near head defused to `SELECT near_noise`): 29 passed, exit 0 — the far
+     head, once nearest, resolves the same assignment silently, proving its read
+     readable and reaching in both probes.
+
+### [TODO Architect] Found, not acted on: the fail-closed arm's assertion message
+
+The message inside the fail-closed arm's `it(...)` states the same falsified universal
+(`an updated_at assignment that no readable statement head reaches`, with `a head further
+up the file whose statement closed earlier does not count` as its only farther-head
+caveat), and its remediation (`Give the statement a readable head`) misdirects in the
+near-non-reaching case, where the statement HAS one. The near/far plant above reds this
+very bar while a readable head reaches the reported assignment, and that head's statement
+closed PAST it, not earlier. Confirmed 2/2 by independent re-measurement. It is a string
+literal — a non-comment line — and the standing round-1 decision is no code change, which
+every round's evidence has certified as zero non-comment changed lines, so it is recorded
+here for the architect to rule rather than edited.
+
+### Considered and left, with the reason
+
+- Header scan-1's `The head counts only if the statement it opens reaches the
+  assignment's line` keeps its deliberate `only if` necessity spelling: reaching the
+  token implies reaching the line, so the necessary condition survives.
+- The dynamically-named-target bullet's `"No readable head reaches it" is not a property
+  of the shape...` and the `SpanEvent` docblock's `lends its table to a write below it
+  that no readable head reaches` describe the span-replay mechanism
+  `backend-head-line-read-silences-fail-closed-backstop` owns; the sweep read both and
+  filed nothing.
+- The quieting-shapes paragraph's `reds the fail-closed arm where no nearer head reaches
+  it` already anchors on the assignment.
+
+### Acceptance evidence
+
+All vitest runs from scratch copies (`git archive HEAD backend`, the edited canary
+overlaid, `node_modules` and `.env` symlinked, `tests/setup.ts` stubbed). The shared
+checkout was never mutated by a probe; plants went to `backend/src/zz-probe-*.ts` inside
+the copies and were deleted after each run.
+
+- AC2 at the final tree: the canary is 29/29 and all nine `tests/eslint` files are
+  139/139 with exit 0 and no `Errors` line; `npm run typecheck` and `npx eslint` on the
+  file both exit 0; `ALLOWED_COLUMN_ALTERATIONS` is untouched (zero hits in the diff);
+  the TypeScript scanner counts 54 block comments and 894 line comments with zero parse
+  diagnostics at both range ends.
+- AC3 is unchanged: no fixture or assertion was touched, so the round-1 pins still red
+  under their mutants.
+- The pre-commit anchor gate: a standalone proof ran the hook in a throwaway repo over
+  the hold-items diff with `PEVO_ANCHOR_GATE=on` exported and a one-line firing control
+  (`// see the rule below`, rejection captured verbatim); the full final diff then passed
+  the live hook at commit with the gate on.
+
+This round's corrections are the fifth recurrence on this file of
+`agents/docs/solutions/conventions/a-readers-bound-restated-at-n-sites-reads-as-sufficient-at-each.md`
+(the plural consequent and the universal-over-heads items are the same class); no new
+entry, and per the round-3 and round-4 notes the architect folds the recurrence at
+archive. Backend did not run code review (`agents/backend/CLAUDE.md` assigns
+`/ce-code-review` to the architect).
