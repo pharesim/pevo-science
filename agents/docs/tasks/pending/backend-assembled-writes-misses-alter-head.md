@@ -1232,3 +1232,115 @@ This round's corrections are the fifth recurrence on this file of
 entry, and per the round-3 and round-4 notes the architect folds the recurrence at
 archive. Backend did not run code review (`agents/backend/CLAUDE.md` assigns
 `/ce-code-review` to the architect).
+
+## Architect re-review (2026-09-29, round 5) — HELD PENDING FIXES:
+
+Reviewed `57afcc63` alone (`57afcc63^..57afcc63`, an ancestor of `main`) via
+`/ce-code-review` across four lenses (correctness, project-standards on root `CLAUDE.md`,
+adversarial, learnings) plus one validator batch that re-measured both actionable findings in
+its own `git archive 57afcc63` copy. The cross-model pass did NOT run (the reviewed commit is
+no longer the working-tree file, and only a same-family route is installed on this host), so
+the adversarial lens ran in-process. No reviewer touched a database or the shared checkout.
+Every line number below is a line number in the file AT `57afcc63`. Two sibling commits
+(`35b3a3bb`, `50a582dc`, the scan-roots task) landed on the file while this review ran; their
+hunks touch none of the sentences below, but text past line 256 sits lower at HEAD (header
+item 4 is unmoved at 189; the `assembledWrites` sentence is at 2691 and `UNRESOLVED_TABLE` at
+1128 as of `50a582dc`).
+
+**What held up, so it is not redone.** Both round-4 items landed and were re-derived by
+execution rather than taken from the signal, each by three lenses independently. Item 1: the
+hold's plant (an `UPDATE widgets` template opened above, no `;` after its backtick, fragment
+`SET b = 2;` with `updated_at = now()` on the next line) reds
+`every updated_at assignment resolves to the table it writes`, exit 1; the `;`-to-`,` control
+is 29/29, exit 0. Item 2: the own-line-left widgets head is 29/29 and the fragment-alone
+control reds the fail-closed arm. The self-found corrections hold too: the enum-member plant
+reds the column-first arm ALONE (1 failed | 28 passed) and the `=`-inside-the-quotes control
+reds both writer arms (2 failed | 27 passed); the near/far plant reds the fail-closed arm and
+the `SELECT near_noise` control is 29/29. The new POSITION rule's other disjuncts were probed
+true (a migration last line with no terminator resolves; a read that passes the assignment and
+then ends a later line inside a value does not). AC2, re-run by the architect from a
+`git archive 57afcc63` copy: canary 29/29, all nine `tests/eslint` files 139/139 with exit 0
+and no `Errors` line, `npm run typecheck` and `npx eslint` on the file exit 0,
+`ALLOWED_COLUMN_ALTERATIONS` absent from the diff. Prose only, verified mechanically: the
+non-comment parser-leaf streams at base and head are identical (22745 leaves), with 54 block
+comments (45 JSDoc), 894 line comments and zero parse diagnostics at both ends. The pre-commit
+anchor gate is zero-hit over the 41 added lines with `ALLOW_MARKER` set and a firing control.
+Project standards is clean.
+
+The hold is prose only, two items, one commit. The user's round-1 decision stands: no code
+change, no new fixture. Quote item 1's plant and control in the signal.
+
+### Item 1 (required). "Runs on to the assignment" buckets a read that gave up past it.
+
+Header item 4 (lines 186-190: "where that nearest head's read runs on to the assignment, the
+assignment is bucketed under that head's table instead") and the `assembledWrites` docblock
+(2645-2649: "where it runs on to the assignment, the assignment is bucketed under its table
+instead") state the bucketing consequent without the gave-up condition. `targetTable`
+(2298-2302) refuses any read with `stopped` set, whatever line it stopped on, and this same
+commit says so at 309 ("where it did not give up and ended past where the `updated_at` token
+begins") and 2279. Measured twice (adversarial, the validator), same result: an
+`UPDATE widgets` template opened on a line above its head, whose read runs into a SET-list
+fragment, passes `updated_at = now(),` and gives up on the next line (a value left open), reds
+`every updated_at assignment resolves to the table it writes`, 1 failed | 28 passed, exit 1;
+the control with that value closed on its own line is 29/29, exit 0. A direct `statementAt`
+probe shows the read at `lastLine` past the assignment with `stopped` true in the plant, false
+in the control. The error is in the loud direction, and the two sentences are this range's
+rewrite of the round-4 item-1 sites.
+
+Fix: at both sites, either defer the reach condition to the three-bucket clause's definition
+by name (preferred: one definition, restated nowhere, is what ends this recurrence), or carry
+both halves of it (did not give up; ended past where the token begins). Check every other
+sentence in the file that states the bucketing consequent for the same omission and list what
+the check covered, from the code; at `57afcc63` the architect's grep finds "runs on to the
+assignment" at these two sites only, and line 313's "runs on into the fragment but ends before
+its `updated_at` token" is correct. Re-measure the plant and control above and quote both.
+
+### Item 2 (required). The `UNRESOLVED_TABLE` one-liner leaves the no-head case to a parenthetical.
+
+Lines 1085-1087: "The label a write gets when the NEAREST head the upward walk finds — if it
+finds one at all — has a read that does not reach it." The condition depends on a head being
+found; the no-head case, which `targetTable` returns at 2304, is never stated. The
+`unresolvedIn` docblock this range also rewrote (4816-4818) and the round-4 item-2 disjunct
+both name it as its own disjunct. Found independently by correctness, adversarial and
+learnings. Nothing false, wording only. Fix: state it as the two-disjunct form its siblings
+use (the walk finds no head, or the nearest head it finds has a read that does not reach it).
+
+### Dismissed by the user in triage (2026-09-29), recorded so it is not re-raised
+
+- 413-416, the quieting-shapes clause's "where one naming another table does, it is bucketed
+  there": the walk asks only the NEAREST head, so an even nearer non-reaching head reds the
+  fail-closed arm instead (plant and control reproduced three times). Dismissed: the sentence
+  predates this range (`d0c5f95e`), it defers by name to the ALTER paragraph that carries the
+  nearest-head bound, and the round-3 triage dismissed contrived nearer-head layouts in the
+  same passage. Leave its wording as is; item 1's check is for the gave-up condition only.
+- 2280, the `targetTable` docblock's "A head whose statement ended before that belongs to
+  some other query": "ended before" now also covers a read that hit `LITERAL_CAP` short of
+  its own assignment, which is that assignment's own statement (measured: a 47-line template
+  reds, the 30-filler-line control is green). Dismissed: the outcome it states is correct,
+  only the stated reason is off, and only for a statement longer than the cap.
+- 354, the ALTER paragraph's "the table-first arm reds only while that head's read still
+  spells the write": that arm reads from every `accounts` head, so a farther accounts
+  template reds both writer arms. Contrived, and red either way.
+- 305 and 355, "the three buckets the columnAssignments paragraph below gives" and "per the
+  three-bucket sentence above" point at each other. Both enumerate all three buckets;
+  navigation only, and the convention's restate-it clause is met.
+- 2646, `assembledWrites`' "spans the ASSIGNMENT" differs from the token-begin rule only when
+  a `"` terminator sits between the token and its `=`, which only an enum or class-field
+  member name produces.
+
+### The round-5 `[TODO Architect]`, triaged by the user (2026-09-29). No action on this task.
+
+The fail-closed arm's assertion message (2987-2991) states the falsified universal ("no
+readable statement head reaches", "Give the statement a readable head"). The claim is true,
+confirmed by four agents with the near/far plant and control. DISMISSED: the red bar still
+names the site and its line, the misdirection needs a near/far layout no tree writes, and
+lifting the no-code-change decision for one string is not worth another surface.
+
+### Learnings
+
+No new entry. This round's item 1 is the sixth recurrence, on this file, of
+`agents/docs/solutions/conventions/a-readers-bound-restated-at-n-sites-reads-as-sufficient-at-each.md`:
+the sweep patched the sites a verification pass named instead of re-deriving every
+restatement. The architect folds the recurrence into that entry via `/ce-compound-refresh` at
+archive, per the round-3 and round-4 notes, together with the stale `targetTable` summary in
+the normalization entry's Examples that the learnings lens flagged.
