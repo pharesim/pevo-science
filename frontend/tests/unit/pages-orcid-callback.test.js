@@ -1520,4 +1520,39 @@ describe('orcidCallbackPage', () => {
       expect(sessionStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_mode');
     });
   });
+
+  describe('_verify - session_auth mode', () => {
+    // The session-window leg holds the proof to the consent-op leg's standard.
+    // A null proof cached here is dropped on the next read, and a truthy
+    // non-string is refused by the next gate; either way that gate starts
+    // another ORCID round-trip after this one was toasted as a success.
+    // Refusing the write surfaces the failure on this page instead.
+    it.each([
+      { label: 'null', proof: null },
+      { label: 'numeric', proof: 42 },
+    ])(
+      'session_auth with a $label fresh_auth_proof: surfaces error, no cache write, no toast, no navigation',
+      async ({ proof }) => {
+        sessionStorageData['pevo_fresh_auth_return_to'] = '/publish';
+        const comp = createComponent();
+        mockCompleteOrcid.mockResolvedValue({
+          data: {
+            mode: 'session_auth',
+            fresh_auth_proof: proof,
+            expires_at: '2099-01-01T00:00:00.000Z',
+            absolute_expires_at: '2099-01-01T08:00:00.000Z',
+          },
+        });
+
+        await comp._verify('code', 'state', 'session_auth');
+
+        expect(comp.status).toBe('error');
+        expect(comp.errorMessage).toBe('orcid.verificationFailed');
+        expect(sessionStorageData['pevo_fresh_auth_session_proof']).toBeUndefined();
+        expect(sessionStorageData['pevo_fresh_auth_return_to']).toBe('/publish');
+        expect(mockToastStore.show).not.toHaveBeenCalled();
+        expect(mockRouterStore.navigate).not.toHaveBeenCalled();
+      },
+    );
+  });
 });

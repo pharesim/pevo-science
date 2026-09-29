@@ -472,6 +472,18 @@ export function initOrcidCallbackPage() {
       // no activity extends. Cache the whole window so every action the user
       // takes until it closes reuses this one re-auth act, then bounce them back
       // to where they started so they can carry on.
+      //
+      // Refuse a proof that is not a non-empty string before any of that, the
+      // same guard the consent-op leg applies. Cached, a null proof is dropped
+      // on the next read and a truthy non-string is refused by the next gate;
+      // either way that gate starts another ORCID round-trip after the user
+      // was told this one succeeded. The deadlines need no check here:
+      // `cacheSessionProof` already drops the slot on a non-finite deadline.
+      if (typeof data.fresh_auth_proof !== 'string' || !data.fresh_auth_proof) {
+        this.status = 'error';
+        this.errorMessage = this.$t('orcid.verificationFailed');
+        return;
+      }
       cacheSessionProof(
         data.fresh_auth_proof,
         data.expires_at,
