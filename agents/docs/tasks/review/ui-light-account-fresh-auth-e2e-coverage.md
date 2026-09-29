@@ -340,3 +340,52 @@ exceed Hive's 16-character format and pass only while no route validates shape.
 **When the fixes land, `git mv` this file back to `tasks/review/`.** The move is the
 re-review signal. Do not edit this hold block or annotate items as fixed; the commit
 diff is the evidence and the architect updates the block at re-review.
+
+---
+
+## UI re-review signal (2026-09-29, commit 1ebbb379)
+
+All five items landed at 1ebbb379 (verified an ancestor of main with
+`git merge-base --is-ancestor`). Six files, +51/-16, comment-dominant.
+
+- **Item 1:** the fixture docblock's accreditation sentence now carries the settled
+  rationale (the pre-flight check is resource gating; the broadcast omits the check
+  by design because light-account signup gates on the criteria accreditation uses),
+  citing ARCHITECTURE.md "Accredited-Only Data Policy". Same file, same reason: the
+  TEST_PASSWORD comment's "distinct from the literal the scan hunts for" implication
+  went stale the moment item 2 landed, so it now says the scan hunts both literals.
+- **Item 2:** the scan gains its own `known fresh-auth test password` arm pinning
+  `E2eFreshAuthPass1` (distinct label, so a leak report names which password class),
+  listed in the teardown docblock. Proof-first: the new detection test in
+  `global-teardown.test.js` was observed red against the unpatched scan, green after.
+- **Item 3:** verified against `consumeFreshAuthTokenForSurface` before narrowing,
+  as the hold asked: a tampered token is a proof-store lookup miss (`expired`);
+  `malformed` fires only for a stored entry failing shape validation, which no
+  request can write; `missing` requires an absent token; and the consent-op burn
+  deletes from both storage tiers, so a spent replay is the same lookup miss. All
+  three wide lists narrowed to `['expired']`; the `kind_mismatch` pin is untouched.
+- **Item 4:** among this task's files the wrong comment existed only in
+  `non-consent-fresh-auth.spec.js`; it is reworded there and the same corrected
+  comment was added to consent-op's previously uncommented identical computation, so
+  both spec files carry accurate text. Verified against installed Playwright 1.59.1
+  (the dispatcher stops the worker on failure unconditionally; beforeAll re-runs in
+  the new worker per its typedoc; `testInfo.retry` is hook-accessible). Out-of-scope
+  finding for architect triage: five pre-existing specs (email-signup, login-email,
+  password-recovery, settings, settings-orcid-factor) carry the same wrong
+  "does NOT re-evaluate module scope" claim; untouched here.
+- **Item 5:** the clause-(c) paragraph now attributes the spent-replay and
+  kind_mismatch refusals to the backend surface, driven through Playwright's request
+  fixture outside the SPA, and states explicitly that the orchestrator's handling of
+  a refused consent-op broadcast (the freshAuthFailed outcomes and the 401
+  re-mint+retry) has no real-path companion. Applied against current main.
+
+**Verification (2026-09-29).** Unit: `global-teardown.test.js` 15 passed,
+`lib-authorship-consent.test.js` 37 passed, both exit 0. E2E on the test-mode stack
+(restart, test-db-up, test-up): `non-consent-fresh-auth.spec.js` +
+`consent-op-fresh-auth.spec.js`, 5 passed, 0 skipped, exit 0. HAF listed an
+accredited researcher, so the publish leg ran and the narrowed pre-flight control
+fired for real; teardown unpinned the run's CID. Dev routing restored afterwards.
+A six-lens adversarial verify pass (read-only workflow) refuted nothing; its
+residual notes are pre-existing behavior, not this change (the scan reports one
+label per trace file; the group-offset counter constrains future pattern sources
+containing escaped parens).
