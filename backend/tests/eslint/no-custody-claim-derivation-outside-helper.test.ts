@@ -73,12 +73,24 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
 import {
+  blockCommentInterior,
   enclosingSymbol,
   isCommentLine,
   occurrencesOf,
   sourcesUnder,
   type ScannedSource,
 } from '../support/enclosing-symbol.js';
+
+/** The prose-only skip the scans below hand to `occurrencesOf`: comment by
+ *  shape plus the block-comment region `occurrencesOf` computes once per
+ *  file, so a star-leading line of live code (a wrapped multiplication in a
+ *  SQL literal) is scanned rather than read as a docblock continuation. */
+const skipCommentLine = (
+  line: string,
+  _lineIndex: number,
+  _lines: string[],
+  insideRegion: boolean,
+): boolean => isCommentLine(line, insideRegion);
 
 const HELPER_MODULE = 'lib/custody-claim.ts';
 
@@ -280,7 +292,7 @@ const BLOCK_OPENER_RE = /\)\s*\{\s*$/;
  *  exists to prevent. The block-opener stop is the one place that direction is
  *  reversed, because there the over-match lands on a whole class of legitimate
  *  gates rather than on a single odd line. */
-function statementFrom(lines: string[], lineIndex: number): string {
+function statementFrom(lines: string[], lineIndex: number, interior?: boolean[]): string {
   let joined = lines[lineIndex];
   if (joined.includes(';') || BLOCK_OPENER_RE.test(joined)) return joined;
   let taken = 0;
@@ -290,7 +302,7 @@ function statementFrom(lines: string[], lineIndex: number): string {
     j++
   ) {
     if (lines[j].trim() === '') break;
-    if (isCommentLine(lines[j])) continue;
+    if (isCommentLine(lines[j], interior?.[j])) continue;
     joined += '\n' + lines[j];
     taken++;
     if (lines[j].includes(';') || BLOCK_OPENER_RE.test(lines[j])) break;
@@ -310,9 +322,10 @@ function statementOccurrences(
   const keys = new Set<string>();
   const sites: string[] = [];
   for (const { rel, lines } of files) {
+    const interior = blockCommentInterior(lines);
     lines.forEach((line, i) => {
-      if (line.trim() === '' || isCommentLine(line)) return;
-      if (!pattern.test(statementFrom(lines, i))) return;
+      if (line.trim() === '' || isCommentLine(line, interior[i])) return;
+      if (!pattern.test(statementFrom(lines, i, interior))) return;
       const symbol = enclosingSymbol(lines, i);
       keys.add(`${rel}#${symbol}`);
       sites.push(`${rel}:${i + 1} (${symbol}) — ${line.trim()}`);
@@ -352,7 +365,7 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
     const { keys, sites } = occurrencesOf(
       sources,
       HELPER_CALL_RE,
-      (line) => HELPER_DEFINITION_RE.test(line) || isCommentLine(line),
+      (line, _i, _lines, inside) => HELPER_DEFINITION_RE.test(line) || isCommentLine(line, inside),
     );
     expect(keys, `custodyClaimFor call sites:\n${sites.join('\n')}`).toEqual(
       [...ALLOWED_HELPER_CALL_SITES].sort(),
@@ -378,8 +391,9 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
     const literalOutsideWriters: string[] = [];
     const variableOutsideHelperCallers: string[] = [];
     for (const { rel, lines } of sources) {
+      const interior = blockCommentInterior(lines);
       lines.forEach((line, i) => {
-        if (!JWT_MINT_RE.test(line) || isCommentLine(line)) return;
+        if (!JWT_MINT_RE.test(line) || isCommentLine(line, interior[i])) return;
         const key = `${rel}#${enclosingSymbol(lines, i)}`;
         const site = `${rel}:${i + 1} (${key})`;
         switch (classifyMint(lines, i)) {
@@ -616,9 +630,31 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
     expect(enclosingSymbol(lines, 1)).toBe('POST /login');
     expect(enclosingSymbol(lines, 5)).toBe('handleLogin');
     const synthetic: ScannedSource = { rel: 'routes/synthetic.ts', lines };
-    expect(occurrencesOf([synthetic], HELPER_CALL_RE, isCommentLine).keys).toEqual([
+    expect(occurrencesOf([synthetic], HELPER_CALL_RE, skipCommentLine).keys).toEqual([
       'routes/synthetic.ts#POST /login',
       'routes/synthetic.ts#handleLogin',
     ]);
+
+    // A star-leading live line: a wrapped operand naming the helper. The
+    // shape-only reading dropped it as a docblock continuation before it was
+    // counted; the block-comment region `occurrencesOf` computes per file is
+    // what keeps it counted. The same text inside a docblock stays prose.
+    const starLeadingLive: ScannedSource = {
+      rel: 'routes/synthetic.ts',
+      lines: [
+        'function weightedClaim(account: AccountRow) {',
+        '  return Number(account.active)',
+        '    * custodyClaimFor(account).length;',
+        '}',
+      ],
+    };
+    expect(occurrencesOf([starLeadingLive], HELPER_CALL_RE, skipCommentLine).keys).toEqual([
+      'routes/synthetic.ts#weightedClaim',
+    ]);
+    const proseContinuation: ScannedSource = {
+      rel: 'routes/synthetic.ts',
+      lines: ['/**', ' * custodyClaimFor(account) is the one licensed derivation.', ' */'],
+    };
+    expect(occurrencesOf([proseContinuation], HELPER_CALL_RE, skipCommentLine).keys).toEqual([]);
   });
 });

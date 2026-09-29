@@ -68,6 +68,7 @@ import { describe, it, expect } from 'vitest';
 import path from 'node:path';
 import {
   MODULE_SCOPE,
+  blockCommentInterior,
   enclosingSymbol,
   isCommentLine,
   isModuleScopeKey,
@@ -75,6 +76,17 @@ import {
   sourcesUnder,
   type ScannedSource,
 } from '../support/enclosing-symbol.js';
+
+/** The prose-only skip the scans below hand to `occurrencesOf`: comment by
+ *  shape plus the block-comment region `occurrencesOf` computes once per
+ *  file, so a star-leading line of live code (a wrapped multiplication in a
+ *  SQL literal) is scanned rather than read as a docblock continuation. */
+const skipCommentLine = (
+  line: string,
+  _lineIndex: number,
+  _lines: string[],
+  insideRegion: boolean,
+): boolean => isCommentLine(line, insideRegion);
 
 /** A CALL to the session-surface consume: identifier followed by an open paren,
  *  optionally across whitespace so a wrapped call still matches. An import
@@ -130,10 +142,10 @@ function epochlessConsumes(files: ScannedSource[]) {
   const consumes = occurrencesOf(
     files,
     CONSUME_CALL_RE,
-    (line) => CONSUME_DEFINITION_RE.test(line) || isCommentLine(line),
+    (line, _i, _lines, inside) => CONSUME_DEFINITION_RE.test(line) || isCommentLine(line, inside),
   );
   const epochs = new Set(
-    occurrencesOf(files, EPOCH_REF_RE, isCommentLine).keys.filter((k) => !isModuleScopeKey(k)),
+    occurrencesOf(files, EPOCH_REF_RE, skipCommentLine).keys.filter((k) => !isModuleScopeKey(k)),
   );
   return {
     consumes,
@@ -147,10 +159,10 @@ function fieldlessSurfaces(files: ScannedSource[]) {
   const surfaces = occurrencesOf(
     files,
     SURFACE_CALL_RE,
-    (line) => SURFACE_DEFINITION_RE.test(line) || isCommentLine(line),
+    (line, _i, _lines, inside) => SURFACE_DEFINITION_RE.test(line) || isCommentLine(line, inside),
   );
   const fields = new Set(
-    occurrencesOf(files, SURFACE_FIELD_RE, isCommentLine).keys.filter((k) => !isModuleScopeKey(k)),
+    occurrencesOf(files, SURFACE_FIELD_RE, skipCommentLine).keys.filter((k) => !isModuleScopeKey(k)),
   );
   return {
     surfaces,
@@ -164,14 +176,19 @@ function fieldlessSurfaces(files: ScannedSource[]) {
  *  is wrapped (colon at end of line). Returns null when `name` is written in
  *  shorthand position (no colon), which for the epoch field means a
  *  pass-through of the same-named binding. */
-function valueTextAfterKey(lines: string[], lineIndex: number, name: string): string | null {
+function valueTextAfterKey(
+  lines: string[],
+  lineIndex: number,
+  name: string,
+  interior?: boolean[],
+): string | null {
   const line = lines[lineIndex];
   const m = line.match(new RegExp(`(?<!\\.)\\b${name}\\b\\s*(:)?`));
   if (!m || !m[1]) return null;
   const after = line.slice((m.index ?? 0) + m[0].length);
   if (after.trim() !== '') return after;
   for (let j = lineIndex + 1; j < lines.length; j++) {
-    if (isCommentLine(lines[j]) || lines[j].trim() === '') continue;
+    if (isCommentLine(lines[j], interior?.[j]) || lines[j].trim() === '') continue;
     return lines[j];
   }
   return '';
@@ -212,11 +229,12 @@ function literalEpochSurfaces(files: ScannedSource[]) {
     return f;
   };
   for (const { rel, lines } of files) {
+    const interior = blockCommentInterior(lines);
     lines.forEach((line, i) => {
-      if (isCommentLine(line)) return;
+      if (isCommentLine(line, interior[i])) return;
       const key = () => `${rel}#${enclosingSymbol(lines, i)}`;
       if (ACCEPT_SESSION_WRITE_RE.test(line)) {
-        const value = valueTextAfterKey(lines, i, 'acceptSession');
+        const value = valueTextAfterKey(lines, i, 'acceptSession', interior);
         if (value !== null && !/^\s*false\b/.test(value)) {
           const f = factFor(key());
           f.accepting = true;
@@ -224,7 +242,7 @@ function literalEpochSurfaces(files: ScannedSource[]) {
         }
       }
       if (SURFACE_FIELD_WRITE_RE.test(line)) {
-        const value = valueTextAfterKey(lines, i, 'sessionsInvalidatedAtMs');
+        const value = valueTextAfterKey(lines, i, 'sessionsInvalidatedAtMs', interior);
         const f = factFor(key());
         if (value === null || EPOCH_REF_RE.test(value)) {
           f.epochRef = true;
@@ -238,7 +256,7 @@ function literalEpochSurfaces(files: ScannedSource[]) {
   const surfaces = occurrencesOf(
     files,
     SURFACE_CALL_RE,
-    (line) => SURFACE_DEFINITION_RE.test(line) || isCommentLine(line),
+    (line, _i, _lines, inside) => SURFACE_DEFINITION_RE.test(line) || isCommentLine(line, inside),
   );
   const offenders: string[] = [];
   for (const key of surfaces.keys) {
@@ -510,5 +528,33 @@ describe('every session-window consume carries the account revocation epoch', ()
 
     expect(isCommentLine(' * the epoch travels on req.hiveSessionsInvalidatedAt')).toBe(true);
     expect(isCommentLine('      req.hiveSessionsInvalidatedAt,')).toBe(false);
+
+    // A star-leading live consume: a wrapped operand naming the consume. The
+    // shape-only reading dropped it as a docblock continuation before it was
+    // counted, so an epoch-less consume written this way was never paired —
+    // a silent pass in this guard. The block-comment region `occurrencesOf`
+    // computes per file is what keeps it an offender, and the same text
+    // inside a docblock pairs with nothing and demands nothing.
+    const starLeadingConsume: ScannedSource = {
+      rel: 'routes/synthetic.ts',
+      lines: [
+        'async function tallyConsume(token: string, username: string) {',
+        '  return Number(flag)',
+        '    * consumeSessionFreshAuthToken(token, username).length;',
+        '}',
+      ],
+    };
+    expect(epochlessConsumes([starLeadingConsume]).offenders).toEqual([
+      'routes/synthetic.ts#tallyConsume',
+    ]);
+    const proseContinuation: ScannedSource = {
+      rel: 'routes/synthetic.ts',
+      lines: [
+        '/**',
+        ' * consumeSessionFreshAuthToken(token, username) demands the epoch.',
+        ' */',
+      ],
+    };
+    expect(epochlessConsumes([proseContinuation]).consumes.keys).toEqual([]);
   });
 });

@@ -179,14 +179,30 @@ const jointImportStatement = (lines: string[], lineIndex: number): string => {
   return joined;
 };
 
+/** The prose-only skip the scans below hand to `occurrencesOf`: comment by
+ *  shape plus the block-comment region `occurrencesOf` computes once per
+ *  file, so a star-leading line of live code (a wrapped multiplication in a
+ *  SQL literal) is scanned rather than read as a docblock continuation. */
+const skipCommentLine = (
+  line: string,
+  _lineIndex: number,
+  _lines: string[],
+  insideRegion: boolean,
+): boolean => isCommentLine(line, insideRegion);
+
 /** The three shapes that name the mint without holding a callable reference
  *  under a new name: its own definition, a whole-comment line, and an unaliased
  *  import specifier. Everything else that writes the name counts. The alias
  *  veto is applied to the JOINED statement, not the single line — see
  *  {@link jointImportStatement}. */
-const skipMintLine = (line: string, lineIndex: number, lines: string[]): boolean =>
+const skipMintLine = (
+  line: string,
+  lineIndex: number,
+  lines: string[],
+  insideRegion?: boolean,
+): boolean =>
   SESSION_MINT_DEFINITION_RE.test(line) ||
-  isCommentLine(line) ||
+  isCommentLine(line, insideRegion) ||
   (SESSION_MINT_IMPORT_SPECIFIER_RE.test(line) &&
     !SESSION_MINT_ALIAS_RE.test(jointImportStatement(lines, lineIndex)));
 
@@ -234,8 +250,9 @@ const SESSION_KIND_TYPE_OCCURRENCE_RE = /\bkind\b['"`\]\s]*:\s*(['"`])session\1\
  *  self-test below so the two cannot drift apart. `SESSION_KIND_RE` carries no
  *  global flag on purpose: only the stripping regex is global, and a global
  *  regex is stateful under `.test`. */
-const constructsSessionEntry = (line: string): boolean =>
-  !isCommentLine(line) && SESSION_KIND_RE.test(line.replace(SESSION_KIND_TYPE_OCCURRENCE_RE, ''));
+const constructsSessionEntry = (line: string, insideRegion?: boolean): boolean =>
+  !isCommentLine(line, insideRegion) &&
+  SESSION_KIND_RE.test(line.replace(SESSION_KIND_TYPE_OCCURRENCE_RE, ''));
 
 /** The discriminator KEY in a position whose VALUE the line does not show: a
  *  bare shorthand property (`kind,` / `kind }`, forwarding a local binding) or
@@ -258,8 +275,19 @@ const SESSION_KIND_BARE_KEY_RE = /(?<![.\w])['"`]?\bkind\b['"`]?\s*(?:[,}]|:\s*$
 /** A line that either shows the full session discriminator or signals its key
  *  with the value out of sight. This composed predicate is what the whole-tree
  *  scan and the planted self-tests share. */
-const signalsSessionEntry = (line: string): boolean =>
-  constructsSessionEntry(line) || (!isCommentLine(line) && SESSION_KIND_BARE_KEY_RE.test(line));
+const signalsSessionEntry = (line: string, insideRegion?: boolean): boolean =>
+  constructsSessionEntry(line, insideRegion) ||
+  (!isCommentLine(line, insideRegion) && SESSION_KIND_BARE_KEY_RE.test(line));
+
+/** The inverted skip the discriminator scan hands to `occurrencesOf`, shared
+ *  with the planted end-to-end probes below so the scan and its probes cannot
+ *  drift apart. */
+const skipNonSessionEntryLine = (
+  line: string,
+  _lineIndex: number,
+  _lines: string[],
+  insideRegion?: boolean,
+): boolean => !signalsSessionEntry(line, insideRegion);
 
 /** A reference to the private slide persister, and its definition line. */
 const SESSION_SLIDE_CALL_RE = /\bpersistSessionSlide\b/;
@@ -416,7 +444,7 @@ const FORBIDDEN_MINT_FILES = [
  *  elsewhere would over-match — a red bar naming the site, the loud
  *  direction; rename the helper or account for the site. */
 function sessionIssuingSites(files: ScannedSource[]): { keys: string[]; sites: string[] } {
-  const direct = occurrencesOf(files, JWT_MINT_RE, isCommentLine);
+  const direct = occurrencesOf(files, JWT_MINT_RE, skipCommentLine);
   const keys = new Set(direct.keys);
   const sites = [...direct.sites];
   const isPlainFunctionName = (sym: string): boolean => /^[A-Za-z_$][\w$]*$/.test(sym);
@@ -431,7 +459,7 @@ function sessionIssuingSites(files: ScannedSource[]): { keys: string[]; sites: s
     const calls = occurrencesOf(
       files,
       callRe,
-      (line) => definitionRe.test(line) || isCommentLine(line),
+      (line, _i, _lines, inside) => definitionRe.test(line) || isCommentLine(line, inside),
     );
     for (const key of calls.keys) {
       keys.add(key);
@@ -479,11 +507,7 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     // but it cannot avoid writing the discriminator — as a visible literal, a
     // wrapped literal, or a shorthand forwarding, all of which the composed
     // predicate fires on.
-    const { keys, sites } = occurrencesOf(
-      sources,
-      /\bkind\b/,
-      (line) => !signalsSessionEntry(line),
-    );
+    const { keys, sites } = occurrencesOf(sources, /\bkind\b/, skipNonSessionEntryLine);
     expect(keys, `session-kind entry construction sites:\n${sites.join('\n')}`).toEqual(
       [...ALLOWED_SESSION_ENTRY_SITES].sort(),
     );
@@ -493,7 +517,7 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     const { keys, sites } = occurrencesOf(
       sources,
       SESSION_SLIDE_CALL_RE,
-      (line) => SESSION_SLIDE_DEFINITION_RE.test(line) || isCommentLine(line),
+      (line, _i, _lines, inside) => SESSION_SLIDE_DEFINITION_RE.test(line) || isCommentLine(line, inside),
     );
     expect(
       keys,
@@ -511,7 +535,7 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     // On a session-establishment or recovery module even HOLDING a reference is
     // the violation, so the unaliased-specifier skip is deliberately not applied
     // here; only prose is spared.
-    const { sites } = occurrencesOf(scanned, SESSION_MINT_IDENT_RE, isCommentLine);
+    const { sites } = occurrencesOf(scanned, SESSION_MINT_IDENT_RE, skipCommentLine);
     expect(
       sites,
       'a session-proof window must be opened only by an explicit re-auth act, ' +
@@ -576,7 +600,7 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     const { keys, sites } = occurrencesOf(
       module,
       MEMSTORE_TOUCH_RE,
-      (line) => MEMSTORE_DEFINITION_RE.test(line) || isCommentLine(line),
+      (line, _i, _lines, inside) => MEMSTORE_DEFINITION_RE.test(line) || isCommentLine(line, inside),
     );
     expect(
       keys,
@@ -592,7 +616,7 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     const { keys, sites } = occurrencesOf(
       module,
       ENTRY_KEY_PREFIX_RE,
-      (line) => ENTRY_KEY_PREFIX_DEFINITION_RE.test(line) || isCommentLine(line),
+      (line, _i, _lines, inside) => ENTRY_KEY_PREFIX_DEFINITION_RE.test(line) || isCommentLine(line, inside),
     );
     expect(
       keys,
@@ -607,7 +631,7 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     // store with no identifier the scans above pin. Comments are spared (prose
     // cannot address Redis); everything else is one definition line at module
     // scope of the owning module.
-    const { keys, sites } = occurrencesOf(sources, ENTRY_KEYSPACE_LITERAL_RE, isCommentLine);
+    const { keys, sites } = occurrencesOf(sources, ENTRY_KEYSPACE_LITERAL_RE, skipCommentLine);
     expect(
       keys,
       `the fresh-auth entry keyspace is addressed outside its defining constant:\n${sites.join('\n')}`,
@@ -618,7 +642,7 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     const { keys, sites } = occurrencesOf(
       sources,
       SEEDING_HOOK_RE,
-      (line) => SEEDING_HOOK_DEFINITION_RE.test(line) || isCommentLine(line),
+      (line, _i, _lines, inside) => SEEDING_HOOK_DEFINITION_RE.test(line) || isCommentLine(line, inside),
     );
     expect(
       keys,
@@ -708,6 +732,36 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     // module that defines the mint stays scanned for references to it.
     expect(SESSION_MINT_DEFINITION_RE.test('export async function issueSessionFreshAuthToken(')).toBe(true);
     expect(SESSION_MINT_DEFINITION_RE.test("  const issued = await issueSessionFreshAuthToken(username, 'password');")).toBe(false);
+
+    // A star-leading live line: a wrapped operand naming the mint. The
+    // shape-only reading dropped it as a docblock continuation before it was
+    // counted, which was a silent pass for exactly the reference this canary
+    // scans for; the block-comment region `occurrencesOf` computes per file
+    // is what keeps it counted. The same text inside a docblock stays prose.
+    const starLeadingLive: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'function weightedMint(username: string) {',
+        '  return Number(flag)',
+        '    * issueSessionFreshAuthToken(username, mechanism).length;',
+        '}',
+      ],
+    };
+    expect(occurrencesOf([starLeadingLive], SESSION_MINT_IDENT_RE, skipMintLine).keys).toEqual([
+      'lib/synthetic.ts#weightedMint',
+    ]);
+    const proseContinuation: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        '/**',
+        ' * issueSessionFreshAuthToken(username, mechanism) is licensed twice.',
+        ' */',
+        'function weightedMint(username: string) {',
+        '  return null;',
+        '}',
+      ],
+    };
+    expect(occurrencesOf([proseContinuation], SESSION_MINT_IDENT_RE, skipMintLine).keys).toEqual([]);
   });
 
   it('the import matcher fires on every import of the mint and on nothing else', () => {
@@ -812,7 +866,7 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
       ],
     };
     expect(
-      occurrencesOf([wrapped], /\bkind\b/, (line) => !signalsSessionEntry(line)).keys,
+      occurrencesOf([wrapped], /\bkind\b/, skipNonSessionEntryLine).keys,
     ).toEqual(['lib/synthetic.ts#mintWindowUnderAnotherName']);
 
     const shorthand: ScannedSource = {
@@ -825,7 +879,7 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
       ],
     };
     expect(
-      occurrencesOf([shorthand], /\bkind\b/, (line) => !signalsSessionEntry(line)).keys,
+      occurrencesOf([shorthand], /\bkind\b/, skipNonSessionEntryLine).keys,
     ).toEqual(['lib/synthetic.ts#forwardKindShorthand']);
   });
 

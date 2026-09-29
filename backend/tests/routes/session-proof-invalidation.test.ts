@@ -420,13 +420,21 @@ describe('every toucher of the revocation column also closes session-proof windo
    *  docblock mention of the name across the module, the middleware, and two
    *  route files. Without this skip each mention becomes an occurrence that must
    *  pair with a sweep in its own enclosing symbol, and the suite goes red on
-   *  documentation alone. The shape-only predicate is the right one here: on a
-   *  scan where a match DEMANDS something, an over-match is safe and a skip is
-   *  not. An inline trailing comment on a code line is deliberately not
-   *  stripped, because a comment marker also occurs inside string literals and
-   *  truncating there would drop a real write sharing the line. */
-  const skipColumnLine = (line: string): boolean =>
-    isCommentLine(line) || READ_ONLY_LINES.includes(normalize(line));
+   *  documentation alone. The region-aware `isCommentLine` is the right
+   *  predicate here, not `isCommentedOut`: on a scan where a match DEMANDS
+   *  something, an over-match is safe and a skip is not, so the filter skips
+   *  as little as possible — the region argument exists to keep a star-leading
+   *  line of live code (a wrapped column write in a SQL literal) from being
+   *  read as a docblock continuation and dropped as a demand. An inline
+   *  trailing comment on a code line is deliberately not stripped, because a
+   *  comment marker also occurs inside string literals and truncating there
+   *  would drop a real write sharing the line. */
+  const skipColumnLine = (
+    line: string,
+    _lineIndex?: number,
+    _lines?: string[],
+    insideRegion?: boolean,
+  ): boolean => isCommentLine(line, insideRegion) || READ_ONLY_LINES.includes(normalize(line));
 
   const sources = sourcesUnder(path.resolve(__dirname, '..', '..', 'src'));
 
@@ -653,6 +661,30 @@ describe('every toucher of the revocation column also closes session-proof windo
       'routes/synthetic.ts#POST /quoted',
       'routes/synthetic.ts#POST /wrapped',
     ]);
+  });
+
+  it('a column write on a star-leading live line is still a demand', () => {
+    // A wrapped SQL expression puts the column on a line whose trimmed text
+    // begins with `*`, which is also the shape of a docblock continuation.
+    // The shape-only reading dropped such a line before it was counted, so a
+    // writer shaped this way was never demanded to sweep — a silent pass in
+    // this guard. The block-comment region `occurrencesOf` computes per file
+    // is what keeps the demand, and the same text inside a docblock stays
+    // prose rather than becoming a phantom demand.
+    const lines = [
+      "router.post('/wrapped-star', async (req, res) => {",
+      '  await pool.query(`UPDATE accounts SET flags = flags',
+      '    * CASE WHEN sessions_invalidated_at IS NULL THEN 1 ELSE 0 END,',
+      '      sessions_invalidated_at = NOW()`);',
+      '});',
+      '',
+      '/**',
+      ' * every writer of sessions_invalidated_at MUST sweep in the same handler',
+      ' */',
+    ];
+    const { touches, offenders } = unsweptWriters([{ rel: 'routes/synthetic.ts', lines }]);
+    expect(touches.keys).toEqual(['routes/synthetic.ts#POST /wrapped-star']);
+    expect(offenders).toEqual(['routes/synthetic.ts#POST /wrapped-star']);
   });
 
   it('a sweep commented out with a line comment does not pair with a live write', () => {
