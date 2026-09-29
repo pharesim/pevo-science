@@ -999,3 +999,94 @@ and the anchor gate, four falsification lenses, two confirmers per deduped candi
 agents, zero errors) and `wf_b8f5c0fa-d9d` (pass 2, stopped early as disclosed). Backend
 did not run code review (`agents/backend/CLAUDE.md` assigns `/ce-code-review` to the
 architect).
+
+## Architect re-review (2026-09-29, round 4) — HELD PENDING FIXES:
+
+Reviewed `f65e38b7..b49ceb14` (the three round-4 commits, all ancestors of `main`) via
+`/ce-code-review` across four lenses (correctness, project-standards, adversarial, learnings)
+plus one validator batch that re-measured all three surviving findings in its own
+`git archive b49ceb14` copy. The cross-model pass did NOT run (only a same-family route is
+installed on this host), so the adversarial lens ran in-process. No reviewer touched a
+database or the shared checkout. Every line number below is a line number in the file AT
+`b49ceb14`. A sibling commit (`67361efe`, the scan-roots task) landed on the file while this
+review ran, adding a header-region section, so the same text sits lower at HEAD; every
+measurement was taken in `git archive b49ceb14` copies and is unaffected.
+
+**What held up, so it is not redone.** All three round-3 items landed and were re-derived by
+execution rather than taken from the signal. The DISCLOSED replication gap is closed: the
+stopped pass's four-site left-of-assignment rider was confirmed by three independent
+measurement families (correctness, adversarial, the validator), both variants — a head on the
+assignment's own line LEFT of it is consulted (silent bucketing where its read spans the
+assignment and names another table; the fragment-alone control reds fail-closed), and a head
+RIGHT of the assignment on that line is invisible (the walk climbs past it to a farther
+reaching head; the swapped-declarator control reds fail-closed) — including the
+never-climbs-past clause with a farther reaching head. Also probed true: the shape-1 ALTER
+quieting against a src control, the shape-2 over-run with the `+` inside the over-run joining
+silently, the three quoteAt case signatures, and ALTER-is-no-`HEAD_PATTERNS`-head. The
+sibling-consistency sweep the stopped pass never ran found nothing beyond item 1 below. AC2
+re-run by the architect from a `git archive b49ceb14` copy: canary 29/29, all nine
+`tests/eslint` files 139/139, `npm run typecheck` and `npx eslint` on the file exit 0;
+`ALLOWED_COLUMN_ALTERATIONS` byte-identical (`016: 3`); 54 block comments (45 JSDoc) and zero
+parse diagnostics at both range ends; the pre-commit anchor gate is zero-hit over the 75
+added lines with a firing control. Project standards is clean: every added positional cite
+carries a stable name.
+
+The hold is prose only, two items, both the standing defect class (a consequent written
+without a condition the mechanism requires), each validated with a plant and a control by two
+lenses and the validator. The user's round-1 decision stands: no code change, no new fixture.
+Land both in one commit and quote each item's plant and control in the signal.
+
+### Item 1 (required). Bucketing is promised on declaration/fragment reach; the walk buckets only a read that spans the assignment.
+
+Three sites this range rewrote state the nearest head's read reaching the DECLARATION or the
+FRAGMENT as what buckets the assignment under that head's table: header item 4 ("where that
+nearest head's read runs on to the declaration", lines 188-190), the three-bucket clause
+("does not reach the fragment", 289-290), and the `assembledWrites` docblock ("a read that
+does not reach the fragment" / "where it runs on to the fragment", 2593-2596). `targetTable`
+answers to the ASSIGNMENT token's own line and column, so a read that runs into the fragment
+but closes before the assignment does not bucket it. Measured (adversarial, the validator):
+an `UPDATE widgets` template opened on an earlier line with no `;` after its closing
+backtick, then a fragment spelling `SET b = 2;` with `updated_at = now()` on the next line,
+reds `every updated_at assignment resolves to the table it writes`, exit 1, where the prose
+predicts silent widgets bucketing; the control with that `;` changed to `,` (the read then
+spans the assignment) is 29/29, exit 0. The error is in the loud direction. The ALTER
+paragraph's own form ("the nearest one's read does not reach its assignment", 321-322) is
+correct and stays.
+
+Fix: state the reach/run-on condition against the assignment token at the three sites, as the
+ALTER paragraph already does; a fragment/declaration wording may remain only where its own
+sentence separately says the read must span the assignment. Re-measure the plant and control
+above and quote both in the signal.
+
+### Item 2 (required). The fail-closed disjunct says "above"; the walk's domain is at-or-above.
+
+Lines 289-290: "the fail-closed arm reds where that one head's read does not reach the
+fragment or no head sits above at all". The walk's domain, stated by this same range at all
+four rider sites, includes a head on the assignment's own line to its LEFT. Measured
+(correctness, the validator): a head left of the assignment on its own line, nothing above,
+read spanning the assignment, is 29/29, exit 0 (bucketed silently), while the disjunct
+predicts a fail-closed red; the fragment-alone control reds
+`every updated_at assignment resolves to the table it writes`. The error is in the unsafe
+direction: a reader is promised a catcher the own-line-left layout does not get. The sibling
+clause at 321 ("where the walk finds no head at all") is the correct form.
+
+Fix: bring the disjunct inside the walk's stated domain (no head found at all, the
+own-line-left slot included), matching the sibling clause at 321. Re-measure the plant and
+control and quote both.
+
+### Dismissed by the user in triage (2026-09-29), recorded so it is not re-raised
+
+- 2275-2279, the quoteAt cancellation sentence's unconditional "the head is quote-free after
+  all": an unpaired `'` or `"` after the cancellation and ahead of the `$$` re-arms
+  `enclosingQuote` and the readable arm reds (measured, plant and control, twice). Dismissed
+  as the condition-carried-in-paragraph class: the paragraph's governing sentence ("takes a
+  head with no quote open ahead of it on its own line") carries the condition, the round-3
+  triage dismissed this class at its own items, and the round-4 "Considered and left" covers
+  the backtick variant of the same interference.
+
+### Learnings
+
+No new entry. Items 1 and 2 are the fourth recurrence, on this file, of
+`agents/docs/solutions/conventions/a-readers-bound-restated-at-n-sites-reads-as-sufficient-at-each.md`,
+whose body does not yet carry the assignment-walk material. The architect folds the
+recurrence into that entry via `/ce-compound-refresh` at archive, per the round-3 note.
