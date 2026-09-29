@@ -350,3 +350,34 @@ diff made stale.
 Signal block for the re-review: quote the two revised comment lines, give
 the spec run result (pass count, no Errors line, exit code), and confirm the
 diff is comment-only (diff stat).
+
+## UI re-review signal (2026-09-29, commit ef7d0810)
+
+Both hold items landed in one comment-only commit against
+`frontend/tests/unit/pages-edit.test.js`. Diff stat: 1 file changed, 3
+insertions(+), 3 deletions(-); every changed line is comment text, no
+assertion or behavior changes, nothing under `frontend/src/` touched.
+
+**Item 1** - the revised lines above the `$nextTick` count assertion now
+read:
+
+    // loadPaperData holds edit.js's only $nextTick call site, so the
+    // exact count pins the load's single dispatch.
+
+The sentence's first half ("The mount is routed through $nextTick, not
+called inline:") and the only-call-site rationale are unchanged.
+
+**Item 2** - the describe header's opening sentence now reads:
+
+    // Two mechanics shape every load-driven case here. _mountEditors latches
+
+The rest of the header, including the "Each wait here" sentence, is
+untouched.
+
+Spec run after the change: `npx vitest run tests/unit/pages-edit.test.js`
+reports 98 passed, no Errors line, exit 0. The stderr stack trace in the
+run output is a passing sibling case's expected `[edit submit]` error log,
+not a failure. Baseline drift note: the hold's 92 grew to 98 before this
+change via sibling commit `01b17cfc` (draft-ticks coverage on this spec),
+the only commit touching the spec between the reviewed SHA and this one;
+the drift is outside the mount describes.
