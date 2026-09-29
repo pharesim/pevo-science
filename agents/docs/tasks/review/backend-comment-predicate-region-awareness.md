@@ -84,3 +84,51 @@ reachable today. Fixing the walk fixes both.
 Backend zone only. The frontend copy already has the fix and must not be edited from this
 task. Anchor any new comment prose on exported symbol names, not on line numbers, SHAs, or
 task slugs.
+
+---
+
+Backend implementation signal (2026-09-29, commits a8000291 + c11902ce + 9614a541, all
+self-verified as ancestors of main):
+
+- `a8000291` — the port: `blockCommentInterior` carried over from the frontend copy
+  (line-start openers only, template-parity and visible-close guards), `isCommentLine`
+  takes `insideRegion` with the shape-only reading preserved when no region is passed,
+  `occurrencesOf` computes the region once per file and hands it to `skipLine` as a
+  fourth argument (scope items 1-2), and the `enclosingSymbol` brace walk tracks the same
+  region state instead of skipping star-leading lines, so a comment close sharing its
+  line with a block-closing brace is seen as a close (scope item 3). Scope item 4
+  resolved as "re-scope": the walk closes the counterexample this task names, but the
+  port carries the sibling's two comment-boundary residuals (the multi-boundary line
+  resolves inward) plus the parity inversions, so the SET-EQUALITY paragraph is
+  re-stated against those named residuals rather than left as written. New machinery
+  suite at `backend/tests/support/enclosing-symbol.test.ts`, one probe per decision
+  point, with the live corpus shapes pinned verbatim.
+- Scope extension found at intake: a FOURTH consumer, the revocation-column scan in
+  `backend/tests/routes/session-proof-invalidation.test.ts`, passes the same predicate
+  over `backend/src` (demand side of a pairing, so a skipped star-leading write was the
+  same silent pass). Threaded and probed like the three named canaries; its docblock
+  claim that the shape-only predicate is "the right one" is reworded accordingly. The
+  changed `isCommentLine` signature makes TypeScript reject passing it directly as a
+  `skipLine`, so no future caller can silently fall back to the shape-only reading.
+- AC 1, proven by mutation probe, not suite green: a planted star-leading live line in
+  the reputation SQL literal carrying `jwt.sign(` + `custodyClaimFor(` +
+  `consumeSessionFreshAuthToken(` + `sessions_invalidated_at` left all four consumers
+  GREEN on the pre-change tree and turns all four RED post-change. Each consumer now
+  also carries a standing planted probe (star-leading live occurrence counted, docblock
+  continuation spared), so a threading reversion goes red with no manual probe.
+- AC 2: the machinery suite resolves a match placed after `*/ }` to module scope, not to
+  the function whose brace that line closes.
+- AC 3: a 19-mutation matrix (predicate arms, region-pass guards, walk guards, seed,
+  bound, re-entry, `occurrencesOf` threading, per-canary threading), each mutation
+  applied inside the changed function in an isolated scratchpad copy: 17 killed on the
+  first pass; the two survivors exposed a missing close-search-offset pin and an
+  invalidation probe fixture whose second plain-shaped write self-absorbed the
+  assertion, both fixed in `c11902ce`, after which all 19 kill.
+- AC 4: a classification diff over every line of `backend/src` shows exactly five lines
+  change reading under the region-aware predicate — the two cited lines plus one more
+  reputation SQL factor line and two more bridge markdown lines — all live code; every
+  docblock continuation keeps its prose reading. Machinery suite, all six importer test
+  files, and the full session-proof-invalidation route file pass on the real
+  environment; typecheck and lint clean.
+- `9614a541` — anchor-convention fix from the simplify pass: the skip docblocks name
+  their targets instead of pointing "below". Frontend copy untouched.
