@@ -77,7 +77,8 @@ import {
   type ScannedSource,
 } from '../support/enclosing-symbol.js';
 
-/** The prose-only skip the scans below hand to `occurrencesOf`: comment by
+/** The prose-only skip this file's forbidden-shape scans hand to
+ *  `occurrencesOf`: comment by
  *  shape plus the block-comment region `occurrencesOf` computes once per
  *  file, so a star-leading line of live code (a wrapped multiplication in a
  *  SQL literal) is scanned rather than read as a docblock continuation. */

@@ -179,7 +179,8 @@ const jointImportStatement = (lines: string[], lineIndex: number): string => {
   return joined;
 };
 
-/** The prose-only skip the scans below hand to `occurrencesOf`: comment by
+/** The prose-only skip this file's forbidden-shape scans hand to
+ *  `occurrencesOf`: comment by
  *  shape plus the block-comment region `occurrencesOf` computes once per
  *  file, so a star-leading line of live code (a wrapped multiplication in a
  *  SQL literal) is scanned rather than read as a docblock continuation. */
@@ -280,13 +281,13 @@ const signalsSessionEntry = (line: string, insideRegion?: boolean): boolean =>
   (!isCommentLine(line, insideRegion) && SESSION_KIND_BARE_KEY_RE.test(line));
 
 /** The inverted skip the discriminator scan hands to `occurrencesOf`, shared
- *  with the planted end-to-end probes below so the scan and its probes cannot
- *  drift apart. */
+ *  between the whole-tree scan and its planted end-to-end probes so the two
+ *  cannot drift apart. */
 const skipNonSessionEntryLine = (
   line: string,
   _lineIndex: number,
   _lines: string[],
-  insideRegion?: boolean,
+  insideRegion: boolean,
 ): boolean => !signalsSessionEntry(line, insideRegion);
 
 /** A reference to the private slide persister, and its definition line. */
