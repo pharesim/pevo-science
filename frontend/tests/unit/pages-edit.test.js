@@ -829,7 +829,7 @@ describe('editPage handleSubmit sanitization', () => {
   // _mountEditors teardown-during-init guard block invokes _mountEditors
   // directly, so nothing there observes that a load schedules a mount at all.
   //
-  // Two mechanics shape every case here. _mountEditors latches
+  // Two mechanics shape every load-driven case here. _mountEditors latches
   // _editorsInitialized before it reads $refs and returns early once the flag
   // is set, so a load that runs with empty refs latches it with zero editors
   // and refs assigned afterwards are inert: refs go in before the load, never
@@ -862,8 +862,8 @@ describe('editPage handleSubmit sanitization', () => {
       expect(mockCreateEditor.mock.calls[1][0]).toBe(bodyEl);
       expect(comp._editorsInitialized).toBe(true);
       // The mount is routed through $nextTick, not called inline:
-      // loadPaperData holds edit.js's only $nextTick call site, so an
-      // exact count of one also pins that no second dispatch path exists.
+      // loadPaperData holds edit.js's only $nextTick call site, so the
+      // exact count pins the load's single dispatch.
       expect(comp.$nextTick).toHaveBeenCalledTimes(1);
     });
 
