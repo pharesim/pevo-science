@@ -671,11 +671,14 @@ describe('every toucher of the revocation column also closes session-proof windo
     // this guard. The block-comment region `occurrencesOf` computes per file
     // is what keeps the demand, and the same text inside a docblock stays
     // prose rather than becoming a phantom demand.
+    // The star-leading line is deliberately the handler's ONLY occurrence of
+    // the column: a second, plainly-shaped write in the same handler would
+    // resolve to the same key and satisfy the assertion on its own, leaving
+    // the star-leading line with nothing to discriminate.
     const lines = [
       "router.post('/wrapped-star', async (req, res) => {",
       '  await pool.query(`UPDATE accounts SET flags = flags',
-      '    * CASE WHEN sessions_invalidated_at IS NULL THEN 1 ELSE 0 END,',
-      '      sessions_invalidated_at = NOW()`);',
+      '    * CASE WHEN sessions_invalidated_at IS NULL THEN 1 ELSE 0 END`);',
       '});',
       '',
       '/**',

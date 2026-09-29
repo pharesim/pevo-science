@@ -108,6 +108,12 @@ describe('enclosing-symbol: the comment predicate, the brace walk and the region
     // An opener whose comment runs on past the line reaches the no-close
     // branch instead, which answers prose for every prefix that gets there.
     expect(isCommentLine('  /* an opener whose comment runs on', false)).toBe(true);
+    // The close search starts past the opener's own two characters, so a
+    // line whose first three characters are an opener plus a slash is an
+    // opener, not a self-closing comment with live code behind it. This pins
+    // the offset the predicate documents as its close-search residual.
+    expect(isCommentLine('/*/ an opener followed by a slash, still prose')).toBe(true);
+    expect(isCommentLine('/*/ an opener followed by a slash, still prose', false)).toBe(true);
     // A close-leading line is the one star shape the known-closed reading
     // leaves to the search: it ends a comment whatever the region pass
     // believes, and is answered by what follows its close.
