@@ -41,9 +41,10 @@
  * post-gate stop. The publish test asserts the broadcast REQUEST it builds
  * (proof and CID) without pinning the refused response.
  *
- * Carve-out clause (a): the ORCID test stubs `/api/orcid/callback` (no
- * real ORCID OAuth handshake is possible in Playwright), so the window it
- * caches is test-authored and nothing it asserts is backend-issued. What
+ * Carve-out clause (a): the ORCID test stubs `/api/orcid/callback` at the
+ * network layer rather than driving the in-network ORCID stub, so the
+ * window it caches is test-authored and nothing it asserts is
+ * backend-issued. What
  * runs for real is the callback page's handling of that response: the
  * cache write, the bounce to the seeded return path, and the clearing of
  * the in-flight mode and return-path keys. The vote and comment tests
@@ -295,7 +296,7 @@ test.describe('light account against the real backend', () => {
     ]);
 
     // ...and the backend accepted it: the request passed the fresh-auth gate
-    // and stopped at the seeded account's posting-key decrypt.
+    // and stopped at the seeded account's posting-key availability guard.
     await expectPostGateStop(await broadcastResponsePromise);
 
     // The window the SPA cached is the one it carried.
@@ -513,8 +514,8 @@ test.describe('light account against the real backend', () => {
 
     // The page reports the failed publish and keeps the form (no navigation,
     // no draft cleared): the end state for a refused broadcast, whether it is
-    // refused before the gate as today or stopped at the posting-key decrypt
-    // once the allowlist admits the bundle.
+    // refused before the gate as today or stopped at the posting-key
+    // availability guard once the allowlist admits the bundle.
     await expect
       .poll(() => page.evaluate(() => window.Alpine.$data(document.querySelector('[x-data="publishPage"]')).step))
       .toBe('error');

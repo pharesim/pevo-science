@@ -20,8 +20,9 @@
  *
  * Where the real-backend leg stops, and why that is the assertion: the seeded
  * light account carries no encrypted posting key, so `/api/custody/broadcast`
- * consumes the proof and then refuses at its first post-gate step, the
- * posting-key decrypt (`expectPostGateStop`, fixtures/light-account.js).
+ * consumes the proof, reads the account row, and refuses at the posting-key
+ * availability guard that fronts the decrypt (`expectPostGateStop`,
+ * fixtures/light-account.js); the decrypt itself never runs.
  * Nothing is signed and nothing reaches a Hive node. The spent-proof replay
  * doubles as the gate control: the identical bundle that just passed is
  * refused AT the gate once its proof is gone.
@@ -166,7 +167,7 @@ test.describe('light-account consent op against the real backend', () => {
 
     // The backend accepted it: the gated-op scan matched the proof's target,
     // the consume passed, and the request stopped at the seeded account's
-    // posting-key decrypt.
+    // posting-key availability guard.
     await expectPostGateStop(await broadcastResponsePromise);
 
     // Single-use: the consume spent the proof, so the identical bundle is

@@ -10,8 +10,9 @@
  * reach the real `POST /api/custody/broadcast` without anything being
  * signed or reaching a Hive node: the handler consumes the proof, reads the
  * row (a missing row would 401, an upgrade stamp would 403, and the seed
- * clears both), then hits the posting-key decrypt and refuses with the
- * posting-key-unavailable envelope. `expectPostGateStop` pins that exact
+ * clears both), then refuses at the posting-key availability guard that
+ * fronts the decrypt, with the posting-key-unavailable envelope; the decrypt
+ * itself never runs. `expectPostGateStop` pins that exact
  * envelope, which is how a spec proves a request PASSED the fresh-auth gate
  * (the gate itself answers FRESH_AUTH_REQUIRED, and a bundle the handler
  * refuses before the gate answers 400 or 403 with a different code).
@@ -104,10 +105,11 @@ export async function confirmBroadcastDialog(page) {
 /**
  * Assert a `POST /api/custody/broadcast` response is the seeded account's
  * post-gate stop (see the module docblock): the request passed the
- * fresh-auth gate and reached the posting-key decrypt. Both the status and
- * the message are pinned because the handler has two 500 envelopes, and only
- * the posting-key one sits at the first post-gate step; the outer catch's
- * generic one would mean the decrypt itself threw.
+ * fresh-auth gate and was refused at the posting-key availability guard that
+ * fronts the decrypt. Both the status and the message are pinned because the
+ * handler has two 500 envelopes: the guard's posting-key-unavailable one is
+ * what this asserts, and the outer catch's generic one would mean a step past
+ * the guard threw.
  */
 export async function expectPostGateStop(response) {
   const body = await response.json();

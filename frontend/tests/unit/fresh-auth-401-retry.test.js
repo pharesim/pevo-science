@@ -26,7 +26,8 @@
 // path. A light account's vote acquires the window through the real
 // POST /custody/session-auth, and the real POST /custody/broadcast
 // carries it, passes the fresh-auth gate, and stops at the seeded
-// account's posting-key decrypt; a tampered proof through the same route
+// account's posting-key availability guard, before the decrypt; a
+// tampered proof through the same route
 // is refused at the gate, and the same window is accepted again on a
 // replay. The 401-retry, the username_mismatch teardown, and the
 // redirect-posture branches this suite pins have no real-path companion:
