@@ -1275,6 +1275,13 @@ export async function ensureSessionWindow({
   minRemainingMs = WINDOW_PREFLIGHT_MARGIN_MS,
   allowRedirect = true,
 } = {}) {
+  // This custody check must stay ahead of every path that can produce a
+  // `reauthRequired` outcome. `freshAuthWindowReady` answers that outcome by
+  // calling the page's `onReauthRequired` offer, which asks through
+  // `initBroadcastConfirm`'s store, and that store's `request()` resolves
+  // true without showing anything for a non-light account. Only because a
+  // non-light account returns here, before any outcome exists, can the offer
+  // never turn into a navigation nobody was asked about.
   if (Alpine.store('auth')?.custody !== 'light') return { ready: true, proof: null };
 
   const proof = await acquireSessionProof(minRemainingMs, { allowRedirect });

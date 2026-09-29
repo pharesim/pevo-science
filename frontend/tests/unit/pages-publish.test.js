@@ -302,6 +302,23 @@ describe('publishPage', () => {
     });
   });
 
+  describe('draft flush load guard', () => {
+    it('a flush before the restore has run leaves a real draft untouched', () => {
+      // The gates flush unconditionally, and a flush that lands ahead of the
+      // restore would read the still-empty form: the empty-form branch then
+      // removes the stored key outright, and the draft the restore was about
+      // to bring back is gone.
+      const saved = JSON.stringify({ title: 'Saved Title', abstract: 'Saved abstract', body: 'Saved body', savedAt: 1 });
+      localStorage.setItem('pevo-draft-publish', saved);
+      const comp = createComponent();
+      expect(comp._initialLoadDone).toBe(false);
+
+      comp._flushDraftSave();
+
+      expect(localStorage.getItem('pevo-draft-publish')).toBe(saved);
+    });
+  });
+
   describe('handleSubmit', () => {
     function validComponent() {
       const comp = createComponent();
@@ -890,8 +907,10 @@ describe('publishPage', () => {
     // live in component state, never in the draft, so a full-page ORCID
     // round-trip discards them. A gate reached while nothing is attached keeps
     // the navigating factor (the worst case is re-picking the one file being
-    // chosen); once a file is held, every gate refuses a passwordless account
-    // non-destructively and says so.
+    // chosen). Once a file is held, the entry and file-selection gates ask a
+    // passwordless account through the confirm dialog, stating what leaving
+    // costs, while the pre-broadcast gate never asks: it refuses with the
+    // re-authenticate toast, because past the uploads the pins are paid for.
     it('a passwordless account resubmitting with a file attached is asked, and keeps the file on a decline', async () => {
       // The entry gate must not fire the navigation that wipes the attached
       // file. It must not dead-end either: a passwordless account has no other
@@ -948,6 +967,64 @@ describe('publishPage', () => {
         expect(mockSessionUpload).not.toHaveBeenCalled();
         expect(broadcastOps).not.toHaveBeenCalled();
         expect(comp.step).toBe('idle');
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('text typed while the confirm dialog is open is in the draft when the round-trip starts', async () => {
+      // The gate's flush runs before the dialog opens, and the dialog stays
+      // up for as long as the user reads it. A yes has to write again, or the
+      // words typed in that time leave with the page despite the copy saying
+      // the text is kept.
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+      let draftAtOrcid = null;
+      mockStartOrcid.mockImplementation(async () => {
+        draftAtOrcid = localStorage.getItem('pevo-draft-publish');
+        return { redirect_url: 'https://orcid.org/oauth/authorize?x=1' };
+      });
+      vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/publish' } });
+      try {
+        const comp = lightComponent();
+        comp._initialLoadDone = true;
+        comp.pdfFile = { name: 'paper.pdf', size: 1024 };
+        mockStores.broadcastConfirm.request.mockImplementationOnce(async () => {
+          comp.title = 'Typed While Asked';
+          return true;
+        });
+
+        await comp.handleSubmit();
+
+        expect(mockStartOrcid).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(draftAtOrcid)).toMatchObject({ title: 'Typed While Asked' });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('a yes that arrives after the page unmounted navigates nowhere', async () => {
+      // The dialog can outlive the page. A yes answered for a page the user
+      // already left must not send a dead page to ORCID; it ends the way a
+      // decline does, silently.
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+      mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+      vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/publish' } });
+      try {
+        const comp = lightComponent();
+        comp.pdfFile = { name: 'paper.pdf', size: 1024 };
+        mockStores.broadcastConfirm.request.mockImplementationOnce(async () => {
+          comp.destroy();
+          return true;
+        });
+
+        await comp.handleSubmit();
+
+        expect(mockStores.broadcastConfirm.request).toHaveBeenCalledTimes(1);
+        expect(mockStartOrcid).not.toHaveBeenCalled();
+        expect(window.location.href).toBe('');
+        expect(mockSessionUpload).not.toHaveBeenCalled();
+        expect(broadcastOps).not.toHaveBeenCalled();
+        expect(mockStores.toast.show).not.toHaveBeenCalled();
       } finally {
         vi.unstubAllGlobals();
       }

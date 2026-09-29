@@ -2281,6 +2281,64 @@ describe('editPage re-auth window ordering', () => {
     }
   });
 
+  it('text typed while the confirm dialog is open is in the draft when the round-trip starts', async () => {
+    // The gate's flush runs before the dialog opens. A yes has to write again,
+    // or edits made while the dialog stood open leave with the page despite
+    // the copy saying the text is kept.
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    let draftAtOrcid = null;
+    mockStartOrcid.mockImplementation(async () => {
+      draftAtOrcid = localStorage.getItem('pevo-draft-edit-alice-p1');
+      return { redirect_url: 'https://orcid.org/oauth/authorize?x=1' };
+    });
+    vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/edit/alice/p1' } });
+    try {
+      const comp = unchangedLightComponent();
+      comp._initialLoadDone = true;
+      comp.supplementaryFiles = [newSupplementary()];
+      mockStores.broadcastConfirm.request.mockImplementationOnce(async () => {
+        comp.title = 'Typed While Asked';
+        return true;
+      });
+
+      await comp.handleSubmit();
+
+      expect(mockStartOrcid).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(draftAtOrcid)).toMatchObject({ title: 'Typed While Asked' });
+    } finally {
+      vi.unstubAllGlobals();
+      localStorage.removeItem('pevo-draft-edit-alice-p1');
+    }
+  });
+
+  it('a yes that arrives after the page unmounted navigates nowhere', async () => {
+    // The dialog can outlive the page. A yes answered for a page the user
+    // already left must not send a dead page to ORCID; it ends the way a
+    // decline does, silently.
+    mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+    mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
+    vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/edit/alice/p1' } });
+    try {
+      const comp = unchangedLightComponent();
+      comp.supplementaryFiles = [newSupplementary()];
+      mockStores.broadcastConfirm.request.mockImplementationOnce(async () => {
+        comp.destroy();
+        return true;
+      });
+
+      await comp.handleSubmit();
+
+      expect(mockStores.broadcastConfirm.request).toHaveBeenCalledTimes(1);
+      expect(mockStartOrcid).not.toHaveBeenCalled();
+      expect(window.location.href).toBe('');
+      expect(mockSessionUpload).not.toHaveBeenCalled();
+      expect(broadcastOps).not.toHaveBeenCalled();
+      expect(mockStores.toast.show).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('when the new file is the only change, the offer is the only way out', async () => {
     // Removing the files is the move a bare refusal implies, and on this
     // arrangement it is a dead end: the form is then unchanged, and the

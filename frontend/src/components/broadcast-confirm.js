@@ -14,7 +14,13 @@ export function initBroadcastConfirm() {
     _resolve: null,
 
     request({ title, message, confirmLabel }) {
-      // Only show for light accounts
+      // Only show for light accounts. The unasked `true` for any other
+      // custody is safe for the re-auth navigation offer (the pages'
+      // `onReauthRequired` predicate, called from `freshAuthWindowReady`)
+      // only because `ensureSessionWindow` returns ready for a non-light
+      // account before any `reauthRequired` outcome can exist. Moving that
+      // custody check would let this branch approve a navigation to ORCID
+      // that nobody was asked about.
       const auth = Alpine.store('auth');
       if (auth.custody !== 'light') return Promise.resolve(true);
 

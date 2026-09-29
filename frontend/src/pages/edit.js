@@ -944,12 +944,24 @@ export function initEditPage() {
     // `request()` resolves false both when the user declines and when another
     // action's dialog already owns the modal; both mean no navigation, which
     // is what the caller does with a false either way.
+    //
+    // A yes is honoured only while the page is still mounted, the same rule
+    // as the publish page's copy of this method: a yes arriving after the
+    // user has left degrades to the silent refusal a decline produces, rather
+    // than sending a page that no longer exists to ORCID. The unmount check
+    // also precedes the second flush, since `draftKey` derives from the router
+    // params and names whatever the user moved on to. A yes that is honoured
+    // flushes again because the flush in `_windowReady` ran before the dialog
+    // opened, and the copy promised that the text survives the round-trip.
     async _confirmNavigationCost() {
-      return Alpine.store('broadcastConfirm').request({
+      const confirmed = await Alpine.store('broadcastConfirm').request({
         title: this.$t('confirm.reauthNavigateTitle'),
         message: this.$t('confirm.reauthNavigateMessage'),
         confirmLabel: this.$t('confirm.reauthNavigate'),
       });
+      if (!confirmed || !this._mounted) return false;
+      this._flushDraftSave();
+      return true;
     },
 
     // A new supplementary file waiting to be uploaded. Files already on chain
