@@ -33,3 +33,15 @@ module exists, which is why this is low priority.
 1. A staged `.mts` (or `.cts`) file with a violating added line fails the
    hook; the same line in a `.ts` file still fails; clean lines pass.
 2. `bash .githooks/tests/test-pre-commit.sh` passes.
+
+## Implementation signal (2026-09-29)
+
+Landed at `86181664`. Both extension lists in `.githooks/pre-commit` now carry
+`mts|cts`: the `staged_added` awk path filter (scope item 1) and the
+line-cite arm of `is_rot` (same gap class, so a `loader.mts:42` cite is caught
+too). Test file gains R19 (slug in `.mts`), R20 (slug in `.cts`), R21
+(`.mts:NN` line cite) and A10b (clean `.mts` line accepted). Against the
+previous hook R19-R21 fail (38/3); against the new hook the suite is 41
+passed, 0 failed, exit 0. Scope item 3: no backend canary task filed; the
+whole-tree `no-stale-comment-anchors` canary still walks `.ts` only, which
+stays moot until a `.mts`/`.cts` module exists under `backend/src`.
