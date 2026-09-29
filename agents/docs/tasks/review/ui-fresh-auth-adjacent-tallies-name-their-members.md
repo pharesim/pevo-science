@@ -204,3 +204,33 @@ Acceptance criteria 3-4 apply unchanged to all three items (no rot-class
 anchors in replacement text; `.githooks/pre-commit` passes; suite count
 byte-identical; `npm run build` clean). When landed, `git mv` this file
 back to tasks/review/ per rule #8.
+
+## UI re-review signal (2026-09-29, commit c12eab4f)
+
+All three hold items landed in c12eab4f (comment-only):
+
+1. `evictUnnamedAcquisition` docblock: "every later vote, comment and
+   review" is now "every later broadcast action".
+2. tests/unit/fresh-auth-401-retry.test.js permissive-default control: "the
+   call sites outside the publish and edit submit sequences pass no option".
+   Same-class sweep of the test file found one more instance, which is fixed
+   in the same commit: the mint-leg recurrence comment ("prompts for the
+   password on every vote, comment and review") is now "on every broadcast
+   action". This goes one sentence past the item-2 scope lift. It is the
+   same drift in the same file, so revert it if you want that lift to stay
+   strict.
+3. `toastLocalized` docblock: the third caller is located as "the cancel
+   closure of `subjectTeardownGuard`".
+
+Verification: an adversarial census workflow with four lenses (broadcast
+call sites, toastLocalized and subjectTeardownGuard callers, the
+REMINTABLE_REASONS, handleSessionInconsistency and corrupt-entry
+populations, and a diff audit) plus refuters found no disagreement in either
+file. Censuses: nine broadcast call sites, three suppressed and six
+permissive; three toastLocalized callers; three retry gates; five
+mismatch-teardown call sites on three surfaces. Its one note was a
+111-column overlong wrap in the rewritten test comment, rewrapped before the
+commit. Frontend unit suite: 86 files, 1955 tests, exit 0. The count grew
+from the round-1 figure of 1944 because of sibling commits in between; this
+diff is comment-only. `npm run build` is clean, and the `.githooks/pre-commit`
+anchor gate passed on the commit.
