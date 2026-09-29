@@ -21,7 +21,7 @@
   },
   "header": {
     "tagline": "علم آزاد، دسترسی آزاد",
-    "disconnect": "خروج",
+    "disconnect": "Sign out",
     "installBrowserExtension": "نصب Keychain"
   },
   "home": {

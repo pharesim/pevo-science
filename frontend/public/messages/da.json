@@ -21,7 +21,7 @@
   },
   "header": {
     "tagline": "åben videnskab, fri adgang",
-    "disconnect": "Log ud",
+    "disconnect": "Sign out",
     "installBrowserExtension": "Installer Keychain"
   },
   "home": {

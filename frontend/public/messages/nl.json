@@ -21,7 +21,7 @@
   },
   "header": {
     "tagline": "open wetenschap, open toegang",
-    "disconnect": "Afmelden",
+    "disconnect": "Sign out",
     "installBrowserExtension": "Keychain installeren"
   },
   "home": {

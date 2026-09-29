@@ -21,7 +21,7 @@
   },
   "header": {
     "tagline": "science ouverte, accès libre",
-    "disconnect": "Se déconnecter",
+    "disconnect": "Sign out",
     "installBrowserExtension": "Installer Keychain"
   },
   "home": {

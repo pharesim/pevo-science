@@ -21,7 +21,7 @@
   },
   "header": {
     "tagline": "מדע פתוח, גישה פתוחה",
-    "disconnect": "התנתקות",
+    "disconnect": "Sign out",
     "installBrowserExtension": "התקנת Keychain"
   },
   "home": {

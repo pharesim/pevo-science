@@ -3905,19 +3905,26 @@ recovery instructions that tell the reader to sign out
 the verb, and the header control is the only way to end a session, so the
 label now matches them.
 
-Each locale was judged against its own sign-in label (`signIn.signInButton`).
-Six locales already rendered the matching half of a consistent sign-in /
-sign-out pair, so their translations were kept and they are not listed:
+All fifteen non-English locales are re-stubbed with the new English and
+listed below. A hint for translators: judged against each locale's own
+sign-in label (`signIn.signInButton`), six locales already rendered the
+matching half of a consistent sign-in / sign-out pair before the reword:
 da (Log ind / Log ud), de (Anmelden / Abmelden), fa (ورود / خروج),
 fr (Se connecter / Se déconnecter), he (התחברות / התנתקות) and
-nl (Inloggen / Afmelden). The nine locales below paired a session or login
-verb for sign-in with a connection-cutting verb for sign-out; they are
-re-stubbed and need a fresh value.
+nl (Inloggen / Afmelden). Those prior values remain good candidates. The
+other nine paired a session or login verb for sign-in with a
+connection-cutting verb for sign-out and need a fresh value.
 
 ar: header.disconnect
 cs: header.disconnect
+da: header.disconnect
+de: header.disconnect
 es: header.disconnect
+fa: header.disconnect
+fr: header.disconnect
+he: header.disconnect
 it: header.disconnect
+nl: header.disconnect
 pl: header.disconnect
 pt: header.disconnect
 sv: header.disconnect
