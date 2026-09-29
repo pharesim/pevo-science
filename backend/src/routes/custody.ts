@@ -67,8 +67,12 @@ const SIGNED_AT_MAX_LEN = 64;
 
 const router = Router();
 
-// Allowed Hive operations for custodial broadcast
-const ALLOWED_OPS = new Set(['comment', 'vote', 'custom_json']);
+// Allowed Hive operations for custodial broadcast. `comment_options` is
+// admitted only bound to an earlier `comment` op in the same bundle (see the
+// per-op loop in the /broadcast handler).
+const ALLOWED_OPS = new Set(['comment', 'comment_options', 'vote', 'custom_json']);
+// The payout cap every SPA comment_options op carries (Hive's default).
+const COMMENT_OPTIONS_MAX_ACCEPTED_PAYOUT = '1000000.000 HBD';
 
 const broadcastLimiter = rateLimit({ name: 'custody-broadcast', windowMs: 60_000, max: 30, keyFn: byAccount });
 // Consume-on-success-only: the 1/hr cap exists to bound a one-shot ceremony,
@@ -460,7 +464,10 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     idempotencyKey = validation.value;
   }
 
-  // Validate each operation
+  // Validate each operation. `commentKeys` holds the author/permlink of every
+  // `comment` op validated so far, so a `comment_options` op binds only to a
+  // comment that precedes it (the chain also requires that order).
+  const commentKeys = new Set<string>();
   for (const op of operations) {
     if (!Array.isArray(op) || op.length !== 2) {
       return sendError(res, 400, 'VALIDATION_ERROR', 'Each operation must be a [type, params] tuple');
@@ -488,6 +495,37 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
         }
       } catch {
         return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid json_metadata');
+      }
+      commentKeys.add(JSON.stringify([opParams.author, opParams.permlink]));
+    } else if (opType === 'comment_options') {
+      // The SPA bundles this op with every new post to apply the rewards
+      // policy (rewards allowed, paid in HP, no beneficiaries). Bind it to the
+      // post it configures and pin every policy field to the SPA's values, so
+      // a stolen session can neither retarget another post's options nor route
+      // its rewards. The bound comment op may be an edit of an existing post,
+      // and the chain lets these fields only ever tighten: an unpinned
+      // `allow_votes: false` or lowered payout cap would permanently disable
+      // voting or rewards on a paper already in its payout window.
+      if (typeof opParams !== 'object' || opParams === null) {
+        return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid comment_options payload');
+      }
+      if (opParams.author !== username) {
+        return sendError(res, 403, 'FORBIDDEN', `comment_options author must be '${username}'`);
+      }
+      if (!commentKeys.has(JSON.stringify([opParams.author, opParams.permlink]))) {
+        return sendError(res, 403, 'FORBIDDEN', 'comment_options must follow a comment op for the same author and permlink in the same bundle');
+      }
+      if (opParams.percent_hbd !== 0) {
+        return sendError(res, 403, 'FORBIDDEN', 'comment_options percent_hbd must be 0');
+      }
+      if (!Array.isArray(opParams.extensions) || opParams.extensions.length !== 0) {
+        return sendError(res, 403, 'FORBIDDEN', 'comment_options extensions must be empty');
+      }
+      if (opParams.max_accepted_payout !== COMMENT_OPTIONS_MAX_ACCEPTED_PAYOUT) {
+        return sendError(res, 403, 'FORBIDDEN', `comment_options max_accepted_payout must be '${COMMENT_OPTIONS_MAX_ACCEPTED_PAYOUT}'`);
+      }
+      if (opParams.allow_votes !== true || opParams.allow_curation_rewards !== true) {
+        return sendError(res, 403, 'FORBIDDEN', 'comment_options allow_votes and allow_curation_rewards must be true');
       }
     } else if (opType === 'vote') {
       if (opParams.voter !== username) {
