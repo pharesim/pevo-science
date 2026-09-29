@@ -233,6 +233,25 @@
  * fail-closed resolution arm spans both trees, because an unattributable
  * write matters more in a migration, not less.
  *
+ * WHAT THE ROOTS ARE, stated so coverage is a property a reader checks rather
+ * than infers. Scanned: every `.ts`, `.mts`, `.cts` and `.tsx` module under
+ * `backend/src`, recursively (the shared `sourcesUnder` collects the first
+ * spelling, {@link moduleResourcesUnder} the other three), every `.sql`
+ * resource under the same tree ({@link sqlResourcesUnder}, read as SQL), and
+ * every `.sql` file at the top of `backend/migrations`. Every module the
+ * build can compile into the `dist` the image runs is in that set:
+ * `tsconfig.json` includes the whole of `src` and sets no `allowJs`, so a
+ * `.js` placed there is neither compiled nor shipped, and is not scanned
+ * either, while a `.tsx` compiles only while it is free of JSX (no `jsx`
+ * option is set) and is scanned whether or not it would build. The
+ * containment runs one way on purpose: a file scanned in vain costs a red
+ * bar at worst, and a file shipped unscanned is the silent direction this
+ * statement of the roots exists to close. Excluded, deliberately: every tree
+ * that does not ship. Test code
+ * under `backend/tests` is one such tree; `backend/scripts` is the one that
+ * LOOKS like a scan candidate and is not, and the `backend/scripts` entry
+ * under KNOWN LIMITS records why, and what re-opens the question.
+ *
  * A RED BAR MAY BE THE READER'S, NOT A THIRD WRITER'S, and so may a green one
  * or a slow run. What is recorded about this reader elsewhere, none of it
  * about the column, is catalogued in `agents/docs/solutions/README.md` under
@@ -595,6 +614,21 @@
  *     a write base caught and this misses to need one of those triggers, and
  *     found nesting refusing more phantoms than it widens. Neither tree spells
  *     any of them.
+ *   - `backend/scripts` is outside every root, on purpose. The tree is
+ *     database-adjacent, which is what makes it look like a missing root: its
+ *     one client, the test-reset helper Playwright's global-setup runs, opens
+ *     a pool on `APP_DATABASE_URL`. Three facts keep it out. It does not
+ *     ship: the image copies it into the build stage for the academic-domain
+ *     fetch and never into the runtime stage, so nothing the deployed
+ *     application executes lives there. Its one client refuses any database
+ *     whose name does not end `_test`, and what it then runs is TRUNCATE,
+ *     which removes rows and stamps a marker on none. And the tree is `.js`
+ *     and `.sh` today, so pointing the `.ts` walker at it would scan nothing
+ *     while reading as coverage — a stated exclusion is honest where an
+ *     empty root is not. The boundary this buys: a script added there that
+ *     connects to the application database and WRITES rows is a new root,
+ *     and admitting it means a walker that collects that script's own
+ *     extension, not just a root list growing a directory.
  *   - The scans read the shapes an author writes by accident, not the ones an
  *     author writes to evade a test. A writer determined to get past them can.
  *
@@ -2821,8 +2855,42 @@ function sqlResourcesUnder(root: string): ScannedSource[] {
   return out;
 }
 
+/** Every `.mts` / `.cts` / `.tsx` module under `root`, recursively.
+ *
+ *  Same argument as `sqlResourcesUnder`: the shared `sourcesUnder` collects
+ *  `.ts` alone, and `endsWith('.ts')` matches none of these spellings, while
+ *  `tsconfig.json`'s `include` covers the whole of `src` — a module in any of
+ *  them is compiled (a `.tsx` only while it is free of JSX, since no `jsx`
+ *  option is set and one carrying JSX fails the build), lands in the `dist`
+ *  the image runs, and reaches the same database as any `.ts` neighbour. A
+ *  writer moved into one would otherwise leave every scan without leaving the
+ *  deployed tree. None exists today, which is why this returns an empty list
+ *  and why the writer set is unchanged by it. All three spellings are
+ *  TypeScript, and `readable` blanks them as such, keyed off the rel NOT
+ *  ending `.sql`. */
+function moduleResourcesUnder(root: string): ScannedSource[] {
+  const out: ScannedSource[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (
+        entry.isFile() &&
+        (entry.name.endsWith('.mts') || entry.name.endsWith('.cts') || entry.name.endsWith('.tsx'))
+      ) {
+        out.push({
+          rel: path.relative(root, full).split(path.sep).join('/'),
+          lines: readFileSync(full, 'utf8').split('\n'),
+        });
+      }
+    }
+  };
+  walk(root);
+  return out;
+}
+
 const srcRoot = path.resolve(__dirname, '..', '..', 'src');
-const sources = readable(sourcesUnder(srcRoot));
+const sources = readable([...sourcesUnder(srcRoot), ...moduleResourcesUnder(srcRoot)]);
 const migrations = readable([
   ...migrationSources(path.resolve(__dirname, '..', '..', 'migrations')),
   ...sqlResourcesUnder(srcRoot),
