@@ -2717,13 +2717,48 @@ describe('editPage draft carries the addressed-review ticks', () => {
     expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
   });
 
+  // Twin of the unmount-during-broadcast case on the continuation arm. The
+  // continuation and same-author legs are mutually exclusive, so a fixture
+  // resolving isContinuation false proves nothing about this arm's
+  // post-broadcast clear, and the unmount exit is the one only that clear can
+  // serve: every later clear sits past the `_mounted` guard it takes.
+  it('an unmount during the continuation broadcast still drops the draft the landed post spent', async () => {
+    const { invalidatePaperCache } = await import('../../src/api.js');
+    invalidatePaperCache.mockResolvedValue({});
+    arrangeLoad([REV_ONE, REV_TWO], {
+      authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }],
+    });
+
+    const comp = loadedComponent();
+    mockStores.auth.username = 'bob';
+    await comp.loadPaperData();
+    comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
+    // Fixture-posture proof: this test exercises the continuation branch.
+    expect(comp.isContinuation).toBe(true);
+
+    let draftDuringBroadcast = null;
+    broadcastOps.mockImplementation(async () => {
+      draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+      comp.destroy();
+      return { tx_id: 'tx' };
+    });
+
+    await comp.handleSubmit();
+
+    expect(broadcastOps).toHaveBeenCalledTimes(1);
+    // Non-vacuous: the gate's flush wrote the ticked draft, so the clear past
+    // the broadcast has something to drop.
+    expect(JSON.parse(draftDuringBroadcast).addressedReviews).toEqual([addressed(REV_ONE)]);
+    expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+  });
+
   // Twin of the unmount-during-broadcast case on the other branch arm, and it
   // takes the other exit.
   // The continuation and same-author legs are mutually exclusive, so a fixture
   // resolving isContinuation false proves nothing about this one. A rejecting
-  // invalidation is the exit the clear beside step = 'success' cannot serve:
-  // the throw carries execution past it into the terminal catch with the
-  // continuation post already on chain.
+  // invalidation is the exit the clear after the invalidation await cannot
+  // serve: the throw carries execution past it into the terminal catch with
+  // the continuation post already on chain.
   it('the continuation post drops the draft when the cache invalidation rejects', async () => {
     vi.useFakeTimers();
     try {
@@ -2768,7 +2803,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
   // The post-broadcast clear closes the unmount and rejecting-invalidation
   // exits, but the form stays interactive across the invalidation await
   // itself: a keystroke there re-arms the debounce AFTER that clear ran, and
-  // a rejection then skips the success-side clear into the terminal catch.
+  // a rejection then skips the clear after that await into the terminal catch.
   // Without the catch's own clear the timer fires two seconds later and
   // writes the spent draft back behind the landed edit — rejections correlate
   // with slow networks, which is when that window is widest.
@@ -2856,6 +2891,165 @@ describe('editPage draft carries the addressed-review ticks', () => {
       expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
       comp.destroy();
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The resolving twin of the re-arm window. A save that FIRES inside the
+  // invalidation await writes the spent draft back, and leaving the page
+  // before the invalidation settles takes the `_mounted` guard after it.
+  // destroy() has nothing pending to cancel by then, so only a clear placed
+  // ahead of that guard can drop the rewritten draft. The await can hang up
+  // to the request timeout, which is the window a user leaves through.
+  it('an unmount across a resolving invalidation drops the draft a fired save wrote back', async () => {
+    vi.useFakeTimers();
+    try {
+      const { invalidatePaperCache } = await import('../../src/api.js');
+      arrangeLoad([REV_ONE, REV_TWO]);
+
+      const comp = loadedComponent();
+      await comp.loadPaperData();
+      comp.authorName = 'Alice';
+      comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
+      // Fixture-posture proof: this test exercises the same-author branch.
+      expect(comp.isContinuation).toBe(false);
+
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      let draftBeforeUnmount = null;
+      invalidatePaperCache.mockImplementation(async () => {
+        comp.title = 'Retitled while the invalidation was in flight';
+        comp._scheduleDraftSave();
+        vi.advanceTimersByTime(2000);
+        draftBeforeUnmount = localStorage.getItem(DRAFT_KEY);
+        comp.destroy();
+        return {};
+      });
+
+      await comp.handleSubmit();
+
+      expect(broadcastOps).toHaveBeenCalledTimes(1);
+      // Non-vacuous: the fired save really did write the draft back.
+      expect(JSON.parse(draftBeforeUnmount).title).toBe('Retitled while the invalidation was in flight');
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Twin on the continuation arm: each arm carries its own clear after the
+  // invalidation await, so the same-author fixture proves nothing about this
+  // one.
+  it('an unmount across a resolving invalidation drops the continuation draft a fired save wrote back', async () => {
+    vi.useFakeTimers();
+    try {
+      const { invalidatePaperCache } = await import('../../src/api.js');
+      arrangeLoad([REV_ONE, REV_TWO], {
+        authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }],
+      });
+
+      const comp = loadedComponent();
+      mockStores.auth.username = 'bob';
+      await comp.loadPaperData();
+      comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
+      // Fixture-posture proof: this test exercises the continuation branch.
+      expect(comp.isContinuation).toBe(true);
+
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      let draftBeforeUnmount = null;
+      invalidatePaperCache.mockImplementation(async () => {
+        comp.title = 'Retitled while the invalidation was in flight';
+        comp._scheduleDraftSave();
+        vi.advanceTimersByTime(2000);
+        draftBeforeUnmount = localStorage.getItem(DRAFT_KEY);
+        comp.destroy();
+        return {};
+      });
+
+      await comp.handleSubmit();
+
+      expect(broadcastOps).toHaveBeenCalledTimes(1);
+      // Non-vacuous: the fired save really did write the draft back.
+      expect(JSON.parse(draftBeforeUnmount).title).toBe('Retitled while the invalidation was in flight');
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The terminal catch clears only when the broadcast landed. A throw before
+  // that point (a failed upload, a failed broadcast) has put nothing on
+  // chain, so the draft the entry gate flushed is still the user's work and
+  // the retry needs it. The guard sits ahead of either arm's landed marker,
+  // so one same-author case witnesses it for both arms.
+  it('a broadcast that fails before landing keeps the flushed draft', async () => {
+    const { invalidatePaperCache } = await import('../../src/api.js');
+    arrangeLoad([REV_ONE, REV_TWO]);
+
+    const comp = loadedComponent();
+    await comp.loadPaperData();
+    comp.authorName = 'Alice';
+    comp.title = 'Retitled before a failing broadcast';
+    comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
+    // Fixture-posture proof: this test exercises the same-author branch.
+    expect(comp.isContinuation).toBe(false);
+
+    broadcastOps.mockRejectedValue(new Error('broadcast unavailable'));
+
+    await comp.handleSubmit();
+
+    expect(broadcastOps).toHaveBeenCalledTimes(1);
+    expect(invalidatePaperCache).not.toHaveBeenCalled();
+    expect(comp.step).toBe('error');
+    const saved = JSON.parse(localStorage.getItem(DRAFT_KEY));
+    expect(saved.title).toBe('Retitled before a failing broadcast');
+    expect(saved.addressedReviews).toEqual([addressed(REV_ONE)]);
+    comp.destroy();
+  });
+
+  // The catch clear sits ahead of the catch's `_mounted` guard for the corner
+  // this case stages: the debounce FIRES inside a rejecting invalidation and
+  // the user leaves before it rejects. destroy() has no pending timer left to
+  // cancel, so the draft the fired save wrote back is dropped by the catch or
+  // not at all. By then the router params name the next paper, which has a
+  // draft of its own that the clear must leave alone: the catch clears by the
+  // key captured before the first await, not by the draftKey getter.
+  it('a catch entered unmounted after the debounce fired drops the rewritten draft by its captured key', async () => {
+    vi.useFakeTimers();
+    const OTHER_KEY = 'pevo-draft-edit-bob-p9';
+    try {
+      const { invalidatePaperCache } = await import('../../src/api.js');
+      arrangeLoad([REV_ONE, REV_TWO]);
+
+      const comp = loadedComponent();
+      await comp.loadPaperData();
+      comp.authorName = 'Alice';
+      comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
+      // Fixture-posture proof: this test exercises the same-author branch.
+      expect(comp.isContinuation).toBe(false);
+
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      let draftBeforeUnmount = null;
+      invalidatePaperCache.mockImplementation(async () => {
+        comp.title = 'Retitled while the invalidation was in flight';
+        comp._scheduleDraftSave();
+        vi.advanceTimersByTime(2000);
+        draftBeforeUnmount = localStorage.getItem(DRAFT_KEY);
+        comp.destroy();
+        mockStores.router.params = { author: 'bob', permlink: 'p9' };
+        localStorage.setItem(OTHER_KEY, storedDraft());
+        throw new Error('invalidate unavailable');
+      });
+
+      await comp.handleSubmit();
+
+      // Non-vacuous: the fired save really did write the draft back.
+      expect(JSON.parse(draftBeforeUnmount).title).toBe('Retitled while the invalidation was in flight');
+      // The catch took its `_mounted` guard, so step never left the leg.
+      expect(comp.step).toBe('broadcasting');
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      expect(localStorage.getItem(OTHER_KEY)).toBe(storedDraft());
+    } finally {
+      mockStores.router.params = { author: 'alice', permlink: 'p1' };
       vi.useRealTimers();
     }
   });

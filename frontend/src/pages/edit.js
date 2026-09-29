@@ -1340,11 +1340,11 @@ export function initEditPage() {
           }
 
           // The post is on chain, so the draft is spent — drop it here, ahead
-          // of both exits that stand between this point and the clear beside
-          // step = 'success'. An unmount takes the `_mounted` guard below, and a
-          // rejecting invalidation throws to the terminal catch; either one left
-          // the flushed draft behind a landed post, and a restored tick alone
-          // passes the no-changes check on the next visit.
+          // of both exits that stand between this point and the clear after
+          // the invalidation await. An unmount takes the `_mounted` guard
+          // below, and a rejecting invalidation throws to the terminal catch;
+          // either one left the flushed draft behind a landed post, and a
+          // restored tick alone passes the no-changes check on the next visit.
           this._clearDraft(draftKey);
           landed = true;
           if (!this._mounted) return;
@@ -1353,13 +1353,16 @@ export function initEditPage() {
           const canonicalAuthor = this.paper.canonical_author || this.paper.author;
           const canonicalPermlink = this.paper.canonical_permlink || this.paper.permlink;
           await invalidatePaperCache(canonicalAuthor, canonicalPermlink);
+          // The form stays interactive across that await, so a watched change
+          // there can arm the debounce, or fire it, or flush the draft
+          // synchronously, all after the post-broadcast clear. Re-clear ahead
+          // of the `_mounted` guard, for the reason the terminal catch's clear
+          // sits ahead of its own: a save that already fired left destroy()
+          // nothing to cancel, and the rewritten draft outlives the component.
+          this._clearDraft(draftKey);
           if (!this._mounted) return;
 
           this.step = 'success';
-          // Idempotent after the post-broadcast clear, and kept for the window
-          // that clear cannot see: the invalidation is an await the form stays
-          // interactive across.
-          this._clearDraft(draftKey);
           this._setTimer(() => {
             this.navigate(`/paper/${canonicalAuthor}/${canonicalPermlink}`);
           }, 1500);
@@ -1444,12 +1447,12 @@ export function initEditPage() {
           const canonicalAuthor = this.paper.canonical_author || this.paper.author;
           const canonicalPermlink = this.paper.canonical_permlink || this.paper.permlink;
           await invalidatePaperCache(canonicalAuthor, canonicalPermlink);
+          // See the continuation branch: re-clear what the interactive window
+          // across the invalidation await wrote back, ahead of the guard.
+          this._clearDraft(draftKey);
           if (!this._mounted) return;
 
           this.step = 'success';
-          // See the continuation branch: idempotent, kept for the interactive
-          // window the invalidation await opens.
-          this._clearDraft(draftKey);
           this._setTimer(() => {
             this.navigate(`/paper/${canonicalAuthor}/${canonicalPermlink}`);
           }, 1500);
