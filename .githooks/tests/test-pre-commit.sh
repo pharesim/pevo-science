@@ -88,6 +88,12 @@ run_case "R17 bare positional anchor (the rows below)" 1 "" \
   'mkdir -p frontend/tests; printf "// depends on its truthiness, so the rows below differ there\n" > frontend/tests/a.test.js; git add frontend/tests/a.test.js'
 run_case "R18 bare positional anchor (the table above)" 1 "" \
   'mkdir -p frontend/src; printf "// the silent rows are the ones the table above leaves null\n" > frontend/src/a.js; git add frontend/src/a.js'
+run_case "R19 slug in a .mts module" 1 "" \
+  'mkdir -p backend/src; printf "// fixed per backend-foo-bar (since archived)\n" > backend/src/a.mts; git add backend/src/a.mts'
+run_case "R20 slug in a .cts module" 1 "" \
+  'mkdir -p frontend/tests; printf "// fixed per backend-foo-bar (since archived)\n" > frontend/tests/a.cts; git add frontend/tests/a.cts'
+run_case "R21 line-cite .mts:NNN" 1 "" \
+  'mkdir -p backend/src; printf "// see loader.mts:42 for the hook\n" > backend/src/a.ts; git add backend/src/a.ts'
 
 echo
 echo "=== Legitimate / out-of-scope → accept (exit 0) ==="
@@ -111,6 +117,8 @@ run_case "A9 out-of-scope dir (scripts/)" 0 "" \
   'mkdir -p scripts; printf "// fixed per backend-foo-bar archived\n" > scripts/a.js; git add scripts/a.js'
 run_case "A10 in-scope dir but non-source ext (.md)" 0 "" \
   'mkdir -p backend/src; printf "fixed per backend-foo-bar archived\n" > backend/src/a.md; git add backend/src/a.md'
+run_case "A10b clean line in a .mts module" 0 "" \
+  'mkdir -p backend/src; printf "// the loader resolves ESM specifiers\n" > backend/src/a.mts; git add backend/src/a.mts'
 run_case "A11 empty staged set" 0 "" \
   'true'
 # The carve-out's DURABLE form: a stable behavioral name rides along inside the

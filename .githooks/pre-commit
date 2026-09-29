@@ -84,7 +84,7 @@ anchor_violation() {
   # Line-number cites: a <file>.<ext>:<n> path, the bare-Lnn form (`bridge.js L66`),
   # or a `line <n>` / `lines <n>-<n>` reference. (Terminal `~<n>` is intentionally
   # not gated here — see header.)
-  grep -qiE '\.(ts|tsx|js|jsx|mjs|cjs|sql)(:[0-9]+|[[:space:]]+L[0-9]+)|\blines?[[:space:]]+[0-9]' <<<"$content" && return 0
+  grep -qiE '\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|sql)(:[0-9]+|[[:space:]]+L[0-9]+)|\blines?[[:space:]]+[0-9]' <<<"$content" && return 0
   grep -qiE '\btasks-archive\b|\btask acceptance\b|\b(AC|acceptance)[[:space:]]+#[0-9]|\bsee task[[:space:]]+(item\b|#|[a-z0-9]+-)' <<<"$content" && return 0
   # Bare positional anchors: an article sitting DIRECTLY against a structural
   # noun, then above/below. The adjacency is the whole discriminator — see the
@@ -114,7 +114,7 @@ staged_added() {
     | awk '
       /^\+\+\+ / { f = substr($0, 7);   # strip leading "+++ b/"
                    keep = (f ~ /^(frontend|backend)\/(src|tests)\// &&
-                           f ~ /\.(ts|tsx|js|jsx|mjs|cjs|sql)$/);
+                           f ~ /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|sql)$/);
                    next }
       /^@@ /     { match($0, /\+[0-9]+/);
                    nl = substr($0, RSTART + 1, RLENGTH - 1) + 0;
