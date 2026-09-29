@@ -182,3 +182,54 @@ Before any probe-restore (`git checkout --` or `git show >`), require
 `git status` clean for the file per the committed-baseline discipline, and
 land your docblock edits on top of whatever the sibling has committed by
 then rather than rebuilding from an older blob.
+
+## Backend re-review signal (2026-09-29, commits 35b3a3bb and 50a582dc):
+
+Both SHAs verified as ancestors of `main`. All five items are addressed in
+the canary file; no walker traversal changed, no `.json` collector added,
+`routineSites` still reads migrations only.
+
+1. WHAT THE ROOTS ARE now scopes the universal to TypeScript modules and
+   points to a new `resolveJsonModule` KNOWN LIMITS entry. The entry gives
+   the no-`.json`-today fact, why an empty collector is not added, and the
+   re-open condition the hold prescribed.
+2. New KNOWN LIMITS entry: the two local walkers read regular files and
+   directories only and do not follow links, the shared `.ts` walker does,
+   no symlink exists under `backend/src` today, and the re-open condition.
+   The roots paragraph cross-references it.
+3. `codeSourcesUnder(root)` combiner builds `sources`. A new spec plants
+   `a/b/writer.{ts,mts,cts,tsx}`, a decoy `writer.js` and `writer.sql` in a
+   tmpdir. It asserts the exact rel sets from `codeSourcesUnder` and
+   `sqlResourcesUnder`, and exact `countsOf` maps from `columnAssignments`
+   and `accountsColumnWriters` (`file#touch`, `writer.sql#<module>`).
+   Mutation table, each run in a scratch copy: RED for emptied module
+   predicate, `.mts` typo, dropped `.tsx`, dropped `.cts`, combiner
+   dropping either spread, non-recursive module walk, non-recursive `.sql`
+   walk, emptied `.sql` predicate. Two survivors are stated rather than
+   pinned: `sources` pointed back at `sourcesUnder` alone, and
+   `sqlResourcesUnder` dropped from `migrations`. Both are call-site wiring
+   lines that no fixture can pin short of a tautology, and the second is a
+   pre-existing merge the hold did not name. The `codeSourcesUnder`
+   docblock records both. The first commit's message overclaimed "unwired
+   merge" coverage; 50a582dc corrects the prose it describes.
+4. Exclusions restated: excluded trees either do not ship (`backend/tests`,
+   `backend/scripts`) or ship only data the application reads or serves
+   (`backend/data`, `backend/public`, production `node_modules`). Only
+   `backend/src` modules and `backend/migrations` reach the database as
+   executable statements.
+5. KNOWN LIMITS entry for runtime DDL in a module, leaning on the
+   accident-not-evasion scope entry. Narrowed in 50a582dc after
+   verification: module-side ALTERs and routine bodies spelling the
+   assignment ARE read (the ALTER and writer arms span `sources`). The
+   entry names the one silent shape: a trigger or rule bound to `accounts`
+   whose function writes `NEW.updated_at`.
+
+Verification: a four-lens adversarial workflow (hold fidelity, facts,
+conventions, mutation), with two refuters per finding, ran on 35b3a3bb in
+scratch copies. Three findings survived: the item-5 overclaim, the fixture
+coverage overclaim, and a ragged wrap. All three are fixed in 50a582dc.
+Refuted findings included "emitted verbatim" pedantry (tsc re-serialises
+JSON) and node_modules being code rather than data; neither changes what
+any scan reads. Clean tree: `tests/eslint/` 9 files / 140 tests green,
+`npm run typecheck` passes, `npm run lint` has only its one existing
+warning, and the pre-commit anchor gate passed on both commits.
