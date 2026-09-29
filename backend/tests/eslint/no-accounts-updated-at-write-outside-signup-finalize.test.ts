@@ -249,10 +249,9 @@
  * collects one, and the `resolveJsonModule` entry under KNOWN LIMITS records
  * what re-opens that. The shared walker follows a symbolic link and the two
  * local ones do not; the symlink entry under KNOWN LIMITS records that edge.
- * The containment
- * runs one way on purpose: a file scanned in vain costs a red bar at worst,
- * and a file shipped unscanned is the silent direction this statement of
- * the roots exists to close. Excluded, deliberately: every other tree, and
+ * The containment runs one way on purpose: a file scanned in vain costs a
+ * red bar at worst, and a file shipped unscanned is the silent direction
+ * this statement of the roots exists to close. Excluded, deliberately: every other tree, and
  * each excluded tree either does not ship or ships only data that no scan
  * reads as statements. Test code under `backend/tests` and the maintenance
  * code under `backend/scripts` do not ship; `backend/data`, the built
@@ -673,15 +672,18 @@
  *     link exists under `backend/src` today. The re-open condition: a linked
  *     module or directory under `src`, at which point the local walkers
  *     follow links the way the shared one does.
- *   - Runtime DDL spelled inside a scanned MODULE is read by no arm. The
- *     routine arm, which refuses a trigger, rule or stored routine bound to
- *     `accounts`, walks the SQL files only (the migrations and any `.sql`
- *     resource under `src`), so a `CREATE FUNCTION` or
- *     `CREATE TRIGGER` targeting `accounts` held in a module's SQL string, and
- *     run from there, installs a writer this file never sees. Application
- *     code installing a trigger at runtime is not a shape an author writes by
- *     accident, and the accident-not-evasion scope entry of this list covers
- *     it.
+ *   - The routine arm walks the SQL files only (the migrations and any `.sql`
+ *     resource under `src`), so a trigger or rule installed at runtime from
+ *     a MODULE's SQL string is judged by no arm. Most DDL a module could
+ *     spell is still read by the arms that span `sources`: an `ALTER TABLE
+ *     accounts` naming the column reds the ALTER arm, and a routine body
+ *     spelling `UPDATE accounts SET updated_at = ...` reds the writer arms
+ *     like any other statement text. What is left is the shape only the
+ *     routine arm catches, a `CREATE TRIGGER ... ON accounts` (or a rule)
+ *     whose function writes `NEW.updated_at := now()`, since that write is
+ *     no assignment the column pattern reads. Application code installing a
+ *     trigger at runtime is not a shape an author writes by accident, and
+ *     the accident-not-evasion scope entry of this list covers it.
  *   - The scans read the shapes an author writes by accident, not the ones an
  *     author writes to evade a test. A writer determined to get past them can.
  *
@@ -2951,7 +2953,10 @@ function moduleResourcesUnder(root: string): ScannedSource[] {
 /** Every TypeScript module under `root` in any spelling the build compiles:
  *  the shared `.ts` walk and {@link moduleResourcesUnder} together. The union
  *  is a function of its own so the walker-fixture spec can hand it a planted
- *  tree and see exactly what the canary's `sources` would hold. */
+ *  tree and see what it collects. That spec pins the union, not the call
+ *  that builds `sources` from it: pointing `sources` back at `sourcesUnder`
+ *  alone stays green on today's tree, as does dropping `sqlResourcesUnder`
+ *  from `migrations`, and those two call sites are held by reading them. */
 function codeSourcesUnder(root: string): ScannedSource[] {
   return [...sourcesUnder(root), ...moduleResourcesUnder(root)];
 }
@@ -2982,7 +2987,8 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // Today's tree holds no `.mts`, `.cts`, `.tsx` or `.sql` under `src`, so
     // both local walkers legitimately return nothing there, and the
     // plausibility spec cannot tell that apart from a walker whose extension
-    // test, recursion or merge into `sources` was lost. A planted tree can.
+    // test or recursion was lost, or a union in `codeSourcesUnder` that
+    // dropped one of its walkers. A planted tree can.
     const tmp = mkdtempSync(path.join(tmpdir(), 'pevo-updated-at-walker-'));
     try {
       const dir = path.join(tmp, 'a', 'b');
