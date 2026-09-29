@@ -848,6 +848,65 @@ re-review.
 
 ---
 
+## UI re-review signal (2026-09-29, commit 92141abf)
+
+All five round-7 items landed in one commit, self-verified as an ancestor of
+`main` (`git merge-base --is-ancestor 92141abf main`). Every behavioral claim
+names its own spec and was probed per site in an isolated scratchpad copy at
+the pinned commit, one mutant at a time: **6 mutants, 6 killed**, each failing
+exactly its named spec(s) and nothing else. Baseline for the two page suites:
+184/184, exit 0.
+
+**1. Publish load guard pinned.** New spec "a flush before the restore has run
+leaves a real draft untouched" (`pages-publish.test.js`, describe `draft flush
+load guard`): seeds a real draft, leaves `_initialLoadDone` false, calls
+`_flushDraftSave()`, asserts the stored value is byte-identical. Probe: the
+guard inside `_writeDraft` deleted fails exactly it.
+
+**2. Ordering comment reworded.** It now distinguishes the entry and
+file-selection gates (ask via the confirm dialog) from the pre-broadcast gate
+(refuses with the toast). Comment-only.
+
+**3. A stale yes navigates nowhere.** `_confirmNavigationCost` (both pages)
+returns false when `!this._mounted`, so a yes arriving after unmount degrades to
+the silent refusal a decline produces. On edit the unmount check precedes the
+second flush, since `draftKey` derives from the router params. Specs "a yes that
+arrives after the page unmounted navigates nowhere" (one per page): no
+`startOrcid`, no navigation assigned, no upload, no broadcast, no toast. Probe
+per page: dropping `|| !this._mounted` fails exactly that page's spec.
+
+**4. Re-flush on an honoured yes.** Both pages flush the draft again before
+returning true. Specs "text typed while the confirm dialog is open is in the
+draft when the round-trip starts" (one per page): the confirm mock sets the
+title before resolving true, and the draft read inside the `startOrcid` mock
+carries it. Probe per page: removing the re-flush fails exactly that page's
+spec. A combined revert of publish's method to the old one-liner fails both
+publish specs.
+
+**5. Invariant named at both ends.** Comments at the custody check in
+`ensureSessionWindow` and at the non-light auto-resolve in
+`broadcastConfirm.request` name each other by symbol (`freshAuthWindowReady`,
+`onReauthRequired`, `initBroadcastConfirm`, `ensureSessionWindow`). No
+positional forms; the pre-commit anchor gate passed. Comment-only.
+
+### Verification
+
+Full frontend unit suite in a two-level isolated copy at `92141abf`: 86 files,
+1954 passed / 1 failed, exit 1. The lone failure is the known absolute-cap
+flake ("the slide never pushes past the absolute cap",
+`lib-fresh-auth-session-window.test.js`); that file re-run alone three times
+was 62/62, exit 0 each time. `npm run build` exit 0. Not run: E2E and any
+live-chain exercise.
+
+Review workflow (hold fidelity, races/regressions, test quality, project
+standards, each finding given an adversarial refuter): hold fidelity and
+project standards clean. One nit, raised by two lenses and dismissed by the
+user at triage: nothing pins the unmount check preceding the second flush in
+`_confirmNavigationCost` (the committed order is correct; a future swap would
+go unnoticed because the unmount specs cannot observe a flush).
+
+---
+
 ## UI re-review signal (2026-08-31, commit d069c711)
 
 All three round-4 items landed in one commit, implemented in an isolated
