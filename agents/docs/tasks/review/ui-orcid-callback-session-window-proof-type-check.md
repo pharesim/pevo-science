@@ -67,3 +67,31 @@ positional anchors. The one docblock sentence that names the mint callback as
 "the only coercion the wire needs" (in `ensureSessionWindow`'s fail-closed
 guard) is scoped to the sentinel space and stays true after this lands, since
 this writer never returns into the vocabulary; do not edit it for this task.
+
+## UI implementation signal (2026-09-29, commit 91e6f22d)
+
+Landed in `91e6f22d` (verified: `git merge-base --is-ancestor 91e6f22d main`).
+
+- **Scope 1 / AC 1.** `_handleSessionAuth` now refuses
+  `typeof data.fresh_auth_proof !== 'string' || !data.fresh_auth_proof` with
+  `status = 'error'` and `orcid.verificationFailed`, returning before
+  `cacheSessionProof`, `clearReturnPath`, the success toast and `navigate`.
+  No deadline check added.
+- **Scope 2.** New `_verify - session_auth mode` describe in
+  `tests/unit/pages-orcid-callback.test.js`, an `it.each` over `null` and `42`
+  modeled on the consent-op leg's proof-shape table. Each case drives
+  `_verify(..., 'session_auth')` and asserts: error state and copy, no
+  `pevo_fresh_auth_session_proof` entry, return path still stored, no toast,
+  no navigation.
+- **Scope 3.** `cacheSessionProof` untouched; the `ensureSessionWindow`
+  docblock sentence untouched.
+- **AC 2, pre-existing gap noted.** No unit spec drives the session_auth
+  string-proof path through the page component. Its only coverage is the E2E
+  `orcid-callback session_auth caches the issued proof in sessionStorage` in
+  `tests/e2e/non-consent-fresh-auth.spec.js` (not run for this change; the
+  guard does not touch the string path). Not closed here, per scope 2.
+- **AC 3.** Frontend unit suite: 86 files, 1957 tests, exit 0. Mutation in a
+  scratchpad copy (guard deleted): exactly the two new cases fail. The copy
+  also fails `sec-001-equivalence.test.js` at file load because it imports
+  `backend/src/lib/authMessage.ts`, which the frontend-only copy lacks; it
+  fails identically with the guard restored, so it is a copy artifact.
