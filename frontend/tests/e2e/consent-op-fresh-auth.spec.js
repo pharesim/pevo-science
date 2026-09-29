@@ -70,6 +70,10 @@ const FULL_NAME = 'E2E Fresh Auth Consenter';
 
 test.describe('light-account consent op against the real backend', () => {
   let pool;
+  // Computed in beforeAll, where testInfo carries the retry index. A retry
+  // runs in a fresh worker process, so module scope re-runs too; what keeps
+  // each attempt's seeded rows distinct is the retry index plus the fresh
+  // timestamp.
   let RUN_SUFFIX;
   let USERNAME;
 
@@ -166,9 +170,11 @@ test.describe('light-account consent op against the real backend', () => {
     await expectPostGateStop(await broadcastResponsePromise);
 
     // Single-use: the consume spent the proof, so the identical bundle is
-    // now refused AT the gate (a spent entry reads as expired).
+    // now refused AT the gate. The reason is exactly `expired`: the burn
+    // removed the entry from both storage tiers, so a spent proof reads as
+    // the same lookup miss a lapsed one does.
     const replay = await request.post('/api/custody/broadcast', { headers: bearer(token), data: body });
-    await expectGateRefusal(replay, { status: 401, reasons: ['expired', 'missing'] });
+    await expectGateRefusal(replay, { status: 401, reasons: ['expired'] });
 
     // Kind isolation: a session-kind window, minted for real by the same
     // account, is refused on this surface for its kind. This is the

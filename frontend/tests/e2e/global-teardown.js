@@ -75,6 +75,9 @@ async function unpinFromKubo(ipfsApiUrl, cid) {
  *   - `SESSION_SECRET` value itself (checked separately via env lookup).
  *   - Known E2E-minted password `E2eTestPass1` used by seed-phrase,
  *     email-signup, login-email, password-recovery, settings.
+ *   - Known light-account password `E2eFreshAuthPass1` (the light-account
+ *     fixture's TEST_PASSWORD), typed into the reauth modal by the
+ *     fresh-auth specs.
  *
  * `trace.zip` is a ZIP archive of JSONL. We unzip via `unzip -p`; if that
  * binary is unavailable the scan is skipped (with a warning) rather than
@@ -120,6 +123,7 @@ export function scanTracesForSecrets() {
     { label: 'SESSION_SECRET JSON key', source: '"SESSION_SECRET"' },
     { label: 'BIP39 mnemonic', source: '([a-z]{3,8} ){11}[a-z]{3,8}' },
     { label: 'known test password', source: 'E2eTestPass1' },
+    { label: 'known fresh-auth test password', source: 'E2eFreshAuthPass1' },
   ];
   // Each pattern wrapped in its own outer group so we can identify which one
   // matched. Note the BIP39 source already contains one inner group; that is

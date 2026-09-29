@@ -191,8 +191,10 @@ test('orcid-callback session_auth caches the issued proof in sessionStorage', as
 
 test.describe('light account against the real backend', () => {
   let pool;
-  // Recomputed per beforeAll so a Playwright retry (which re-runs beforeAll
-  // but not module scope) seeds distinct rows.
+  // Computed in beforeAll, where testInfo carries the retry index. A retry
+  // runs in a fresh worker process, so module scope re-runs too; what keeps
+  // each attempt's seeded rows distinct is the retry index plus the fresh
+  // timestamp.
   let RUN_SUFFIX;
   // One seeded light account serves the vote and comment tests.
   let SEEDED_USERNAME;
@@ -302,15 +304,19 @@ test.describe('light account against the real backend', () => {
 
     // Controls through the same route from outside the page. A tampered
     // proof is refused AT the gate, which is what makes the post-gate stop
-    // above evidence of a pass rather than of a route that never checks. And
-    // the same window is accepted again: the session kind is multi-use inside
+    // above evidence of a pass rather than of a route that never checks.
+    // The reason is exactly `expired`: a tampered token is a proof-store
+    // lookup miss, the same outcome as a lapsed one (`readFreshAuthEntry`
+    // in backend fresh-auth), while `malformed` fires only when a STORED
+    // entry fails shape validation, which no request can induce. And the
+    // same window is accepted again: the session kind is multi-use inside
     // its deadlines, unlike the consent-op kind `consent-op-fresh-auth.spec.js`
     // spends.
     const tampered = await request.post('/api/custody/broadcast', {
       headers: bearer(token),
       data: { ...body, fresh_auth_proof: `${body.fresh_auth_proof}x` },
     });
-    await expectGateRefusal(tampered, { status: 401, reasons: ['missing', 'expired', 'malformed'] });
+    await expectGateRefusal(tampered, { status: 401, reasons: ['expired'] });
 
     const replay = await request.post('/api/custody/broadcast', { headers: bearer(token), data: body });
     await expectPostGateStop(replay);
@@ -472,12 +478,13 @@ test.describe('light account against the real backend', () => {
     expect(typeof (await tokenResp.json()).data.upload_token).toBe('string');
     // Control: the same pre-flight with a tampered proof is refused AT the
     // gate, so the 200 above is the gate accepting this window rather than
-    // a route that never checks.
+    // a route that never checks. Refused as `expired`, the tampered-token
+    // lookup miss the vote test's control explains.
     const tamperedPreflight = await request.post('/api/ipfs/upload-token', {
       headers: bearer(token),
       data: { ...tokenBody, fresh_auth_proof: `${tokenBody.fresh_auth_proof}x` },
     });
-    await expectGateRefusal(tamperedPreflight, { status: 401, reasons: ['missing', 'expired', 'malformed'] });
+    await expectGateRefusal(tamperedPreflight, { status: 401, reasons: ['expired'] });
 
     // Transfer: the token-gated multipart upload pins the bytes for real.
     const uploadResp = await uploadResponsePromise;

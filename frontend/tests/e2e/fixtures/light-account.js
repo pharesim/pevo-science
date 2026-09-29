@@ -21,16 +21,20 @@
  * the bytes for real (the keychain fixture records the CID for
  * global-teardown to unpin). The pre-flight does gate on HAF accreditation
  * AFTER the proof consume, so an upload leg needs a username HAF reports as
- * accredited; the broadcast handler performs no accreditation check.
+ * accredited. That check is resource gating (pinning costs the platform);
+ * the broadcast handler performs no accreditation check by design, since
+ * light-account signup gates on the same criteria accreditation uses, so
+ * every product-created light account already qualifies (ARCHITECTURE.md
+ * "Accredited-Only Data Policy").
  */
 
 import argon2 from '../../../../backend/node_modules/argon2/argon2.cjs';
 import { expect } from '@playwright/test';
 
 // Password behind every seeded light account in these specs. Distinct from
-// the shared `E2eTestPass1` that global-teardown's trace scan hunts for; the
-// specs that use it also turn traces off, since the reauth modal types it and
-// the mint request carries it.
+// the shared `E2eTestPass1`; global-teardown's trace scan hunts for both
+// literals. The specs that use it also turn traces off, since the reauth
+// modal types it and the mint request carries it.
 export const TEST_PASSWORD = 'E2eFreshAuthPass1';
 
 export function bearer(token) {

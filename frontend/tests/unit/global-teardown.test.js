@@ -202,6 +202,16 @@ describe('scanTracesForSecrets — detection', () => {
     expect(() => scanTracesForSecrets()).toThrowError(/known test password/);
   });
 
+  it('fires on known fresh-auth test password', () => {
+    stageTraceFile('t-fa-pw');
+    // The light-account fixture's TEST_PASSWORD, typed into the reauth modal
+    // by the fresh-auth specs. Those specs disable traces themselves; this
+    // arm is the backstop for a future importer that forgets to.
+    spawnQueue.push(successfulSpawn('form data: password=E2eFreshAuthPass1'));
+
+    expect(() => scanTracesForSecrets()).toThrowError(/known fresh-auth test password/);
+  });
+
   it('fires on BIP39 mnemonic shape', () => {
     stageTraceFile('t-bip');
     // 12 lowercase words of length 3-8, separated by single spaces.

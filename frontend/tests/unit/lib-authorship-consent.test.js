@@ -27,9 +27,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // on the password factor: an author_accept resolves the factor against the
 // real GET /settings/email, mints the target-bound proof at the real
 // POST /custody/fresh-auth through the reauth modal, and carries it on the
-// real POST /custody/broadcast past the gated-op consume; a replay is refused
-// as spent and a session-kind proof is refused for its kind. The ORCID factor
-// and the retry gate's re-mint have no real-path companion on this surface:
+// real POST /custody/broadcast past the gated-op consume. That spec's
+// spent-replay and kind_mismatch refusals are controls on the backend
+// surface, driven through Playwright's request fixture outside the SPA, so
+// they exercise the gate, not this orchestrator: the orchestrator's own
+// handling of a refused consent-op broadcast (the freshAuthFailed outcomes
+// and the 401 re-mint+retry) has no real-path companion. Neither do the
+// ORCID factor and the retry gate's re-mint on this surface:
 // tests/e2e/settings-orcid-factor.spec.js completes the ORCID factor's full
 // round-trip on the settings surface only, and no e2e spec induces a
 // FRESH_AUTH_REQUIRED on a consent-op broadcast the SPA then retries.
