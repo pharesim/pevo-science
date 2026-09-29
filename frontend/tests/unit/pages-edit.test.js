@@ -2720,8 +2720,8 @@ describe('editPage draft carries the addressed-review ticks', () => {
   // Twin of the unmount-during-broadcast case on the continuation arm. The
   // continuation and same-author legs are mutually exclusive, so a fixture
   // resolving isContinuation false proves nothing about this arm's
-  // post-broadcast clear, and the unmount exit is the one only that clear can
-  // serve: every later clear sits past the `_mounted` guard it takes.
+  // post-broadcast clear, and only that clear can serve the unmount exit:
+  // every later clear sits past the `_mounted` guard it takes.
   it('an unmount during the continuation broadcast still drops the draft the landed post spent', async () => {
     const { invalidatePaperCache } = await import('../../src/api.js');
     invalidatePaperCache.mockResolvedValue({});
