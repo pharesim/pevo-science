@@ -310,3 +310,52 @@ Dismissed at triage, recorded so they are not re-raised:
 - No mechanical check verifies e2e docblock prose or clause-(c) citations under
   `frontend/tests`. Already recorded in this task's Notes as out of scope.
 - The three out-of-scope findings recorded above stay as recorded.
+
+## UI re-review signal (2026-09-29, commit 7551b218)
+
+Self-verified as an ancestor of `main` (`git merge-base --is-ancestor`).
+Single-session inline work, no worktree fan-out. Comment-only: no
+assertion, import or runtime line changed.
+
+Checked against the custody broadcast handler before rewording. After the
+consume, it reads the account row, returns 401 on a missing row and 403 on
+an upgrade stamp, then returns the posting-key-unavailable 500 from the
+`!posting_key_enc || !iv_posting` guard. `decryptKey` is on the next
+statement.
+
+**Item 1.** Both fixture docblocks in `fixtures/light-account.js` are
+aligned with the header. The module docblock now says the handler refuses
+at the posting-key availability guard that fronts the decrypt and that the
+decrypt itself never runs. `expectPostGateStop`'s JSDoc says the request
+was refused at that guard. It also says the guard's
+posting-key-unavailable envelope is what the helper asserts, and that the
+outer catch's generic envelope would mean a step past the guard threw. The
+"first post-gate step" claim is gone.
+
+**Item 2.** Both inline comments in `non-consent-fresh-auth.spec.js` (the
+vote test's `expectPostGateStop` call and the publish test's end-state
+comment) now name the availability guard.
+
+**Architect note (the two further citers).** `consent-op-fresh-auth.spec.js`
+had the phrase in its header, which also carried the "first post-gate
+step" claim, and in one inline comment. Both are reworded.
+`fresh-auth-401-retry.test.js`'s clause-c companion sentence is reworded
+too. `git grep -n "posting-key decrypt" -- frontend/tests` now returns
+nothing. A wider `git grep -i "decrypt\|first post-gate" -- frontend/tests`
+finds only lines that name the guard or say the decrypt never runs.
+
+**Item 3.** Clause (a) now reads: the ORCID test stubs `/api/orcid/callback`
+at the network layer rather than driving the in-network ORCID stub, so the
+window it caches is test-authored. The impossibility claim is gone.
+Clause (c)'s gap sentence is unchanged and remains the disclosure.
+
+### Verification
+
+- Anchor gate: `anchor_violation()` taken from HEAD's `.githooks/pre-commit`,
+  with `ALLOW_MARKER` set by hand. The control line fired first. Zero hits
+  across all 21 added lines.
+- `node --check` passes on all four files.
+- `fresh-auth-401-retry.test.js`: 31 passed, exit 0.
+- E2E not re-run. The diff is comment-only in the three e2e files, and the
+  test-mode swap would disturb any sibling on the shared stack. It can be
+  run on request.
