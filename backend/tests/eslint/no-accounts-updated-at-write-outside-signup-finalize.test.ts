@@ -183,12 +183,12 @@
  *      under KNOWN LIMITS names the silent joins those leave. A SET-list
  *      fragment carrying the assignment is caught separately by the
  *      fail-closed arm where the COLUMN-FIRST walk finds no head at or above
- *      the declaration (its own line counting only left of the assignment),
+ *      the assignment (its own line counting only left of it),
  *      or the NEAREST head it finds — it never climbs past that
- *      one — has a read that does not reach it; where that nearest head's
- *      read runs on to the declaration, the assignment is bucketed under its
- *      table instead, and the dynamic-SQL entry under KNOWN LIMITS gives the
- *      three buckets. A column LIST held in a variable
+ *      one — has a read that does not reach the assignment itself; where
+ *      that nearest head's read runs on to the assignment, the assignment is
+ *      bucketed under that head's table instead, and the dynamic-SQL entry
+ *      under KNOWN LIMITS gives the three buckets. A column LIST held in a variable
  *      has no such second catcher,
  *      since a list names the column with no `=` after it, and neither, as a
  *      rule, does an `ALTER TABLE accounts` clause: a drop, a rename and a
@@ -305,11 +305,21 @@
  *     in the three buckets the {@link columnAssignments} paragraph below
  *     gives. That walk consults the NEAREST head at or above the assignment —
  *     on the assignment's own line only a head to its LEFT — and never
- *     climbs past it, so the fail-closed arm reds where that one
- *     head's read does not reach the fragment or no head sits above at all,
- *     the writer arms red where it reaches and names `accounts`, and where it
- *     reaches naming another table the assignment is bucketed there and
- *     nothing reds at all.
+ *     climbs past it, and it asks POSITION, not text: the head's read
+ *     reaches the assignment where it did not give up and ended past where
+ *     the `updated_at` token begins — on a later line, or on the token's own
+ *     line either right of it or at no terminator at all. So the fail-closed
+ *     arm reds where the walk finds no head at all, or the nearest one's
+ *     read does not reach the assignment — a read that runs on into the
+ *     fragment but ends before its `updated_at` token leaves it unresolved
+ *     all the same. Where that head's read reaches the assignment and the
+ *     head names `accounts`, the assignment is bucketed there and the
+ *     column-first writer arm reds on the bucket; the table-first arm
+ *     answers to its own read of the text, not to this walk, and reds only
+ *     while that text still spells the write — a terminator landing between
+ *     the token and its `=` satisfies the walk and not that arm. And where
+ *     it reaches it naming another table the assignment is bucketed there
+ *     and nothing reds at all.
  *     The other way out of silence is a read reaching no terminator,
  *     which the every-statement-readable arm reds by line. The ALTER arm and
  *     the every-statement-readable arm are both walked from a head, and every
@@ -339,8 +349,11 @@
  *     is a property of the read, not of the shape. Such an ALTER reds the
  *     fail-closed arm where the walk finds no head at all, or the nearest
  *     one's read does not reach its assignment — even while a farther head's
- *     read does — and reds the writer arms instead where the nearest head
- *     reaches it and names `accounts`; where it reaches it naming some other
+ *     read does. Where the nearest head reaches it and names `accounts`, the
+ *     assignment is bucketed there instead: the column-first arm reds on the
+ *     bucket, and the table-first arm reds only while that head's read still
+ *     spells the write, per the three-bucket sentence above. Where it
+ *     reaches it naming some other
  *     table, the assignment is bucketed there and nothing reds at all. A drop, a rename
  *     or a retype spells no assignment of its own, as a rule, so there is
  *     nothing for that walk to start from and it reds nowhere; the carve-out
@@ -1069,7 +1082,9 @@ const SQL_INTERPOLATION_RE = /\$\{/;
 const JOINED_BEFORE_RE = /\+\s*$/;
 const JOINED_AFTER_RE = /^\s*\+/;
 
-/** The label a write gets when no statement head above it reaches it. */
+/** The label a write gets when the NEAREST head the upward walk finds — if it
+ *  finds one at all — has a read that does not reach it. A farther head whose
+ *  read would reach does not rescue it: the walk never climbs past. */
 const UNRESOLVED_TABLE = '<unresolved>';
 
 /** How far one statement is read downward from its head, so an unterminated
@@ -2261,9 +2276,11 @@ function statementHead(line: string, before?: number): StatementHead | null {
 
 /** The table written by the assignment on `lineIndex`: the nearest statement
  *  head at or above it, provided the statement that head opens reaches the
- *  assignment's line. A head whose statement closed earlier belongs to some
+ *  assignment itself — did not give up, and ended past where the `updated_at`
+ *  token begins. A head whose statement ended before that belongs to some
  *  other query, and the assignment is {@link UNRESOLVED_TABLE}: the walk does
- *  not keep climbing to whatever query happens to sit further up. On the
+ *  not keep climbing to whatever query happens to sit further up, even one
+ *  whose read would reach. On the
  *  assignment's own line only a head to its LEFT can own it, since a statement
  *  opened after the assignment cannot contain it. */
 function targetTable(code: BlankedCode, lineIndex: number, position?: number): string {
@@ -2625,11 +2642,12 @@ interface AssembledWrite {
  *  spells an assignment, and where the walk from that assignment finds no
  *  head at or above it (its own line counting only left of the assignment),
  *  or the NEAREST head it finds has a read that does not reach
- *  the fragment, the fail-closed arm reds on it. The walk never climbs past
- *  that nearest head, and whether its read spans the fragment is a property
- *  of the read, not of the shape: where it runs on to the fragment, the
- *  assignment is bucketed under its table instead, and the dynamic-SQL entry
- *  under KNOWN LIMITS gives the three buckets. A column list held in a variable spells none, and
+ *  the assignment itself, the fail-closed arm reds on it. The walk never
+ *  climbs past that nearest head, and whether its read spans the ASSIGNMENT,
+ *  not merely the fragment holding it, is a property of the read, not of the
+ *  shape: where it runs on to the assignment, the assignment is bucketed
+ *  under its table instead, and the dynamic-SQL entry under KNOWN LIMITS
+ *  gives the three buckets. A column list held in a variable spells none, and
  *  neither, as a rule, does an `ALTER TABLE accounts` clause: a drop, a
  *  rename and a retype each spell the column with no assignment of their
  *  own. (An `updated_at =` inside a USING expression or a CHECK is read as
@@ -4795,8 +4813,9 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     return unreadableStatements(readable([{ rel, lines }])).map((o) => o.site);
   }
 
-  /** The assignments in a fixture file that no readable head reaches, which is
-   *  what the fail-closed arm reports. */
+  /** The assignments in a fixture file that resolve to no table, which is what
+   *  the fail-closed arm reports: the walk from each found no head, or found a
+   *  nearest one whose read does not reach it. */
   function unresolvedIn(lines: string[], rel = 'x.ts'): Occurrence[] {
     return columnAssignments(readable([{ rel, lines }])).get(UNRESOLVED_TABLE) ?? [];
   }
