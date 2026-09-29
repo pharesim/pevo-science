@@ -113,3 +113,59 @@ caller set); the `ensureSessionWindow` guard comment's "those two legs" (the
 claim verifies against the code); `evictUnnamedAcquisition`'s "both writers
 of that slot" (the behavioral claim verifies under the natural reading
 writers = `cacheSessionProof` + `slideSessionWindow`).
+
+## UI implementation signal (2026-09-29, commit 5cb292ba)
+
+All scope items landed in commit 5cb292ba (comment-only, fresh-auth.js):
+
+1. `REMINTABLE_REASONS`: consumers named (the consent-op gate
+   `consentOpFreshAuthRetryGate` serving both orchestrators, the
+   session-kind retry in `broadcastWithFreshAuth`, and the upload retry in
+   `uploadFile`, lib/ipfs-upload.js); numeral removed.
+2. `handleSessionInconsistency`: caller surfaces named
+   (`broadcastWithFreshAuth` both legs, `consentOpFreshAuthRetryGate`,
+   `tornDownSession` in lib/ipfs-upload.js); the parenthetical now carries
+   all three shapes including the upload throw (`UPLOAD_SESSION_TORN_DOWN`).
+3. "the eight broadcast call sites" is now "every broadcast call site". The
+   permissive census in `broadcastWithFreshAuth`'s docblock is now the
+   complement form ("every other call site keeps the permissive default");
+   the suppressed enumeration (publish + edit submit sequences) re-verified
+   exact against the tree and kept.
+4. `cacheSessionProof`'s universal scoped to "the module's other explicit
+   corruption checks"; the consent-op reader's parse catch is outside the
+   stated class and its behavior untouched.
+5. Item-5 sweep findings, fixed in the same commit: the recurrence example
+   ("the next vote, comment and review" is now "each broadcast action that
+   follows"); the stale "call-site discriminators (publish.js,
+   vote-buttons.js, vouch-section.js)" parenthetical (no call site inspects
+   the rejection shape today; now subjunctive); and the per-surface
+   wire-shape claims in the `isUsernameMismatch` and
+   `consentOpFreshAuthRetryGate` docblocks. Those two claimed all
+   consent-op/settings/upload errors are status-less api.js
+   ApiRequestErrors, but the authorship orchestrator's guarded call is
+   signer.js `broadcastOps` (pages/paper-detail.js `_broadcastConsentOp`)
+   whose errors carry `status` (403 on a mismatch); only settings and
+   upload raise the status-less shape. Verified directly at the
+   paper-detail run callback, the signer.js error shaping, and the api.js
+   ApiRequestError constructor.
+
+Verification: five-agent adversarial census workflow (one independent
+census per population plus a cross-refuter), all clean, converging on the
+same censuses (three retry gates; five mismatch-teardown call sites on
+three surfaces; nine broadcast call sites split three suppressed / six
+permissive; corruption checks all drop with the parse catch outside the
+class). Frontend unit suite 86 files / 1944 tests green, exit 0, count
+unchanged before and after; `npm run build` clean; `.githooks/pre-commit`
+anchor gate passed on the staged diff.
+
+Out-of-scope observations for architect triage (not fixed):
+
+- tests/unit/fresh-auth-401-retry.test.js carries the same permissive
+  census drift in a test comment ("vote/comment/review call sites pass no
+  option"; vouch-section's two sites also pass none). Task scope says no
+  test changes.
+- `toastLocalized`'s docblock locates its third call site "in the
+  password-factor mint", but the call lives in `subjectTeardownGuard`'s
+  cancel closure, which fires from teardown cancels across several flows,
+  not only the mint. toastLocalized call sites are outside this task's
+  four populations.
