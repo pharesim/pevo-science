@@ -1707,3 +1707,125 @@ relative to the worst guarded regression class, not merely shorter than the
 long pass) into the sibling entry
 `backtracking-fix-must-bound-every-quantifier-whose-class-overlaps-2026-09-14.md`
 rather than filing a new one.
+
+## Backend re-review signal (2026-09-29, commit e76af395)
+
+Both held items and all four fold-ins landed, in one commit touching only the
+canary. The frozen maps, both backlog constants and `LANDING_DIGEST` are
+byte-untouched, and no file outside
+`backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts` is
+in the diff.
+
+### Item 1 — the timing spec fails fast instead of hanging
+
+The run-length loop is `[400, 6_400, 100_000]`. The spec comment and
+`LABEL_SRC`'s closing sentence both speak of three lengths and both name the
+tail-separator revert as the class the shortest pass exists for. Probed in
+both directions on isolated copies: the revert of `QUALIFIER`'s trailing
+`[\s-]{1,4}` to `[\s-]+` against THIS commit goes red at the 400 pass
+(labelCount 2559.8ms against the 250ms threshold, whole file verdict in 7s);
+the same revert against the parent commit was killed by a 120s timeout with
+no Tests line ever printed, which is the hang the hold reported.
+
+### Item 2 — the emphasis-group bound is pinned
+
+Adversarial strings are `[prefix, run]` pairs: the seven prior shapes carry an
+empty prefix, and `['_', '-']` plus `['*', ' ']` put one emphasis character
+between the label and a whole homogeneous run. The spec comment states which
+bound the prefixed shapes pin (the `[\s-]{0,4}` inside the emphasis group) and
+why suffix-only shapes cannot (the mixed run reaches the group but hands it at
+most one dash between emphasis characters). Probed in both directions:
+reverting that bound to `[\s-]*` is GREEN against the parent commit, which is
+the escape the hold reproduced, and red against this one, with the failure
+message naming the prefixed shape (citationsIn 312.2ms on a 400-character run
+of "-" prefixed "_"). Margin note, stated rather than discovered later: at 400
+the caught cost is 312ms against 250ms under nine-wide parallel probe load, a
+1.25x margin, but the same revert costs about 2.3s at 6400 (the prior round's
+measurement), so a load flake at 400 cannot turn the mutation green overall.
+
+### Fold-ins
+
+- Tag name bounded (`<[a-z]{1,16}>`); the "EVERY run in the label is therefore
+  bounded" sentence now enumerates it, and a following sentence states the
+  bound exists to make that sentence structural, not to remove a cost (the run
+  sits between literal `<` and `>` and cannot partition). Reverting to
+  `<[a-z]+>` was probed and is GREEN by design: the bound is deliberately
+  unpinned and its docblock says only what it provides. The `<em>` parse
+  probes and the census are unchanged.
+- The `CLAIM_SPAN` parenthetical now says both arms hold the long spelling on
+  their own (the refusal fires at `. T` before the room is consulted; the room
+  alone is too tight for the fourteen-character tail), so it demonstrates
+  neither in isolation, which is why the probes use the short spelling.
+- The header's fourth gap entry, `CLAIM_SPAN`'s closing sentence and the
+  `abbrevNearMiss` intro comment all state the refusal's actual trigger set
+  (any of `.`, `;`, `!`, `?`, one whitespace, then a non-lower-case
+  character) rather than "abbreviation", and the probe list gains the
+  semicolon-joined pair of backticked paths, pinning the gap at a
+  non-abbreviation member.
+- The `COMPANIONS` slack probe pair mirrors the `(S)` one: with `[Ss]`
+  matching the `S` the eight characters of slack reach the colon; under a
+  lower-case-only `s?` they must cover the `S` too and fall one short.
+  Probed in both directions: the `s?` revert is GREEN against the parent
+  commit and red against this one at the new probe.
+
+### Found and fixed in-round
+
+An adversarial docblock-consistency pass over the diff, run before commit,
+convicted the first draft of the shape-pair comment of this file's own held
+defect class: it said a suffix-only run "never reaches" the emphasis group's
+inner bound, and the mixed shape's leading `_` does reach it (verified by
+capture against the pattern; the dash it hands over is also matchable by the
+qualifier word class, so it even partitions once). The committed sentence
+claims only what is true: no suffix-only shape puts a LONG homogeneous run in
+that slot, so only the prefixed shapes pin the bound's cost. The same pass
+verified the other five new claims against the pattern code and found them
+exact: the trigger-set wording matches `(?![.;!?]\s(?![a-z]))`, the semicolon
+in the new gap member is load-bearing (removing it flips the loose claim to
+1), the fall-one-short arithmetic is exact at 7, 8 and 9 characters of slack,
+`{1,16}` clears the longest HTML element name (ten), and the fourteen-character
+count in the parenthetical is a count.
+
+Two numeric claims were hedged to the measurement spread rather than copied
+from the hold: the tail revert at 400 reads "two to three seconds" (the hold
+measured about 2s unloaded; 2.6s here under parallel load) and the word-class
+revert at 6400 reads "about ten seconds" (8.4s prior round; 11.1s here under
+load). The committed pattern's cost was measured per shape and length on an
+instrumented copy: the slowest is 6.7ms (the underscore-prefixed dash run
+through `citationsIn` at 100,000), so the comment's "single-digit
+milliseconds" is measured rather than assumed, and the flake direction that
+matters keeps a 37x margin.
+
+### Deviations from the prescription
+
+None of substance. Item 2 offered pairs or one extra literal; the pair form
+was chosen because it names the shape in data beside its siblings rather than
+as a one-off literal inside the loop. The word-class mutation was re-probed
+as well (green at 400, red at 6400 in 11.1s under load), confirming the
+middle-pass sentence the reword introduces.
+
+### Verification
+
+- Canary 11 of 11 (~5.5s standalone, no Docker env needed); `tests/eslint/`
+  9 files, 139 tests, green, exit 0 (the count over the prior round's 131 is
+  sibling suites landed since, not this diff). `npm run typecheck` passes.
+  `npm run lint` not run: it lints `src/` only and no `src/` file changed.
+- Mutation battery: eight probes, each in its own isolated scratchpad copy of
+  `backend/` (working-tree and parent-commit variants), mutations applied as
+  exact-byte single-occurrence replacements read from files rather than
+  retyped. Verdicts: tail fixed=red at 400 / parent=hang at 120s; emphasis
+  fixed=red on the prefixed shape / parent=green; plural fixed=red at the
+  COMPANIONS probe / parent=green; word-class fixed=red at 6400;
+  tag fixed=green by design. Probe copies were deleted after each run; the
+  repo tree was never written by a probe.
+- Anchor gate: `anchor_violation()` from `.githooks/pre-commit`, run
+  standalone with `ALLOW_MARKER` set, over all 91 added lines: zero hits,
+  with five control lines (slug, ordinal, line-number cite, positional
+  anchor, archive redirect) all firing, so the harness was live.
+
+### [TODO Architect]
+
+Unchanged and still deferred to archive: the solutions entry
+`carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02.md`
+still ends its canary section with "Do not describe this canary as existing.
+It is a proposal," and the 2026-09-14 hold's note about folding the
+shortest-length sizing refinement into the sibling backtracking entry stands.
