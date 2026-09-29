@@ -105,3 +105,80 @@ one confirmed finding (the `.tsx` gap) is fixed as item 2 above. Residual
 nit dismissed as pre-existing class: the local walkers do not follow
 symlinks while the shared `sourcesUnder` does (no symlinks exist under
 `backend/src`; same shape as the accepted `sqlResourcesUnder`).
+
+## Architect re-review (2026-09-29) — HELD PENDING FIXES:
+
+Round 1. Five-lens review plus an independent validation pass; all four items
+below validated with scratch-copy reproduction. The change itself is sound:
+AC1-AC3 re-verified independently (plants red on head for all three
+spellings, green on base, clean tree green, docblock facts all true). The
+items are residuals of the task's own genre: the new prose states universals
+broader than the walker set, and the new walker has no standing pin. Items
+1, 2 and 4 are one docblock pass. Prose fixes were chosen over walker
+hardening at triage; do not widen walker traversal under this hold.
+
+1. **JSON-module shape falsifies the roots universal.** `tsconfig` sets
+   `resolveJsonModule`, so a `.json` under `src` imported by compiled code is
+   emitted verbatim into the shipped `dist`, and no walker collects `.json`.
+   Probe-verified: a planted `q.json` carrying the UPDATE plus an opaque
+   `pool.query(q.touch)` consumer stays green while tsc emits it. In the
+   WHAT THE ROOTS ARE paragraph, narrow "Every module the build can compile
+   into the `dist` the image runs is in that set" so it no longer covers
+   shapes nothing scans, and add a KNOWN LIMITS bullet naming
+   `resolveJsonModule` with the re-open condition: a tracked `.json` under
+   `src` holding statement text read by application code is a new root, and
+   admitting it means a collector for that extension feeding the scanned
+   set. (An empty `.json` walker today was rejected at triage for the same
+   reason the task rejected an empty `backend/scripts` root.)
+
+2. **Symlink qualification.** `moduleResourcesUnder` and the pre-existing
+   `sqlResourcesUnder` gate on Dirent `isFile()`/`isDirectory()`, both false
+   for symlinks, while the shared `sourcesUnder` statSyncs through them.
+   Probe-verified by three lenses: a writer module behind a file or
+   directory symlink under `src` is compiled and shipped by tsc yet stays
+   green; the same shape as `.ts` goes red. State in the canary docblock
+   (the WHAT THE ROOTS ARE paragraph or the local walkers' own docblocks)
+   that the two local walkers read regular files only and do not follow
+   links, that no symlink exists under `backend/src` today, and the re-open
+   condition (a symlinked module or directory under `src`). Prose only; the
+   walker-traversal change was dismissed at triage as hardening, consistent
+   with the signal block's own `sqlResourcesUnder` dismissal.
+
+3. **Standing pin for the module walker.** On today's tree the walker
+   legitimately returns an empty list, so the walk-plausibility arm cannot
+   distinguish it from a gutted extension predicate, a lost recursion, or a
+   dropped spread in the `sources` merge: each of those mutations leaves the
+   canary green (reproduced twice). Add a tmpdir fixture test: extract a
+   combiner (e.g. `codeSourcesUnder(root)` returning the `sourcesUnder` +
+   `moduleResourcesUnder` union), build `sources` from it, write a fixture
+   tree with nested `writer.{ts,mts,cts,tsx}` plus a decoy non-compiled
+   `.js`, and assert both the collected rel set and that the writer arms
+   name each plant as `file#symbol`. Cover `sqlResourcesUnder` with a
+   planted `.sql` in the same fixture (closes the identical pre-existing
+   gap). The sibling companion-citation canary already pins its walker with
+   this shape. Validated: red under emptied predicate, extension typo,
+   dropped `.tsx`, unwired combiner and non-recursive walk; green clean.
+
+4. **Exclusion dichotomy overclaims.** "Excluded, deliberately: every tree
+   that does not ship" is false as a dichotomy: the Dockerfile production
+   stage copies `backend/data` (plus `public/` and production
+   `node_modules`) into the runtime image, all outside every root. Restate
+   the clause: excluded trees either do not ship (tests, scripts) or ship
+   only non-module data no scan reads as statements; only `backend/src`
+   modules and `backend/migrations` reach the database as executable
+   statements.
+
+5. **Stated limit, not an arm (dismissal record).** Module-side runtime DDL
+   (CREATE FUNCTION / CREATE TRIGGER text targeting `accounts` inside a
+   scanned module's SQL string) is caught by no arm; the routine arm walks
+   migrations only. Add one KNOWN LIMITS sentence acknowledging it, leaning
+   on the existing accident-not-evasion scope statement. Extending
+   `routineSites` over `sources` was considered and dismissed at triage;
+   do not add it under this hold.
+
+NOTE (coordination): the working tree currently carries unstaged sibling
+docblock edits on the canary file, in regions outside this task's hunks.
+Before any probe-restore (`git checkout --` or `git show >`), require
+`git status` clean for the file per the committed-baseline discipline, and
+land your docblock edits on top of whatever the sibling has committed by
+then rather than rebuilding from an older blob.
