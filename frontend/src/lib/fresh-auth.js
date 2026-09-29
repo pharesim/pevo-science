@@ -173,8 +173,8 @@ export function handleSessionInconsistency() {
 // back to English for the not-yet-loaded-bundle case; this is that read plus
 // the show, in one place, so the fallback policy and the severity cannot drift
 // between the sites that raise messages (the session-inconsistency teardown
-// above, the window-outcome dispatch below, and the teardown cancel in the
-// password-factor mint).
+// above, the window-outcome dispatch below, and the cancel closure of
+// `subjectTeardownGuard`).
 function toastLocalized(section, name, fallback) {
   const msg = Alpine.store('i18n')?.messages?.[section]?.[name] || fallback;
   Alpine.store('toast')?.show(msg, 'error');
@@ -974,7 +974,7 @@ export function abandonInFlightAcquisitions() {
 // `ensureSessionWindow` and the broadcast unwinder `acquisitionAborted` — but
 // only the guard ever cleared, so a truthy non-string reaching the broadcast
 // surface was refused and left where it was, to be re-read and re-refused on
-// every later vote, comment and review until the entry's idle deadline arrived,
+// every later broadcast action until the entry's idle deadline arrived,
 // a sign-out scrubbed the slot, or an unrelated page gate or upload pre-flight
 // happened to run the evicting one. The upload pre-flight is not a third such
 // reading: `windowProof` (lib/ipfs-upload.js) calls `ensureSessionWindow` and

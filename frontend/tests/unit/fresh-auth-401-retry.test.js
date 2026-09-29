@@ -518,9 +518,10 @@ describe('broadcastWithFreshAuth — error-recovery paths', () => {
   });
 
   it('the permissive default still hands a passwordless 401 retry to the ORCID round-trip', async () => {
-    // Control for the suppressed pair above: vote/comment/review call sites
-    // pass no option, and for them the navigating factor remains the way
-    // through. Pins-at-risk suppression is opt-in, not a new global posture.
+    // Control for the suppressed pair above: the call sites outside the
+    // publish and edit submit sequences pass no option, and for them the
+    // navigating factor remains the way through. Pins-at-risk suppression is
+    // opt-in, not a new global posture.
     clearPasswordFactorMemo();
     mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: false } });
     mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
@@ -676,7 +677,7 @@ describe('broadcastWithFreshAuth — error-recovery paths', () => {
     // leg leaves a stuck entry for a later action to re-read: a poisoned window
     // costs one action and the next acquires normally. What recurs is the mint
     // leg. A mint that keeps answering without a proof string prompts for the
-    // password on every vote, comment and review and refuses every one, and
+    // password on every broadcast action and refuses every one, and
     // answering correctly to be told nothing, per action, is what silence here
     // costs.
     it.each([
