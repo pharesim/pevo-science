@@ -79,10 +79,12 @@ export const ORCID_REDIRECT_HOSTS = Object.freeze(['orcid.org', 'sandbox.orcid.o
 
 // 401 consume-failure reasons that mean "the proof was absent or no longer
 // usable" — re-mint and retry once. `wrong_mechanism` is excluded (re-minting
-// the same factor would not fix it). Single source of truth shared by both
-// fresh-auth orchestrators (settings + authorship consent ops) and the
-// session-kind retry gate in broadcastWithFreshAuth below, so the three retry
-// gates cannot drift on which 401 reasons are recoverable.
+// the same factor would not fix it). Single source of truth shared by the
+// retry gates — the consent-op gate (consentOpFreshAuthRetryGate below,
+// serving the settings and authorship orchestrators), the session-kind retry
+// gate in broadcastWithFreshAuth below, and the upload surface's
+// session-window retry in uploadFile (lib/ipfs-upload.js) — so the gates
+// cannot drift on which 401 reasons are recoverable.
 export const REMINTABLE_REASONS = Object.freeze(['missing', 'expired', 'malformed']);
 
 // Shared password-factor outcome sentinels for the consent-op / settings
@@ -135,13 +137,17 @@ export function passwordPromptMessage() {
 
 // Tear down a corrupted session on `username_mismatch`: the JWT subject and the
 // proof subject diverge, which no re-auth can fix. Disconnect the session and
-// surface the re-login toast. Shared by all three fresh-auth orchestrators
-// (broadcastWithFreshAuth, withAuthorshipFreshAuth, withSettingsFreshAuth) so the
-// teardown side-effects cannot drift between surfaces; each caller still returns
-// its own surface-appropriate sentinel after calling this (the session-kind path
-// returns FRESH_AUTH_REDIRECT_PENDING, the consent-op/settings paths return
-// { sessionInconsistent: true }). `auth.disconnect()` is synchronous (auth.js —
-// in-memory mutation + localStorage/sessionStorage removals, no awaited I/O), so
+// surface the re-login toast. Shared by every surface that routes a mismatch
+// here — broadcastWithFreshAuth (its first-attempt and retry legs), the
+// consent-op retry gate consentOpFreshAuthRetryGate (serving the settings and
+// authorship orchestrators), and the upload surface's tornDownSession
+// (lib/ipfs-upload.js) — so the teardown side-effects cannot drift between
+// surfaces; each caller still reports its own surface-appropriate shape after
+// calling this (the session-kind path returns FRESH_AUTH_REDIRECT_PENDING,
+// the consent-op gate returns { sessionInconsistent: true }, and the upload
+// path throws its already-reported UPLOAD_SESSION_TORN_DOWN code).
+// `auth.disconnect()` is synchronous (auth.js — in-memory mutation +
+// localStorage/sessionStorage removals, no awaited I/O), so
 // teardown completes before the toast fires and there is no toast-vs-teardown
 // race. Lib code cannot use `$t`; read the i18n store directly with an English
 // fallback for the not-yet-loaded-bundle case.
@@ -372,11 +378,11 @@ function claimTeardownReport() {
 // retryable re-auth failure.
 //
 // `details.reason` is the whole gate, never a status code. The session-kind
-// surface shapes its errors in signer.js and carries a 403 alongside; the
-// consent-op, settings and upload surfaces raise api.js ApiRequestErrors that
-// carry no `status` at all, and a retry-leg error that reaches a normalizing
-// wrapper loses `status` on the way through. Keying on the reason is the only
-// form that holds on every leg.
+// and authorship consent-op surfaces broadcast through signer.js, which
+// shapes their errors with a 403 alongside; the settings and upload surfaces
+// raise api.js ApiRequestErrors that carry no `status` at all, and a
+// retry-leg error that reaches a normalizing wrapper loses `status` on the
+// way through. Keying on the reason is the only form that holds on every leg.
 export function isUsernameMismatch(err) {
   return err?.code === 'FRESH_AUTH_REQUIRED' && err.details?.reason === 'username_mismatch';
 }
@@ -548,8 +554,8 @@ export function cacheSessionProof(token, expiresAt, absoluteExpiresAt) {
   const absoluteSpanMs = anchoredSpan(absoluteExpiresAt, SESSION_ABSOLUTE_PERIOD_MS);
   // An unparseable deadline anchors to NaN, and `new Date(now + NaN)` throws a
   // RangeError at toISOString — from a cache write no caller expects to
-  // reject. Fail closed instead, matching every other corrupt-entry case in
-  // this module: drop the slot and let the next consumer re-auth.
+  // reject. Fail closed instead, matching the module's other explicit
+  // corruption checks: drop the slot and let the next consumer re-auth.
   if (!Number.isFinite(idlePeriodMs) || !Number.isFinite(absoluteSpanMs)) {
     dropWindow();
     return;
@@ -1575,9 +1581,11 @@ export async function beginAuthorshipOrcidFreshAuth(target, isStale) {
 // username_mismatch is a corrupted session, not a retryable re-auth failure:
 // tear it down and force re-login via the shared teardown, matching the
 // session-kind sibling in broadcastWithFreshAuth. The gate keys on
-// `err.details.reason`, never on a status code: the error reaching these
-// orchestrators is an api.js ApiRequestError carrying only code/details, no
-// `status` (unlike the signer.js-shaped session-kind error). 401
+// `err.details.reason`, never on a status code: the settings orchestrator's
+// errors are api.js ApiRequestErrors carrying only code/details, no
+// `status`, while the authorship orchestrator's guarded call broadcasts
+// through signer.js and carries one — reason-keying is the form that holds
+// on both surfaces. 401
 // wrong_mechanism and the 403 target/kind mismatches are not fixable by
 // re-minting the same factor; they fall through to freshAuthFailed. Errors
 // whose code is not FRESH_AUTH_REQUIRED rethrow untouched so callers keep
@@ -1670,8 +1678,8 @@ export async function consentOpFreshAuthRetryGate(err, {
 
 // Map a non-string acquisition outcome onto the broadcast call-site contract.
 // Every failure to acquire unwinds through the single FRESH_AUTH_REDIRECT_PENDING
-// sentinel so the eight broadcast call sites keep their one clean-abort branch
-// instead of growing per-outcome handling of their own. The toast (or the
+// sentinel so every broadcast call site keeps its one clean-abort branch
+// instead of growing per-outcome handling of its own. The toast (or the
 // deliberate silence) per outcome comes from the shared dispatch table, so
 // this unwinder cannot drift from the page gate. The reauthRequired outcome
 // is load-bearing here for the suppressed broadcast posture: post-upload call
@@ -1689,7 +1697,7 @@ export async function consentOpFreshAuthRetryGate(err, {
 // `evictUnnamedAcquisition` drops the entry that caused it, so nothing is left
 // in the slot for a later reading to inherit the refusal from. A password
 // account whose mint keeps answering without a proof string is prompted again
-// on the next vote, comment and review, answers correctly again, and is
+// on each broadcast action that follows, answers correctly again, and is
 // refused again. Silence there is a password answered correctly for nothing,
 // repeatedly.
 //
@@ -1727,9 +1735,9 @@ function acquisitionAborted(proof) {
 // call sites (the publish and edit submit sequences) pass `false` so a window
 // invalidated server-side after their suppressed pre-broadcast gate passed
 // cannot fire the full-page ORCID navigation while completed pins sit in
-// submit-handler locals; the vote/comment/review call sites keep the
-// permissive default. The suppressed refusal unwinds through
-// `acquisitionAborted`'s reauthRequired branch with the re-authenticate toast.
+// submit-handler locals; every other call site keeps the permissive default.
+// The suppressed refusal unwinds through `acquisitionAborted`'s
+// reauthRequired branch with the re-authenticate toast.
 export async function broadcastWithFreshAuth(username, operations, opts = {}) {
   const { allowRedirect = true, ...broadcastOpts } = opts;
   const auth = Alpine.store('auth');
@@ -1809,9 +1817,8 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
         // broadcastOps to the `{ status, code, details }` shape callers expect.
         // Without this wrap, a network failure during re-auth surfaces with
         // `TypeError: Failed to fetch` (or a startOrcid error envelope) instead
-        // of the original FRESH_AUTH_REQUIRED context, so call-site
-        // discriminators (publish.js, vote-buttons.js, vouch-section.js)
-        // misclassify the failure and surface the wrong toast.
+        // of the original FRESH_AUTH_REQUIRED context, and a call site that
+        // inspects the rejection shape would misclassify the failure.
         try {
           // The re-acquisition inherits the caller's redirect posture: a
           // suppressed call site's retry must refuse (reauthRequired toast)
