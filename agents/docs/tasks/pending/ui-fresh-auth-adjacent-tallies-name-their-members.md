@@ -169,3 +169,38 @@ Out-of-scope observations for architect triage (not fixed):
   cancel closure, which fires from teardown cancels across several flows,
   not only the mint. toastLocalized call sites are outside this task's
   four populations.
+
+## Architect re-review (2026-09-29) — HELD PENDING FIXES:
+
+Round 1 review of commit 5cb292ba: every rewritten claim verified true
+against the tree (censuses re-derived independently and converging with the
+signal block), standards and conventions clean, all universals survived
+adversarial falsification. Held on one validated in-file miss plus the two
+out-of-scope observations above, which the user routed back onto this task.
+All three are comment-only rewording; the Scope section's "no test changes"
+line is lifted for item 2 only.
+
+1. `evictUnnamedAcquisition` docblock: "to be re-read and re-refused on
+   every later vote, comment and review until the entry's idle deadline
+   arrived" still enumerates the triple as if it were the census; the vouch,
+   retract-vouch, publish and edit broadcasts re-read the same stranded slot
+   (six of the nine call sites are not vote/comment/review). Reword to the
+   quantified form this commit adopted for the identical phrase in
+   `acquisitionAborted`'s docblock, e.g. "on every later broadcast action".
+   Acceptance criterion 1 covers this sentence; the item-5 sweep missed it.
+
+2. tests/unit/fresh-auth-401-retry.test.js: the test comment
+   "vote/comment/review call sites pass no option" carries the same
+   permissive-census drift (vouch-section's two sites also pass none).
+   Reword so the sentence does not read as a closed member list: quantify
+   ("the call sites outside the publish and edit submit sequences pass no
+   option") or name all six. Comment-only; suite count must not change.
+
+3. `toastLocalized` docblock: locate the third call site by the symbol that
+   owns it — `subjectTeardownGuard`'s cancel closure — rather than "in the
+   password-factor mint", which names only one of the flows that reach it.
+
+Acceptance criteria 3-4 apply unchanged to all three items (no rot-class
+anchors in replacement text; `.githooks/pre-commit` passes; suite count
+byte-identical; `npm run build` clean). When landed, `git mv` this file
+back to tasks/review/ per rule #8.
