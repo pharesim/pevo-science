@@ -137,15 +137,27 @@ default means the mutation kills below were unchanged by the tuning, which was r
 
 ## Why This Matters
 
-Mutation evidence, measured in isolated scratchpad copies. Baseline before the two new cases: 87 passed, exit 0.
+Mutation evidence, measured in isolated scratchpad copies. Pass counts in this section are point-in-time
+measurements from when the cases landed; the spec has grown since and its totals with it. Baseline before the
+two new cases: 87 passed, exit 0.
 
 - **Before**, three regressions each survived the whole spec file undetected, at 87 passed and exit 0: deleting the
   `$nextTick` scheduling block, populating the harness `$refs` default with real elements, and renaming the
   template's `x-ref="abstractEditor"`. Nothing in the file drove the load path far enough to notice any of them.
 - **After** adding the positive and negative cases, at 89 passed and exit 0: deleting the `$nextTick` block kills
   both new cases (2 failed, exit 1), and populating the `$refs` default kills the negative case (1 failed, exit 1).
-  The `x-ref` rename still survives, because a unit spec that supplies `$refs` directly never reads the template;
-  closing that one needs an assertion over the exported template string, which is a different kind of test.
+- The `x-ref` rename survived those two cases, because a unit spec that supplies `$refs` directly never reads the
+  template. Closing it needed an assertion over the exported template string, which is a different kind of test,
+  and the describe has since gained exactly that: a load-free case asserting `editPageTemplate` contains both
+  `x-ref="abstractEditor"` and `x-ref="bodyEditor"`, so the rename is now killed by a template-string assertion
+  rather than by the load-driven cases.
+- The positive case also pins the dispatch mechanism with an exact count,
+  `expect(comp.$nextTick).toHaveBeenCalledTimes(1)`: `loadPaperData` holds `edit.js`'s only `$nextTick` call site,
+  so the count witnesses the load's single dispatch and distinguishes the `$nextTick` route from an inline call.
+  What such a count cannot pin is the absence of a second dispatch path: an inline duplicate `_mountEditors()`
+  added beside the `$nextTick` dispatch survives every case, because the `_editorsInitialized` latch absorbs the
+  duplicate before any observable effect. Scope any comment above an exact-count assertion to the dispatches it
+  witnesses, never to path absence.
 
 That gap is the concrete cost of dead ends 1 and 2. Either one reports "0 calls" whether the mount is wired
 correctly or deleted outright, so the assertion cannot discriminate a working mount from a broken one: it never
