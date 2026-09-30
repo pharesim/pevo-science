@@ -75,3 +75,24 @@ server-refreshed session; the change belongs in the error ladder, not the diverg
 The reviewer that found this proposed a liveness check on the store's session before the retry
 signs, as an independent second fix. That is defensible but it is a different change with its own
 staleness question, so it is not part of this task's scope.
+
+## Note from the revoked-session teardown work (2026-09-30)
+
+The auth store now has `handleRevokedSession(sentToken)`, called by the api.js
+bearer helper and the custody broadcast on `401 SESSION_INVALIDATED`. It tears
+the session down when the rejected token is still the store's token, after
+first adopting a different unexpired session found in storage. The upgrade
+POST (`_postUpgradeBackend`) was deliberately left unhooked for this task to
+decide.
+
+One interaction to cover here. The upgrade route revokes the old token a
+moment before it answers. A bearer request answered in that gap (the
+notification or authorship poll in the upgrading tab, or any request in a
+sibling tab before the upgrading tab has saved the reissued session) now tears
+the session down, where before it was inert. When the upgrade response then
+lands, `_upgradeSubjectDiverged` is true, the reissued token is dropped and the
+flow ends as session-changed-after-cleanup. The window is tens of milliseconds
+and the user recovers by signing in again, but it lands at the irreversible
+step. A "rotation in flight" marker set around the upgrade POST in both legs,
+which `handleRevokedSession` defers to, would close the same-tab case. The
+sibling-tab case would need that marker visible across tabs.

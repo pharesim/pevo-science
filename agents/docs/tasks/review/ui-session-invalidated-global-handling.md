@@ -90,3 +90,58 @@ The four writers are named here as context for why the code exists, not as a
 list to enumerate in code. Anchor any comment on the behavior (a revoked bearer
 token tears the session down) rather than on the roster of routes that can cause
 it, which will grow.
+
+## Implementation notes
+
+**UI implementation signal (2026-09-30, commits `b3d52627`, `7247ff5b`; both verified ancestors of `main`):**
+
+- `b3d52627` lands the central handling: the api.js bearer helper and the
+  custody broadcast in signer.js report `401 SESSION_INVALIDATED` to the auth
+  store's `handleRevokedSession`, which reuses `disconnect()` and the shared
+  fresh-auth teardown (`handleSessionRevoked`, a sibling of
+  `handleSessionInconsistency` over one shared body). New key
+  `auth.sessionRevoked`, stubbed in fifteen locales.
+- `7247ff5b` lands three items from the user's triage of a pre-handoff review:
+  the sign-in modal shows the reason while it is open, the copy no longer
+  names a cause, and a different unexpired session found in storage is adopted
+  instead of torn down.
+
+Decisions the task left open:
+
+- **Where the user lands (scope 3, criterion 1).** Decided with the user: the
+  SPA does not navigate. It signs out, shows the message, and opens the
+  existing sign-in modal on the current page. `/login` has no extension path
+  and no return path, and a route change destroys review and comment text,
+  attached files, and the key-upgrade retry state.
+- **§ 6.7 (criterion 6).** "Redirects to login" is still not literally true
+  and needs correcting, in `ARCHITECTURE.md` § 6.7 and in the
+  `SESSION_INVALIDATED` row of `api-contracts/common.md`: the SPA signs the
+  user out, says the account's sign-in details changed, and opens the sign-in
+  prompt in place. `api-contracts/custody.md` says other tabs are signed out
+  after an upgrade; same-browser tabs adopt the reissued token instead.
+- **Stale token.** The store acts only when the rejected token is still its
+  own, so a late rejection of an old token cannot sign out a reissued session.
+- **Retry gate (scope 4, criterion 4).** No gate matched this code before and
+  none does now. With the teardown running before the rejection propagates, a
+  cold light-account acquisition ends silently instead of asking for a
+  password on a dead session. Pinned in `session-revoked.test.js`.
+- **Shared teardown (scope 5).** Routed through the helper the
+  session-inconsistency task reshaped. If that task is held and the helper
+  moves, `handleSessionRevoked` moves with it.
+- **Same-browser tabs.** Left alone; `disconnect()` removes the stored entry,
+  so the storage event signs sibling tabs out.
+
+Not covered, by decision:
+
+- The upgrade POST in `pages/settings.js` is not hooked. It sends a pinned
+  token and belongs to `ui-upgrade-401-proof-budget-auth-failure-split`, which
+  now carries a note on the remaining race.
+- Call sites still receive the rejection, so some show their own generic error
+  next to the central message.
+
+Follow-ups filed from the triage: `ui-sign-in-modal-has-no-orcid-path`,
+`ui-recover-and-reset-leave-a-revoked-session-signed-in`,
+`ui-revoked-session-e2e-real-path`.
+
+Verification: full frontend unit suite green at `7247ff5b` (88 files, 1995
+tests, exit 0). Not checked in a browser and no e2e run.
