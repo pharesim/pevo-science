@@ -113,11 +113,11 @@ cannot verify either way against the installed Playwright source, leave it and l
 UI implementation signal (2026-09-30, commit `3c9f3b10`):
 
 - **Scope 1.** All seven comments reworded in `3c9f3b10` (self-verified: the SHA is an
-  ancestor of `main` and its `--name-status` lists exactly the seven e2e files). The four
+  ancestor of `main` and its `--name-status` lists exactly the seven e2e files). The three
   `beforeAll` sites (`login-email`, `settings`, `settings-orcid-factor`, all above the
   module-scope declarations) use the accepted fresh-auth wording, extended with "and
-  beforeAll runs again". The three test-body sites (`email-signup`, `password-recovery`
-  test body, plus the module-level comments above `OLD_PASSWORD` in `password-recovery`
+  beforeAll runs again". The four test-body sites (`email-signup` and `password-recovery`
+  test bodies, plus the module-level comments above `OLD_PASSWORD` in `password-recovery`
   and `TEST_PASSWORD` in `seed-phrase`, which describe a test-body computation) say the
   suffix is computed in the test body, where `testInfo` carries the retry index, so every
   attempt computes it afresh. None of them mentions `beforeAll`.
@@ -142,5 +142,5 @@ UI implementation signal (2026-09-30, commit `3c9f3b10`):
   timestamp separates them. "The retry index plus the fresh timestamp" stays true as
   written, and the same holds for the accepted wording in the two fresh-auth specs, so I
   did not diverge from it. If the architect wants the comments to say the timestamp alone
-  is the guarantee, that is a wording change across all six `beforeAll` sites including
+  is the guarantee, that is a wording change across all five `beforeAll` sites including
   the two already-accepted ones.
