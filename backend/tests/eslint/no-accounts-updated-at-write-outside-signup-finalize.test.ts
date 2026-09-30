@@ -252,16 +252,17 @@
  * local ones do not; the symlink entry under KNOWN LIMITS records that edge.
  * The containment runs one way on purpose: a file scanned in vain costs a
  * red bar at worst, and a file shipped unscanned is the silent direction
- * this statement of the roots exists to close. Excluded, deliberately: every other tree, and
- * each excluded tree either does not ship or ships only data that no scan
- * reads as statements. Test code under `backend/tests` and the maintenance
- * code under `backend/scripts` do not ship; `backend/data`, the built
- * frontend under `backend/public` and the production `node_modules` do, as
- * files the application reads or serves rather than as SQL it runs. Only the
- * modules under `backend/src` and the files under `backend/migrations` reach
- * the database as executable statements. `backend/scripts` is the tree that
- * LOOKS like a scan candidate and is not, and the `backend/scripts` entry
- * under KNOWN LIMITS records why, and what re-opens the question.
+ * this statement of the roots exists to close. Excluded, deliberately:
+ * every other tree, and each excluded tree either does not ship or ships
+ * only data that no scan reads as statements. Test code under
+ * `backend/tests` and the maintenance code under `backend/scripts` do not
+ * ship; `backend/data`, the built frontend under `backend/public` and the
+ * production `node_modules` do, as files the application reads or serves
+ * rather than as SQL it runs. Only the modules under `backend/src` and the
+ * files under `backend/migrations` reach the database as executable
+ * statements. `backend/scripts` is the tree that LOOKS like a scan
+ * candidate and is not, and the `backend/scripts` entry under KNOWN LIMITS
+ * records why, and what re-opens the question.
  *
  * A RED BAR MAY BE THE READER'S, NOT A THIRD WRITER'S, and so may a green one
  * or a slow run. What is recorded about this reader elsewhere, none of it
@@ -674,17 +675,20 @@
  *     module or directory under `src`, at which point the local walkers
  *     follow links the way the shared one does.
  *   - The routine arm walks the SQL files only (the migrations and any `.sql`
- *     resource under `src`), so a trigger or rule installed at runtime from
- *     a MODULE's SQL string is judged by no arm. Most DDL a module could
- *     spell is still read by the arms that span `sources`: an `ALTER TABLE
- *     accounts` naming the column reds the ALTER arm, and a routine body
- *     spelling `UPDATE accounts SET updated_at = ...` reds the writer arms
- *     like any other statement text. What is left is the shape only the
- *     routine arm catches, a `CREATE TRIGGER ... ON accounts` (or a rule)
- *     whose function writes `NEW.updated_at := now()`, since that write is
- *     no assignment the column pattern reads. Application code installing a
- *     trigger at runtime is not a shape an author writes by accident, and
- *     the accident-not-evasion scope entry of this list covers it.
+ *     resource under `src`), so its refusal of a trigger or rule bound to
+ *     `accounts` does not reach one installed at runtime from a MODULE's
+ *     SQL string. Most DDL a module could spell is still read by the arms
+ *     that span `sources`: an `ALTER TABLE accounts` naming the column reds
+ *     the ALTER arm, and a routine body spelling `UPDATE accounts SET
+ *     updated_at = ...` reds the writer arms like any other statement text.
+ *     A rule whose action spells that statement is read the same way, the
+ *     statement sitting in the rule's text. What is left to no arm, the
+ *     unread spellings the other entries of this list record aside, is a
+ *     `CREATE TRIGGER ... ON accounts` whose function writes
+ *     `NEW.updated_at := now()`, since that write is no assignment the
+ *     column pattern reads. Application code installing a trigger at
+ *     runtime is not a shape an author writes by accident, and the
+ *     accident-not-evasion scope entry of this list covers it.
  *   - The scans read the shapes an author writes by accident, not the ones an
  *     author writes to evade a test. A writer determined to get past them can.
  *
@@ -2990,7 +2994,9 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // both local walkers legitimately return nothing there, and the
     // plausibility spec cannot tell that apart from a walker whose extension
     // test or recursion was lost, or a union in `codeSourcesUnder` that
-    // dropped one of its walkers. A planted tree can.
+    // dropped `moduleResourcesUnder`. A planted tree can. (A union that
+    // dropped `sourcesUnder` is the one that spec does see: `sources`
+    // empties.)
     const tmp = mkdtempSync(path.join(tmpdir(), 'pevo-updated-at-walker-'));
     try {
       const dir = path.join(tmp, 'a', 'b');
