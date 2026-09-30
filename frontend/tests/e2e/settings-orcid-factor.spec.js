@@ -62,9 +62,10 @@ const STUB_PROOF = 'stub-fresh-auth-proof-orcid-factor';
 const NEW_PASSWORD = 'OrcidFactorPass1';
 const CONSENT_OP_KEY = 'pevo_fresh_auth_consent_op_proof';
 
-// Populated in beforeAll from (Date.now, testInfo.retry). Playwright re-runs
-// beforeAll on retries but does NOT re-evaluate module scope, so deriving the
-// identity strings there (with testInfo.retry) keeps retries off a colliding
+// Populated in beforeAll from (Date.now, testInfo.retry); beforeAll is where
+// testInfo carries the retry index. A retry runs in a fresh worker process, so
+// module scope re-runs too and beforeAll runs again; the retry index plus the
+// fresh timestamp keep each attempt off a colliding
 // UNIQUE(email)/UNIQUE(username)/partial-UNIQUE(orcid) row left by a failed attempt.
 let RUN_SUFFIX;
 let TEST_USERNAME;

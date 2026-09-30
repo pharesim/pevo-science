@@ -44,9 +44,9 @@ import { withAppPool } from './fixtures/db.js';
 test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 
 // Stable constants stay at module scope; identity strings derived from
-// RUN_SUFFIX are computed per-test (including `testInfo.retry`) so
-// Playwright retries in the same worker re-evaluate them and don't collide
-// on UNIQUE(email) / UNIQUE(username).
+// RUN_SUFFIX are computed in the test body, where testInfo carries the
+// retry index, so each attempt gets its own and does not collide on
+// UNIQUE(email) / UNIQUE(username).
 const OLD_PASSWORD = 'E2eOldPass1';
 const NEW_PASSWORD = 'E2eNewPass2';
 const TEST_NAME = 'E2E Recovery Tester';
@@ -101,9 +101,9 @@ test('user requests password reset, follows email token, and signs in with new p
   page,
   request,
 }, testInfo) => {
-  // RUN_SUFFIX is computed inside the test body so Playwright retries — which
-  // re-run this test function but do NOT re-evaluate module scope — get a
-  // distinct suffix (via `testInfo.retry`) and don't collide on
+  // RUN_SUFFIX is computed inside the test body, where testInfo carries the
+  // retry index, so every attempt computes it afresh. The retry index plus
+  // the fresh timestamp keep a retry from colliding on
   // UNIQUE(email) / UNIQUE(username) against rows from the failed attempt.
   const RUN_SUFFIX = `${Date.now().toString(36).slice(-6)}r${testInfo.retry}`;
   const TEST_EMAIL = `e2e+recovery-${RUN_SUFFIX}@pevo.test`;

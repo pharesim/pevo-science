@@ -32,10 +32,10 @@ const TEST_INSTITUTION = 'Test Institution';
 const TEST_FIELD = 'Test Science';
 
 test('fresh visitor signs up and verifies email', async ({ page }, testInfo) => {
-  // RUN_SUFFIX is computed here (not at module scope) so Playwright retries
-  // in the same worker re-evaluate it. Including `testInfo.retry` guarantees
-  // a distinct suffix on every attempt, avoiding duplicate-signup 409s that
-  // would mask the original failure.
+  // RUN_SUFFIX is computed in the test body, where testInfo carries the retry
+  // index, so every attempt computes it afresh. The retry index plus the
+  // fresh timestamp give each attempt a distinct suffix, avoiding
+  // duplicate-signup 409s that would mask the original failure.
   const RUN_SUFFIX = `${Date.now().toString(36).slice(-6)}r${testInfo.retry}`;
   const TEST_EMAIL = `e2e+signup-${RUN_SUFFIX}@pevo.test`;
 

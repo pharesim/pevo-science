@@ -35,9 +35,10 @@ import argon2 from '../../../backend/node_modules/argon2/argon2.cjs';
 test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 
 // Stable constants stay at module scope; identity strings derived from
-// RUN_SUFFIX are (re)computed in beforeAll so Playwright retries — which
-// re-run beforeAll but do NOT re-evaluate module scope — get a distinct
-// suffix that includes `testInfo.retry`.
+// RUN_SUFFIX are computed in beforeAll, where testInfo carries the retry
+// index. A retry runs in a fresh worker process, so module scope re-runs too
+// and beforeAll runs again; what keeps each attempt's seeded rows distinct is
+// the retry index plus the fresh timestamp.
 const NEW_LOCALE = 'de';
 
 // Known password for the seeded light account. The change-email JWT path now

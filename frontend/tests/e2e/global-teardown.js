@@ -73,8 +73,7 @@ async function unpinFromKubo(ipfsApiUrl, cid) {
  *     3-8 lowercase letters). Catches seed phrases that drive the light-
  *     account signup path.
  *   - `SESSION_SECRET` value itself (checked separately via env lookup).
- *   - Known E2E-minted password `E2eTestPass1` used by seed-phrase,
- *     email-signup, login-email, password-recovery, settings.
+ *   - Known E2E-minted password literal `E2eTestPass1`.
  *   - Known light-account password `E2eFreshAuthPass1` (the light-account
  *     fixture's TEST_PASSWORD), typed into the reauth modal by the
  *     fresh-auth specs.

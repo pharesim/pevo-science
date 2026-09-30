@@ -42,8 +42,8 @@ import { deriveAllKeys } from '../../src/hive-keys.js';
 test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 
 // Constants that don't depend on RUN_SUFFIX stay at module scope; identity
-// strings derived from RUN_SUFFIX (email, username) are computed per-test
-// so Playwright retries in the same worker re-evaluate them.
+// strings derived from RUN_SUFFIX (email, username) are computed in the test
+// body, where testInfo carries the retry index, so each attempt gets its own.
 const TEST_PASSWORD = 'E2eTestPass1';
 const TEST_NAME = 'E2E Seed Tester';
 const TEST_INSTITUTION = 'Test Institution';

@@ -28,10 +28,11 @@ import { openAppPool } from './fixtures/db.js';
 // capture both).
 test.use({ trace: 'off', video: 'off', screenshot: 'off' });
 
-// Identity strings derived from RUN_SUFFIX are computed in beforeAll (rather
-// than at module scope) so Playwright retries in the same worker — which
-// re-run beforeAll but do NOT re-evaluate module scope — get a distinct
-// suffix including `testInfo.retry`. Stable constants stay here.
+// Identity strings derived from RUN_SUFFIX are computed in beforeAll, where
+// testInfo carries the retry index. A retry runs in a fresh worker process,
+// so module scope re-runs too and beforeAll runs again; what keeps each
+// attempt's seeded rows distinct is the retry index plus the fresh
+// timestamp. Stable constants stay here.
 const TEST_PASSWORD = 'E2eLoginPass1';
 const WRONG_PASSWORD = 'NotMyPassword9';
 
