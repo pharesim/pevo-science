@@ -225,3 +225,31 @@ itself never triggers a write.
   remintable-401 retry. Threading the option into only the first reproduces the
   bug on every closed-window 401, which is the case these surfaces meet most
   often.
+
+### Architect note (2026-09-30) — the confirm has landed, and one more site shares the draft-key exposure
+
+Blocker 1 in the block this note follows is satisfied: the re-auth window task is
+archived clean, so the cost-stating confirm (`_confirmNavigationCost` on the publish
+and edit pages, asked through the `broadcastConfirm` store) and the pre-navigation
+flush are on main and reusable. Blocker 2, the product decision on light-account
+vouching, is still open, so the task stays in `blocked/`.
+
+A residual from that task's final review, recorded here because it shares the
+acquisition seam this task builds on. It is not held anywhere else:
+
+- `page-mount.js` re-renders only when the router's route name changes. A history
+  jump from one `/edit/...` entry to another therefore keeps the same `editPage`
+  instance mounted while the `draftKey` getter, which reads the router params,
+  starts naming the other paper.
+- If that jump happens while the navigation-cost confirm is open, an honoured yes
+  passes the `_mounted` check in `_confirmNavigationCost` and its flush writes this
+  form under the other paper's draft key. The debounced save and the flush in
+  `_windowReady` already have the same exposure; the confirm's flush is one more
+  site, not a new class.
+- Narrow: it needs two edit entries one history step apart and the modal open.
+
+Relevance at pickup: a stash bound to surface, target and subject (the Scope's
+"restore is bound three ways") must read its target at write time from the same
+params, so the same same-instance param change can mis-bind it. Capture the target
+when the composing begins or when the gate is entered, not at the write, or say in
+the signal why the write-time read is safe on the surfaces in scope.
