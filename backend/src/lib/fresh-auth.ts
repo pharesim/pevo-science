@@ -1909,7 +1909,7 @@ async function burnConsentOpEntry(token: string): Promise<boolean> {
     } catch (err) {
       logger.warn(
         { err, event: 'fresh_auth.redis_getdel_failed' },
-        'Redis burn of a consent-op fresh-auth proof failed; the in-memory tier arbitrates and a compensating delete follows',
+        'Redis burn of a consent-op fresh-auth proof failed; the outcome is decided in-process, and a compensating delete follows only when the in-memory tier wins a proof not already recorded as spent',
       );
     }
   }
@@ -2062,11 +2062,15 @@ function dropSessionWindow(token: string, username: string): void {
  *  lost if Redis flaps before the next consume.
  *
  *  The Redis write is skipped entirely when the read came from the in-memory
- *  tier: that tier answers precisely when Redis did not, and writing there would
- *  recreate a key Redis has already expired. For the same reason the write uses
- *  `XX` (set only if the key still exists) rather than a plain `SET` — the key
- *  can lapse between this consume's read and its write, and a plain `SET` would
- *  resurrect it for another full window.
+ *  tier. That tier answers only when the Redis read did not return the entry: a
+ *  nil reply, a rejected read, or a Redis leg never attempted. In none of the
+ *  three does this consume hold evidence that the canonical key still exists
+ *  (after a rejected read it typically does), so a plain write from here could
+ *  plant a key Redis has dropped or never held, and the write is not attempted
+ *  at all. The Redis-served leg, which did see the key, guards the same hazard
+ *  with `XX` (set only if the key still exists) rather than a plain `SET` — the
+ *  key can lapse between this consume's read and its write, and a plain `SET`
+ *  would resurrect it for another full window.
  *
  *  Scope of the `XX`-declined branch, stated precisely because it is easy to
  *  over-claim: it removes the in-memory copy when the canonical Redis entry

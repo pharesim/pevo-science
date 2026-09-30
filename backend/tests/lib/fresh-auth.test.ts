@@ -33,7 +33,10 @@
  *    idle passed with the cap far away).
  *  - Persistence rules for a slide: written back to Redis with `XX` when Redis
  *    answered the read, and NOT written to Redis at all when the in-memory tier
- *    answered, since writing there would recreate a key Redis has dropped.
+ *    answered. That tier answers only on a nil reply, a rejected read, or a
+ *    Redis leg never attempted, and in none of them does the consume have
+ *    evidence the canonical key still exists, so a plain write could plant a
+ *    key Redis has dropped or never held.
  *  - The persist is DETACHED from the authorization decision, and the in-memory
  *    write inside it lands before the network call. A Redis write that never
  *    settles is the only way to separate that from an awaited persist: the
@@ -637,13 +640,16 @@ describe('creditOpFreshAuthTarget — credit-op target builder + consume round-t
 });
 
 describe('TTL-expiry on in-memory fallback', () => {
-  // The TTL-guard test scenario only fires on the in-memory fallback
-  // path. When Redis is available, Redis's own server-side EX TTL is
-  // authoritative and the in-memory `cached.expiresAt > Date.now()`
-  // guard is bypassed. The mutation-kill targets the in-memory guard at
-  // consume time, so these tests force the Redis-down-on-consume path
-  // via a spy: issuance writes the memStore backup; consume sees Redis
-  // unavailable and falls through to memStore where the TTL guard fires.
+  // The in-memory `cached.expiresAt > Date.now()` guard is reached whenever
+  // the Redis read does not return the entry: a nil reply (which is what a
+  // key past its server-side EX TTL produces), a rejected read, or a Redis
+  // leg never attempted. Only a non-nil `GET` returns before it. The
+  // mutation-kill targets that guard at consume time. With Redis up, these
+  // tests reach it by making the `GET` reject via a spy, with the
+  // availability predicate left real; with Redis unavailable no spy is
+  // installed and the Redis leg is never attempted, which reaches the same
+  // guard. Either way issuance has written the memStore backup, and the
+  // consume falls through to memStore, where the TTL guard fires.
 
   it('returns valid before the TTL boundary on the memStore fallback', async () => {
     // Force fake timers BEFORE issuance so the memStore-backup expiresAt
@@ -1711,8 +1717,11 @@ describe('session-proof window', () => {
   });
 
   it.skipIf(!redisAvailable)('a slide served from the in-memory tier is NOT written back to Redis', async () => {
-    // The in-memory tier answers precisely when Redis did not. Writing the slid
-    // entry to Redis from there would recreate a key Redis has already dropped.
+    // The in-memory tier answers only when the Redis read did not return the
+    // entry, and a consume served from it has no evidence the canonical key
+    // still exists, so it must not write. Here the key does still exist (the
+    // window was minted against healthy Redis and only the `GET` is made to
+    // reject); the consume simply cannot know it.
     const redis = getRedis()!;
     const issued = await issueSessionFreshAuthToken('nowrite-user', 'password');
     const getSpy = vi.spyOn(redis, 'get').mockRejectedValue(new Error('forced Redis-down'));
