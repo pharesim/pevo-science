@@ -1136,3 +1136,68 @@ per-arm `landed` marker read by a terminal catch placed ahead of the unmount
 guard is still undocumented and remains a `/ce-compound` candidate. Do not
 cite this hold, its item numbers, or the task slug in code or test comments;
 anchor on the symbols named above.
+
+## UI re-review signal (2026-09-30, commit afa7192b)
+
+`afa7192b` self-verified as an ancestor of `main` (`git merge-base
+--is-ancestor`). No worktree fan-out; single-session inline work, built on
+the current tree (`92141abf` and later included).
+
+Prose only. No executable line changed: both files, run through an esbuild
+comment strip, are byte-identical to their parents, and every changed line
+in the diff is a `//` line.
+
+### Item 1: each writer named by its own trigger
+
+The comment above the continuation arm's re-clear now says a watched change
+arms the debounce, the armed save can fire, and a file selection flushes the
+draft synchronously through `_windowReady`, needing neither a watched change
+nor the debounce delay. It does not say `_windowReady` is the only caller of
+`_flushDraftSave()`. The guard-placement rationale is unchanged apart from
+reflow, and the native arm's pointer is untouched.
+
+### Item 2: the shared catch, not marker placement
+
+The pre-landing spec's header now gives the real reason: both arms share the
+one terminal catch, and a throw before the landing reaches its `if (landed)`
+guard with the marker still false whichever arm ran, so one same-author case
+witnesses that guard. It claims nothing about either arm's marker placement.
+No continuation twin was added.
+
+One further change in the same header, not prescribed, raised rather than
+buried: "the draft the entry gate flushed" became "the draft `_windowReady`
+flushed". On the failed-broadcast path this spec runs, the pre-broadcast
+`_windowReady` call flushes again after the entry one, so the stored draft
+is the later gate's write. The entry-gate attribution was exact only for the
+failed-upload example.
+
+### Item 3: the arm and the exit, named
+
+The rejecting-invalidation spec's header opens "The continuation arm,
+through its rejecting-invalidation exit." The remaining sentences are
+untouched.
+
+### Verification
+
+- `pages-edit.test.js`: 105 passed, 0 failed, exit 0, no Errors line (the
+  count is above the reviewed 103 because of sibling commits since, not this
+  diff). Full frontend unit suite: 87 files / 1980 tests, exit 0.
+  `npm run build` clean (standing dhive direct-`eval` warning only).
+- No mutation table, per the hold: no executable line changed.
+- The new wording was checked against the code by six independent read-only
+  reviewers, two per comment, each asked to refute it. All three reworded
+  sentences came back accurate, and clean against the comment-anchor rules.
+  Two of their points were taken: the "neither a watched change nor the
+  debounce delay" wording (the flush does cancel a pending timer, so "no
+  debounce involved" read too literally), and the `_windowReady` attribution
+  described under item 2.
+- One point was NOT taken and is left for the architect: the same header's
+  pre-existing "has put nothing on chain", and the terminal catch comment's
+  "nothing landed" in `edit.js`, are wider than the code supports. `landed`
+  records that the broadcast call resolved. A broadcast can reject with the
+  transaction on chain (a lost response, or an error status after the
+  server-side broadcast), and the client cannot tell. Both sentences predate
+  this round and the production one is outside the prescribed scope, so
+  neither was reworded.
+- E2E not re-run: comment-only diff.
+- No new i18n keys, so no `STUBS.md` entry.
