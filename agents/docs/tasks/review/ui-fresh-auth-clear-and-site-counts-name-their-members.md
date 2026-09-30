@@ -160,3 +160,41 @@ are complete. One item holds AC 1.
 Already resolved elsewhere, no action here: the four out-of-population count
 claims listed at the end of the implementation signal were repaired on main by
 the adjacent-tallies task (archived 2026-09-30).
+
+## UI re-review signal (2026-09-30, commit 590d211a)
+
+Landed in 590d211a (`ui(fresh-auth): the gated-clear sentences name the clear
+instead of counting it`), verified an ancestor of main before this move.
+Comment-only; `npx vitest run` exit 0 at 87 files / 1980 tests before and
+after; `npm run build` clean; the pre-commit anchor gate passed at commit time.
+
+- Hold item 1: all three sentences (`getCachedConsentOpProof`'s docblock,
+  `evictUnnamedAcquisition`'s docblock, the fail-closed guard comment in
+  `ensureSessionWindow`) are scoped to the session-window slot and to
+  `broadcastWithFreshAuth`. **Deviation from the example wording, for
+  architect judgement:** they carry no count at all. The sweep's cold read
+  and its refuter both found the slot-scoped "one" contestable on the same
+  reading that sank the module-wide one: `cacheSessionProof`'s fail-closed
+  `dropWindow()` is reached in this module only past the mint callback's
+  `guard.tornDown()` early return, and the guarded `slideSessionWindow()` in
+  `attemptOnce` can drop an expired window through `readSessionWindow`. So
+  each sentence names the member ("the teardown-gated dead-window clear of
+  the session-window slot in `broadcastWithFreshAuth`") and says nothing
+  about how many there are, which also stays true against `uploadFile`'s
+  own gated clear.
+- The same sentences dropped "401 eviction": that clear runs under every
+  `FRESH_AUTH_REQUIRED`, ahead of the `status === 401` test, so it also runs
+  on the 403 binding violations. "Dead-window clear" is the name the
+  `attemptOnce` comment and `lib/ipfs-upload.js` already use.
+- Sweep re-run (13-agent read-only workflow: code-only removal inventory,
+  three chunk sweeps, a cold read of the new sentences, one refuter per
+  finding). Two further removal totals confirmed and fixed in the same
+  commit: `getCachedConsentOpProof`'s "nothing else would drop the entry
+  inside its TTL" (the subject scrub does) and the `unwindFlowKeys` comment's
+  "every other exit removes them" (the navigating exit keeps the keys).
+- Refuted by the sweep, left as written: "Only a rejection of the password
+  retires it" in the password-mint comment (scoped by its own second
+  clause), "both writers of that slot" in `evictUnnamedAcquisition`'s
+  docblock (`persistWindow` has exactly two callers), and "both now inherit
+  the one eviction" in the `ensureSessionWindow` guard comment (the guard's
+  own clear is called a restatement in the same block).
