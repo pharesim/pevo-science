@@ -186,9 +186,10 @@
  *      the assignment (its own line counting only left of it),
  *      or the NEAREST head it finds — it never climbs past that
  *      one — has a read that does not reach the assignment itself; where
- *      that nearest head's read runs on to the assignment, the assignment is
- *      bucketed under that head's table instead, and the dynamic-SQL entry
- *      under KNOWN LIMITS gives the three buckets. A column LIST held in a variable
+ *      that nearest head's read does reach it, the assignment is bucketed
+ *      under that head's table instead. What reaching asks of a read is
+ *      defined in the dynamic-SQL entry under KNOWN LIMITS, which
+ *      also gives the three buckets. A column LIST held in a variable
  *      has no such second catcher,
  *      since a list names the column with no `=` after it, and neither, as a
  *      rule, does an `ALTER TABLE accounts` clause: a drop, a rename and a
@@ -1125,9 +1126,9 @@ const SQL_INTERPOLATION_RE = /\$\{/;
 const JOINED_BEFORE_RE = /\+\s*$/;
 const JOINED_AFTER_RE = /^\s*\+/;
 
-/** The label a write gets when the NEAREST head the upward walk finds — if it
- *  finds one at all — has a read that does not reach it. A farther head whose
- *  read would reach does not rescue it: the walk never climbs past. */
+/** The label a write gets when the upward walk finds no head at all, or the
+ *  NEAREST head it finds has a read that does not reach it. A farther head
+ *  whose read would reach does not rescue it: the walk never climbs past. */
 const UNRESOLVED_TABLE = '<unresolved>';
 
 /** How far one statement is read downward from its head, so an unterminated
@@ -2688,9 +2689,10 @@ interface AssembledWrite {
  *  the assignment itself, the fail-closed arm reds on it. The walk never
  *  climbs past that nearest head, and whether its read spans the ASSIGNMENT,
  *  not merely the fragment holding it, is a property of the read, not of the
- *  shape: where it runs on to the assignment, the assignment is bucketed
- *  under its table instead, and the dynamic-SQL entry under KNOWN LIMITS
- *  gives the three buckets. A column list held in a variable spells none, and
+ *  shape: where it does reach it, the assignment is bucketed under its
+ *  table instead. What reaching asks of a read is defined in the
+ *  dynamic-SQL entry under KNOWN LIMITS, which also gives the three
+ *  buckets. A column list held in a variable spells none, and
  *  neither, as a rule, does an `ALTER TABLE accounts` clause: a drop, a
  *  rename and a retype each spell the column with no assignment of their
  *  own. (An `updated_at =` inside a USING expression or a CHECK is read as
