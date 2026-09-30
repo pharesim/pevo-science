@@ -1344,3 +1344,124 @@ the sweep patched the sites a verification pass named instead of re-deriving eve
 restatement. The architect folds the recurrence into that entry via `/ce-compound-refresh` at
 archive, per the round-3 and round-4 notes, together with the stale `targetTable` summary in
 the normalization entry's Examples that the learnings lens flagged.
+
+## Backend round-6 signal (2026-09-30, commit f9a839a8)
+
+The commit is an ancestor of `main` (`git merge-base --is-ancestor` checked) and touches
+only `backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`.
+Both hold items and the one correction landed in this ONE commit; the adversarial
+verification ran before committing. Prose only, verified mechanically on the pre-correction
+tree: the non-comment parser-leaf streams at base (`0352188e`) and head are identical (22937
+leaves, zero parse diagnostics, the same comment count at both ends, and a one-literal
+mutation control that differs by 1 leaf). The correction then removed one word from two
+comment lines, and the committed diff's 20 changed lines are all comment lines.
+
+The canary is 30/30 at this base, not the 29/29 of the round-5 block: the scan-roots sibling
+commits added a test. Every count below is against 30.
+
+### Item 1. The two sites defer reach by name (the preferred option)
+
+Header item 4 and the `assembledWrites` docblock no longer say "runs on to the assignment"
+(zero occurrences in the file). Each states the consequent with the defined verb ("where
+that nearest head's read does reach it, the assignment is bucketed under that head's table
+instead") and then defers: "What reaching asks of a read is defined in the dynamic-SQL entry
+under KNOWN LIMITS, which also gives the three buckets." Neither site restates either half.
+
+The hold's plant and control, re-measured in a scratch copy:
+
+- PLANT, `src/zz-probe-x.ts`: an `UPDATE widgets` / `SET a = 1` template opened on the line
+  above its head with no `;` after its closing backtick, then a second template holding
+  `b = 2,` / `updated_at = now(),` / `c = 'left open`. Reds
+  `every updated_at assignment resolves to the table it writes`, 1 failed | 29 passed,
+  exit 1, site `zz-probe-x.ts:7`.
+- CONTROL, identical but `c = 'closed here'`: 30 passed, exit 0.
+- Direct `statementAt` probe of the widgets head (assignment on line 7): plant `lastLine` 8,
+  `closedAt` -1, `quoteAt` -1, `stopped` true, `targetTable` `<unresolved>`; control
+  `lastLine` 10, `stopped` false, `targetTable` `widgets`.
+
+### Item 2. `UNRESOLVED_TABLE` in the two-disjunct form
+
+"The label a write gets when the upward walk finds no head at all, or the NEAREST head it
+finds has a read that does not reach it." The two disjuncts map one to one onto
+`targetTable`'s two return sites. Measured, each reding the fail-closed arm alone
+(1 failed | 29 passed, exit 1): a fragment with no head anywhere; a fragment under a
+one-line `UPDATE widgets` that closed on its own line; and the near/far layout, whose
+`SELECT near_noise` control is 30/30 with `targetTable` `gadgets`.
+
+### The check the hold asked for: every sentence stating the bucketing consequent
+
+One agent grepped the whole file for bucket, reach, runs on, spans, lend, attribut, resolve,
+owner, owns, belongs, climb, nearest, UNRESOLVED, gave up / give up and stopped, and read
+every comment hit in context. What it covered, by verdict:
+
+- Defers by name: header item 4, the `assembledWrites` docblock (the two edited sites).
+- Carries both halves: the dynamic-SQL entry's definition, the `targetTable` docblock and
+  its inline comment, the cap fixture's comment.
+- Inside the dynamic-SQL entry, after the definition, using the defined verb: the two
+  bucketing clauses of the three-bucket sentence, the ALTER paragraph's three, and the
+  quieting-shapes clause (its nearest-head wording is a settled dismissal).
+- Negative or necessity form only, no bucketing consequent: `UNRESOLVED_TABLE`,
+  `unresolvedIn`, header scans 1 to 3, the `statementAt` invariant, the "only a statement
+  that reaches the assignment can own it" fixture comment.
+- Carries the give-up half as its subject: `SqlStatement.stopped`, the multi-line VALUE
+  entry, the stop-line fixture comment.
+- Head selection or past-bug narrative, no claim about the read: `UPDATE_TARGET_RE`,
+  `NOT_A_TABLE`, `statementHead`, `SpanEvent`, the span and stop inline comments in
+  `statementAt`, `columnAssignments`' one-liner, the MERGE and two-statements-per-line
+  fixture comments, the value-state and FAIL-CLOSED STOP fixture narratives.
+- OMITS: one sentence, outside this round's diff. See the `[TODO Architect]` below.
+
+### The correction the verification pass forced, fixed in the same commit
+
+The first draft of the deferral said reach "is defined once, in the dynamic-SQL entry". Two
+lenses (adversarial, sibling-consistency) filed it independently: the `targetTable` docblock
+spells the same two halves, so "once" is literally false. The confirmers split 1 to 1 on
+whether a reader is misled; the word is gone either way, since it was a count claim this
+round added and the code falsifies. No outcome differs between the two spellings.
+
+The adversarial lens otherwise failed to falsify any of the three rewritten sentences. Its
+probes, each matching the sentence plus the deferred definition: a give-up read past the
+assignment (red, closed-value control green); a terminator just left of the token on its
+line (red, `,` control green); `closedAt` -1 on the assignment's line at end of file (green,
+give-up control red) and at the cap (39 filler lines green, 40 red); no head at all (red);
+an own-line head right of the assignment (ignored, green under a reaching head, red with
+nothing above). The entry holds exactly one definition and it maps disjunct for disjunct
+onto `targetTable`'s `reaches` expression.
+
+Refuted 0 to 2 and not acted on: header scan 1's "reaches the assignment's line" as a
+second, weaker statement of reach. It is an "only if", stays true, and round 5 left it.
+
+### Acceptance evidence
+
+All vitest runs from scratch copies (`git archive 0352188e backend`, the edited canary
+overlaid, `node_modules` and `.env` symlinked, `tests/setup.ts` stubbed). The shared
+checkout was never mutated by a probe.
+
+- AC2 at the committed text: all nine `tests/eslint` files 140/140, exit 0, no `Errors`
+  line; the canary 30/30; `npm run typecheck` and `npx eslint` on the file exit 0.
+  `ALLOWED_COLUMN_ALTERATIONS` is absent from the diff.
+- AC3 is unchanged: no fixture or assertion was touched.
+- The pre-commit anchor gate: standalone in a throwaway repo over the added lines with
+  `PEVO_ANCHOR_GATE=on` and the hook's own `ALLOW_MARKER`, zero hits, exit 0; the
+  `// see the rule below` control is rejected with 1 hit, exit 1. The commit then passed
+  the live hook.
+
+Verification: workflow `wf_4e5d6541-a42` (13 agents, zero errors): two measurement agents,
+three falsification lenses, two confirmers per candidate. Backend did not run code review
+(`agents/backend/CLAUDE.md` assigns `/ce-code-review` to the architect).
+
+### [TODO Architect] Found by the hold's check, not acted on: the quoted-identifier bullet
+
+The KNOWN LIMITS bullet on shapes that are not house style says the SET-list form "reds by
+resolution instead, but only where no readable head opens earlier in the same quoted text
+... so a sibling statement read from that head reaches the assignment and lends it its own
+table, silently". That is the round-5 item-1 omission at a site this round did not edit: it
+uses the defined verb outside the defining entry with no deferral and no gave-up half.
+Measured, and reproduced by both confirmers: a template holding
+`UPDATE widgets SET note = 'open` / `tail' WHERE id = 2;` / `UPDATE "accounts" SET updated_at = now() WHERE id = 1`
+reds the fail-closed arm (1 failed | 29 passed, exit 1) where the sentence predicts silence;
+with the value closed on line 1 it is 30/30. Loud direction, pre-existing. Left alone
+because `backend-head-line-read-silences-fail-closed-backstop` owns this sentence (its
+"only where no readable head opens earlier" half is already that task's subject), so an edit
+here would collide with it. Both confirmers voted it out of scope for this round on that
+ground.
