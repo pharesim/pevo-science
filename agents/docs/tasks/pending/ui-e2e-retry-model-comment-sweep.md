@@ -144,3 +144,133 @@ UI implementation signal (2026-09-30, commit `3c9f3b10`):
   did not diverge from it. If the architect wants the comments to say the timestamp alone
   is the guarantee, that is a wording change across all five `beforeAll` sites including
   the two already-accepted ones.
+
+## Architect re-review (2026-09-30) — HELD PENDING FIXES:
+
+Reviewed commit 3c9f3b10 against its parent. Confirmed: the diff is
+comment-only (the non-comment token streams of all seven files are identical
+across the commit); the sweep grep returns the nine lines the signal states
+and none of them carries either false shape; `global-teardown.test.js` passes
+unchanged at 15 tests; the anchor gate has no hit on the 26 added lines; the
+`E2eTestPass1` bullet names no spec and matches a real scan arm. Dropping the
+enumeration is accepted. The retry model in the Why section holds against
+installed Playwright 1.59.1 and was reproduced in throwaway runs: a failed
+test stops its worker, and the retry runs in a new process that loads the spec
+file again.
+
+All seven reworded comments place the suffix computation correctly, three in
+`beforeAll` and four in a test body. AC 1, 3, 4 and 5 are met. Three items
+hold the task.
+
+Items 1 and 2 are sentences 3c9f3b10 did not touch. They are held under the
+Notes section ("a further sentence about retries that is false in a way
+neither shape above covers, fix it and list it"); the signal's Scope 2 line
+reports none. The task's own seven-site list missed them too, so the miss is
+not the implementer's alone.
+
+1. **The in-hook `beforeAll` comments credit the retry index with a guarantee
+   it does not give.** Two sites, both inside `test.beforeAll`:
+   `login-email.spec.js` ("Playwright runs beforeAll again on retries, so
+   including `testInfo.retry` guarantees retries see a distinct suffix ...
+   against rows left by the failed attempt") and `settings.spec.js` (the same
+   sentence with "re-runs beforeAll on retries"). The first half is true. The
+   second half is not.
+
+   In a `beforeAll`, `testInfo` belongs to the test whose start triggered the
+   hook, which is the first test the worker runs in that describe. The retry
+   index is per test. After a failure with a retry left, the runner requeues
+   the failed test at its next index together with the tests that have not run
+   yet, and the new worker runs that group in file order. Both describes hold
+   two tests, so this run is reachable under `workers: 1, retries: 1`:
+
+   - Worker A: the hook reads 0. Test 1 fails.
+   - Worker B runs test 1 at retry 1, then test 2 at retry 0. The hook is
+     triggered by test 1 and reads 1. Test 1 passes. Test 2 fails, having used
+     rows seeded under a suffix that ends `r1`.
+   - Worker C runs test 2 at retry 1. The hook reads 1 again.
+
+   Test 2's failed attempt and its own retry both ran under a suffix ending
+   `r1`. The timestamp tail was the only part that differed. Two reviewers
+   reproduced it with a two-test stand-in describe: three processes, and the
+   hook read 0, then 1, then 1.
+
+   The signal's precision note describes the same property and is right that
+   the header wording stays true. These two in-hook sentences are the ones it
+   does not leave true.
+
+   Fix, comment-only, both sites. The invariant, not a fixed sentence: the
+   hook runs again because a retry starts a fresh worker; the index the hook
+   reads is the triggering test's, and it can repeat from one worker to the
+   next, a test's failed attempt and its own retry included; the retry index
+   plus the fresh timestamp are what keep the seeded rows distinct. Do not
+   attach "guarantees" to the retry index.
+
+2. **`seedActiveUser`'s comment says a retry can hit UNIQUE(email).** In
+   `password-recovery.spec.js`: "Clean any leftover row from a prior partial
+   run (test DB is reset between runs by global-setup, but a retry within the
+   same run can hit UNIQUE(email))". The file has one test. It builds the email
+   and the username in its body from the timestamp tail plus `testInfo.retry`,
+   and in a test body that index is the test's own: 0 on the first attempt, 1
+   on the retry. The two attempts therefore never share an email or a
+   username, and the `DELETE`, which is keyed on this attempt's own pair,
+   matches no row a failed attempt left. The sentence also says the opposite
+   of the two comments 3c9f3b10 reworded in the same file.
+
+   Fix, comment-only: describe the `DELETE` as defensive cleanup and drop the
+   claim about a retry. Leave the `DELETE` itself alone. The "reset between
+   runs by global-setup" clause is true (`global-setup.js` runs the backend's
+   `test-db:reset` before every run) and can stay.
+
+3. **"beforeAll runs again" above `let RUN_SUFFIX` in
+   `settings-orcid-factor.spec.js` is true only for the happy-path describe.**
+   This is the one item on a line 3c9f3b10 added, and it is what keeps AC 2
+   open. The file has two describes, each with its own `beforeAll`. The four
+   variables under the comment (`RUN_SUFFIX`, `TEST_USERNAME`, `TEST_EMAIL`,
+   `TEST_ORCID`) are written only by the happy-path describe's hook. The
+   mismatch describe's test is the last test in the file, so when it fails its
+   retry worker runs that test alone. Playwright drops a describe that has no
+   test in the group being run, so the happy-path hook does not run in that
+   worker and the four variables stay undefined there. A reviewer reproduced
+   it with a two-describe stand-in. Nothing fails today, because the mismatch
+   test passes its own `NEG_*` identifiers. But the sentence as written ("A
+   retry runs in a fresh worker process, so module scope re-runs too and
+   beforeAll runs again") covers every retry in the file.
+
+   Fix, comment-only: scope the clause to the hook that populates these
+   variables, using the names the file already uses ("the happy-path
+   describe", "the mismatch describe"). The header comments in
+   `login-email.spec.js` and `settings.spec.js` carry the same clause and need
+   no change: each of those files has one describe.
+
+**The signal's wording question (retry index plus timestamp, or timestamp
+alone): keep the pair.** No change at the five `beforeAll` header sites, the
+two fresh-auth specs included. Item 1 shows that in a `beforeAll` the index
+alone does not separate two runs. The timestamp alone is not a guarantee
+either: `Date.now()` is a wall-clock read and is not monotonic. Crediting the
+pair claims neither, and no reviewer constructed a run in which the pair gives
+two attempts the same suffix. This paragraph is the reason for leaving that
+text alone. It is not text for a comment.
+
+**For the fix round.**
+
+- Comment-only again (AC 4), and the new text follows "Comment anchors"
+  (AC 5). The e2e suite still does not need to run.
+- Before moving the file back, read every sentence that mentions a retry in
+  the six specs, rather than grepping for a phrasing, and put three questions
+  to each: does it credit `testInfo.retry` alone inside a `beforeAll`; does it
+  say a retry can collide where the suffix is built per attempt; does it say a
+  hook runs again without saying for which describe. List in the signal any
+  further sentence you fix.
+
+**Not held.**
+
+- "Recompute RUN_SUFFIX per beforeAll invocation" and "whatever the most
+  recent beforeAll computed" (`login-email.spec.js`, `settings.spec.js`) are
+  loose but not false. Rewording them is optional.
+- Nothing pins these comments to the Playwright version. Dismissed as
+  theoretical.
+- The trace scan's literal coverage is unchanged and stays out of scope.
+- Two pre-existing anchor notes are awaiting a triage decision and are not
+  part of this hold: "the two tests below" in `login-email.spec.js`, and
+  "the opt-out pattern in actions #1" in the `scanTracesForSecrets` docblock.
+  Do not act on them from this block.
