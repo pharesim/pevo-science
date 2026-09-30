@@ -109,3 +109,38 @@ its result. State in the signal block that it was not run.
 If while in these files you find a further sentence about retries that is false in a way
 neither shape above covers, fix it and list it in the signal block. If you find one you
 cannot verify either way against the installed Playwright source, leave it and list it.
+
+UI implementation signal (2026-09-30, commit `3c9f3b10`):
+
+- **Scope 1.** All seven comments reworded in `3c9f3b10` (self-verified: the SHA is an
+  ancestor of `main` and its `--name-status` lists exactly the seven e2e files). The four
+  `beforeAll` sites (`login-email`, `settings`, `settings-orcid-factor`, all above the
+  module-scope declarations) use the accepted fresh-auth wording, extended with "and
+  beforeAll runs again". The three test-body sites (`email-signup`, `password-recovery`
+  test body, plus the module-level comments above `OLD_PASSWORD` in `password-recovery`
+  and `TEST_PASSWORD` in `seed-phrase`, which describe a test-body computation) say the
+  suffix is computed in the test body, where `testInfo` carries the retry index, so every
+  attempt computes it afresh. None of them mentions `beforeAll`.
+- **Scope 2.** The sweep grep returns nine lines, all read. Each either says module scope
+  re-runs on a retry or says stable constants stay at module scope. None says a retry
+  skips module scope or shares a worker. A wider read of every retry sentence under
+  `frontend/tests/e2e` (fixtures and global setup and teardown included) found no further
+  false sentence in either shape or a new one, so nothing extra was fixed.
+- **Scope 3.** Dropped the enumeration. The bullet now reads "Known E2E-minted password
+  literal `E2eTestPass1`." and names no spec. Reason: the list is what went stale, and a
+  two-name list would go stale the same way the next time a spec picks up or drops the
+  literal. The bullet claims no coverage of any other literal.
+- **Verification.** Comment-only: filtering the diff's changed lines for anything that is
+  not a `//` or ` *` line returns nothing. `frontend/tests/unit/global-teardown.test.js`
+  passes unchanged (15 tests, exit 0). The e2e suite was NOT run, per the task's Notes.
+  The retry model was re-checked against installed Playwright 1.59.1
+  (`runner/dispatcher.js`, `worker/workerMain.js`, `worker/testInfo.js`).
+- **One precision note, left as is.** Inside `beforeAll`, `testInfo.retry` is the retry
+  index of the first test the new worker runs, not a count of `beforeAll` invocations. In
+  a multi-test describe, two `beforeAll` runs can carry the same retry index (for
+  example: test 1 fails twice, then a third worker runs test 2 at retry 0), and only the
+  timestamp separates them. "The retry index plus the fresh timestamp" stays true as
+  written, and the same holds for the accepted wording in the two fresh-auth specs, so I
+  did not diverge from it. If the architect wants the comments to say the timestamp alone
+  is the guarantee, that is a wording change across all six `beforeAll` sites including
+  the two already-accepted ones.
