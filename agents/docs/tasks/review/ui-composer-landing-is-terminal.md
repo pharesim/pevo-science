@@ -230,3 +230,137 @@ If you find a writer of either draft key that does not go through `_writeDraft`,
 past the landing that can still reach the terminal catch, stop and flag it in the task
 file before landing. Both would mean § 8 is wrong about the code, and the section gets
 fixed first.
+
+## UI implementation signal (2026-09-30, commits `49e8fcea`, `3c5ca950`)
+
+Landed in `49e8fcea` (both pages and both unit files) and `3c5ca950` (removes one spec from
+the edit unit file, see "Binding check"). Both verified as ancestors of `main`.
+
+**Shape.** The recommended one: an instance flag `_landed` and one method `_markLanded`
+(flag, debounce cancel, removal) on each page. The barrier is in `_writeDraft`, the submit
+refusal is the first statement of `handleSubmit`, and each `:disabled` binding carries
+`|| _landed` as its own term. `isSubmitting`, the label expressions and
+`_scheduleDraftSave` are untouched. No i18n key was added.
+
+**The two edit arms share one tail**, `_finishLanded(draftKey, canonicalAuthor,
+canonicalPermlink)`: `_markLanded(draftKey)`, then the invalidation inside its own
+try/catch (`console.warn('[edit invalidate]', err)`), then the `_mounted` guard, then
+`success` and the navigate timer. Each arm's entry is one `await this._finishLanded(...)`.
+`_clearDraft`, the `landed` local, both clears after the invalidation await and the
+terminal catch's clear are removed.
+
+**One deviation.** The canonical author and permlink are captured in `handleSubmit` next
+to the other targets, ahead of the broadcast, and passed into the tail. On main each arm
+read `this.paper` after the broadcast. The tail now runs on an unmounted instance too, and
+a throw from a `this.paper` read there would have reached the terminal catch, which
+scope item 4 rules out.
+
+**Stop-and-flag checks, both negative.** The only `setItem` on either draft key is in the
+page's `_writeDraft`. Nothing past the landing reaches the terminal catch: the tail's one
+await is caught where it is called (probe E12).
+
+**Publish page, beyond the letter of the scope.** The refusal in `_writeDraft` sits ahead
+of the empty-form `removeItem` as well as the write, since every visit shares the one key.
+Pinned by `a flush of an emptied form on a landed instance leaves the shared key alone`
+(probed by moving the refusal below the removal: that spec alone goes red).
+`discardDraft()` still removes the entry on a landed instance. It is a user action on a
+mounted page and was left alone.
+
+### Criterion 9: the six specs that pinned the removed clears
+
+| Spec on main | Outcome |
+|---|---|
+| `the continuation post drops the draft when the cache invalidation rejects` | Rewritten, path still reachable: `a rejecting cache invalidation still ends in success, with the rejection logged and the navigate armed` (criterion 3, continuation arm) |
+| `a keystroke during the rejecting invalidation cannot resurrect the spent draft` | Rewritten, path still reachable: `a save armed during a rejecting invalidation fires into the write barrier` (2a, same-author) |
+| `the continuation post drops a draft re-armed during the rejecting invalidation` | Replaced: the per-arm catch clear is gone. Risk covered by `a file selection during the invalidation await writes nothing` (2b, continuation arm) |
+| `an unmount across a resolving invalidation drops the draft a fired save wrote back` | Rewritten, path still reachable: `a save armed and fired inside the invalidation await writes nothing` (2a). The fired save writes nothing, so there is nothing to drop |
+| `an unmount across a resolving invalidation drops the continuation draft a fired save wrote back` | Replaced by criterion 4: `a draft a later visit wrote during a resolving invalidation is still there when handleSubmit returns`. The new contract requires the opposite of the old spec |
+| `a catch entered unmounted after the debounce fired drops the rewritten draft by its captured key` | Replaced: nothing past the landing reaches the terminal catch. Covered by criterion 4's rejecting variant, and its captured-key half moved into both criterion 1 unmount specs |
+
+`a broadcast that fails before landing keeps the flushed draft` is now `a broadcast call
+that does not resolve keeps the flushed draft and leaves the instance drafting and
+submittable` (scope item 6 and criterion 6a), with a continuation twin.
+
+### Criterion 8: probes, one mutant per site
+
+Run by an agent that did not write the specs, one fresh scratchpad copy of `frontend/` per
+mutant, after two repair rounds on the specs. Baseline green. Every mutant was killed.
+"n" is the number of specs that went red; the named specs are the ones the criterion
+requires, or the most specific ones.
+
+Edit page (`pages-edit.test.js`):
+
+| Site | Mutant | n | Caught by |
+|---|---|---|---|
+| continuation arm's entry | call deleted | 9 | `an unmount during the continuation broadcast still drops the draft the landed post spent` and others |
+| same-author arm's entry | call deleted | 26 | `an unmount during the broadcast still drops the draft the landed edit spent` and others |
+| landing call in the tail | `_markLanded(draftKey)` deleted | 18 | both later-visit specs, both file-selection specs and others |
+| `_markLanded`: flag | line deleted | 8 | both file-selection specs, both save-armed specs, the second-submit specs |
+| `_markLanded`: debounce cancel | line deleted | 2 | `the landing cancels a save the debounce still has armed` and its continuation twin |
+| `_markLanded`: removal | line deleted | 18 | both unmount specs, both later-visit specs and others |
+| landing key | `this.draftKey` in place of the captured key | 2 | both unmount specs (criterion 1) |
+| barrier | refusal deleted from `_writeDraft` | 4 | 2a (both), 2b, 2c |
+| barrier | refusal moved to `_scheduleDraftSave` | 4 | 2b, 2c, and both 2a specs |
+| submit refusal | deleted | 4 | the four `a second submit on a landed instance ...` specs |
+| `:disabled` term | `\|\| _landed` removed | 1 | `the submit button is disabled by the landed flag` |
+| invalidation catch | bare await | 2 | criterion 3 spec, `a save armed during a rejecting invalidation fires into the write barrier` |
+| invalidation ahead of the guard | `_mounted` guard put back in front | 2 | both unmount specs (criterion 1) |
+| clear after the invalidation await | second `_markLanded(draftKey)` | 5 | the later-visit specs, resolving and rejecting (criterion 4) |
+| clear after the invalidation await | bare `removeItem(draftKey)` | 4 | the later-visit specs, resolving and rejecting, each arm |
+| barrier before the broadcast, continuation | `_landed = true` ahead of the await | 2 | continuation 6a and 6b specs |
+| barrier before the broadcast, same-author | `_landed = true` ahead of the await | 2 | same-author 6a and 6b specs |
+| redirect-pending branch, each arm | block deleted | 3 each | that arm's three redirect-pending specs |
+
+Publish page (`pages-publish.test.js`, describe `a landed broadcast ends the composer instance`):
+
+| Site | Mutant | n | Caught by |
+|---|---|---|---|
+| landing call | deleted | 7 | 7a, 7b, both 7c, 7d and others |
+| `_markLanded`: flag | line deleted | 5 | both 7c specs, the armed-after-landing spec, 7d |
+| `_markLanded`: debounce cancel | line deleted | 1 | 7b, on the `_draftTimer` handle |
+| `_markLanded`: removal | line deleted | 6 | 7a, 7b, both 7c and others |
+| barrier | refusal deleted from `_writeDraft` | 3 | both 7c specs, the armed-after-landing spec |
+| barrier | refusal moved to `_scheduleDraftSave` | 3 | `handlePdfChange` and `handleSupplementaryFiles` specs, each separately |
+| submit refusal | deleted | 1 | 7d |
+| `:disabled` term | `\|\| _landed` removed | 1 | `the submit button is disabled by the landed flag as its own term` |
+| barrier before the broadcast | `_landed = true` ahead of the await | 2 | both 7f specs |
+| landing ahead of the guard | `_markLanded()` moved behind the `_mounted` guard | 1 | 7a |
+| redirect-pending's own guard | deleted | 1 | 7e |
+| redirect-pending branch | block deleted | 3 | 7e, 7f and the remintable-401 spec |
+
+Vacuity (`_initialLoadDone`): every spec that asserts nothing is written after the landing
+runs on a fixture with the flag set and goes red under the barrier probe, with three
+stated exceptions where another refusal stands in front. On both pages the second-submit
+specs' storage clause is held by the submit refusal first. On the publish page 7b's
+trailing storage clause cannot be reached once the timer is cancelled. Those specs bite on
+the broadcast count, the `_writeDraft` spy and the `_draftTimer` handle.
+
+Two probe results a reviewer should know:
+
+- A removal reinstated after the invalidation await but **behind** the `_mounted` guard
+  turns no spec red. Criterion 4 stages the later write after `destroy()`, so it covers the
+  ahead-of-guard position, which is the shape on main. A mounted-only second removal can
+  only reach another tab's draft, which § 8 Limits already accepts.
+- All four edit barrier specs for 2a and 2c run on the same-author fixture, and 2b runs on
+  the continuation one. The barrier is the one shared `_writeDraft`.
+
+### Binding check (criteria 5 and 7d)
+
+Two layers. In the repo, a template assertion per page pins the exact `:disabled` string.
+In scratchpad copies, a throwaway spec sliced the submit button out of each shipped
+template and mounted it under real Alpine in jsdom (no browser): the button is live with
+`_landed` false, disabled once it is set, and keeps its idle label. Both passed. A repair
+agent had also added that real-Alpine spec to the edit unit file. `3c5ca950` removes it, so
+the unit file carries no second Alpine-mounting harness. Say so if you would rather have
+it in the suite.
+
+### Verification
+
+- `npx vitest run` in `frontend/` at `49e8fcea`: 88 files, 2017 tests, exit 0, no Errors line.
+  After `3c5ca950` the two page files re-run at 207 tests, exit 0.
+- `npm run build`: clean.
+- E2E not run. `edit-paper.spec.js` and `publish.spec.js` need the stack swapped into test
+  mode, which I did not do in the shared checkout.
+- A separate review agent per page checked the diff against the criteria and the comment
+  rules. It reported no blocker. Its should-fix and nit items on comment wording are
+  applied in `49e8fcea`.
