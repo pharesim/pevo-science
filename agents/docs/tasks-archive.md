@@ -1,250 +1,250 @@
-## Edit draft omits the ticked reviews, so a re-auth round-trip silently drops `addresses_reviews` (archived 2026-09-30)
+## Drive a light-account fresh-auth broadcast and upload end to end in the e2e suite (archived 2026-09-30)
 
-Architect archive note (2026-09-30, round 6): archived clean after six rounds. Re-reviewed
-`afa7192b` alone (an ancestor of `main`, two frontend files, prose only) with /ce-code-review:
-correctness, project-standards on root `CLAUDE.md`, and testing. No adversarial lens, since no
-executable line changed. No finding on the diff. All three round-5 items are FIXED.
+Architect archive note (2026-09-30, round 3): archived clean after three rounds. Re-reviewed
+`1ebbb379` alone (an ancestor of `main`, six files under `frontend/tests`, +51/-16,
+comment-dominant) with /ce-code-review at the pinned commit, since main had drifted past it:
+correctness, project-standards on root `CLAUDE.md`, testing, adversarial in-process (no
+different-model peer on this host) and learnings. No primary finding. All five items held
+on 2026-09-28 are FIXED, and no later commit on main changed a sentence `1ebbb379` wrote.
 
-- Item 1: the comment above the continuation arm's re-clear names each writer by its own
-  trigger (a watched change arms the debounce, the armed save can fire, a file selection
-  flushes through `_windowReady`) and does not claim `_windowReady` is the only flusher.
-- Item 2: the pre-landing spec header rests on the shared terminal catch and its
-  `if (landed)` guard, and claims nothing about either arm's marker placement. The
-  unprescribed "`_windowReady` flushed" attribution is accurate.
-- Item 3: the rejecting-invalidation spec header names the continuation arm and its exit.
+- Item 1: the fixture docblock carries the by-design accreditation rationale in one
+  sentence, matching ARCHITECTURE "Accredited-Only Data Policy" (the upload pre-flight
+  check is resource gating; signup already establishes qualification).
+- Item 2: the trace scan has its own `known fresh-auth test password` arm. Removing or
+  relabelling the arm fails exactly the new unit test; no alternation shadowing, and the
+  group-offset bookkeeping resolves the arm to its own label.
+- Item 3: all three wide reason lists are `['expired']`. `consumeFreshAuthTokenForSurface`
+  returns `expired` on any lookup miss before `validateStoredEntry`, the only `malformed`
+  source, can run; `missing` needs an absent token. A spent consent-op replay is `expired`
+  on every ordering traced (Redis up, Redis down, a flap at burn time, concurrent
+  presentation). Exactly four `reasons:` call sites exist; the fourth is the untouched
+  `kind_mismatch` pin. Status and code pins are unchanged.
+- Item 4: both fresh-auth specs state the real retry model. Playwright 1.59.1's dispatcher
+  stops a failed worker and runs the retry in a new one.
+- Item 5: the `lib-authorship-consent.test.js` clause-(c) paragraph attributes the
+  spent-replay and kind_mismatch controls to the backend surface and states that the
+  orchestrator's handling of a refused consent-op broadcast has no real-path companion.
 
-Verified independently: comment-stripped output of both files is byte-identical across the
-commit and no non-comment line changed. Tests not re-run by the architect on a comment-only
-diff; the implementer reported `pages-edit.test.js` 105 passed, the full frontend unit suite
-87 files / 1980 tests, exit 0, build clean.
+Verified independently: `global-teardown.test.js` 15 passed and
+`lib-authorship-consent.test.js` 37 passed, exit 0, in an isolated copy at the commit. The
+e2e claim (5 passed across both fresh-auth specs) was not re-run.
 
-Routed: the pre-existing "nothing landed" and "has put nothing on chain" wording (`landed`
-records that the broadcast call resolved, and a broadcast can reject with the transaction on
-chain) joins the reserved draft-lifecycle decision, now filed as
-`tasks/pending/architect-edit-draft-lifecycle-decision.md` together with every item the
-earlier rounds reserved (the write barrier, the try/catch around `invalidatePaperCache`, the
-post-error writer re-arm, the unmounted re-clear on a successor visit, `publish.js`).
+Dismissed at triage: (a) the scan arm, the unit-test input and the fixture's
+`TEST_PASSWORD` are three independent copies of the literal, so rotating the fixture
+constant would leave the arm stale with tests green (theoretical-only); (b) the consent-op
+replay comment's "removed the entry from both storage tiers" is exact for the
+Redis-available path the e2e runs, while under a Redis flap the spent-proof ledger refuses
+instead, still as `expired`; (c) `consent-op-fresh-auth.spec.js`'s own clause-(c) sentence
+calls itself the companion for "the orchestration" without the qualification the citing
+unit header now carries (not false; the clause-(c) duty sits on the mocked suite's header);
+(d) the same spec's bare "the broadcast handler performs no accreditation check" in its
+clause-(a) paragraph (true, reads as the scope of the stub, and was not held at round 2).
 
+Routed: the false retry-model comment surviving in six sibling e2e specs, and the
+`scanTracesForSecrets` docblock listing specs that do not type `E2eTestPass1`, are filed as
+`ui-e2e-retry-model-comment-sweep`.
+
+Left open for the user, not decided here: (1) whether to extend the trace scan to the six
+other typed password literals (every spec that types one sets `trace: 'off'`, so it would
+be a backstop only); (2) the comment test's known-defect pin in
+`non-consent-fresh-auth.spec.js` now reddens by design because backend `4cb4347b` admits
+`comment_options`; the ui flip to `expectPostGateStop` is a `[TODO Architect]` routing row
+on `backend-custody-allowlist-comment-options` and is to be routed at that task's review.
+
+No /ce-compound entry: once the sweep task lands, the specs themselves carry the correct
+retry model.
 
 **Owner:** ui
-**Created:** 2026-09-21
+**Created:** 2026-09-06
+
+Routed out of the architect round-4 review of `ui-consent-op-teardown-guard`. Filed to
+give the fresh-auth unit suites a clause-c real-path companion that actually exists: four
+of them currently cite one that does not cover what they claim, and a fifth surface (the
+authorship consent-op e2e spec) discharges clause (c) by pointing at this task.
 
 ## Why
 
-On the edit page a passwordless (ORCID-only) light account acquires its re-auth
-window by full-page navigation. The entry gate is allowed to navigate while no new
-file is held, on the premise that everything else on the form is drafted. One field
-is not: `addressedReviews`. `_scheduleDraftSave` in `frontend/src/pages/edit.js`
-writes title, abstract, body, keywords, the author fields, `newCoAuthors` and
-`citations`; the review ticks are in neither the saved object nor the restore path,
-and no `$watch` schedules a save when a tick changes.
+Root `CLAUDE.md`'s "Carve-out for deterministic edge-case coverage" permits mocking only
+when, among other things, clause (c) holds: the same risk class is covered by a real-path
+test elsewhere, OR a follow-up task is filed to add such coverage. Four unit suites
+discharge that clause by citing `frontend/tests/e2e/non-consent-fresh-auth.spec.js`:
 
-The sequence: tick the reviews this revision addresses, attach nothing, click
-Submit. Ticks alone count as a change, so the no-changes check passes and the
-permissive entry gate navigates to ORCID. The user returns to a restored form whose
-ticks are gone and nothing says so. The resubmit then broadcasts the edit without
-`addresses_reviews`.
+- `lib-ipfs-upload.test.js` — "exercises upload + broadcast against the real backend"
+- `fresh-auth-401-retry.test.js` — "exercises broadcastWithFreshAuth against the real
+  backend for the happy path and the window-reuse path"
+- `lib-fresh-auth-session-window.test.js` — "exercises acquisition + broadcast against the
+  real backend"
+- `lib-fresh-auth-outcome-dispatch.test.js` — "exercises acquisition against the real
+  backend"
 
-This is worse than the other undrafted-state gaps on the same surface because it
-changes what goes on chain, not only what the user has to retype. The edit lands
-looking as if it addressed no review, and review invalidation downstream reads that
-field.
+That spec contains exactly one test. It route-stubs `/api/orcid/callback` and asserts the
+`session_auth` handler caches the issued window in sessionStorage. It drives no broadcast
+and no upload. Its own closing note records the second test — a real vote through the
+paper-detail page — as prototyped and removed, because the production bundle does not
+expose `lib/fresh-auth.js` for dynamic import and the paper-detail mount needs more
+fixture surface (full enrichment shape, paper-card data, accreditation polling stubs) than
+a wire-contract assertion was judged to be worth. That note closes by naming the follow-up
+this task is: drive the comment-composer path with full fixture data.
 
-Surfaced at the round-6 review of the light-account re-auth window work and
-confirmed against the code by two reviewers. Pre-existing: the draft never carried
-the field, and the navigating gate has been reachable since the ORCID factor was
-wired into the submit sequence.
+So the acquisition half of those citations is defensible and the broadcast and upload
+halves are not. The risk classes left with no real-path companion are the ones the mocked
+suites exist to cover: a window proof actually reaching `/api/custody/broadcast`, and a
+window rejected between the IPFS pre-flight and the transfer.
+
+There is no mechanical backstop. `backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`
+resolves citations under `backend/tests/` only, so a frontend suite can cite a spec that
+does not cover it indefinitely without any check failing.
 
 ## Scope
 
-Carry `addressedReviews` in the edit draft: save it, restore it, and schedule a
-save when it changes.
+1. Add e2e coverage that drives a light account through a fresh-auth broadcast with a
+   proof attached, against the real backend. The comment-composer path is the shape the
+   removed prototype's note recommends: it needs less fixture surface than paper-detail,
+   and a comment is a real `custody/broadcast` with a session-window proof.
+2. Add e2e coverage for the upload leg on the light-account path, where a window proof IS
+   involved (`publish.spec.js` drives the upload endpoint only on self-custody, where none
+   is). The window-rejected-mid-flight retry does not need to be reproduced; exercising the
+   integrated path with real infrastructure is what clause (c) asks for, not mirroring the
+   mocked assertion.
+3. Add e2e coverage for the light-account **consent-op** leg: one authorship consent
+   action (`author_accept` or `author_resign`) broadcast with a target-bound consent-op
+   proof attached, against the real backend. This is a distinct mechanism from legs 1
+   and 2, not a variant of them: the consent-op proof is minted by
+   `mintAuthorshipFreshAuthProof` at `POST /custody/fresh-auth` and cached under
+   `CONSENT_OP_PROOF_KEY`, while the session window is minted by `mintSessionAuthProof`
+   at `POST /custody/session-auth` and cached under `SESSION_PROOF_KEY`. Per
+   `ARCHITECTURE.md` 6.4.1 a session-window proof is rejected on the consent-op surface
+   with `kind_mismatch`, so legs 1 and 2 cannot cover this risk class however thoroughly
+   they are built. `frontend/tests/e2e/authorship-consent-actions.spec.js` is the header
+   that depends on this leg.
+4. Point the five headers at whatever this task actually lands, and drop the claims it
+   does not support. Coordinate with the header corrections landed on
+   `ui-consent-op-teardown-guard`, which discharges clause (c) through this task in the
+   interim. While in `lib-fresh-auth-session-window.test.js`, correct its two stale
+   "one case ... reaches the real upload module" statements: two `it()` blocks drive the
+   real upload module, not one.
 
-On restore, reconcile against the reviews actually present on the paper: a saved
-tick whose review no longer exists, or is no longer addressable, is dropped rather
-than resurrected. Restore only after the paper's reviews have loaded, so the
-reconciliation has something to check against.
-
-Alternative considered and not preferred: adding the ticks to the
-`holdsAttachedFiles` predicate so the gate refuses instead of navigating. That
-treats a cheaply draftable field as if it were a file, and it would put a
-passwordless account in front of a re-authenticate confirm for state the draft can
-simply keep. Draft it.
-
-Out of scope: the two-second draft debounce (handled with the re-auth window
-task's held item on flushing before a navigating acquisition), and the review page,
-comment composer and vouch surfaces, which have no draft at all.
+If either leg proves impractical for the same reason the earlier prototype was removed,
+record that finding in this file and say plainly in the headers that no real-path
+companion exists for that risk class. A stated gap is honest; a false citation is not.
 
 ## Acceptance criteria
 
-1. A passwordless account that ticks reviews, attaches nothing, submits, and
-   returns from the ORCID round-trip finds the same reviews ticked.
-2. The resubmitted edit carries `addresses_reviews` with those reviews.
-3. A saved tick for a review that is gone or no longer addressable at restore time
-   is dropped, and the restored set contains only valid entries.
-4. Discarding the draft clears the saved ticks with the rest of it.
-5. Unit coverage in `pages-edit.test.js`: save includes the ticks, a tick change
-   schedules a save, restore reinstates them, restore drops a stale one. Each
-   assertion is probed by reverting its own site.
+1. At least one e2e spec drives a light-account operation that attaches a session-window
+   fresh-auth proof to a real backend request, and asserts the request carried it.
+2. At least one e2e spec drives the light-account upload leg against the real upload
+   endpoint with a window proof.
+3. At least one e2e spec drives a light-account consent-op broadcast that attaches a
+   target-bound consent-op proof to a real backend request, and asserts the request
+   carried it. A session-window proof does not satisfy this criterion.
+4. The clause-c paragraph in each of the four unit suites named above, and in
+   `frontend/tests/e2e/authorship-consent-actions.spec.js`, resolves to a spec that
+   genuinely exercises the risk class that suite mocks, or states the gap explicitly.
+5. No suite's clause-c paragraph names a spec that does not cover it, and no suite
+   discharges clause (c) by citing a filed follow-up whose planned proof kind cannot
+   apply to that suite's surface.
+6. `lib-fresh-auth-session-window.test.js` no longer states that one case reaches the
+   real upload module.
 
-## UI implementation signal (2026-09-22, commits 1b6af088 and 2d505c2f)
+## Notes
 
-Both SHAs self-verified as ancestors of `main` (`git merge-base --is-ancestor`).
-No worktree fan-out; single-session inline work.
+Clause (c) does not require the companion to assert what the mocked test asserts. Root
+`CLAUDE.md` is explicit: the companion "does NOT need to assert the same thing as the
+mocked test, only to exercise the integrated path with real infrastructure so a different
+mutation class is caught." A thin but genuine end-to-end path satisfies it; a thorough
+mocked one does not.
 
-`1b6af088` carries the change, `2d505c2f` the simplify pass on it.
+Worth considering while in here, but not required by this task: whether the backend
+citation canary should grow a frontend counterpart. Nothing currently prevents a frontend
+suite from citing a spec that does not exist at all.
 
-What landed in `frontend/src/pages/edit.js`:
+## UI implementation signal (2026-09-14, commits 58ad7918 and 306d84f4)
 
-- `_scheduleDraftSave` writes `addressedReviews` into the draft object.
-- `_setupReactiveBindings` registers `$watch('addressedReviews', ...)`, so a tick
-  schedules that save like every other drafted field.
-- `_restoreDraft` reads it back through a new `_reconcileAddressedReviews`, which
-  intersects the saved set with `this.reviews` by iterating the reviews rather
-  than the saved array. A tick whose review is gone finds no match and is
-  dropped; each survivor is rebuilt as `{author, permlink}`, which also collapses
-  a duplicate out of a hand-edited or legacy draft and orders the result like the
-  rendered checklist. `loadPaperData` assigns `reviews` from the enrichment
-  response before it calls `_restoreDraft`, so the intersection already had the
-  paper's reviews in hand and no reordering was needed.
-- The checklist checkbox gained `:checked="isReviewAddressed(rev.author, rev.permlink)"`
-  and the component gained that predicate. The input only listened for `@change`
-  before, so without this a restored set would sit in component state while every
-  box rendered clear. `:checked` + `@change` mirrors the citation-relevance
-  checkbox in the same template; `x-model` is unavailable because the entries are
-  `{author, permlink}` pairs, not strings.
-- `toggleAddressedReview` is unchanged. With `:checked` bound, a `change` event
-  cannot fire twice in the same direction, so no dedupe guard was added.
+Both commits verified as ancestors of `main` with `git merge-base --is-ancestor`.
 
-Acceptance criteria:
+**What landed.**
 
-1. Covered by the restore path plus the `:checked` binding. Pinned by `restore
-   reinstates a tick whose review is still on the paper` and `the checklist
-   checkbox reflects the restored set`.
-2. Pinned end to end by `the resubmit after a restore broadcasts
-   addresses_reviews with the restored ticks`, which drives the real
-   `loadPaperData` then the real `handleSubmit` and reads the broadcast
-   `json_metadata`.
-3. Pinned by `restore drops a saved tick whose review is no longer offered`.
-4. The ticks live inside the one draft object, so every existing
-   `removeItem(this.draftKey)` site takes them along. Pinned non-vacuously by
-   `the post-success draft clear takes the ticks with it`, which asserts the
-   restored tick was present before the submit.
-5. Six probes below; the four the criterion names each die to their own site.
+- `frontend/tests/e2e/non-consent-fresh-auth.spec.js` (rewritten): the existing ORCID
+  callback test, plus three light-account tests against the real test-mode backend. A vote
+  from paper-detail: real `POST /custody/session-auth` mint through the reauth modal, real
+  `POST /custody/broadcast` carrying the window past the fresh-auth gate to the seeded
+  account's posting-key stop, a tampered-proof control refused at the gate, and a replay
+  accepted again (multi-use). A comment from the composer: same acquisition, request
+  asserted unmasked, response pinned as today's pre-gate refusal (defect below). A publish
+  with a PDF: window acquired at file selection, real `POST /ipfs/upload-token` consumes it
+  (with a tampered-proof control), real `POST /ipfs/upload` returns a CID, and the broadcast
+  request carries the same window and that CID.
+- `frontend/tests/e2e/consent-op-fresh-auth.spec.js` (new): `author_accept` from the accept
+  affordance, target-bound proof minted at the real `POST /custody/fresh-auth`, consumed at
+  the real `POST /custody/broadcast` past the gated-op scan to the posting-key stop; the
+  replay is refused as spent (401 expired) and a freshly minted session-kind proof is
+  refused with 403 `kind_mismatch`.
+- `frontend/tests/e2e/fixtures/light-account.js` (new): seeded light row (argon2 password
+  hash, no posting key), reauth-modal and confirm-dialog drivers, post-gate-stop and
+  gate-refusal assertions, `postTo`. `fixtures/paper-mocks.js` gains `buildPaper`,
+  `installAuthedBootMocks`, and a `comments` stub option; `authorship-consent-actions.spec.js`
+  imports them instead of local copies.
+- Headers corrected to what the specs genuinely drive: the four suites this task names,
+  `authorship-consent-actions.spec.js`, and three siblings that made the same now-false claim
+  (`lib-authorship-consent.test.js`, `lib-fresh-auth-consent-op-eviction.test.js`,
+  `lib-fresh-auth-teardown.test.js`).
 
-Verification:
+**Why each leg stops where it does.** The seeded rows carry no encrypted posting key, so the
+custody handler consumes the proof, reads the row, and refuses at the posting-key decrypt
+(500 INTERNAL_ERROR, "Posting key not available"), the first refusal a fully seeded row can
+reach past the gate. Nothing is signed and no Hive node is reached. The upload pre-flight
+gates on HAF accreditation after the consume, so the publish test seeds its light row under a
+HAF-accredited username (removed again in afterAll) and skips itself when HAF lists none.
 
-- `pages-edit.test.js`: 81 passed (74 before). Full frontend unit suite in an
-  isolated two-level copy: 86 files / 1918 tests passed. `npm run build` clean.
-  Both run outside the checkout; `git status` confirmed unchanged afterwards.
-- Mutation probes, one scratchpad copy per mutant off the committed tree:
+**Test runs (test-mode stack, 2026-09-14).** `non-consent-fresh-auth.spec.js` (4 tests),
+`consent-op-fresh-auth.spec.js` (1), `authorship-consent-actions.spec.js` (4): 9 passed,
+0 skipped (HAF listed an accredited researcher, so the publish leg ran and pinned a real
+CID). Touched unit suites: 188 tests passed at 58ad7918; the four re-amended at 306d84f4
+passed again (121 tests).
 
-  | reverted site | tests that die |
-  |---|---|
-  | the save site in `_scheduleDraftSave` | the debounced-save spec, plus the tick-change spec |
-  | `$watch('addressedReviews', ...)` | the tick-change spec, plus the watcher-enumeration spec |
-  | the restore line in `_restoreDraft` | restore, drop-stale, resubmit, post-success-clear |
-  | the `reviews` intersection in `_reconcileAddressedReviews` | drop-stale only |
-  | the `:checked` binding | the checkbox spec |
-  | the `isReviewAddressed` body | the checkbox spec |
+**Acceptance criteria.**
 
-  Re-run after the simplify pass against `2d505c2f`; all six still kill.
-- Real Alpine 3.15.11 mounted over the checklist block sliced out of the shipped
-  `editPageTemplate` (throwaway spec in a scratchpad copy, not committed): a
-  restored tick renders checked while its siblings do not, ticking a further
-  review round-trips into the model and stays checked, and unticking the restored
-  one clears both model and DOM. Alpine routes `checked` through
-  `bindAttributeAndProperty`, and a programmatic property write dispatches no
-  `change`, so the binding cannot re-enter the handler.
-- `frontend/tests/e2e/edit-paper.spec.js` run under the documented test-mode
-  dance (build, `restart`, `test-db-up`, `test-up`, run, `up`; dev routing at
-  `pevo_app` confirmed restored afterwards). 7 of its specs fail, all with the
-  same `strict mode violation: locator('form button[type="submit"]') resolved to
-  2 elements`, the second element being the app-shell reauth modal's Confirm
-  button in `frontend/index.html`. This is the dominant pre-existing E2E failure
-  class, not a regression: neither commit adds any `type="submit"` markup
-  (`git diff | grep -c` returns 0) nor touches the modal or its store. In the
-  review-addressing spec specifically, `reviewCheckboxes.first().check()` passes
-  against the new binding and the failure is on the following submit-click line,
-  so the run is positive evidence for the `:checked` change in real Chromium.
-  A pre-change baseline re-run was not performed.
-- No new i18n keys, so no `STUBS.md` entry.
+1. Met by the vote test: a session-window proof on a real custody broadcast, the request
+   asserted to carry it, the gate passed.
+2. Met by the publish test: the window proof on the real upload-token pre-flight, then the
+   real upload and its CID.
+3. Met by the consent-op test: a target-bound proof on a real custody broadcast, the request
+   asserted to carry it; the `kind_mismatch` control shows a session-window proof cannot
+   satisfy it.
+4. and 5. Met: every clause-(c) paragraph in the five named headers resolves to a spec that
+   drives the risk class or states the gap, and the three sibling headers likewise. A grep of
+   `frontend/tests` for "follow-up is filed", "prototyped and removed", and "none exists"
+   finds no remaining stale citation of these specs.
+6. Already satisfied before this task: the two "one case ... reaches the real upload module"
+   sentences left `lib-fresh-auth-session-window.test.js` at 1c03368c, when the teardown
+   cases were split into `lib-fresh-auth-teardown.test.js`, whose header says two cases
+   drive the real upload module. Verified no such sentence remains.
 
-Notes for review, none of them changes in this diff:
+Not done, optional per the Notes: a frontend counterpart of the backend citation canary.
 
-- Enrichment-failure interaction. `loadPaperData` uses `Promise.allSettled`, so a
-  rejected enrichment leaves `reviews` empty while the paper still loads. The
-  checklist is then not rendered at all and the reconciliation drops every saved
-  tick, and the restore-triggered watcher re-saves the pruned set. Implemented
-  this way deliberately: the alternative keeps ticks the user cannot see or clear
-  and broadcasts them, which is the same class of defect this task is about. The
-  cheap-looking guard (reconcile only when `reviews` is non-empty) is wrong
-  because it resurrects stale ticks on a paper whose reviews are all genuinely
-  gone, which criterion 3 forbids.
-- `newCoAuthors` is the same shape of gap, still open. `_scheduleDraftSave`
-  persists it but `_setupReactiveBindings` registers no watcher for it, so a new
-  co-author row reaches the draft only when some other watched field changes
-  afterwards. The publish page watches its `coAuthors` equivalent. One line to
-  fix; left alone as outside this task's stated scope. `discipline` is not a gap:
-  the edit page renders it disabled and `_prefillForm` re-derives it.
-- Three simplify findings were surfaced and dismissed by the user, recorded in
-  `2d505c2f`'s message: a module-local `{author, permlink}` compare (five more
-  inline copies live in this file, `publish.js` and `paper-detail.js`, so a
-  helper at three of eight sites trades duplication for inconsistency), the
-  vestigial `:value` on the checklist checkbox (pre-existing, read by nothing,
-  and the E2E locates by `data-testid`), and collapsing the first two new specs.
+**Surfaced defect (needs triage; backend zone).** `backend/src/routes/custody.ts` admits only
+`comment`, `vote`, and `custom_json` on the custody broadcast, while every new post the SPA
+builds (comment composer, publish page, review page, edit-page continuation post) bundles a
+`comment_options` op for the rewards policy. The handler refuses the bundle with 403
+FORBIDDEN, "Operation 'comment_options' is not allowed for custodial accounts", BEFORE the
+fresh-auth gate. Both sides date from the initial light-accounts commit (92c2e6b6), so a
+light account's comment, review, and publish have never worked through custody; votes and
+the edit page's same-author native edit (a lone comment op) are unaffected. Reproduced
+outside Playwright with a minted JWT: comment plus comment_options is refused in 4 ms with
+no gate log line, while comment-only and vote-only bundles reach the gate. The comment test
+pins the refusal as a positive assertion under a `known-defect` annotation; once the
+allowlist admits the op (author and permlink bound to the bundled comment and the JWT
+subject, plus a decision on server-side `percent_hbd` enforcement), that pin reddens and is
+replaced by `expectPostGateStop`. No backend task was filed from this session (ui zone);
+the architect should file one.
 
-## Architect re-review (2026-09-22) — HELD PENDING FIXES:
+**Overlap with sibling ui tasks (a note appended to each).**
 
-`/ce-code-review` on `1b6af088` + `2d505c2f` (six lenses; standards clean; two
-validated P2s and one advisory). The core change is sound: the reconciler
-cannot emit a tick the checklist does not render, the restore ordering holds,
-`:checked` is the right Alpine shape, and all five criteria are pinned on the
-fulfilled-enrichment path. Three items, all in the same file, then move back to
-`review/`.
+- `ui-non-consent-spec-header-overclaims`: Scope 1 (opening paragraph), Scope 2 (ORCID
+  companion sentence), and Scope 4 (the six citing suites) are overtaken by the rewritten
+  docblock; Scope 3 took the disclosure option (orcid-link's real-path test is named as
+  environment-gated by its conditional skip); the skip-removal decision stays with that task.
+- `ui-positional-anchor-sweep-frontend`: item 1 ("is covered by the test above") no longer
+  exists; the closing note it lived in was replaced.
 
-1. **Rejected enrichment on the return load prunes every saved tick and the
-   restore-triggered re-save makes the loss permanent** (`edit.js`, the
-   `_restoreDraft` reconcile assignment). `loadPaperData` settles with
-   `Promise.allSettled`; on a rejected enrichment `reviews` stays `[]` and
-   execution still falls through to `_restoreDraft`, so the intersection yields
-   `[]`, the `$watch` microtask fires after `_initialLoadDone = true`, and two
-   seconds later the draft is rewritten without the ticks. The checklist card is
-   `x-if="reviews.length > 0"`, so the returning user sees a form with no
-   checklist and resubmits without `addresses_reviews`: the defect this task
-   exists to close, on a transient 503 at the one moment the enrichment cache
-   has usually expired. This task's Scope says restore only after the paper's
-   reviews have loaded; on this branch they never loaded. The signal block's
-   objection to a `reviews.length` guard (it would resurrect stale ticks on a
-   paper whose reviews are genuinely gone) does not apply to a status guard: a
-   paper with no reviews is a fulfilled response with an empty list, which the
-   intersection still prunes correctly.
-   **Fix:** in `loadPaperData`, treat `enrichmentRes.status === 'rejected'`
-   the way the paper rejection is treated: set `loadError` and return before
-   `_prefillForm()` / `_restoreDraft()`. The existing Retry card is the user's
-   way through, and the draft is neither pruned nor rewritten because
-   `_initialLoadDone` stays false. Add a spec that seeds a draft with ticks,
-   `fetchPaperEnrichment.mockRejectedValue(...)`, runs `loadPaperData`, asserts
-   `loadError` is set and `addressedReviews` is still `[]`, then advances fake
-   timers past the debounce and asserts the stored draft still carries the
-   ticks. Update the reconciler's docblock sentence that says `loadPaperData`
-   assigns `reviews` before it calls `_restoreDraft` so it also states that a
-   rejected enrichment never reaches the restore.
-
-2. **A pending draft-save timer survives the post-success draft clear**
-   (`edit.js`, both `handleSubmit` success branches, the continuation post and
-   the native edit). Each calls `localStorage.removeItem(this.draftKey)` but
-   neither cancels `_draftTimer`; only `destroy()` and `_scheduleDraftSave`'s
-   own reschedule touch it. A save armed by the last watched change fires after
-   the clear when the broadcast plus cache invalidation completes inside the
-   debounce and before the 1.5 s `navigate()` teardown, and the next edit visit
-   restores that draft over the freshly fetched paper. The mechanism predates
-   this diff for every text field; this diff wired the task's own gesture (tick,
-   then submit) into the same timer, and the resurrected ticks alone pass the
-   no-changes check, so a second submit re-declares `addresses_reviews` on an
-   otherwise no-op revision.
-   **Fix:** beside each of the two `removeItem(this.draftKey)` success sites,
-   `if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }`,
-   mirroring `destroy()`. Add a fake-timer spec: arm the debounce (a tick, or
-   `_scheduleDraftSave()` directly with `_initialLoadDone` set), run
-   `handleSubmit` to `step === 'success'`, advance past two seconds, and assert
+**Review.** An ultracode workflow ran three simplification personas and six review lenses
