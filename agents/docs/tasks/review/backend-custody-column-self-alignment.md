@@ -1157,3 +1157,73 @@ Architect-side, carried forward:
   `api-contracts/auth.md` `/link` stuck-recovery branch still carry to
   archive, unchanged from the round-4 block. They were not discharged this
   round because the task did not archive.
+
+## Backend re-review signal (2026-09-30, `cca00888`)
+
+Round-5 hold items 1-2 landed. Nothing inside the hold block was edited.
+Mutations ran in a scratchpad copy of `backend/` with `tests/setup.ts`
+stubbed; the checkout was never mutated. A three-lens read-only refuter pass
+ran over the diff before the commit; what it changed is called out under
+item 1.
+
+**1. The state-C sentence.** The `handleLogin` comment no longer says the
+passwordless shape is defended at `/upgrade`. It now says the shape is not
+defended in `handleLogin`, that on the custody routes it is
+`POST /api/custody/fresh-auth` and `POST /api/custody/session-auth` that
+branch on it, each refusing a row with no `password_hash`, and that
+`POST /api/custody/upgrade` never reads that column. Verified against the
+code: both refusals are `if (!account.password_hash)` followed by a 401; both
+routes mount under `/api/custody`; the `/upgrade` handler's only `accounts`
+read is `SELECT upgraded_at`; `handleLogin`'s SELECT reads `username, custody,
+upgraded_at`. The surrounding clauses are byte-identical.
+
+One deviation from the hold's wording, from the refuter pass. The first
+draft copied the hold's "the routes that actually branch on the passwordless
+shape are `/fresh-auth` and `/session-auth`" as a bare universal. It is true
+of `routes/custody.ts` and false of the tree: `POST /api/auth/login` refuses
+a null `password_hash` (`NO_PASSWORD_SET`), `POST /api/settings/set-password`
+refuses a non-null one, and the `POST` / `DELETE /api/settings/email`
+handlers derive `hasPassword` from it to refuse a wrong-mechanism proof. The
+shipped sentence is scoped to the custody routes, where the two named are
+the only ones that read the column.
+
+**2. `STATEMENT_JOIN_CAP` pinned.** A joined-count pair sits beside the
+split-derivation pair in the wrapped-derivation `it()`, through the same
+`reader` / `offenders` path, with literals: the epoch read on the opening
+line and the yielding branch as the fourth joined line is caught, as the
+fifth it is missed. Only the opening line carries `upgraded_at`, so the
+verdict turns on how many lines `statementFrom` joins from there. The
+synthetic `router.get(... => {` line also opens a statement (it is not a
+block opener), but at cap 4 it reaches the branch in neither probe.
+
+Mutations on the file in the copy, baseline 8/8 green:
+
+- cap 1, 2, 3: the fourth-joined-line assertion reds, nothing else.
+- cap 5, 8, 40: the fifth-joined-line assertion reds, nothing else.
+- `&& taken < STATEMENT_JOIN_CAP` deleted from the loop: the fifth-joined-line
+  assertion reds, so the miss comes from the join cap and not from the scan
+  cap or the pattern.
+- `EPOCH_TERNARY_RE` mangled: the same `it()` reds, so the pair cannot pass on
+  a dead pattern.
+
+Caveat on "nothing else": vitest stops at the first failing assertion in a
+test, so assertions after the failing one inside that `it()` were not
+evaluated under each mutation. The whole-tree scan, a separate test, stayed
+green at every value.
+
+The pair pins the VALUE, as ordered, not that the constant is read: inlining
+`taken < 4` and moving the constant stays green. No added sentence claims
+otherwise.
+
+The docblock states both sides. What the cap buys was executed rather than
+asserted: a multi-line `sendOk(res, { upgraded_at: ..., <four members>,
+badge: x ? 'self' : 'none' })` is clean at cap 4, reported from one line at
+cap 5, and from three at cap 40. What it costs is the missed probe itself.
+
+### Verification
+
+`npm run typecheck` (both projects) and `npm run lint` clean; the one lint
+warning is the pre-existing unused-disable in `lib/author-supersession.ts`.
+`tests/eslint/` = 9 files / 141 tests green, exit 0, `--retry=0`, run in the
+scratchpad copy. `.githooks/pre-commit` passed on the commit. No behaviour
+changed in `src` (one comment in `orcid.ts`), so no route suite was re-run.
