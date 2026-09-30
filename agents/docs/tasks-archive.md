@@ -1,250 +1,250 @@
-## The assembled-write scan reads one head where the shared set names two (archived 2026-09-30)
+## Light-account re-auth window: adopt the password factor and stop redirecting mid-submit (archived 2026-09-30)
 
-Architect archive note (2026-09-30, round 6): archived clean after six rounds. Re-reviewed
-`f9a839a8` alone (an ancestor of `main`, 11 added and 9 removed comment lines) with
-/ce-code-review: correctness, project-standards on root `CLAUDE.md`, adversarial in-process
-(the reviewed tree was not the checkout, and this host has no different-model peer) and
-learnings. No actionable finding. Both round-5 items are FIXED.
+Architect archive note (2026-09-30, round 8): archived clean after eight rounds. Re-reviewed
+`92141abf` alone (an ancestor of `main`, six frontend files) with /ce-code-review at the
+pinned commit, since main had drifted past it: correctness, project-standards on root
+`CLAUDE.md`, testing, adversarial in-process (no different-model peer on this host),
+frontend races and learnings. No primary finding. All five round-7 items are FIXED.
 
-- Item 1: header item 4 and the `assembledWrites` docblock state the bucketing consequent
-  with the defined verb and defer what reaching asks of a read, by name, to the
-  dynamic-SQL entry under KNOWN LIMITS. "runs on to the assignment" occurs nowhere in the
-  file. The hold's plant reds `every updated_at assignment resolves to the table it writes`
-  (1 failed | 29 passed, exit 1) and its closed-value control is 30/30, re-measured by the
-  architect. Item 2: `UNRESOLVED_TABLE` carries the two-disjunct form, one disjunct per
-  `targetTable` return site; the no-head, closed-nearest-head and near/far plants each red
-  the fail-closed arm and the near/far control is 30/30.
-- Three parties planted independently (correctness 12, adversarial 21, the architect 9) and
-  found no layout where a rewritten sentence plus the deferred definition predicts one
-  outcome and the canary does another. The entry holds one definition of reach and it maps
-  term for term onto `targetTable`'s `reaches` expression.
-- Architect intake from a `git archive f9a839a8` copy: canary 30/30, all nine `tests/eslint`
-  files 140/140 with exit 0 and no `Errors` line, `npm run typecheck` and `npx eslint` on
-  the file exit 0. Prose only, verified mechanically: the non-JSDoc parser-leaf streams at
-  base and head are identical (23141 leaves, zero parse diagnostics, a mutation control
-  that differs). The anchor gate is zero-hit over the 11 added lines with a firing control.
-  Project standards is clean.
-- Routed, by user triage, to `backend-head-line-read-silences-fail-closed-backstop`
-  (commit `f3e8048a`, which also merges `backend-opened-above-head-lends-its-table` into
-  it): the one P3 advisory of this round (the reach definition says "did not give up" and
-  never links `SqlStatement.stopped`; correctness and adversarial, independently); the
-  pre-existing header scan 2 sentence that promises the fail-closed red bar as a universal
-  (silent under an opened-above preceding head: plant 30/30, control reds, reproduced by
-  the architect); the two sentences that state the refusal in terminator terms; the
-  no-terminator member of the opened-above layout; and the round-6 `[TODO Architect]` on
-  the quoted-identifier bullet (reproduced: red where the sentence predicts silence,
-  control 30/30).
-- Dismissed by the user in triage, recorded so they are not re-raised: the
-  `SqlStatement.stopped` docblock's "runs on past everything below it, so it does reach a
-  write there" (a write past `LITERAL_CAP` is not reached; loud direction, statements over
-  40 lines only, the same class as the round-5 `targetTable` dismissal); the unpinned
-  `reach.closedAt === -1 ||` disjunct (deleting it leaves the suite 30/30; a regression
-  there errs loud, and the no-new-fixture decision stands). Not held, nothing false: the
-  `assembledWrites` lead-in "whether its read spans the ASSIGNMENT", the two bare pronouns
-  in "where it does reach it", the numeral in "the three buckets", and the deferral name
-  resolving by convention.
-- Learnings: no new entry. The recurrence goes into
-  `conventions/a-readers-bound-restated-at-n-sites-reads-as-sufficient-at-each.md` and the
-  stale `targetTable` summary in the comment-normalization entry is corrected, both via
-  /ce-compound-refresh in the same pass, as the round-3 to round-5 notes planned.
-- Sibling commit `078550bc` landed on the file during the review; its hunks touch none of
-  the reviewed sentences. Line numbers in the rounds below are as of each round's commit.
+- Item 1: the publish `_writeDraft` load guard is pinned; deleting it fails exactly the new
+  `draft flush load guard` spec.
+- Item 2: the ordering describe's comment separates the asking gates (entry and
+  file-selection, through the confirm dialog) from the pre-broadcast refusal with the toast.
+- Item 3: `_confirmNavigationCost` on both pages returns false once `_mounted` is false;
+  dropping the check fails exactly that page's unmount spec.
+- Item 4: both pages flush again on an honoured yes; removing the flush fails exactly that
+  page's typed-while-asked spec.
+- Item 5: `ensureSessionWindow`'s custody check and `broadcastConfirm.request`'s non-light
+  auto-resolve name each other by symbol. The custody-change race between the two checks
+  was traced and the no-unasked-navigation invariant holds.
 
+Verified independently: all six implementer mutants reproduced, each killed by exactly its
+named spec; the two page suites 184/184; the full frontend unit suite in an isolated copy
+at the commit 86 files, 1955 passed, exit 0; build exit 0. E2E and live-chain not run.
 
-**Owner:** backend
-**Created:** 2026-09-16
+Dismissed at triage: (a) nothing pins the unmount check preceding the second flush in
+`_confirmNavigationCost` (a flush-first mutant survives; the committed order is correct,
+theoretical-regression coverage only); (b) text typed, or an in-app navigation made,
+between an honoured yes and the redirect, one `startOrcid` request long. Routed: a
+same-instance edit-to-edit history jump re-points `draftKey` while the page stays mounted,
+so the confirm's flush can write under the other paper's key (a pre-existing class shared
+with the debounced save and the gate flush); recorded as an architect note on the blocked
+composer-surfaces task. No /ce-compound: the round surfaced no learning the store lacks.
 
-Routed out of the round-2 architect review of the ALTER `IF EXISTS` pin. Pre-existing
-and untouched by that round, and a file-wide decision rather than an ALTER-arm one, so
-it is filed here rather than held there.
+**Owner:** ui
+**Created:** 2026-08-25
+
+**[UNBLOCKED by Backend, 2026-08-25]** The backend side has landed on `main`. What is now available:
+
+- A session-kind proof is **multi-use inside a bounded window**. Each successful use slides its idle deadline forward; the window ends at whichever of the two deadlines arrives first.
+- Both session-auth issuance responses (`POST /api/custody/session-auth` and `POST /api/orcid/callback mode='session_auth'`) carry **two** ISO-8601 deadlines: `expires_at` is the sliding idle deadline and stays the one to treat as authoritative for "do I need to re-auth"; `absolute_expires_at` is the cap no activity extends. Cache both, and treat either being reached as closed.
+- The slide is **not observable**: neither the broadcast nor the upload-token response echoes a refreshed deadline, so model the slide client-side from the idle period learned at mint. A window that closed reports 401 `FRESH_AUTH_REQUIRED` with `details.reason: 'expired'` regardless of which deadline was hit.
+- `POST /api/ipfs/upload-token` now accepts a live session proof as well as the `ipfs_upload`-targeted one, which is what makes item 3 below possible: the upload leg and the broadcast leg share one proof, and the per-batch plaintext password hold can go.
+- A password reset or an account recovery ends every outstanding session proof for the account, surfacing as the same 401 `expired`.
+
+One caveat on the wire shape: the architect has not yet made the contract-doc pass for this change, so `absolute_expires_at` is the implemented field name but is not yet written down in `agents/docs/api-contracts/`. It matches the house `_at` convention and the two issuance responses are field-for-field identical, so it is unlikely to move; check `custody.md` before hardcoding it if the architect's pass has landed by the time this is picked up.
 
 ## Why
 
-`READ_FROM_HEADS` exists to be the single enumeration of every head a statement is read
-FROM, and it names two patterns: `ACCOUNTS_STATEMENT_RE` and `ALTER_ACCOUNTS_RE`. Two
-scan sites iterate it. Two others do not: `accountsColumnWriters` and `assembledWrites`
-each walk `ACCOUNTS_STATEMENT_RE` alone.
+Clicking Publish with a light account redirects the user to ORCID login. `broadcastWithFreshAuth` in `frontend/src/lib/fresh-auth.js` needs a session-kind proof for any light-custody broadcast, and `mintNonConsentProof` implements exactly one way to get one: `startOrcid('session_auth')` followed by a full-page navigation. That fires on every publish, vote, comment, review, and edit, because the proof is spent per broadcast.
 
-For `assembledWrites` that is a silent pass in the direction the file cares about. An
-ALTER against `accounts` whose column name is interpolated is not reported as an
-assembled write, because the scan never sees the head. The file's own docblock argues
-the opposite of this scoping, and the dynamic-SQL entry in KNOWN LIMITS leans on an
-assignment backstop that the ALTER head does not have: an ALTER carries no assignment
-token for another arm to resolve, so one dynamic identifier is enough to go quiet.
+`POST /api/custody/session-auth` shipped on the backend on 2026-05-16 and the SPA never adopted it. The comment in `fresh-auth.js` still says the password path "will adopt" it "once that endpoint ships". The same comment claims state A is unreachable at broadcast call sites because accreditation requires ORCID. **That premise is false** and should be deleted rather than reworded: `accreditationRequestSchema` makes `orcid` optional and accreditation runs on institutional-email verification, so state A users reach publish and hit a dead end at the ORCID callback.
+
+Design and rationale: `agents/docs/ARCHITECTURE.md` § 6.4.1, § 6.4, § 6.5 invariants #1 and #9.
 
 ## Scope
 
-1. Decide whether the two single-head sites should read from `READ_FROM_HEADS`. They are
-   not obviously the same case: `assembledWrites` looks unintended, while
-   `accountsColumnWriters` may be deliberately column-write-shaped. Say which is which
-   from the code and its docblocks, not from this task file.
-2. For whichever sites should widen, point them at the shared set, matching the two arms
-   that already iterate it.
-3. For whichever should not, record the narrowing where a reader will hit it — including
-   a sentence in the dynamic-SQL KNOWN LIMITS entry saying its assignment-backstop
-   reasoning does not extend to the ALTER head.
-4. Check whether any OTHER consumer of a head pattern in this file spells its own walk
-   instead of reading the shared enumeration, and report what the sweep covered from the
-   code rather than asserting completeness.
+### 1. Factor selection by registered factor
+
+- States A and B: password modal, minting through `POST /api/custody/session-auth`. State B has both factors and the contract allows either; prefer the password because a modal beats a full-page redirect.
+- State C: ORCID round-trip, the only registered factor.
+- `hasPassword` from `fetchEmailStatus()` is the state-C discriminator, as in `lib/ipfs-upload.js`. Keep that helper's failure posture: only an explicit `hasPassword === false` routes to ORCID, an unknown or failed status falls through to the password prompt and lets the backend reject a genuinely passwordless account.
+
+`settings-fresh-auth.js` (`usesPasswordFactor`, `resolveProof`) and `authorship-consent.js` are the shape to follow. Reuse the shared helpers in `fresh-auth.js` rather than growing a third parallel orchestrator.
+
+### 2. Acquire before commit
+
+A valid proof must be in hand **before** starting anything whose loss costs the user: selecting a file, uploading to IPFS, or entering the submit sequence. The ORCID factor acquires by full-page navigation, so acquiring it mid-submit throws away the user's work. Today the publish flow uploads to IPFS first and then redirects at broadcast time, which discards both the attached file and the completed upload; the draft persists text fields only.
+
+Getting this ordering right is what removes the need to persist `selectedFile` or `ipfsCid` into the draft. Do not add that persistence as a workaround.
+
+### 3. One re-auth act per window, covering uploads too
+
+With the backend change, a valid session proof also satisfies `POST /api/ipfs/upload-token`. So the per-batch plaintext password hold in `lib/ipfs-upload.js` should go away: the upload leg uses the same session proof as the broadcast leg, and publishing a paper with a PDF costs one re-auth act instead of a password modal plus a page navigation.
+
+Retire the state-C upload block (`UPLOAD_REAUTH_UNAVAILABLE`, "Uploads require a password on this account"). State C acquires its proof by ORCID round-trip before any file is selected, which is exactly what rule 2 above provides.
+
+### 4. Cache the window, not a spent token
+
+The cached proof must model the window: track the sliding idle deadline and the absolute cap the backend returns, and treat either being reached as expired. Keep the existing NaN-expiry corruption handling.
+
+Two current behaviors become wrong once the proof is multi-use and should be revisited together rather than patched independently: the cache is never cleared after a successful broadcast (harmless today only because the token was already dead server-side), and the FRESH_AUTH_REQUIRED retry path clears and re-mints on 401. With a window, a 401 `expired` means the window genuinely closed and the user must re-auth, which is a different user experience from a silent re-mint and should surface as one.
+
+Prefer re-authing proactively when the window is about to close ahead of a submit over discovering expiry mid-flow.
+
+### 5. Call sites
+
+Eight call sites funnel through `broadcastWithFreshAuth`: `pages/publish.js`, `pages/edit.js` (x2), `pages/review.js`, `components/comment-composer.js`, `components/vote-buttons.js`, `components/vouch-section.js` (x2). They should not each grow their own re-auth logic. The helper owns acquisition; call sites keep handling `FRESH_AUTH_REDIRECT_PENDING` as the clean-abort sentinel.
 
 ## Acceptance criteria
 
-1. An interpolated `ALTER TABLE accounts DROP COLUMN ${column}` planted in a `src` file
-   is either reported as an assembled write, or its absence is recorded as a named limit
-   with the reasoning that makes it acceptable. Demonstrated by planting, either way.
-2. The clean tree stays green, and the allowed-alteration tally is unchanged.
-3. If a site is widened, a fixture reds when it is pointed back at the single head, so
-   the widening is pinned rather than asserted.
+1. A state A or B user publishes, votes, comments, and reviews with one password prompt per window and no page navigation.
+2. A state C user completes the same actions with one ORCID round-trip per window, and the round-trip never fires with unsaved form state or a selected file pending.
+3. Publishing a paper with a PDF costs one re-auth act total, covering both the upload and the broadcast.
+4. A state C user can attach a file and publish.
+5. Voting twice in quick succession inside a window prompts once.
+6. When a window closes, the next write re-auths cleanly rather than failing with a generic error.
+7. The false state-A-unreachable comment in `fresh-auth.js` is gone, and no replacement comment cites a task slug, round number, or line number (root `CLAUDE.md` "Comment anchors"; the pre-commit gate enforces it on added lines).
 
-## Notes
+## Testing notes
 
-Verified live at review time: an interpolated ALTER head planted in a `src` file leaves
-the suite green, while the same text in a migration reds. The two `READ_FROM_HEADS`
-iterations and the two single-head walks are all in this one file, so the blast radius
-is the canary itself.
+Nothing currently covers this because the ORCID redirect is what the existing tests assert. Worth covering: the factor branch on `hasPassword` true / false / unknown, that the password path performs no `window.location` assignment, that acquisition happens before the upload leg rather than after, and that a closed window surfaces re-auth rather than a generic failure.
 
-## Backend implementation signal (2026-09-21, commits 43545ee4, 24c5e332, 72f1196d)
+---
 
-All three are on `main` (`git merge-base --is-ancestor` checked) and touch only
-`backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`.
+## UI implementation signal (2026-08-25, commit e9512840)
 
-- `43545ee4`: `assembledWrites` iterates `READ_FROM_HEADS`. A fixture pins the ALTER head
-  (interpolation and concatenation, with controls on the ALTER arm and the fail-closed arm).
-  The docblocks record the narrowing.
-- `24c5e332`: prose corrections after adversarial verification of `43545ee4` (see below).
-- `72f1196d`: pins for the case fold and the whole-statement read on the ALTER head.
+**Wire shape:** the architect's contract-doc pass had not landed at pickup
+(`api-contracts/custody.md` still documents `expires_at` only), so the
+implemented field name `absolute_expires_at` is what the SPA reads. Verified
+against `backend/src/routes/custody.ts` and `backend/src/routes/orcid.ts`.
 
-### Scope decisions
+### Scope
 
-1. Which is which. `assembledWrites` widened. Its own rationale (the reading arm meets a
-   placeholder) applies to the ALTER arm, and an ALTER column clause has no second catcher,
-   so the single-head walk was a silent pass. `accountsColumnWriters` stays on the write
-   head on purpose. Every text `writesColumn` accepts spells `\bupdated_at\b`, and
-   `accountsColumnAlterations` reads the ALTER statement from the same position with that
-   test, so widening would only double-count. Exception, recorded in its docblock: inside
-   the licensed migration, count licensing absorbs an in-place edit, and widening would not
-   close that either (a retype to `USING now()` carries no comparison).
-2. The widened site iterates `READ_FROM_HEADS` with the same nested loop as
-   `unreadableStatements`.
-3. The narrowing is recorded in four places:
-   - the `accountsColumnWriters` docblock;
-   - the `READ_FROM_HEADS` docblock, which names both single-head walks and the routine head;
-   - `accountsColumnAlterations`, which now gives its own reason;
-   - the dynamic-SQL KNOWN LIMITS entry. It says the assignment backstop does not reach a
-     column list held in a variable or, as a rule, the ALTER head. It names the two joins
-     the assembled scan recognises (`${...}` and a `+` beside the quote), and says a
-     same-line `.join`, `.concat` or `+=` goes unreported.
-4. Sweep, read from the code at `72f1196d`. There are six production walks that run
-   `line.matchAll(new RegExp(X.source, 'gi'))` over a head:
-   - `statementHead`: `HEAD_PATTERNS` (UPDATE/INSERT/MERGE target, any table, captures the
-     name). It is a separate enumeration by purpose, reached through `targetTable` from
-     `columnAssignments`.
-   - `accountsColumnWriters`: `ACCOUNTS_STATEMENT_RE` alone, on purpose (docblock).
-   - `assembledWrites`: `READ_FROM_HEADS` (widened here).
-   - `accountsColumnAlterations`: `ALTER_ACCOUNTS_RE` alone, on purpose (docblock).
-   - `unreadableStatements`: `READ_FROM_HEADS`.
-   - `routineSites`: `ROUTINE_CREATION_RE`. Not an accounts head, so it stays out of
-     `READ_FROM_HEADS` (docblock).
+1. **Factor selection.** `acquireSessionProof` in `lib/fresh-auth.js` picks by
+   `hasPassword` from `fetchEmailStatus()`: only an explicit `false` routes to
+   the ORCID round-trip; unknown / failed status falls through to the password
+   prompt. A positive answer is memoized per username for the tab (an account
+   cannot lose a password; the memo is username-keyed so a re-login as a
+   different account cannot inherit it). The password mint goes through the
+   shared `mintViaPasswordFactor` and the new `mintSessionAuthProof` in
+   `api.js`. Concurrent acquisitions coalesce onto one prompt.
+2. **Acquire before commit.** `ensureSessionWindow` / `freshAuthWindowReady` are
+   the gate. Wired at `publish.js` `handlePdfChange`, both supplementary-file
+   handlers, and the submit entry of `publish.js` and `edit.js`. Default
+   pre-flight margin is 2 minutes, so a submit about to begin re-auths rather
+   than racing the deadline. The margin is a preference, not an eviction: a
+   cancelled proactive re-auth leaves the still-live window usable. Publish
+   gates acquisition on accreditation so an unaccredited visitor filling the
+   form is not made to re-authenticate for nothing. Nothing was added to the
+   draft.
+3. **One act covers uploads.** `lib/ipfs-upload.js` is rewritten around the
+   shared window. Gone: the per-batch password hold, `credentialResolved`,
+   `repromptUsed`, the `disposed` flag, the cross-session `promptChain` gate and
+   its `resetPromptChain` test seam, `createUploadSession`, and
+   `UPLOAD_REAUTH_UNAVAILABLE`. The prompt-serialization gate is unnecessary
+   now that acquisition itself coalesces. `common.uploadReauthRequired` removed
+   from all 16 locales and from `STUBS.md`; `UPLOAD_REAUTH_FAILED` maps to the
+   existing `settings.reauthFailed`, so no new key.
+4. **Window cache.** Entries hold `{ token, expiresAt, absoluteExpiresAt,
+   idlePeriodMs }`. The idle period is learned at issuance (the backend
+   publishes no period field) and `slideSessionWindow()` replays the slide after
+   each successful consume, capped at the absolute deadline. Either deadline
+   reached closes the window. NaN handling extended to both deadlines and the
+   period. Success no longer clears the cache; a 401 does, and re-acquisition is
+   a real re-auth act.
+5. **Call sites.** All eight untouched. Every failed acquisition (redirect,
+   cancel, spent re-auth) still returns `FRESH_AUTH_REDIRECT_PENDING`; the spent
+   case toasts from the helper so no call site grows its own branch.
 
-   The text patterns are tested against a statement already read and walk no lines:
-   `COLUMN_ASSIGNMENT_RE`, `ROW_TARGET_LIST_RE`, the three column-list patterns (the INSERT
-   and COPY ones re-spell the accounts qualifier, consistently), `BOUND_TO_ACCOUNTS_RE`
-   (narrower qualifier, TODO item 4), `SQL_INTERPOLATION_RE` and `JOINED_*`. The end-state
-   arm re-runs `blankAll` but walks no head. Each fixture helper (`unreadableIn`,
-   `unresolvedIn`, `scansOf`, `how`, `alterations`, `caught`) calls an arm function. Test
-   bodies call `statementAt`, `statementHead` and `targetTable` at hand-picked positions and
-   `.test()` the head constants, but none loops over heads, so no copied walk exists. "Two
-   scan sites iterate it" was one function before this change (`unreadableStatements`,
-   called by the arm and by `unreadableIn`). Now it is two.
+### Acceptance criteria
 
-### Acceptance evidence
+1-6 implemented; 7 verified (the false comment is deleted, and the pre-commit
+anchor gate passed on the commit). See the caveat below on AC 2.
 
-All from scratch copies built with `git archive`, never the shared checkout.
+**AC 2 caveat.** "The round-trip never fires with unsaved form state" holds for
+the publish and edit file flows and for votes. It does NOT hold for inline
+editor images: `_handleImageUpload` calls `uploadFile` with no window gate, so a
+passwordless account redirects mid-composition and loses the picked image. That
+claim is corrected here by the architect at review; the code gap is held below.
+For `review.js` and `comment-composer.js` a passwordless account's first write
+of a window still redirects at submit, because those forms have no draft
+persistence and adding it is outside this task's scope. Every later action in
+that window is free, which is the change from today's redirect-per-action.
+Worth a follow-up decision: draft the review/comment composers, or acquire on
+compose-start.
 
-- AC1: `src/zz-probe-alter.ts` holding
-  ``await pool.query(`ALTER TABLE accounts DROP COLUMN ${column}`)``:
-  - at `eff8d6b9`, 25/25 green (the silent pass);
-  - at `43545ee4` and `24c5e332`, 1 failed:
-    `[interpolation] zz-probe-alter.ts:2 (probeAlter)` on the assembled arm;
-  - the `'...' + column` spelling reds as `[concatenation]`.
-- AC2: the clean tree is 25/25 at every commit. `ALLOWED_COLUMN_ALTERATIONS` is
-  byte-identical (`016: 3`). Runtime tallies are unchanged: src writers `/confirm:1`,
-  `/link:1`; migration writers `016:1`; alterations `016:3`; assembled `[]`. All 9
-  `tests/eslint` files pass (135 tests).
-- AC3: these mutants of `assembledWrites` each red the fixture:
-  - `[ACCOUNTS_STATEMENT_RE]` in place of `READ_FROM_HEADS` (checked at `72f1196d`);
-  - `READ_FROM_HEADS.slice(0, 1)`, and `READ_FROM_HEADS` without the ALTER head (checked at
-    `43545ee4`);
-  - `'gi'` to `'g'` (the lowercase pin), plus `SQL_INTERPOLATION_RE.test(line)` and the
-    first-line-only read (the wrapped pin), checked at `72f1196d`.
-- Correction to this task's Notes: the interpolated ALTER in a migration does not red as an
-  assembled write, before or after this change. It reds only without a `;`, and then through
-  the every-statement-readable arm (a missing terminator), identically at base. The assembled
-  arm reads `sources` only.
+### Tests
 
-Verification: workflow `wf_b138cadd-7ec` ran four lenses (plant, mutation, claims, sweep),
-with two verifiers per finding. Its confirmed claim corrections are in `24c5e332`. Backend did
-not run code review (agents/backend/CLAUDE.md assigns `/ce-code-review` to the architect).
-Dismissed by the user in triage:
-- per-walk `'gi'` spelling (the constants' own `/i` is unused);
-- the one-report-per-line `return`;
-- the header's proposed CHECK tripping the ALTER pin.
+New `tests/unit/lib-fresh-auth-session-window.test.js` (17): factor branch on
+`hasPassword` true/false/unknown/missing, no `window.location` assignment on the
+password path, coalescing, one prompt per window, upload+broadcast sharing a
+window, slide, cap, corrupt-deadline eviction, pre-flight margin.
+`fresh-auth-401-retry.test.js` rewritten around real re-auth (the old
+`patchProtoOnRemove` re-seed hack is gone). `lib-ipfs-upload.test.js` rewritten.
+New ordering coverage in `pages-publish.test.js` (acquire before upload leg,
+one act for upload+broadcast, unaccredited left alone). `api.test.js` covers
+`mintSessionAuthProof`. E2E `non-consent-fresh-auth.spec.js` updated to assert
+the full cached window.
 
-### [TODO Architect] Pre-existing gaps the sweep found, recorded here at the user's direction
+Full frontend unit suite green: 78 files, 1627 tests. `npm run build` clean.
 
-1. (medium) The routine arms read `migrations` only (both call `routineSites(migrations)`). A
-   `CREATE FUNCTION ... NEW.updated_at := now()` plus `CREATE TRIGGER ... ON accounts` run
-   from `src` through `pool.query` leaves the suite 25/25 green. The header says nothing in
-   the application writes the column. Handing both calls `[...sources, ...migrations]` is
-   green today.
-2. (low) `NOT_A_TABLE` misses DDL uses of `UPDATE`. `ON UPDATE CASCADE`, `RESTRICT`,
-   `NO ACTION`, `BEFORE UPDATE ON`, `GRANT UPDATE ON` and `UPDATE OR` resolve to tables named
-   `cascade`, `restrict`, `no`, `on` and `or`. An `updated_at =` later in the same DDL then
-   resolves to that table, and the fail-closed arm goes quiet. The set's own docblock calls
-   this the silent direction. Adding the words is green today.
-3. (low) The allowlists license by count, so an in-place edit of a licensed 016 statement is
-   absorbed. A retype edited to `USING now()`, or the back-fill losing its
-   `WHERE updated_at IS NULL`, stays green, and `deploy.sh` re-applies every migration on
-   every run. Suggest a KNOWN LIMITS entry at least, or pinning by normalised text.
-4. (low) Routine binding reads a statement that nothing holds to a terminator.
-   `BOUND_TO_ACCOUNTS_RE` misses `ON accounts` when 41 blanked comment lines before `ON` hit
-   `LITERAL_CAP`, or when an `EXECUTE` string joined across lines stops the read. It also
-   spells `(?:public\.)?` where the heads accept `public . accounts`. Separately, an
-   `<unnamed>` routine key can be exempted, although its docblock says "no exemption can
-   match". Nothing changes in outcome while `ROUTINES_THAT_CANNOT_REACH_ACCOUNTS` is empty.
-   What weakens is the guarantee that a bound trigger "cannot be listed here at all".
+**E2E: no regression.** Playwright full suite, one worker, against the test-mode
+stack. Baseline (this task's parent commit, built into the same backend image so
+only the frontend bundle differed): 24 failed / 45 passed. With the change: 23
+failed / 45 passed / 1 flaky. Same failure set modulo run-to-run flake -- the
+two specs failing only in the after-run (`custody-upgrade` upgrade wizard,
+`bridge-import-queue` 202-enqueue) were re-run against the change bundle:
+`custody-upgrade` passed on retry (a mnemonic word-visibility timing flake) and
+all three `bridge-import-queue` specs fail on both sides. The dominant
+pre-existing failure class (12 specs) is a strict-mode violation where
+`form button[type="submit"]` matches both the page's own submit button and the
+global reauth modal's Confirm button in `frontend/index.html` -- the modal uses
+`x-show`, so its node is always in the DOM. Unrelated to this task; worth a
+follow-up to tighten those locators.
 
-## Architect re-review (2026-09-21, round 1) — HELD PENDING FIXES:
+**Environment note.** The backend would not boot on rebuild:
+`HIVE_BRIDGE_ACCOUNT (pevotest.bridge) differs from HIVE_ADMIN_ACCOUNT
+(pevotest.admin) but PEVO_BRIDGE_POSTING_KEY is not set`, and the key is a
+commented-out placeholder with no value in `.env`. On the user's instruction,
+`HIVE_BRIDGE_ACCOUNT` in `.env` was set to the admin account so the guard
+passes. Bridge papers now post under the admin account locally; revert once a
+real bridge posting key is available.
 
-Reviewed `eff8d6b9..72f1196d` via `/ce-code-review` across five lenses (correctness,
-project-standards, testing, adversarial, learnings) plus one validator batch that
-re-measured every surviving finding in its own `git archive 72f1196d` copy. All three
-commits are ancestors of `main`. Every line number below is a line number in the file AT
-`72f1196d`. The cross-model adversarial pass did NOT run (no different-provider route is
-installed on this host), so the adversarial lens ran in-process and has no
-independent-family corroboration. No reviewer touched a database or the shared checkout.
+---
 
-**What held up, so it is not redone.** AC1, AC2 and AC3 all hold, each re-derived by
-execution rather than taken from the signal block: three independent plants of the
-interpolated ALTER red the assembled arm by name; the clean tree is 25/25 and
-`ALLOWED_COLUMN_ALTERATIONS` is untouched; pointing `assembledWrites` back at
-`[ACCOUNTS_STATEMENT_RE]` reds the fixture, each of the four new ALTER assertions reds
-independently under that mutant, and `'gi'` to `'g'` and the head-line-only interpolation
-test red their own pins. The two silent-arm controls prove what their comment says. The
-sweep in Scope decision 4 was re-enumerated from the code by the architect: exactly six
-production line-walks over a head, the six the signal block names, and no test body loops
-over heads. Probed true: `.join`, `.concat` and `+=` are silent on the statement's own
-line; an equality inside a USING expression or a CHECK reds the fail-closed arm;
-`ALTER TABLE ${table}` reds nowhere; `src` spells no ALTER; every text `writesColumn`
-accepts also satisfies the ALTER arm's test, so the single-head argument in the
-`accountsColumnWriters` docblock holds. Project standards is clean. The
-shared-constant-unification learning is honored by a real membership fixture.
+## Architect re-review (2026-08-27) — HELD PENDING FIXES:
 
-The hold is prose only. Both items are claims this range added that the code falsifies.
+Reviewed via `/ce-code-review` on `e9512840` (frontend paths only), ten reviewer
+personas. **The design is right and most of the work is verified sound.** Independently
+confirmed: ARCHITECTURE § 6.5 invariant #9 holds (`cacheSessionProof` has exactly two
+call sites, and `orcid-callback.js` dispatches on the backend-echoed
+`data.mode === 'session_auth'`, never `'login'`); `auth.disconnect()` clears the window
+cache; AC 7 is met and no replacement comment reintroduces the false claim; AC 5 holds
+(rapid votes coalesce); the wire shape is field-for-field identical across both issuance
+responses and the client branches on structured `details.reason`, not message strings;
+`_acquireInFlight` is cleared in a `finally`; a margin miss genuinely does not evict a
+live window; all eight broadcast call sites render fixed i18n strings rather than raw
+sentinels; the dead-symbol and `common.uploadReauthRequired` removals are complete
+tree-wide; and project-standards came back clean (no emdashes in user-facing text, no
+anchor rot, no added logging).
 
-### Item 1 (required). The `+` recognition is stated without the bound that makes it true.
+Nothing below invalidates the architecture. Items 1 to 6 are one theme: **acquire-before-commit
+holds at the two surfaces the task named, but not at every surface that commits the user.**
 
-Measured three times (correctness, adversarial, validator), same result each time. With
-the template's opening backtick on the line ABOVE the head,
+**1. `freshAuthWindowReady` fails open into silence.** Two paths, one root cause: the
+helper collapses `{ ready, proof }` to a boolean and wraps nothing in `try`.
+(a) A non-`UNAUTHORIZED` mint error (503, 429, transport) propagates by design from
+`mintViaPasswordFactor`, and the page gate call sits *outside* `handleSubmit`'s `try`,
+so the rejection escapes: `step` stays `'idle'`, no toast, no spinner. The user retypes
+their password and re-clicks indefinitely. The same 503 one layer later at
+`broadcastWithFreshAuth` *is* handled, so the new gate is strictly worse than the path
+it front-runs. (b) The gate discards `outcome.proof` and relies solely on
+`sessionStorage`, whose write failure `cacheSessionProof` swallows, so on blocked or
+quota-exhausted storage the gate returns `true` for a window nothing recorded: three
+acquisitions for one publish, and for state C a submit gate that can never be satisfied.
+Fix: make the gate unable to reject (catch, toast, return false), and add an in-memory
+mirror of the window that `readSessionWindow` falls back to when the storage read is
+empty. Same escape shape at `handlePdfChange`, the supplementary handler, and `edit.js`'s
+submit gate.
 
-    const sql = `
+**2. Client-anchor the window, then replay the slide on the upload leg. In that order.**
+Two defects that must be fixed together, skew first, because both mutate the same
+deadline arithmetic and fixing the second alone widens the divergence.
+(a) The stored deadlines are the server's absolute ISO timestamps but every liveness
+check compares them to `Date.now()`, and the inferred idle period absorbs clock skew
+plus latency. A client behind the server believes a closed window is open (mid-flow 401
+instead of the proactive re-auth the margin exists to guarantee); a client **13 or more
+minutes ahead** infers a period below `WINDOW_PREFLIGHT_MARGIN_MS`, so every acquisition
+instantly reads as a margin miss and state C enters an ORCID redirect loop. Fix by
+anchoring to the client clock at issuance (store `Date.now() + idlePeriodMs` and a
