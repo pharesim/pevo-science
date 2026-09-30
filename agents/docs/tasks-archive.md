@@ -1,3 +1,70 @@
+## The pre-commit anchor gate's extension filter misses .mts and .cts (archived 2026-09-30)
+
+Architect review (2026-09-30): archived at round 1 with one P3 fixed in place.
+/ce-code-review on 86181664 (correctness, project-standards, testing, adversarial in-process,
+learnings; no cross-model peer on this host; one validator batch). Both extension lists carry
+`mts|cts` and both acceptance criteria hold. One finding: the `cts` member of the line-cite
+arm was unpinned (R21 cites `loader.mts:42` only, so deleting `cts` from that alternation left
+the suite green at 41/0; reproduced by three reviewers, the validator and the architect). Fixed
+at triage in 0352188e with R22 (`loader.cts:42` in a `.ts` host): suite 42 passed, 0 failed,
+exit 0; the `cts` mutant now fails R22 and the pre-change hook fails R19-R22. The stale
+hand-kept "37 cases" tally in the comment-anchor-rot-precommit-diff-gate solutions entry was
+dropped via /ce-compound-refresh in the commit alongside this archive. Dismissed at triage:
+(a) the backend whole-tree no-stale-comment-anchors canary still walks `.ts` only, moot until a
+`.mts`/`.cts` module exists under `backend/src` and already recorded under scope item 3; (b) a
+pre-existing, dormant silent pass in the hook's awk `+++ b/` header parse under
+`diff.noprefix=true`, `color.ui=always`, git-quoted non-ASCII paths, or an added line starting
+with `++ ` (none of those configs is set in this checkout). No /ce-compound: the per-site
+mutation-probe learning this review exercised already exists.
+
+# The pre-commit anchor gate's extension filter misses .mts and .cts
+
+**Owner:** architect
+**Created:** 2026-09-29
+
+Routed out of the round-1 architect review of the canary-scan-roots task,
+where `.mts`/`.cts` modules were admitted to the updated_at canary's scan
+roots.
+
+## Why
+
+The `.githooks/pre-commit` anchor gate filters staged paths by extension
+(`ts|tsx|js|jsx|mjs|cjs|sql`), which matches neither `.mts` nor `.cts`. A
+future `.mts`/`.cts` module under `frontend/{src,tests}` or
+`backend/{src,tests}` would land with its added lines never checked for
+comment-anchor rot, because the gate is a diff gate: the introduction commit
+is exactly the one it must fire on. The whole-tree
+`no-stale-comment-anchors` canary shares the gap (it walks `.ts` only), but
+that file is backend zone; this task covers the hook only. Moot until such a
+module exists, which is why this is low priority.
+
+## Scope
+
+1. Widen the hook's extension filter to include `mts` and `cts`, keeping
+   the existing extensions untouched.
+2. Re-run `bash .githooks/tests/test-pre-commit.sh`; extend the test file
+   with a `.mts` positive case if the harness shape allows one cheaply.
+3. If widening the backend canary is wanted too, file that as a separate
+   backend task rather than crossing zones here.
+
+## Acceptance criteria
+
+1. A staged `.mts` (or `.cts`) file with a violating added line fails the
+   hook; the same line in a `.ts` file still fails; clean lines pass.
+2. `bash .githooks/tests/test-pre-commit.sh` passes.
+
+## Implementation signal (2026-09-29)
+
+Landed at `86181664`. Both extension lists in `.githooks/pre-commit` now carry
+`mts|cts`: the `staged_added` awk path filter (scope item 1) and the
+line-cite arm of `is_rot` (same gap class, so a `loader.mts:42` cite is caught
+too). Test file gains R19 (slug in `.mts`), R20 (slug in `.cts`), R21
+(`.mts:NN` line cite) and A10b (clean `.mts` line accepted). Against the
+previous hook R19-R21 fail (38/3); against the new hook the suite is 41
+passed, 0 failed, exit 0. Scope item 3: no backend canary task filed; the
+whole-tree `no-stale-comment-anchors` canary still walks `.ts` only, which
+stays moot until a `.mts`/`.cts` module exists under `backend/src`.
+
 ## The edit spec never proves a successful load mounts the editors, and its retry-invariant test retries nothing (archived 2026-09-29)
 
 Architect review (2026-09-29): CLEAN at round 3, archived. /ce-code-review on ef7d0810
@@ -181,70 +248,3 @@ because the outer `beforeEach` already calls `vi.clearAllMocks()`. Verified
 by removing it in a copy, 89 still passed, and skipped anyway: the adjacent
 `_mountEditors teardown-during-init guard` block carries the same local clear,
 and dropping it from one of two neighbouring mount describes trades a dead
-line for an inconsistency. Efficiency: the three `vi.waitFor` calls each paid
-a fixed 50ms on the green path, tripling the file from ~80ms to ~243ms.
-Applied: a 1ms poll interval at all three sites, measured back to ~87ms. The
-timeouts are left at the default, and all three kills above were re-measured
-after the change.
-
-### Two notes for triage, neither in scope here
-
-1. The `x-ref` rename stays uncovered. It is listed under item 1's
-   consequences, but the prescribed fix does not reach it: closing it needs an
-   assertion over `editPageTemplate` pairing each `x-ref` name against the
-   `$refs` key `_mountEditors` reads, which is a different kind of test from
-   the two prescribed. Left for the architect to decide.
-2. `loadPaperData` schedules the mount as
-   `$nextTick(() => { this._mountEditors(); })`, a block-bodied arrow, so the
-   mount promise is discarded at the callback and not only at `$nextTick`.
-   Capturing it through a patched `$nextTick` yields `undefined`, measured
-   before settling on the two mechanisms the tests use. That is why case 1
-   waits on the mount's effect and case 2 wraps `_mountEditors` to observe
-   completion: a plain assertion in case 2 would run before the dynamic import
-   had resolved and pass vacuously.
-
-## Architect re-review (2026-09-24) — HELD PENDING FIXES:
-
-`/ce-code-review` on `48e6e320` ran six lenses (correctness, project-standards,
-testing, learnings, adversarial in-process, frontend-races) plus one
-independent validator. AC1 to AC3 reproduced against `git archive 48e6e320` by
-four lenses independently: baseline 89 passed / exit 0, and the three claimed
-kills exact (delete the `$nextTick` block 2 failed; populate the `$refs`
-default 1 failed; remove the settle-wait 1 failed with `got 1 times`), with
-eight back-to-back real-timer runs at 89/89. AC4 confirmed by the architect in
-a two-level copy of the reviewed commit: 86 files, 1935 passed, exit 0.
-Standards, learnings and races lenses were clean. Two items, both in
-`frontend/tests/unit/pages-edit.test.js` only, one commit:
-
-1. **Pin that the mount is routed through `$nextTick`.** The new describe's
-   header says a successful `loadPaperData` "schedules it through `$nextTick`",
-   but neither case asserts it. `createComponent`'s `$nextTick` mock runs its
-   callback synchronously, so replacing the
-   `this.$nextTick(() => { this._mountEditors(); });` block in `edit.js` with a
-   bare `this._mountEditors();` survives the whole spec (probe: 89 passed,
-   exit 0), while deleting the block is killed. Two independent reviewers and
-   the validator each measured this. In
-   `builds one editor per ref present when the load runs`, after the
-   `_editorsInitialized` assertion add
-   `expect(comp.$nextTick).toHaveBeenCalledTimes(1);`. `loadPaperData` holds
-   `edit.js`'s only `$nextTick` call site, so the count is exact. Proof-first
-   in an isolated copy: the unwrap mutant survives before and fails after with
-   `expected "spy" to be called 1 times, but got 0 times`; the unmutated spec
-   stays green. For the record, the two lenses disagreed on today's production
-   consequence (the `await import('../editor.js')` yields after Alpine's
-   reactive flush, so the unwrapped call would still find the refs until a
-   later refactor also drops the dynamic import); the hold rests on the test
-   claiming more than it asserts, not on a live defect.
-
-2. **Pin the template side of the ref pairing.** Your triage note 1 is
-   accepted as a hold item rather than a separate task. Renaming
-   `x-ref="abstractEditor"` in `editPageTemplate` survives the spec because no
-   test reads the template. Case 1 already pins the code side (populated refs
-   under the keys `abstractEditor` / `bodyEditor` yield the two `createEditor`
-   calls, so `_mountEditors` reads exactly those `$refs` keys); add the
-   template side as a short case in or beside the same describe asserting
-   `editPageTemplate` contains both `x-ref="abstractEditor"` and
-   `x-ref="bodyEditor"`. `editPageTemplate` is already imported by the spec.
-   Proof-first: the template rename survives before and fails after.
-
-Constraints unchanged: nothing under `frontend/src/` changes; the harness
