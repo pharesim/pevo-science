@@ -1,7 +1,7 @@
 ---
 title: "Mutation probes and discriminating tests are per site, not per fix: a fixture's incidental posture silently selects which twin branch a probe proves"
 date: 2026-08-31
-last_updated: 2026-09-24
+last_updated: 2026-09-30
 category: conventions
 module: frontend/tests + architect re-review intake
 problem_type: convention
@@ -58,7 +58,7 @@ The procedural shape of the miss (session history): the implementers' probe pass
 - **Memoized state.** The password-factor answer is memoized per username per tab; a prior test's observation decides a later test's factor unless cleared (see the `clearPasswordFactorMemo()` call and its comment in the `beforeEach` of frontend/tests/unit/pages-edit.test.js). The retry gate deliberately reuses the memo ("the 401 retry gate reuses the memoized factor instead of a second status read", frontend/tests/unit/lib-authorship-consent.test.js), so the memo's content is itself a branch selector.
 - **Stored session state.** Whether a live window proof sits in sessionStorage decides whether acquisition (and hence any of its option handling) runs at all.
 - **Assertion confinement.** An assertion that a mocked collaborator was never invoked (`expect(run).not.toHaveBeenCalled()`) structurally restricts the test to the code that executes before that collaborator; no retry-path or post-commit site can be under such a test, whatever its title says.
-- **Which exit a linear sequence takes.** Where one branch runs the same effect at two points, the fixture's exit (an unmount mid-await, a rejecting collaborator, an early return, or falling through to the end) decides which of them the assertion observed. See `discriminating-spec-must-select-an-exit-only-the-probed-layer-serves.md`.
+- **Which exit a linear sequence takes.** Where one branch runs the same effect at more than one point, the fixture's exit (an unmount mid-await, a rejecting collaborator, an early return, or falling through to the end) decides which of them the assertion observed. See `discriminating-spec-must-select-an-exit-only-the-probed-layer-serves.md`.
 
 ## Why This Matters
 
@@ -91,4 +91,4 @@ Both instances verified against the tree on 2026-08-31; every file:line below is
 - `re-review-intake-green-suite-not-held-item-completion-2026-06-09.md` — the intake-side frame this adds a gate-blind class to: a per-fix probe leaves a twin site deletable under a green suite.
 - `sampling-an-unordered-collection-is-mutation-blind-to-a-truncating-batch-2026-08-26.md` — sibling mutation-blindness mechanism within one assertion, and the documented home of the committed-baseline probe discipline referenced in Guidance step 3.
 
-- `discriminating-spec-must-select-an-exit-only-the-probed-layer-serves.md` — the depth counterpart to this entry's breadth: where one branch runs the same effect at two points, choosing the site to revert is only half the design, because the fixture's exit decides which point the assertion saw.
+- `discriminating-spec-must-select-an-exit-only-the-probed-layer-serves.md` — the depth counterpart to this entry's breadth: where one branch runs the same effect at more than one point, choosing the site to revert is only half the design, because the fixture's exit decides which point the assertion saw.
