@@ -9,6 +9,7 @@ import {
   clearPasswordFactorMemo,
   abandonInFlightAcquisitions,
   dismissOpenReauthPrompt,
+  handleSessionRevoked,
 } from './lib/fresh-auth.js';
 // TAB_SUBJECT_KEY: the per-tab marker naming the JWT subject this tab's
 // subject-bound sessionStorage state (fresh-auth proof caches, ORCID flow
@@ -208,6 +209,58 @@ export function initAuth() {
       this._stopAccreditationPolling();
       localStorage.removeItem(SESSION_KEY);
       this._scrubSubjectBoundState();
+    },
+
+    // A bearer request was answered `401 SESSION_INVALIDATED`: the server
+    // revoked `sentToken` because the account's credentials changed on
+    // another browser or device. The api.js bearer helper and the custody
+    // broadcast in signer.js report here, so the revoked-session teardown has
+    // one home. The key-upgrade request in pages/settings.js does not: it
+    // sends a token pinned before its first await and reads its own 401s.
+    //
+    // Acts only when the rejected token is still the one this store holds.
+    // The custody upgrade reissues a token, which reaches every tab of the
+    // browser through the storage event, and a request sent just before that
+    // with the old token can be answered after the new one is adopted.
+    // Tearing down on that late rejection would remove the stored session and
+    // sign every tab out of a session the server considers valid. The same
+    // comparison makes a second rejection for the same token a no-op, because
+    // the first one cleared it. A same-subject token swap does not run the
+    // subject scrub, so a teardown guard cannot stand in for this check.
+    //
+    // The comparison covers that one ordering only. A rejection that arrives
+    // before the reissued token does (the server revokes the old token a
+    // moment before it answers the upgrade) still finds the old token here
+    // and tears the session down.
+    //
+    // The user did not sign out, so the teardown says why the session ended
+    // and then offers sign-in where they are. Staying on the page matches the
+    // header sign-out and the session-inconsistency teardown, and keeps what
+    // a route change would destroy: a half-written review, attached files,
+    // the key-upgrade retry state.
+    //
+    // Returns true when this call tore the session down.
+    handleRevokedSession(sentToken) {
+      if (!sentToken || sentToken !== this.token) return false;
+      handleSessionRevoked();
+      this._offerSignIn();
+      return true;
+    },
+
+    // Open the sign-in modal without a user gesture. Fire-and-forget: the
+    // caller is an error path that must not wait on the user, so a failed
+    // sign-in is reported here the way the header's Sign in button reports it.
+    // Skipped when the modal is missing or already open, since a second
+    // prompt() would orphan the first one's pending promise.
+    _offerSignIn() {
+      const el = document.querySelector('[x-data="signInModal"]');
+      const modal = el && Alpine.$data(el);
+      if (!modal || modal.open) return;
+      this.connect().catch((err) => {
+        console.warn('[auth] sign in after revoked session failed:', err);
+        const msg = Alpine.store('i18n')?.messages?.common?.connectionFailed || 'Connection failed';
+        Alpine.store('toast')?.show(msg, 'error');
+      });
     },
 
     // THE central subject-change detection point: adopt `username` as the

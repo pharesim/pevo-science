@@ -26,10 +26,13 @@ export async function broadcastOps(username, operations, opts = {}) {
   if (auth.custody === 'light') {
     const body = { operations };
     if (freshAuthProof) body.fresh_auth_proof = freshAuthProof;
+    // Read once: the token this request carries is also what a revoked-session
+    // rejection is reported against.
+    const token = auth.token;
     const res = await fetch('/api/custody/broadcast', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${auth.token}`,
+        'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
@@ -40,6 +43,11 @@ export async function broadcastOps(username, operations, opts = {}) {
       err.status = res.status;
       err.code = respBody.error?.code;
       err.details = respBody.error?.details;
+      // This request does not go through the api.js bearer helper, so it
+      // does not inherit the revoked-session teardown performed there; report
+      // to the same store method. The error still throws, and the fresh-auth
+      // retry gate does not retry on this code.
+      if (err.code === 'SESSION_INVALIDATED') auth.handleRevokedSession?.(token);
       throw err;
     }
     return res.json();

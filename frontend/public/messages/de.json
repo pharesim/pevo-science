@@ -1278,7 +1278,8 @@
   },
   "auth": {
     "sessionInconsistency": "Session inconsistency detected. Please sign in again.",
-    "reauthCancelled": "Your session changed, so the confirmation was cancelled."
+    "reauthCancelled": "Your session changed, so the confirmation was cancelled.",
+    "sessionRevoked": "You were signed out because this account's password or keys were changed. Please sign in again."
   },
   "landing": {
     "publishPaper": "Publikation veröffentlichen",

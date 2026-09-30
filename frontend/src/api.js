@@ -53,6 +53,13 @@ function parseRetryAfterSeconds(res) {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
+// The code `verifyHiveSignature` answers a bearer token with once the account's
+// credentials have changed since the token was issued. Terminal for that
+// token: unlike a closed fresh-auth window it cannot be re-minted, and unlike
+// a retriable 503 it will never succeed on a later attempt. Only the bearer
+// path can receive it, so a request signed with Keychain headers never does.
+const SESSION_INVALIDATED = 'SESSION_INVALIDATED';
+
 function getToken() {
   try {
     const store = Alpine.store('auth');
@@ -106,13 +113,26 @@ async function request(path, init) {
 async function authenticatedRequest(path, init) {
   const token = getToken();
   if (!token) throw new ApiRequestError('UNAUTHORIZED', 'Not logged in');
-  return request(path, {
-    ...init,
-    headers: {
-      ...init?.headers,
-      Authorization: `Bearer ${token}`,
-    },
-  });
+  try {
+    return await request(path, {
+      ...init,
+      headers: {
+        ...init?.headers,
+        Authorization: `Bearer ${token}`,
+      },
+    });
+  } catch (err) {
+    // A revoked bearer token tears the session down here, once, for every
+    // authenticated route, so no call site needs its own handler. The token
+    // this request carried goes along because the store must not act on a
+    // rejection of a token it has since replaced. The rejection still
+    // propagates: it is terminal for the caller's operation, and nothing
+    // retries on this code.
+    if (err?.code === SESSION_INVALIDATED) {
+      Alpine.store('auth')?.handleRevokedSession?.(token);
+    }
+    throw err;
+  }
 }
 
 function buildQuery(params) {

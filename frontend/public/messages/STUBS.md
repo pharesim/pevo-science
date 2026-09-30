@@ -3986,3 +3986,26 @@ pt: confirm.reauthNavigate
 sv: confirm.reauthNavigate
 tr: confirm.reauthNavigate
 zh: confirm.reauthNavigate
+
+### Added 2026-09-30 (ui-session-invalidated-global-handling)
+
+The message a signed-in user sees when this device's session ends because
+the account's password or keys were changed somewhere else (a password
+reset, an account recovery, a key upgrade). They did not sign out here, so
+the copy has to say why they are now signed out.
+
+ar: auth.sessionRevoked
+cs: auth.sessionRevoked
+da: auth.sessionRevoked
+de: auth.sessionRevoked
+es: auth.sessionRevoked
+fa: auth.sessionRevoked
+fr: auth.sessionRevoked
+he: auth.sessionRevoked
+it: auth.sessionRevoked
+nl: auth.sessionRevoked
+pl: auth.sessionRevoked
+pt: auth.sessionRevoked
+sv: auth.sessionRevoked
+tr: auth.sessionRevoked
+zh: auth.sessionRevoked

@@ -168,6 +168,27 @@ export function passwordPromptMessage() {
 // not protect a session established after the flight began; a detector that
 // finds the store connected always disconnects it.
 export function handleSessionInconsistency() {
+  tearDownSessionWithMessage('sessionInconsistency', 'Session inconsistency detected. Please sign in again.');
+}
+
+// Tear down a session the server has revoked: the bearer token was answered
+// `401 SESSION_INVALIDATED` because the account's credentials changed on
+// another browser or device. Same teardown as the mismatch case (disconnect,
+// claim the report, one message), with copy that says why the session ended,
+// since the user did not sign out and nothing on this device explains it.
+// The auth store's `handleRevokedSession` is the only caller and owns the
+// check this helper does not make: that the rejected token is still the one
+// the store holds.
+export function handleSessionRevoked() {
+  tearDownSessionWithMessage(
+    'sessionRevoked',
+    "You were signed out because this account's password or keys were changed. Please sign in again.",
+  );
+}
+
+// The teardown both session-ending detections share; `handleSessionInconsistency`
+// documents the repeat-detection rules, which hold for either message.
+function tearDownSessionWithMessage(name, fallback) {
   const auth = Alpine.store('auth');
   if (auth) {
     if (!auth.isConnected) {
@@ -185,15 +206,15 @@ export function handleSessionInconsistency() {
     // credit whatever teardown is current to a message about something else.
     claimTeardownReport();
   }
-  toastLocalized('auth', 'sessionInconsistency', 'Session inconsistency detected. Please sign in again.');
+  toastLocalized('auth', name, fallback);
 }
 
 // Show one error toast, localized. Lib code cannot use the `$t` magic helper,
 // so every message this module raises reads the i18n store directly and falls
 // back to English for the not-yet-loaded-bundle case; this is that read plus
 // the show, in one place, so the fallback policy and the severity cannot drift
-// between the sites that raise messages (the session-inconsistency teardown
-// above, the window-outcome dispatch below, and `reportTeardownOnce`).
+// between the sites that raise messages (`tearDownSessionWithMessage`, the
+// window-outcome dispatch, and `reportTeardownOnce`).
 function toastLocalized(section, name, fallback) {
   const msg = Alpine.store('i18n')?.messages?.[section]?.[name] || fallback;
   Alpine.store('toast')?.show(msg, 'error');
