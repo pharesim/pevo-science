@@ -77,15 +77,23 @@
  *    that vouches for itself.
  *
  * Hand-ported sibling. `frontend/tests/unit/eslint/enclosing-symbol.js` carries
- * a dialect-adjusted copy of this module, sharing the upward declaration scan,
- * the closing-brace test that rejects a declaration whose block closed at or
- * left of its own indentation, the block-comment region pass and the
- * region-aware comment predicate. The two stay separate deliberately: that
- * copy adds Alpine method-shorthand and template-literal declaration shapes
- * and a per-key occurrence tally, and this one keeps {@link isCommentedOut},
- * which that copy dropped. Nothing mechanical carries a fix to the shared
- * machinery across, so a change to the walk, the region pass, or the comment
- * predicate here is a prompt to read the other copy.
+ * a dialect-adjusted copy of this module. The two share one algorithm:
+ * {@link enclosingSymbol}'s upward declaration scan and its closing-brace test
+ * (a declaration whose block closed at or left of its own indentation is
+ * rejected), the region pass in {@link blockCommentInterior}, and the comment
+ * predicate {@link isCommentLine}. They stay separate deliberately, because
+ * each is written for the declaration shapes and the scan contract of its own
+ * tree, and neither is a subset of the other: {@link isCommentedOut} here has
+ * no equivalent in that copy, and that copy carries machinery of its own that
+ * has none here. Read the sibling for what differs; a list of the differences
+ * kept in this docblock would go stale with nothing failing.
+ *
+ * Nothing mechanical carries a fix to the shared machinery across, in either
+ * direction, and the two have drifted before: a hardening of the comment
+ * handling landed in that copy first and reached this one only later, ported
+ * by hand. So the obligation runs both ways. A change to the walk, the region
+ * pass, or the comment predicate in EITHER file is a prompt to read the other,
+ * and reading the other is also how to learn which copy is ahead.
  */
 
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
