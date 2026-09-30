@@ -86,6 +86,12 @@
  *      comment as readily as in the claim. It does not check WHICH literal a
  *      writer mints against the value that handler wrote.
  *
+ *      A licence is keyed on `file#symbol` as the enclosing-symbol resolver
+ *      names it, so two declarations that resolve to one name in one file
+ *      share a key: a second registration of the same method and path, or a
+ *      nested function named like a licensed one. A mint that leaves its
+ *      handler for such a twin keeps the tally at one and is not seen to move.
+ *
  * What every scan in this file covers is the `.ts` files under `backend/src`,
  * which is what `sourcesUnder` walks from the one root it is handed here.
  * Content under `backend/scripts/`, a module with any other extension, and
@@ -225,14 +231,22 @@ const COLUMN_DESTRUCTURE_RE = /\b(?:const|let|var)\s+\{[^{}]*\bcustody\b[^{}]*\}
 
 /** A session-JWT mint. Same anchor the session-issuing registry uses.
  *
- *  It names the call as this codebase spells it: the default import bound to
- *  `jwt`, the member `sign`, an open paren. A mint reached any other way is not
- *  a match and is classified by nothing: a named or renamed import
+ *  It names the call as this codebase spells it: a receiver named `jwt`, the
+ *  member `sign`, an open paren. What `jwt` is bound to is not checked, so
+ *  `this.jwt.sign(` matches too. A mint spelled any other way is not a match
+ *  and is classified by nothing: a named or renamed import
  *  (`sign(...)`, `jsonwebtoken.sign(...)`), a bracketed member
  *  (`jwt['sign'](...)`), an optional chain (`jwt?.sign(...)`), a member
  *  wrapped onto its own line, and the function taken as a value and called
  *  later (`const mint = jwt.sign`). Those are examples, not the whole class. */
 const JWT_MINT_RE = /\bjwt\.sign\s*\(/;
+
+/** Where each mint on a line opens. The scan and the planted spelling probes
+ *  both read the pattern through this, so what the probes pin is what the scan
+ *  matches with, flags included. */
+function mintColumns(line: string): number[] {
+  return [...line.matchAll(new RegExp(JWT_MINT_RE.source, 'g'))].map((match) => match.index);
+}
 
 /** A literal custody claim inside a mint payload, and the sites that may
  *  write one: each writes the column in the same handler, so the literal is
@@ -322,14 +336,13 @@ interface Mint {
  *  matching line, so two mints sharing a line are two entries as well. */
 function sessionMints(files: ScannedSource[]): Mint[] {
   const mints: Mint[] = [];
-  const everyMint = new RegExp(JWT_MINT_RE.source, 'g');
   for (const { rel, lines } of files) {
     const interior = blockCommentInterior(lines);
     lines.forEach((line, i) => {
       if (isCommentLine(line, interior[i])) return;
-      for (const match of line.matchAll(everyMint)) {
+      for (const column of mintColumns(line)) {
         const key = `${rel}#${enclosingSymbol(lines, i)}`;
-        mints.push({ key, site: `${rel}:${i + 1} (${key})`, source: classifyMint(lines, i, match.index) });
+        mints.push({ key, site: `${rel}:${i + 1} (${key})`, source: classifyMint(lines, i, column) });
       }
     });
   }
@@ -522,8 +535,9 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
     expect(all.length, 'the mint scan found no session-JWT mint at all').toBeGreaterThan(0);
     expect(
       unclassified.map((mint) => mint.site),
-      'a session JWT with no custody claim reads as self at the middleware, ' +
-        `but the omission must be deliberate and this list must name it:\n${sitesOf(unclassified)}`,
+      'a session JWT with no custody claim reads as self at the middleware; ' +
+        'each of these mints either omits the claim or writes it in a shape ' +
+        `the classifier does not read (a bare binding or a quoted literal):\n${sitesOf(unclassified)}`,
     ).toEqual([]);
     expect(
       tally(keysOf(literal)),
@@ -541,33 +555,40 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
       tally(keysOf(atHelperCallers)),
       'a helper caller mints only where this list says a row-reading mint ' +
         'is, once per entry; a second mint in one symbol, or a first in a ' +
-        `caller that issued no session, is not licensed:\n${sitesOf(atHelperCallers)}`,
+        'caller that issued no session, is not licensed, and an entry no ' +
+        `mint uses is dropped:\n${sitesOf(atHelperCallers)}`,
     ).toEqual(tally(ROW_READING_MINT_SITES));
   });
 
   it('the mint scan finds mints, tallies them per symbol, and walks only the call', () => {
-    // `JWT_MINT_RE` by itself, then through the scan that uses it. Prose that
+    // `JWT_MINT_RE` through `mintColumns`, the one reader the scan has, then
+    // through the scan itself. Prose that
     // merely names the mint has no open paren and does not match; prose that
     // quotes the call shape does, and is spared by the comment skip instead.
-    expect(JWT_MINT_RE.test('    const token = jwt.sign(')).toBe(true);
-    expect(JWT_MINT_RE.test('    const token = jwt.sign (')).toBe(true);
-    expect(JWT_MINT_RE.test('    const token = jwt.sign\t  (')).toBe(true);
-    expect(JWT_MINT_RE.test('    const token = jwtXsign(payload, secret);')).toBe(false);
-    expect(JWT_MINT_RE.test('    const token = JWT.sign(payload, secret);')).toBe(false);
-    expect(JWT_MINT_RE.test('  // invariant: no jwt.sign call mints before the INSERT')).toBe(false);
-    expect(JWT_MINT_RE.test('  // a second jwt.sign(...) here needs its own response assertion')).toBe(true);
-    expect(JWT_MINT_RE.test('    const token = jwt.verify(raw, secret);')).toBe(false);
-    expect(JWT_MINT_RE.test('    const token = myjwt.sign(payload, secret);')).toBe(false);
+    const seesMint = (line: string) => mintColumns(line).length > 0;
+    expect(seesMint('    const token = jwt.sign(')).toBe(true);
+    expect(mintColumns('  const a = jwt.sign(x, s), b = jwt.sign(y, s);')).toEqual([12, 32]);
+    expect(seesMint('    const token = this.jwt.sign(payload, secret);')).toBe(true);
+    expect(seesMint('    const token = jwt.signAsync(payload, secret);')).toBe(false);
+    expect(seesMint('    const token = jwt .sign(payload, secret);')).toBe(false);
+    expect(seesMint('    const token = jwt.sign (')).toBe(true);
+    expect(seesMint('    const token = jwt.sign\t  (')).toBe(true);
+    expect(seesMint('    const token = jwtXsign(payload, secret);')).toBe(false);
+    expect(seesMint('    const token = JWT.sign(payload, secret);')).toBe(false);
+    expect(seesMint('  // invariant: no jwt.sign call mints before the INSERT')).toBe(false);
+    expect(seesMint('  // a second jwt.sign(...) here needs its own response assertion')).toBe(true);
+    expect(seesMint('    const token = jwt.verify(raw, secret);')).toBe(false);
+    expect(seesMint('    const token = myjwt.sign(payload, secret);')).toBe(false);
     // Each spelling the `JWT_MINT_RE` docblock names as unseen, pinned so
     // that sentence cannot outlive a change to the pattern. The wrapped member
     // is two lines, and neither is a match.
-    expect(JWT_MINT_RE.test('    const token = sign(payload, secret);')).toBe(false);
-    expect(JWT_MINT_RE.test('    const token = jsonwebtoken.sign(payload, secret);')).toBe(false);
-    expect(JWT_MINT_RE.test("    const token = jwt['sign'](payload, secret);")).toBe(false);
-    expect(JWT_MINT_RE.test('    const token = jwt?.sign(payload, secret);')).toBe(false);
-    expect(JWT_MINT_RE.test('    const token = jwt')).toBe(false);
-    expect(JWT_MINT_RE.test('      .sign(payload, secret);')).toBe(false);
-    expect(JWT_MINT_RE.test('    const mint = jwt.sign;')).toBe(false);
+    expect(seesMint('    const token = sign(payload, secret);')).toBe(false);
+    expect(seesMint('    const token = jsonwebtoken.sign(payload, secret);')).toBe(false);
+    expect(seesMint("    const token = jwt['sign'](payload, secret);")).toBe(false);
+    expect(seesMint('    const token = jwt?.sign(payload, secret);')).toBe(false);
+    expect(seesMint('    const token = jwt')).toBe(false);
+    expect(seesMint('      .sign(payload, secret);')).toBe(false);
+    expect(seesMint('    const mint = jwt.sign;')).toBe(false);
 
     const handler = (route: string, ...body: string[]) => [
       `router.post('${route}', async (req, res) => {`,
@@ -618,8 +639,9 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
     expect(tally(keysOf(twice.literal))).toEqual({ [keyed('/writes')]: 2 });
     expect(tally(keysOf(twice.literal))).not.toEqual(tally([keyed('/writes')]));
     expect(tally(keysOf(twice.literal))).toEqual(tally([keyed('/writes'), keyed('/writes')]));
-    // Two mints sharing a line are two entries, each classified from its own
-    // opening paren: the claimless one ends at its own close.
+    // Two mints sharing a line are two entries. Both read the whole line, so
+    // on one line they classify alike; where the second wraps, the first ends
+    // at its own close and only the second reaches the wrapped claim.
     const sameLine = scan(
       ...handler('/writes', "  const a = jwt.sign({ sub: username }, secret), b = jwt.sign({ sub: username, custody: 'self' }, secret);"),
     );
@@ -649,6 +671,23 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
     expect(tally(keysOf(atSettings.atHelperCallers))).toEqual({ [settingsKey]: 1 });
     expect(tally(ROW_READING_MINT_SITES)[settingsKey]).toBeUndefined();
 
+    // A literal or a claimless mint at a helper caller is still a literal or a
+    // claimless mint: being a caller moves only the variable ones.
+    const literalAtCaller = classifiedMints([{ rel: 'routes/auth.ts', lines: handler('/login', ...mintWith("custody: 'light'")) }]);
+    expect(tally(keysOf(literalAtCaller.literal))).toEqual({ [loginKey]: 1 });
+    const claimlessAtCaller = classifiedMints([{ rel: 'routes/auth.ts', lines: handler('/login', ...mintWith('iat: now')) }]);
+    expect(keysOf(claimlessAtCaller.unclassified)).toEqual([loginKey]);
+    // The caller test is on the whole key, not a prefix of it.
+    const nearCaller = classifiedMints([{ rel: 'routes/auth.ts', lines: handler('/log', ...mintWith('custody')) }]);
+    expect(tally(keysOf(nearCaller.carried))).toEqual({ 'routes/auth.ts#POST /log': 1 });
+    // The scan is not confined to route modules, and a mint on the line that
+    // opens its handler is keyed to that handler.
+    expect(keysOf(classifiedMints([{ rel: 'lib/session.ts', lines: ['export function mintSession(sub: string) {', '  return jwt.sign({ sub }, secret);', '}'] }]).unclassified)).toEqual(['lib/session.ts#mintSession']);
+    expect(
+      keysOf(scan(...handler('/writes', '  sendOk(res, {});'), "router.post('/inline', async (req, res) => res.json(jwt.sign({ sub: username, custody }, secret)));").all),
+    ).toEqual([keyed('/inline')]);
+    expect(tally(['a', 'a', 'a', 'b'])).toEqual({ a: 3, b: 1 });
+
     // A literal claim outranks a variable one when the call's lines carry both.
     expect(classifyMint(['const token = jwt.sign(', "  { sub: username, custody: 'self', meta: { custody } },", '  secret,', ');'], 0)).toBe('literal');
 
@@ -664,6 +703,12 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
     expect(mintPayload(['const token = jwt.sign({ sub: username }, secret);', 'sendOk(res, { token, custody });'], 0)).toBe(
       'const token = jwt.sign({ sub: username }, secret);\n',
     );
+    // The same end of walk on the path the tree scan takes, where the mint's
+    // column is handed in: the offset applies to the mint line alone, so the
+    // closing paren of a wrapped call is counted although it sits left of it.
+    expect(
+      scan(...handler('/omits', ...mintWith('iat: now'), '  sendOk(res, { token, custody });')).all.map((mint) => mint.source),
+    ).toEqual(['none']);
     // Parens are counted from the mint, so one closed ahead of it on the same
     // line does not cancel the mint's own opener, and the call's closing paren
     // ends the walk even when the line goes on to open another.
@@ -767,6 +812,11 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
     ];
     expect(classifyMint(mintWithClaimAt(STATEMENT_SCAN_CAP), 0)).toBe('variable');
     expect(classifyMint(mintWithClaimAt(STATEMENT_SCAN_CAP + 1), 0)).toBe('none');
+    // The same pair through the scan, which hands the walk a column.
+    const scanned = (linesBelow: number) =>
+      sessionMints([{ rel: 'routes/synthetic.ts', lines: mintWithClaimAt(linesBelow) }]).map((mint) => mint.source);
+    expect(scanned(STATEMENT_SCAN_CAP)).toEqual(['variable']);
+    expect(scanned(STATEMENT_SCAN_CAP + 1)).toEqual(['none']);
   });
 
   it('a derivation wrapped, optional-chained, bracketed, or destructured is still refused', () => {
