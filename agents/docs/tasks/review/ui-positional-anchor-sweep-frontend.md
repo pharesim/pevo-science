@@ -82,3 +82,35 @@ that carried "is covered by the test above" was replaced wholesale at 58ad7918, 
 hook's positional regex returns nothing over that file, the new
 `tests/e2e/consent-op-fresh-auth.spec.js`, or `tests/e2e/fixtures/light-account.js`.
 Seven items remain.
+
+UI implementation signal (2026-09-30, commit 473af3f9):
+
+Landed in `473af3f9` (verified an ancestor of `main`). Seven files, comment-only.
+
+- The hook's positional regex returns zero matches over `frontend/src` and
+  `frontend/tests`. Item 6 is not left as a carve-out: the sentence now reads
+  "between this re-check and the `mintViaPasswordFactor` call", so no exemption
+  is needed. The reasoning is in the commit message.
+- Eight sites were re-anchored, not seven. Items 2 to 8 of the filed list, plus
+  one the enumeration predates: `src/lib/ipfs-upload.js` "the table above",
+  now `UPLOAD_ERROR_TEXT`. Item 1 was already gone per the 2026-09-14 note.
+- Item 2 stays inside one file but points across describe blocks from the file
+  header, so the target is restated by the describe's title
+  ('real-backend ORCID null-password round-trips') rather than by position.
+- Each rewrite was checked against the code by an independent read-only pass
+  told to refute it. Seven held. One did not: "the assumed-password 401 case" in
+  `lib-settings-fresh-auth.test.js` matched three cases in that file, so it now
+  reads "the assumed-password 401 that lands after a subject change". Two
+  over-long re-wraps were reflowed in the same pass.
+- Frontend unit suite: 87 files, 1975 tests, exit 0 on two consecutive runs. One
+  earlier run failed only `lib-fresh-auth-session-window` "the slide never
+  pushes past the absolute cap" by 1ms, the known boundary flake.
+
+Not in scope, for the architect to route: the zero-match result is a statement
+about the hook's regex, not about the trees. A sweep for what the per-line,
+article-adjacent regex cannot see found one listed-noun form split across a
+line wrap (`src/pages/settings.js`, retry leg, "the guard" / "above just
+confirmed") and roughly 65 plural, counted or unlisted-noun forms ("the two
+tests below", "the assertion below", "every step below", "see below"), densest
+in `src/pages/settings.js` and the e2e specs. Promoting these trees to a
+whole-tree-clean gate would need those swept and the regex widened first.
