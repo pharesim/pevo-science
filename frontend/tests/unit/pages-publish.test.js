@@ -84,7 +84,7 @@ vi.mock('alpinejs', () => ({
 
 import Alpine from 'alpinejs';
 import { broadcastOps } from '../../src/signer.js';
-import { initPublishPage } from '../../src/pages/publish.js';
+import { initPublishPage, publishPageTemplate } from '../../src/pages/publish.js';
 
 function createComponent(overrides = {}) {
   initPublishPage();
@@ -1359,6 +1359,61 @@ describe('publishPage', () => {
       expect(mockStores.toast.show).toHaveBeenCalledWith('common.connectionFailed', 'error');
       expect(mockStores.toast.show.mock.calls[0][0]).not.toContain('sentinel');
       expect(warnSpy.mock.calls[0][1]).toBe(leaky);
+    });
+  });
+
+  // init() is the only production caller of _mountEditors: it schedules the
+  // mount through $nextTick, and the mount reads $refs.abstractEditor /
+  // $refs.bodyEditor to build one editor per ref. The _mountEditors
+  // teardown-during-init guard block invokes _mountEditors directly, so
+  // nothing there observes that init schedules a mount at all.
+  //
+  // One mechanic shapes the init-driven case. init discards the promise
+  // _mountEditors returns, and the mount reads $refs only after its dynamic
+  // import resolves, so init returning says nothing about the editors: wait
+  // on the mount's own effect. The wait polls tighter than vi.waitFor's 50ms
+  // default, which would otherwise charge a fixed 50ms for a state that
+  // settles a few microtask ticks away; the timeout stays at its default.
+  describe('init mounts the editors', () => {
+    let comp;
+
+    beforeEach(() => {
+      mockCreateEditor.mockClear();
+      comp = createComponent();
+    });
+
+    // init registers a window storage listener; destroy removes it so it
+    // does not outlive the case.
+    afterEach(() => {
+      comp.destroy();
+    });
+
+    it('builds one editor per ref present when init runs', async () => {
+      const abstractEl = {};
+      const bodyEl = {};
+      comp.$refs = { abstractEditor: abstractEl, bodyEditor: bodyEl };
+
+      comp.init();
+      await vi.waitFor(() => expect(mockCreateEditor).toHaveBeenCalledTimes(2), { interval: 1 });
+
+      expect(mockCreateEditor.mock.calls[0][0]).toBe(abstractEl);
+      expect(mockCreateEditor.mock.calls[1][0]).toBe(bodyEl);
+      expect(comp._editorsInitialized).toBe(true);
+      // init holds publish.js's only $nextTick call site, the one that
+      // schedules the mount, so the exact count pins that init dispatches
+      // through $nextTick exactly once: unwrapping the mount to an inline
+      // call drops the count to zero.
+      expect(comp.$nextTick).toHaveBeenCalledTimes(1);
+    });
+
+    // Template side of the ref pairing. The `builds one editor per ref
+    // present when init runs` case pins the code side (_mountEditors reads
+    // exactly the abstractEditor / bodyEditor $refs keys), so asserting
+    // publishPageTemplate carries both x-ref names makes a rename on either
+    // side of the pairing fail one of the two.
+    it('declares the x-ref names _mountEditors reads in the template', () => {
+      expect(publishPageTemplate).toContain('x-ref="abstractEditor"');
+      expect(publishPageTemplate).toContain('x-ref="bodyEditor"');
     });
   });
 
