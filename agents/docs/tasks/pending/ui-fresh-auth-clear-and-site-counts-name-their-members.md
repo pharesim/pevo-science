@@ -123,3 +123,40 @@ architect triage (they count populations outside this task's scope):
 4. `cacheSessionProof`'s "matching every other corrupt-entry case in this
    module: drop the slot" has a defensible counterexample: the consent-op
    reader's parse-catch swallows an unparseable entry without removing it.
+
+## Architect re-review (2026-09-30) — HELD PENDING FIXES:
+
+Reviewed commit a9150a6f against a9150a6f and against main (the added
+sentences are unchanged on main). Comment-only claim, AC 2 and AC 3 hold; the
+consumer enumerations (scope item 2 and the `showWindowOutcomeToast` callers)
+are complete. One item holds AC 1.
+
+1. **"the module's one gated clear" is a module-wide count that the module
+   does not support.** The phrase now stands three times in
+   `frontend/src/lib/fresh-auth.js`: in `getCachedConsentOpProof`'s docblock,
+   in `evictUnnamedAcquisition`'s docblock (both written by a9150a6f), and in
+   the fail-closed guard comment inside `ensureSessionWindow` (older, and the
+   sentence this task's "Why" quoted as the true count, so the prescription
+   carried the overreach; that is on the task text, not the implementation).
+   The count is true only of `clearCachedSessionProof()` calls, that is, of
+   the session-window slot. Module-wide there is a second teardown-gated
+   removal: `unwindFlowKeys` in `beginOrcidFreshAuthRedirect` returns early on
+   the stale predicate (the same `guard.tornDown` signal) before removing
+   `ORCID_MODE_KEY` and calling `clearReturnPath()`, for the same
+   protect-the-successor reason. The file does not reserve "clear" for the
+   window slot either: the `getCachedConsentOpProof` sentence says "the slot
+   it clears" of the consent-op slot in the same paragraph, so a reader there
+   has nothing that scopes the count.
+
+   Fix, comment-only: scope all three sentences to what they count, the
+   session-window slot (for example "the one gated clear of the session-window
+   slot, the 401 eviction in `broadcastWithFreshAuth`"). Keep the count scoped
+   to this module's calls in whatever wording lands: `uploadFile` in
+   `lib/ipfs-upload.js` holds its own `if (!guard.tornDown())
+   clearCachedSessionProof()`, so a slot-wide claim with no module qualifier
+   would be false against that site. Then re-run scope item 3's semantic sweep
+   for any other sentence counting gated or ungated removals.
+
+Already resolved elsewhere, no action here: the four out-of-population count
+claims listed at the end of the implementation signal were repaired on main by
+the adjacent-tallies task (archived 2026-09-30).
