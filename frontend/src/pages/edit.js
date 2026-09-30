@@ -1365,12 +1365,16 @@ export function initEditPage() {
           const canonicalAuthor = this.paper.canonical_author || this.paper.author;
           const canonicalPermlink = this.paper.canonical_permlink || this.paper.permlink;
           await invalidatePaperCache(canonicalAuthor, canonicalPermlink);
-          // The form stays interactive across that await, so a watched change
-          // there can arm the debounce, or fire it, or flush the draft
-          // synchronously, all after the post-broadcast clear. Re-clear ahead
-          // of the `_mounted` guard, for the reason the terminal catch's clear
-          // sits ahead of its own: a save that already fired left destroy()
-          // nothing to cancel, and the rewritten draft outlives the component.
+          // The form stays interactive across that await, and each writer has
+          // its own trigger there: a watched change arms the debounce, the
+          // armed save can fire, and a file selection flushes the draft
+          // synchronously through `_windowReady`, needing neither a watched
+          // change nor the debounce delay. All of it lands after the
+          // post-broadcast clear.
+          // Re-clear ahead of the `_mounted` guard, for the reason the
+          // terminal catch's clear sits ahead of its own: a save that already
+          // fired left destroy() nothing to cancel, and the rewritten draft
+          // outlives the component.
           this._clearDraft(draftKey);
           if (!this._mounted) return;
 

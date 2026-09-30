@@ -2810,8 +2810,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
     expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
   });
 
-  // Twin of the unmount-during-broadcast case on the other branch arm, and it
-  // takes the other exit.
+  // The continuation arm, through its rejecting-invalidation exit.
   // The continuation and same-author legs are mutually exclusive, so a fixture
   // resolving isContinuation false proves nothing about this one. A rejecting
   // invalidation is the exit the clear after the invalidation await cannot
@@ -3036,9 +3035,10 @@ describe('editPage draft carries the addressed-review ticks', () => {
 
   // The terminal catch clears only when the broadcast landed. A throw before
   // that point (a failed upload, a failed broadcast) has put nothing on
-  // chain, so the draft the entry gate flushed is still the user's work and
-  // the retry needs it. The guard sits ahead of either arm's landed marker,
-  // so one same-author case witnesses it for both arms.
+  // chain, so the draft `_windowReady` flushed is still the user's work and
+  // the retry needs it. Both arms share the one terminal catch, and a throw
+  // before the landing reaches its `if (landed)` guard with the marker still
+  // false whichever arm ran, so one same-author case witnesses that guard.
   it('a broadcast that fails before landing keeps the flushed draft', async () => {
     const { invalidatePaperCache } = await import('../../src/api.js');
     arrangeLoad([REV_ONE, REV_TWO]);
