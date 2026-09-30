@@ -342,7 +342,7 @@ const template = `
               <!-- Submit -->
               <div class="flex flex-col-reverse sm:flex-row items-start sm:items-center justify-between gap-3">
                 <p class="text-xs text-ink-muted" x-text="$t('edit.versionLabel', { version: String(nextVersion) })"></p>
-                <button type="submit" class="btn-primary w-full sm:w-auto shrink-0" :disabled="isSubmitting"
+                <button type="submit" class="btn-primary w-full sm:w-auto shrink-0" :disabled="isSubmitting || _landed"
                         x-text="isSubmitting ? $t('edit.saving') : (isContinuation ? $t('edit.publishRevision') : $t('edit.saveButton'))"></button>
               </div>
             </form>
@@ -398,6 +398,9 @@ export function initEditPage() {
     _bodyEditor: null,
     _draftTimer: null,
     _initialLoadDone: false,
+    // True from the moment a broadcast resolves with a result. Set only by
+    // _markLanded and never reset: a landed instance is finished.
+    _landed: false,
     _loadInFlight: false,
     _originalBody: '',
     _storageListener: null,
@@ -819,21 +822,65 @@ export function initEditPage() {
       this._draftTimer = setTimeout(() => this._writeDraft(), 2000);
     },
 
-    // Drop the saved draft and cancel any save the debounce still has armed.
-    // The cancel is the half that is easy to miss: the form stays interactive
-    // through the broadcast, so a change made after _windowReady's flush arms
-    // a timer that would fire inside the 1.5 s navigate() delay and write the
-    // draft straight back. The next visit would then restore it over the
-    // freshly fetched paper, ticks and all, and ticks alone pass the
-    // no-changes check.
+    // The broadcast resolved with a result, so this composer instance is
+    // finished (ARCHITECTURE.md § 8, "Landing is terminal"). One call does the
+    // three things that follow from that, and it is the only place a landed
+    // draft is removed:
+    //
+    // - the flag, which _writeDraft and handleSubmit read from then on. It
+    //   goes first so nothing here can end with the draft gone and the
+    //   instance still writing;
+    // - the debounce cancel. The form stays interactive through the broadcast,
+    //   so a change made after _windowReady's flush has a save armed. It would
+    //   fire into _writeDraft's refusal anyway; cancelling it leaves no timer
+    //   behind on an instance that may already be unmounted;
+    // - the removal, once. The form stays interactive after it too, and every
+    //   later writer is answered by the refusal in _writeDraft, not by a
+    //   second removal. A removal repeated past a later await would run by key
+    //   after the component is gone, where the entry under that key can be a
+    //   draft a later visit to the same paper wrote.
     //
     // The key is passed in rather than read from the draftKey getter, which
-    // derives from the router params: handleSubmit clears from positions an
-    // unmount can already have reached, and by then the params name whatever
-    // the user navigated to. Callers capture the key before their first await.
-    _clearDraft(key) {
+    // derives from the router params: a landing can be reached after an
+    // unmount, and by then the params name whatever the user navigated to.
+    // handleSubmit captures the key before its first await.
+    _markLanded(key) {
+      this._landed = true;
       if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }
       localStorage.removeItem(key);
+    },
+
+    // Everything past a broadcast that resolved with a result, shared by the
+    // continuation and same-author arms of handleSubmit. Nothing in here may
+    // end in the failure state: the post is on chain, so the user is told it
+    // succeeded.
+    //
+    // The order is the contract. _markLanded runs first and ahead of any
+    // `_mounted` check, because the draft outlives the component. The cache
+    // invalidation comes next and is also ahead of the `_mounted` check: the
+    // paper's readers need the eviction whether or not this component is
+    // still there to see it. It is best effort, caught where it is called, and
+    // a rejection is logged and changes nothing the user sees. It stays
+    // awaited so the navigate cannot outrun the eviction. Only the
+    // `step` write and the navigate timer belong to the component, so only
+    // they sit behind the guard.
+    //
+    // The canonical target is passed in, captured by handleSubmit ahead of the
+    // broadcast, so nothing here reads `this.paper` on an instance that may
+    // already be unmounted.
+    async _finishLanded(draftKey, canonicalAuthor, canonicalPermlink) {
+      this._markLanded(draftKey);
+      try {
+        await invalidatePaperCache(canonicalAuthor, canonicalPermlink);
+      } catch (err) {
+        // Sanitization pattern (see executeUpgrade() in settings.js).
+        console.warn('[edit invalidate]', err);
+      }
+      if (!this._mounted) return;
+      this.step = 'success';
+      this._setTimer(() => {
+        this.navigate(`/paper/${canonicalAuthor}/${canonicalPermlink}`);
+      }, 1500);
     },
 
     // Persist the draft now and cancel any pending debounce. Called before an
@@ -851,8 +898,15 @@ export function initEditPage() {
     // only at the scheduler: a flush can fire from a gate before the paper has
     // loaded, and writing the empty form then would overwrite a real draft
     // with nothing.
+    //
+    // The landed refusal belongs here for the same reason: the debounce and
+    // the flush both end in this function, so a refusal at the scheduler alone
+    // would leave every gate's flush writing the spent draft back. The
+    // scheduler is deliberately left alone, and a timer armed after the
+    // landing fires into this refusal.
     _writeDraft() {
       if (!this._initialLoadDone) return;
+      if (this._landed) return;
       const draft = {
         title: this.title, abstract: this.abstract, body: this.body,
         keywordsText: this.keywordsText, authorName: this.authorName,
@@ -1097,6 +1151,13 @@ export function initEditPage() {
     },
 
     async handleSubmit() {
+      // A landed instance accepts no further submit, and the refusal is ahead
+      // of every gate and of the `step` write so it leaves no trace. A native
+      // edit still holds the pre-edit body as its diff base, so a second one
+      // would send a patch against a body the chain no longer holds. A
+      // continuation mints its permlink further down in this function, so a
+      // second one would be a second post.
+      if (this._landed) return;
       const username = this.username;
       if (!username || !this.isConnected) return;
       // Block submission if any author entry lacks a name, instead of
@@ -1119,17 +1180,10 @@ export function initEditPage() {
       const isContinuation = this.isContinuation;
       const ownPost = this.userPostInChain;
       // Capture the draft key for the same reason, one position later in the
-      // sequence: the clear that spends it runs past awaits an unmount can
+      // sequence: the landing that spends it runs past awaits an unmount can
       // interleave with, and the draftKey getter reads the router params, which
       // by then name whatever the user navigated to.
       const draftKey = this.draftKey;
-      // True once either branch's broadcast is on chain and its post-broadcast
-      // _clearDraft has run. The terminal catch reads it: the cache
-      // invalidation is an await the form stays interactive across, so a
-      // watched change there re-arms the debounce after that clear, and a
-      // rejecting invalidation would otherwise leave the timer to write the
-      // spent draft back behind the landed post.
-      let landed = false;
 
       // Leave 'idle' synchronously, before the first await. `isSubmitting`
       // derives from `step`, and it is what disables the submit button — across
@@ -1206,6 +1260,12 @@ export function initEditPage() {
         const targetAuthor = ownPost ? ownPost.author : this.paper.author;
         const targetPermlink = ownPost ? ownPost.permlink : this.paper.permlink;
         const targetIsHead = targetAuthor === headAuthor && targetPermlink === headPermlink;
+        // Where the cache invalidation and the post-success navigate point,
+        // whichever arm runs: the paper-detail endpoint resolves any chain
+        // entry to its canonical root before reading. Captured here with the
+        // other targets so _finishLanded reads nothing from `this.paper`.
+        const canonicalAuthor = this.paper.canonical_author || this.paper.author;
+        const canonicalPermlink = this.paper.canonical_permlink || this.paper.permlink;
 
         // Detect a submit that would change nothing BEFORE paying for the
         // re-auth window. Everything it reads is already in hand and costs
@@ -1344,44 +1404,16 @@ export function initEditPage() {
             // case (the page navigates away) and the 403 username_mismatch
             // disconnect+toast case (no navigation). Reset the step so the UI
             // does not hang at 'broadcasting' in the latter. A pending redirect
-            // is not a landed post, so it keeps its draft: the round-trip is
-            // exactly what the draft exists to survive.
+            // is not a landing, so it keeps its draft and the instance stays
+            // submittable: the round-trip is exactly what the draft exists to
+            // survive.
             if (!this._mounted) return;
             this.step = 'idle';
             return;
           }
 
-          // The post is on chain, so the draft is spent — drop it here, ahead
-          // of both exits that stand between this point and the clear after
-          // the invalidation await. An unmount takes the `_mounted` guard
-          // below, and a rejecting invalidation throws to the terminal catch;
-          // either one left the flushed draft behind a landed post, and a
-          // restored tick alone passes the no-changes check on the next visit.
-          this._clearDraft(draftKey);
-          landed = true;
-          if (!this._mounted) return;
-
-          // Invalidate cache for the canonical paper
-          const canonicalAuthor = this.paper.canonical_author || this.paper.author;
-          const canonicalPermlink = this.paper.canonical_permlink || this.paper.permlink;
-          await invalidatePaperCache(canonicalAuthor, canonicalPermlink);
-          // The form stays interactive across that await, and each writer has
-          // its own trigger there: a watched change arms the debounce, the
-          // armed save can fire, and a file selection flushes the draft
-          // synchronously through `_windowReady`, needing neither a watched
-          // change nor the debounce delay. All of it lands after the
-          // post-broadcast clear.
-          // Re-clear ahead of the `_mounted` guard, for the reason the
-          // terminal catch's clear sits ahead of its own: a save that already
-          // fired left destroy() nothing to cancel, and the rewritten draft
-          // outlives the component.
-          this._clearDraft(draftKey);
-          if (!this._mounted) return;
-
-          this.step = 'success';
-          this._setTimer(() => {
-            this.navigate(`/paper/${canonicalAuthor}/${canonicalPermlink}`);
-          }, 1500);
+          // The broadcast resolved with a result: the instance is finished.
+          await this._finishLanded(draftKey, canonicalAuthor, canonicalPermlink);
         } else {
           // Same-author native edit against the post resolved above.
           //
@@ -1450,37 +1482,18 @@ export function initEditPage() {
             return;
           }
 
-          // See the continuation branch: the edit is on chain, so the draft is
-          // spent before the `_mounted` guard or the invalidation can end this
-          // function without it.
-          this._clearDraft(draftKey);
-          landed = true;
-          if (!this._mounted) return;
-
-          // Cache invalidation keys off the canonical root, not the
-          // edit target — the paper-detail endpoint resolves any chain
-          // entry to its canonical root before reading.
-          const canonicalAuthor = this.paper.canonical_author || this.paper.author;
-          const canonicalPermlink = this.paper.canonical_permlink || this.paper.permlink;
-          await invalidatePaperCache(canonicalAuthor, canonicalPermlink);
-          // See the continuation branch: re-clear what the interactive window
-          // across the invalidation await wrote back, ahead of the guard.
-          this._clearDraft(draftKey);
-          if (!this._mounted) return;
-
-          this.step = 'success';
-          this._setTimer(() => {
-            this.navigate(`/paper/${canonicalAuthor}/${canonicalPermlink}`);
-          }, 1500);
+          // See the continuation branch: the instance is finished.
+          await this._finishLanded(draftKey, canonicalAuthor, canonicalPermlink);
         }
       } catch (err) {
-        // A rejecting cache invalidation lands here with the post already on
-        // chain and its draft already spent: re-clear, so a debounce a
-        // keystroke armed across that await cannot write the spent draft
-        // back (see _clearDraft). Ahead of the `_mounted` guard for the same
-        // reason the post-broadcast clears are: the draft outlives the
-        // component. Pre-broadcast throws keep their draft — nothing landed.
-        if (landed) this._clearDraft(draftKey);
+        // Everything that reaches this catch threw before a broadcast call
+        // resolved, for example a failed upload or a broadcast that rejected.
+        // Nothing past the landing can get here, since _finishLanded catches
+        // its own one fallible step. What the code knows is only that the call did
+        // not resolve, and a broadcast can reject with the transaction on
+        // chain (ARCHITECTURE.md § 8, Limits). The draft is kept either way,
+        // and the instance keeps drafting and stays submittable, because
+        // losing typed work is the worse outcome.
         if (!this._mounted) return;
         this.step = 'error';
         // Sanitization pattern (see executeUpgrade() in settings.js).

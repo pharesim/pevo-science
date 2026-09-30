@@ -321,7 +321,7 @@ const template = `
           <div class="flex flex-col-reverse sm:flex-row items-start sm:items-center justify-between gap-3">
             <p class="text-xs text-ink-muted" x-text="$t('publish.permanentNotice')"></p>
             <template x-if="isAccredited">
-              <button type="submit" class="btn-primary w-full sm:w-auto shrink-0" :disabled="isSubmitting || txBlock"
+              <button type="submit" class="btn-primary w-full sm:w-auto shrink-0" :disabled="isSubmitting || txBlock || _landed"
                       x-text="isSubmitting ? $t('publish.publishing') : $t('publish.publishButton')"></button>
             </template>
             <template x-if="!isAccredited && !isConnected">
@@ -371,6 +371,9 @@ export function initPublishPage() {
     draftSavedAt: null,
     _draftTimer: null,
     _initialLoadDone: false,
+    // True from the moment the broadcast resolves with a result. Set only by
+    // _markLanded and never reset: a landed instance is finished.
+    _landed: false,
     _storageListener: null,
 
     maxUploadSizeMB: getMaxUploadSizeMB(),
@@ -564,6 +567,27 @@ export function initPublishPage() {
       this._draftTimer = setTimeout(() => this._writeDraft(), 2000);
     },
 
+    // The broadcast resolved with a result, so this composer instance is
+    // finished (ARCHITECTURE.md § 8, "Landing is terminal"). One call does the
+    // three things that follow from that, and it is the only place a landed
+    // draft is removed:
+    //
+    // - the flag, which _writeDraft and handleSubmit read from then on. It
+    //   goes first so nothing here can end with the draft gone and the
+    //   instance still writing;
+    // - the debounce cancel. The form stays interactive through the broadcast,
+    //   so a change made in its last two seconds has a save armed. It would
+    //   fire into _writeDraft's refusal anyway; cancelling it leaves no timer
+    //   behind on an instance that may already be unmounted;
+    // - the removal, once. The form stays interactive after it too, and every
+    //   later writer is answered by the refusal in _writeDraft, not by a
+    //   second removal.
+    _markLanded() {
+      this._landed = true;
+      if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }
+      localStorage.removeItem(DRAFT_KEY);
+    },
+
     // Persist the draft now and cancel any pending debounce. Called before an
     // acquisition that may navigate: the debounce above means the keystrokes
     // just before a submit are still only in component state, and a full-page
@@ -579,8 +603,17 @@ export function initPublishPage() {
     // only at the scheduler: a flush can fire from a gate before the restore
     // has run, and writing the empty form then would overwrite a real draft
     // with nothing.
+    //
+    // The landed refusal belongs here for the same reason: the debounce and
+    // the flush both end in this function, so a refusal at the scheduler alone
+    // would leave every gate's flush writing the spent draft back. It sits
+    // ahead of the empty-form removal as well as the write, since every visit
+    // to this page shares the one key and a finished instance has no business
+    // touching what is under it. The scheduler is deliberately left alone, and
+    // a timer armed after the landing fires into this refusal.
     _writeDraft() {
       if (!this._initialLoadDone) return;
+      if (this._landed) return;
       const hasContent = this.title.trim() || this.abstract.trim() || this.body.trim();
       if (!hasContent) {
         localStorage.removeItem(DRAFT_KEY);
@@ -876,6 +909,11 @@ export function initPublishPage() {
     },
 
     async handleSubmit() {
+      // A landed instance accepts no further submit, and the refusal is ahead
+      // of every gate, the confirm dialog and the `step` write so it leaves no
+      // trace. The permlink is minted further down in this function, so a
+      // second submit would be a second post.
+      if (this._landed) return;
       const username = this.username;
       if (!username || !this.isConnected || !this.authorName.trim()) return;
       if (!this.isAccredited) return;
@@ -1081,24 +1119,39 @@ export function initPublishPage() {
           }],
         ];
         const broadcastResult = await broadcastWithFreshAuth(username, operations, { allowRedirect: false });
-        if (!this._mounted) return;
         // FRESH_AUTH_REDIRECT_PENDING covers both the in-flight ORCID redirect
         // (broadcast will resume post-callback) AND the 403 username_mismatch
         // case where broadcastWithFreshAuth has already disconnected + toasted.
         // In the latter case the page won't navigate away, so the step
         // machine must be reset out of 'broadcasting' or the UI hangs
-        // forever showing the in-progress spinner.
+        // forever showing the in-progress spinner. A pending redirect is not
+        // a landing, so it keeps its draft and the instance stays
+        // submittable: the round-trip is exactly what the draft exists to
+        // survive. The `step` write belongs to the component, hence the guard.
         if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) {
+          if (!this._mounted) return;
           this.step = 'idle';
           return;
         }
 
+        // The broadcast resolved with a result: the instance is finished.
+        // Ahead of the `_mounted` guard, because the draft outlives the
+        // component: a user who left during the broadcast would otherwise be
+        // offered the draft of a paper that is on chain on the next visit.
+        this._markLanded();
+        if (!this._mounted) return;
+
         this.step = 'success';
-        localStorage.removeItem(DRAFT_KEY);
         this._setTimer(() => {
           this.navigate(`/paper/${username}/${permlink}`);
         }, 1500);
       } catch (err) {
+        // Everything that reaches this catch threw before the broadcast call
+        // resolved: nothing past the landing awaits. What the code knows
+        // is only that the call did not resolve, and a broadcast can reject
+        // with the transaction on chain (ARCHITECTURE.md § 8, Limits). The
+        // draft is kept either way, and the instance keeps drafting and stays
+        // submittable, because losing typed work is the worse outcome.
         if (!this._mounted) return;
         this.step = 'error';
         // Sanitization pattern (see executeUpgrade() in settings.js).

@@ -88,7 +88,7 @@ vi.mock('alpinejs', () => ({
 
 import Alpine from 'alpinejs';
 import { broadcastOps } from '../../src/signer.js';
-import { fetchPaper, fetchPaperEnrichment } from '../../src/api.js';
+import { fetchPaper, fetchPaperEnrichment, invalidatePaperCache } from '../../src/api.js';
 import { clearPasswordFactorMemo } from '../../src/lib/fresh-auth.js';
 import { initEditPage, editPageTemplate } from '../../src/pages/edit.js';
 
@@ -2079,14 +2079,41 @@ describe('editPage re-auth window ordering', () => {
     );
   });
 
-  // A broadcast leg that resolves to the redirect-pending sentinel has landed
-  // nothing, so the draft the entry gate flushed is what survives the
-  // round-trip or the refusal — the draft-keep half of the invariant whose
-  // step-goes-idle half the remintable-401 specs above pin. The
-  // post-broadcast clear sits below the pending check precisely so this path
-  // cannot reach it, and the four cases here are what hold it there: one per
-  // branch arm, mounted and unmounted.
-  it('same-author posture: the redirect-pending broadcast keeps the flushed draft', async () => {
+  // A broadcast leg that resolves to the redirect-pending sentinel is not a
+  // landing, so the draft the entry gate flushed is what survives the
+  // round-trip or the refusal. That is the draft-keep half of the invariant
+  // whose step-goes-idle half the remintable-401 specs pin. Each arm returns
+  // from its pending check before it reaches `_finishLanded`, and nothing
+  // ahead of the broadcast raises the landed flag, so the instance is still
+  // what it was before the submit: it drafts, and it accepts another submit.
+  // The four redirect-pending cases hold both halves, one per branch arm,
+  // mounted and unmounted. A flag raised ahead of the broadcast would stop
+  // drafting for the rest of the visit without any visible sign, which is why
+  // the mounted pair goes on to stage a later change and a later submit.
+  //
+  // `$watch` is mocked in this harness, so the scheduler stands in for the
+  // watcher a later change would trigger. The later submit is observed at
+  // `_windowReady`, stubbed to refuse: what the gate does for this account is
+  // not the point, only that handleSubmit got as far as asking it.
+  async function expectStillDraftingAndSubmittable(comp, key) {
+    vi.useFakeTimers();
+    try {
+      comp.title = 'Retitled After The Refusal';
+      comp._scheduleDraftSave();
+      vi.advanceTimersByTime(2000);
+      expect(JSON.parse(localStorage.getItem(key)))
+        .toMatchObject({ title: 'Retitled After The Refusal' });
+    } finally {
+      vi.useRealTimers();
+    }
+    const gate = vi.spyOn(comp, '_windowReady').mockResolvedValue(false);
+    await comp.handleSubmit();
+    expect(gate).toHaveBeenCalledTimes(1);
+    expect(comp.step).toBe('idle');
+    expect(comp._landed).toBe(false);
+  }
+
+  it('same-author posture: the redirect-pending broadcast keeps the flushed draft and the instance stays drafting and submittable', async () => {
     mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
     sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify({
       token: 'live-window',
@@ -2112,10 +2139,13 @@ describe('editPage re-auth window ordering', () => {
     expect(comp.step).toBe('idle');
     expect(JSON.parse(localStorage.getItem('pevo-draft-edit-alice-p1')))
       .toMatchObject({ title: 'Retitled Before The Refusal' });
+
+    await expectStillDraftingAndSubmittable(comp, 'pevo-draft-edit-alice-p1');
+    expect(broadcastOps).toHaveBeenCalledTimes(1);
     localStorage.removeItem('pevo-draft-edit-alice-p1');
   });
 
-  it('continuation posture: the redirect-pending broadcast keeps the flushed draft', async () => {
+  it('continuation posture: the redirect-pending broadcast keeps the flushed draft and the instance stays drafting and submittable', async () => {
     mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
     sessionStorage.setItem('pevo_fresh_auth_session_proof', JSON.stringify({
       token: 'live-window',
@@ -2141,6 +2171,9 @@ describe('editPage re-auth window ordering', () => {
     expect(comp.step).toBe('idle');
     expect(JSON.parse(localStorage.getItem('pevo-draft-edit-alice-p1')))
       .toMatchObject({ title: 'Retitled Before The Refusal', authorName: 'Bob' });
+
+    await expectStillDraftingAndSubmittable(comp, 'pevo-draft-edit-alice-p1');
+    expect(broadcastOps).toHaveBeenCalledTimes(1);
     localStorage.removeItem('pevo-draft-edit-alice-p1');
   });
 
@@ -2639,10 +2672,10 @@ describe('editPage draft carries the addressed-review ticks', () => {
     comp.destroy();
   });
 
-  // The ticks live inside the one draft object, so the post-success clear
-  // takes them with the text: the next visit starts from the chain, not from
-  // a tick the revision already addressed.
-  it('the post-success draft clear takes the ticks with it', async () => {
+  // The ticks live inside the one draft object, so the landing clear takes
+  // them with the text: the next visit starts from the chain, not from a tick
+  // the revision already addressed.
+  it('the landing clear takes the ticks with it', async () => {
     broadcastOps.mockResolvedValue({ tx_id: 'tx' });
     const { invalidatePaperCache } = await import('../../src/api.js');
     invalidatePaperCache.mockResolvedValue({});
@@ -2701,41 +2734,408 @@ describe('editPage draft carries the addressed-review ticks', () => {
     }
   });
 
-  // The post-success clear removes the draft, but a save the debounce still
-  // has armed writes it straight back inside the 1.5 s navigate() delay. The
-  // resurrected draft carries the ticks the revision just addressed, and ticks
-  // alone pass the no-changes check, so the next visit can re-declare
-  // addresses_reviews on an otherwise no-op edit. The form stays interactive
-  // while step is 'broadcasting', and _windowReady's flush is behind us by
-  // then, so a change made there is the one the clear has to answer for.
-  it('the post-success clear cancels a save the debounce still has armed', async () => {
+  // Landing is terminal for a composer instance (ARCHITECTURE.md § 8). A
+  // broadcast call that resolves with a result ends the instance through
+  // `_finishLanded`: `_markLanded` raises the landed flag, cancels the
+  // debounce and removes the draft once, by the key handleSubmit captured
+  // before its first await. The cache invalidation runs next, best effort and
+  // mounted or not. Only the `step` write and the navigate timer sit behind
+  // the `_mounted` guard. From then on `_writeDraft` refuses every writer and
+  // handleSubmit refuses every submit.
+  //
+  // The two arms of handleSubmit share that tail. The landing specs pin each
+  // tail behavior on one arm, and each arm's entry into the tail on its own:
+  // the two unmount-during-the-broadcast specs go red when their arm stops
+  // calling `_finishLanded`.
+  //
+  // `$watch` is mocked in this harness, so the scheduler stands in for the
+  // watcher a changed field would trigger. loadPaperData leaves
+  // `_initialLoadDone` true, and every "nothing was written" assertion
+  // depends on that: `_writeDraft` is a no-op before the load, so a spec
+  // built on an unloaded component would pass with no barrier at all.
+  async function sameAuthorForm() {
+    arrangeLoad([REV_ONE, REV_TWO]);
+    const comp = loadedComponent();
+    await comp.loadPaperData();
+    comp.authorName = 'Alice';
+    comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
+    // Fixture-posture proof: the same-author branch, on a loaded component.
+    expect(comp.isContinuation).toBe(false);
+    expect(comp._initialLoadDone).toBe(true);
+    return comp;
+  }
+
+  async function continuationForm() {
+    arrangeLoad([REV_ONE, REV_TWO], {
+      authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }],
+    });
+    const comp = loadedComponent();
+    mockStores.auth.username = 'bob';
+    await comp.loadPaperData();
+    comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
+    // Fixture-posture proof: the continuation branch, on a loaded component.
+    expect(comp.isContinuation).toBe(true);
+    expect(comp._initialLoadDone).toBe(true);
+    return comp;
+  }
+
+  // A file-input change event. The selection goes through `_windowReady`,
+  // whose flush writes the draft synchronously: the one writer that needs
+  // neither a watched change nor the debounce delay.
+  function fileSelection() {
+    return { target: { files: [{ name: 'more.csv', size: 10 }], value: 'C:\\fakepath\\more.csv' } };
+  }
+
+  // The form stays interactive while step is 'broadcasting', and
+  // `_windowReady`'s flush is behind us by then, so a change made there
+  // leaves a save armed across the landing. `_markLanded` cancels it. Storage
+  // cannot show the cancel, because an uncancelled timer would fire into
+  // `_writeDraft`'s refusal and write nothing either way. Two things can: the
+  // timer handle, and whether the armed save ever calls `_writeDraft` once the
+  // debounce delay has passed. The call count is the behavioral half, and it
+  // is what tells a real cancel from a handle that was only set to null. What
+  // the cancel buys is that a landed instance, which may already be
+  // unmounted, leaves no timer behind.
+  it('the landing cancels a save the debounce still has armed', async () => {
     vi.useFakeTimers();
     try {
-      const { invalidatePaperCache } = await import('../../src/api.js');
       invalidatePaperCache.mockResolvedValue({});
-      arrangeLoad([REV_ONE, REV_TWO]);
+      const comp = await sameAuthorForm();
 
-      const comp = loadedComponent();
-      await comp.loadPaperData();
-      comp.authorName = 'Alice';
-      comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
-
-      // A keystroke landing while the edit is in flight. $watch is mocked in
-      // this harness, so the scheduler stands in for the watcher it registers.
+      // A keystroke landing while the edit is in flight. The handle is
+      // captured so the armed state is proven from outside the mock.
+      let timerDuringBroadcast = null;
       broadcastOps.mockImplementation(async () => {
         comp.title = 'Retitled while the edit was in flight';
         comp._scheduleDraftSave();
+        timerDuringBroadcast = comp._draftTimer;
         return { tx_id: 'tx' };
       });
+
+      await comp.handleSubmit();
+
+      // Non-vacuous: the debounce really was armed when the broadcast resolved.
+      expect(timerDuringBroadcast).not.toBe(null);
+      expect(comp.step).toBe('success');
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+
+      // Watch the writer from here on. The spy calls through, and the armed
+      // save resolves `_writeDraft` on the component when it fires, so a save
+      // that survived the landing shows up as a call.
+      const writer = vi.spyOn(comp, '_writeDraft');
+      vi.advanceTimersByTime(2000);
+
+      expect(writer).not.toHaveBeenCalled();
+      expect(comp._draftTimer).toBe(null);
+      comp.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Twin of `the landing cancels a save the debounce still has armed` on the
+  // continuation arm, so the cancel in `_markLanded` has a catcher on each
+  // arm. The handle is also read the moment handleSubmit returns, before any
+  // time passes: a landed instance holds no armed save at all, which is a
+  // stronger claim than the armed save never reaching the writer.
+  it('the continuation landing cancels a save the debounce still has armed', async () => {
+    vi.useFakeTimers();
+    try {
+      invalidatePaperCache.mockResolvedValue({});
+      const comp = await continuationForm();
+
+      let timerDuringBroadcast = null;
+      broadcastOps.mockImplementation(async () => {
+        comp.title = 'Retitled while the revision was in flight';
+        comp._scheduleDraftSave();
+        timerDuringBroadcast = comp._draftTimer;
+        return { tx_id: 'tx' };
+      });
+
+      await comp.handleSubmit();
+
+      // Non-vacuous: the debounce really was armed when the broadcast resolved.
+      expect(timerDuringBroadcast).not.toBe(null);
+      expect(comp.step).toBe('success');
+      expect(comp._draftTimer).toBe(null);
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+
+      const writer = vi.spyOn(comp, '_writeDraft');
+      vi.advanceTimersByTime(2000);
+
+      expect(writer).not.toHaveBeenCalled();
+      expect(comp._draftTimer).toBe(null);
+      comp.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Leaving the page while the broadcast is in flight must cost neither the
+  // landing clear nor the cache invalidation. The draft outlives the
+  // component, and a spent one restores ticks the revision already addressed;
+  // ticks alone pass the no-changes check, so an otherwise no-op resubmit
+  // would re-declare addresses_reviews. The paper's readers need the eviction
+  // whether or not this component is there to see it, or they are served the
+  // pre-edit paper until the cache entry expires. So both run ahead of the
+  // `_mounted` guard, and only `step` and the navigate timer stay behind it.
+  //
+  // By the time the broadcast resolves, the router params name the page the
+  // user went to, which holds a draft of its own. The landing clear uses the
+  // key handleSubmit captured before its first await, not the draftKey
+  // getter, so that draft is left alone and the spent one is the one removed.
+  it('an unmount during the broadcast still drops the draft the landed edit spent', async () => {
+    vi.useFakeTimers();
+    const OTHER_KEY = 'pevo-draft-edit-bob-p9';
+    try {
+      invalidatePaperCache.mockResolvedValue({});
+      const comp = await sameAuthorForm();
+
+      let draftDuringBroadcast = null;
+      broadcastOps.mockImplementation(async () => {
+        draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+        comp.destroy();
+        mockStores.router.params = { author: 'bob', permlink: 'p9' };
+        localStorage.setItem(OTHER_KEY, storedDraft());
+        return { tx_id: 'tx' };
+      });
+
+      await comp.handleSubmit();
+
+      expect(broadcastOps).toHaveBeenCalledTimes(1);
+      // Non-vacuous: the gate's flush wrote the ticked draft, so the landing
+      // clear has something to drop, and the getter now names the other paper.
+      expect(JSON.parse(draftDuringBroadcast).addressedReviews).toEqual([addressed(REV_ONE)]);
+      expect(comp.draftKey).toBe(OTHER_KEY);
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      expect(localStorage.getItem(OTHER_KEY)).toBe(storedDraft());
+      expect(invalidatePaperCache).toHaveBeenCalledTimes(1);
+      expect(invalidatePaperCache).toHaveBeenCalledWith('alice', 'p1');
+      // The component is gone, so its step and its navigate stay untouched.
+      expect(comp.step).toBe('broadcasting');
+      vi.advanceTimersByTime(3000);
+      expect(mockStores.router.navigate).not.toHaveBeenCalled();
+    } finally {
+      mockStores.router.params = { author: 'alice', permlink: 'p1' };
+      vi.useRealTimers();
+    }
+  });
+
+  // Twin of `an unmount during the broadcast still drops the draft the landed
+  // edit spent` on the continuation arm. The continuation and same-author
+  // legs are mutually exclusive, so a fixture resolving isContinuation false
+  // proves nothing about this arm's entry into `_finishLanded`.
+  it('an unmount during the continuation broadcast still drops the draft the landed post spent', async () => {
+    vi.useFakeTimers();
+    const OTHER_KEY = 'pevo-draft-edit-bob-p9';
+    try {
+      invalidatePaperCache.mockResolvedValue({});
+      const comp = await continuationForm();
+
+      let draftDuringBroadcast = null;
+      broadcastOps.mockImplementation(async () => {
+        draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+        comp.destroy();
+        mockStores.router.params = { author: 'bob', permlink: 'p9' };
+        localStorage.setItem(OTHER_KEY, storedDraft());
+        return { tx_id: 'tx' };
+      });
+
+      await comp.handleSubmit();
+
+      expect(broadcastOps).toHaveBeenCalledTimes(1);
+      // Non-vacuous: the gate's flush wrote the ticked draft, so the landing
+      // clear has something to drop, and the getter now names the other paper.
+      expect(JSON.parse(draftDuringBroadcast).addressedReviews).toEqual([addressed(REV_ONE)]);
+      expect(comp.draftKey).toBe(OTHER_KEY);
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      expect(localStorage.getItem(OTHER_KEY)).toBe(storedDraft());
+      expect(invalidatePaperCache).toHaveBeenCalledTimes(1);
+      expect(invalidatePaperCache).toHaveBeenCalledWith('alice', 'p1');
+      expect(comp.step).toBe('broadcasting');
+      vi.advanceTimersByTime(3000);
+      expect(mockStores.router.navigate).not.toHaveBeenCalled();
+    } finally {
+      mockStores.router.params = { author: 'alice', permlink: 'p1' };
+      vi.useRealTimers();
+    }
+  });
+
+  // The post is on chain by the time the invalidation is requested, so a
+  // rejection there is not a failed edit. The route is authenticated and rate
+  // limited, and a 401 or a 429 rejects as readily as a network error.
+  // Reporting any of them as `common.editFailed` invites a second submit of a
+  // post that landed. `_finishLanded` catches the rejection where it awaits
+  // the call, logs the raw error, and carries on to the same success state a
+  // resolving invalidation reaches.
+  it('a rejecting cache invalidation still ends in success, with the rejection logged and the navigate armed', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const rejection = new Error('invalidate unavailable');
+      invalidatePaperCache.mockRejectedValue(rejection);
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      const comp = await continuationForm();
+
+      await comp.handleSubmit();
+
+      expect(broadcastOps).toHaveBeenCalledTimes(1);
+      // Non-vacuous: the invalidation was requested, and it is what rejected.
+      expect(invalidatePaperCache).toHaveBeenCalledTimes(1);
+      expect(comp.step).toBe('success');
+      expect(comp.errorMessage).toBe('');
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith('[edit invalidate]', rejection);
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+
+      expect(mockStores.router.navigate).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1500);
+      expect(mockStores.router.navigate).toHaveBeenCalledTimes(1);
+      expect(mockStores.router.navigate).toHaveBeenCalledWith('/paper/alice/p1');
+      comp.destroy();
+    } finally {
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  // A keystroke inside the invalidation await arms the debounce after the
+  // landing clear has run, and nothing past the landing cancels it. The
+  // scheduler is deliberately not where the refusal lives, so the timer is
+  // armed and does fire, two seconds later, into `_writeDraft`'s refusal.
+  // Rejections correlate with slow networks, which is when that window is
+  // widest.
+  it('a save armed during a rejecting invalidation fires into the write barrier', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const comp = await sameAuthorForm();
+
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      // The timer handle is captured and asserted once handleSubmit has
+      // returned: an assertion throwing inside the mock would be swallowed by
+      // the catch in `_finishLanded` that the rejection feeds.
+      let timerDuringInvalidation = null;
+      invalidatePaperCache.mockImplementation(async () => {
+        comp.title = 'Retitled while the invalidation was in flight';
+        comp._scheduleDraftSave();
+        timerDuringInvalidation = comp._draftTimer;
+        throw new Error('invalidate unavailable');
+      });
+
+      await comp.handleSubmit();
+
+      // Non-vacuous: the debounce really was armed inside the window, and it
+      // is still armed, so the save does fire.
+      expect(timerDuringInvalidation).not.toBe(null);
+      expect(comp._draftTimer).toBe(timerDuringInvalidation);
+      expect(comp.step).toBe('success');
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+
+      vi.advanceTimersByTime(2000);
+
+      expect(comp._draftTimer).toBe(timerDuringInvalidation);
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      comp.destroy();
+    } finally {
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  // The resolving counterpart of `a save armed during a rejecting
+  // invalidation fires into the write barrier`, with the save FIRING inside
+  // the invalidation await
+  // and the user leaving before the await settles. destroy() has nothing
+  // pending to cancel by then, and nothing past the landing removes the entry
+  // a second time, so the barrier is all that keeps the spent draft out of
+  // storage. The await can hang up to the request timeout, which is the
+  // window a user leaves through.
+  it('a save armed and fired inside the invalidation await writes nothing', async () => {
+    vi.useFakeTimers();
+    try {
+      const comp = await sameAuthorForm();
+
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      let timerDuringInvalidation = null;
+      let draftAfterFire = 'unset';
+      invalidatePaperCache.mockImplementation(async () => {
+        comp.title = 'Retitled while the invalidation was in flight';
+        comp._scheduleDraftSave();
+        timerDuringInvalidation = comp._draftTimer;
+        vi.advanceTimersByTime(2000);
+        draftAfterFire = localStorage.getItem(DRAFT_KEY);
+        comp.destroy();
+        return {};
+      });
+
+      await comp.handleSubmit();
+
+      expect(broadcastOps).toHaveBeenCalledTimes(1);
+      // Non-vacuous: the scheduler did arm the save that then fired.
+      expect(timerDuringInvalidation).not.toBe(null);
+      expect(draftAfterFire).toBe(null);
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      expect(comp.step).toBe('broadcasting');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A file selection is the writer a refusal at the scheduler would miss: it
+  // reaches `_writeDraft` through `_windowReady`'s flush, synchronously, with
+  // no watched change and no debounce. The refusal therefore has to sit in
+  // `_writeDraft` itself. Staged on the continuation arm, inside the
+  // invalidation await.
+  it('a file selection during the invalidation await writes nothing', async () => {
+    const comp = await continuationForm();
+
+    broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+    let draftAfterSelection = 'unset';
+    invalidatePaperCache.mockImplementation(async () => {
+      await comp.handleSupplementaryFiles(fileSelection());
+      draftAfterSelection = localStorage.getItem(DRAFT_KEY);
+      return {};
+    });
+
+    await comp.handleSubmit();
+
+    // Non-vacuous: the selection ran to its end, past the gate's flush, and
+    // attached the file.
+    expect(comp.supplementaryFiles).toHaveLength(1);
+    expect(draftAfterSelection).toBe(null);
+    expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+    expect(comp.step).toBe('success');
+    comp.destroy();
+  });
+
+  // The success state rests for 1.5 s before the navigate, with the form
+  // still live. A resting state has no exit to hang a clear on, and destroy()
+  // cancels a pending timer, not a write that already happened. The barrier
+  // is what answers a file selection made there.
+  it('a file selection in the success window writes nothing', async () => {
+    vi.useFakeTimers();
+    try {
+      invalidatePaperCache.mockResolvedValue({});
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      const comp = await sameAuthorForm();
 
       await comp.handleSubmit();
 
       expect(comp.step).toBe('success');
       expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
-      expect(comp._draftTimer).toBe(null);
 
-      vi.advanceTimersByTime(2000);
+      await comp.handleSupplementaryFiles(fileSelection());
 
+      // Non-vacuous: the selection ran to its end and attached the file, and
+      // the navigate timer has not fired yet.
+      expect(comp.supplementaryFiles).toHaveLength(1);
+      expect(mockStores.router.navigate).not.toHaveBeenCalled();
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+
+      vi.advanceTimersByTime(1500);
+
+      expect(mockStores.router.navigate).toHaveBeenCalledWith('/paper/alice/p1');
       expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
       comp.destroy();
     } finally {
@@ -2743,314 +3143,251 @@ describe('editPage draft carries the addressed-review ticks', () => {
     }
   });
 
-  // The clear sat behind two exits the landed broadcast has already passed:
-  // the _mounted gate and the cache invalidation. Leaving the page while the
-  // broadcast is in flight takes the first of them, and the edit is on chain
-  // with the flushed draft still in storage. The next visit restores ticks the
-  // revision already addressed, and ticks alone pass the no-changes check, so
-  // an otherwise no-op resubmit re-declares addresses_reviews.
-  it('an unmount during the broadcast still drops the draft the landed edit spent', async () => {
-    const { invalidatePaperCache } = await import('../../src/api.js');
-    invalidatePaperCache.mockResolvedValue({});
-    arrangeLoad([REV_ONE, REV_TWO]);
+  // The draft is removed once, at landing. A removal repeated past the
+  // invalidation await would run by key after the component is gone, and a
+  // later visit to the same paper shares that key: whatever it drafted while
+  // the earlier instance's invalidation was still pending would be deleted.
+  // The later visit is staged as a direct write under the key, after the
+  // unmount, inside the mocked invalidation.
+  async function expectLaterVisitDraftSurvivesResolvingInvalidation(comp) {
+    const laterVisitDraft = storedDraft({ title: 'Drafted by a later visit' });
 
-    const comp = loadedComponent();
-    await comp.loadPaperData();
-    comp.authorName = 'Alice';
-    comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
-
-    let draftDuringBroadcast = null;
-    broadcastOps.mockImplementation(async () => {
-      draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+    broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+    let draftAtInvalidation = 'unset';
+    invalidatePaperCache.mockImplementation(async () => {
+      draftAtInvalidation = localStorage.getItem(DRAFT_KEY);
       comp.destroy();
-      return { tx_id: 'tx' };
+      localStorage.setItem(DRAFT_KEY, laterVisitDraft);
+      return {};
     });
 
     await comp.handleSubmit();
 
-    expect(broadcastOps).toHaveBeenCalledTimes(1);
-    // Non-vacuous: the gate's flush wrote the ticked draft, so the clear past
-    // the broadcast has something to drop.
-    expect(JSON.parse(draftDuringBroadcast).addressedReviews).toEqual([addressed(REV_ONE)]);
-    expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+    expect(invalidatePaperCache).toHaveBeenCalledTimes(1);
+    // Non-vacuous: the landing clear had already emptied the key, so what
+    // sits under it now can only be the later visit's write.
+    expect(draftAtInvalidation).toBe(null);
+    expect(localStorage.getItem(DRAFT_KEY)).toBe(laterVisitDraft);
+  }
+
+  it('a draft a later visit wrote during a resolving invalidation is still there when handleSubmit returns', async () => {
+    await expectLaterVisitDraftSurvivesResolvingInvalidation(await continuationForm());
   });
 
-  // Twin of the unmount-during-broadcast case on the continuation arm. The
-  // continuation and same-author legs are mutually exclusive, so a fixture
-  // resolving isContinuation false proves nothing about this arm's
-  // post-broadcast clear, and only that clear can serve the unmount exit:
-  // every later clear sits past the `_mounted` guard it takes.
-  it('an unmount during the continuation broadcast still drops the draft the landed post spent', async () => {
-    const { invalidatePaperCache } = await import('../../src/api.js');
-    invalidatePaperCache.mockResolvedValue({});
-    arrangeLoad([REV_ONE, REV_TWO], {
-      authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }],
-    });
-
-    const comp = loadedComponent();
-    mockStores.auth.username = 'bob';
-    await comp.loadPaperData();
-    comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
-    // Fixture-posture proof: this test exercises the continuation branch.
-    expect(comp.isContinuation).toBe(true);
-
-    let draftDuringBroadcast = null;
-    broadcastOps.mockImplementation(async () => {
-      draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
-      comp.destroy();
-      return { tx_id: 'tx' };
-    });
-
-    await comp.handleSubmit();
-
-    expect(broadcastOps).toHaveBeenCalledTimes(1);
-    // Non-vacuous: the gate's flush wrote the ticked draft, so the clear past
-    // the broadcast has something to drop.
-    expect(JSON.parse(draftDuringBroadcast).addressedReviews).toEqual([addressed(REV_ONE)]);
-    expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+  // The same staging entered from the same-author arm. The removal being
+  // guarded against would sit in `_finishLanded`, which both arms share, so
+  // this adds the other arm's entry, not a second behavior.
+  it('same-author arm: a draft a later visit wrote during a resolving invalidation is still there when handleSubmit returns', async () => {
+    await expectLaterVisitDraftSurvivesResolvingInvalidation(await sameAuthorForm());
   });
 
-  // The continuation arm, through its rejecting-invalidation exit.
-  // The continuation and same-author legs are mutually exclusive, so a fixture
-  // resolving isContinuation false proves nothing about this one. A rejecting
-  // invalidation is the exit the clear after the invalidation await cannot
-  // serve: the throw carries execution past it into the terminal catch with
-  // the continuation post already on chain.
-  it('the continuation post drops the draft when the cache invalidation rejects', async () => {
-    vi.useFakeTimers();
+  // The rejecting counterpart of
+  // `expectLaterVisitDraftSurvivesResolvingInvalidation`, run from each arm.
+  // The rejection is caught
+  // inside `_finishLanded`, so it reaches neither the terminal catch nor any
+  // removal, and the later visit's draft survives it as well.
+  async function expectLaterVisitDraftSurvivesRejectingInvalidation(comp) {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const { invalidatePaperCache } = await import('../../src/api.js');
-      invalidatePaperCache.mockRejectedValue(new Error('invalidate unavailable'));
-      arrangeLoad([REV_ONE, REV_TWO], {
-        authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }],
-      });
-
-      const comp = loadedComponent();
-      mockStores.auth.username = 'bob';
-      await comp.loadPaperData();
-      comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
-      // Fixture-posture proof: this test exercises the continuation branch.
-      expect(comp.isContinuation).toBe(true);
-
-      // A keystroke landing while the post is in flight, arming the debounce
-      // past the gate's flush. $watch is mocked in this harness, so the
-      // scheduler stands in for the watcher it registers.
-      broadcastOps.mockImplementation(async () => {
-        comp.title = 'Retitled while the continuation was in flight';
-        comp._scheduleDraftSave();
-        return { tx_id: 'tx' };
-      });
-
-      await comp.handleSubmit();
-
-      expect(broadcastOps).toHaveBeenCalledTimes(1);
-      expect(comp.step).toBe('error');
-      expect(comp._draftTimer).toBe(null);
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
-
-      vi.advanceTimersByTime(2000);
-
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
-      comp.destroy();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  // The post-broadcast clear closes the unmount and rejecting-invalidation
-  // exits, but the form stays interactive across the invalidation await
-  // itself: a keystroke there re-arms the debounce AFTER that clear ran, and
-  // a rejection then skips the clear after that await into the terminal catch.
-  // Without the catch's own clear the timer fires two seconds later and
-  // writes the spent draft back behind the landed edit — rejections correlate
-  // with slow networks, which is when that window is widest.
-  it('a keystroke during the rejecting invalidation cannot resurrect the spent draft', async () => {
-    vi.useFakeTimers();
-    try {
-      const { invalidatePaperCache } = await import('../../src/api.js');
-      arrangeLoad([REV_ONE, REV_TWO]);
-
-      const comp = loadedComponent();
-      await comp.loadPaperData();
-      comp.authorName = 'Alice';
-      comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
-      // Fixture-posture proof: this test exercises the same-author branch.
-      expect(comp.isContinuation).toBe(false);
+      const laterVisitDraft = storedDraft({ title: 'Drafted by a later visit' });
 
       broadcastOps.mockResolvedValue({ tx_id: 'tx' });
-      // The keystroke lands inside the invalidation await: past the
-      // post-broadcast clear, ahead of the rejection. $watch is mocked in
-      // this harness, so the scheduler stands in for the watcher it
-      // registers. The timer handle is captured rather than asserted here —
-      // an assertion throwing inside the mock would be swallowed by the
-      // terminal catch it feeds.
-      let timerDuringInvalidation = null;
+      let draftAtInvalidation = 'unset';
       invalidatePaperCache.mockImplementation(async () => {
-        comp.title = 'Retitled while the invalidation was in flight';
-        comp._scheduleDraftSave();
-        timerDuringInvalidation = comp._draftTimer;
+        draftAtInvalidation = localStorage.getItem(DRAFT_KEY);
+        comp.destroy();
+        localStorage.setItem(DRAFT_KEY, laterVisitDraft);
         throw new Error('invalidate unavailable');
       });
 
       await comp.handleSubmit();
 
-      // Non-vacuous: the debounce really was armed inside the window.
-      expect(timerDuringInvalidation).not.toBe(null);
-      expect(comp.step).toBe('error');
-      expect(comp._draftTimer).toBe(null);
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
-
-      vi.advanceTimersByTime(2000);
-
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
-      comp.destroy();
+      expect(invalidatePaperCache).toHaveBeenCalledTimes(1);
+      // Non-vacuous: the landing clear had already emptied the key.
+      expect(draftAtInvalidation).toBe(null);
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(laterVisitDraft);
+      // Unmounted, so neither the success state nor the failure state.
+      expect(comp.step).toBe('broadcasting');
+      expect(comp.errorMessage).toBe('');
     } finally {
-      vi.useRealTimers();
+      warnSpy.mockRestore();
     }
+  }
+
+  it('a draft a later visit wrote during a rejecting invalidation is still there when handleSubmit returns', async () => {
+    await expectLaterVisitDraftSurvivesRejectingInvalidation(await sameAuthorForm());
   });
 
-  // Twin on the continuation arm: the catch is shared, but each arm records
-  // the landed broadcast for it independently, so a fixture reaching the
-  // catch through the same-author leg proves nothing about this one.
-  it('the continuation post drops a draft re-armed during the rejecting invalidation', async () => {
-    vi.useFakeTimers();
+  it('continuation arm: a draft a later visit wrote during a rejecting invalidation is still there when handleSubmit returns', async () => {
+    await expectLaterVisitDraftSurvivesRejectingInvalidation(await continuationForm());
+  });
+
+  // `isSubmitting` excludes 'success', so without a refusal of its own the
+  // submit is live for the 1.5 s before the navigate. The instance still
+  // holds the pre-edit body as its diff base, so a second native edit would
+  // send a patch against a body the chain no longer holds, and a second
+  // continuation would be a second post. handleSubmit returns before it
+  // touches `step` or reaches any gate, so the refusal leaves no trace.
+  it('a second submit on a landed instance broadcasts nothing, leaves step alone and writes no draft', async () => {
+    invalidatePaperCache.mockResolvedValue({});
+    broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+    const comp = await sameAuthorForm();
+    // Fixture-posture proof: a fresh instance has not landed.
+    expect(comp._landed).toBe(false);
+
+    await comp.handleSubmit();
+
+    expect(comp._landed).toBe(true);
+    expect(comp.step).toBe('success');
+    expect(broadcastOps).toHaveBeenCalledTimes(1);
+
+    // A change that would pass the no-changes check on its own, so nothing
+    // but the landed refusal stands between this submit and a broadcast.
+    comp.title = 'Retitled after the landing';
+    const gate = vi.spyOn(comp, '_windowReady');
+    await comp.handleSubmit();
+
+    expect(broadcastOps).toHaveBeenCalledTimes(1);
+    expect(invalidatePaperCache).toHaveBeenCalledTimes(1);
+    expect(gate).not.toHaveBeenCalled();
+    expect(comp.step).toBe('success');
+    expect(comp.errorMessage).toBe('');
+    expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+    comp.destroy();
+  });
+
+  // A spec fails on its first false assertion, so in `a second submit on a
+  // landed instance broadcasts nothing, leaves step alone and writes no
+  // draft` only the broadcast count is ever the deciding one. The specs built
+  // on `landedSameAuthorForm` each lead with one of the other clauses,
+  // observed at a point the refusal alone decides, so that a refusal moved
+  // further down handleSubmit is named by the clause it broke.
+  async function landedSameAuthorForm() {
+    invalidatePaperCache.mockResolvedValue({});
+    broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+    const comp = await sameAuthorForm();
+    await comp.handleSubmit();
+    // Fixture-posture proof: landed, resting in the success window, with a
+    // change that passes the no-changes check on its own.
+    expect(comp._landed).toBe(true);
+    expect(comp.step).toBe('success');
+    expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+    comp.title = 'Retitled after the landing';
+    return comp;
+  }
+
+  // handleSubmit leaves 'success' for 'authorizing' synchronously, ahead of
+  // its first await, so `step` is read before the returned promise is
+  // awaited. Read afterwards it would show 'success' again either way: a
+  // second submit that went through lands too.
+  it('a second submit on a landed instance does not move step, even before its first await', async () => {
+    const comp = await landedSameAuthorForm();
+
+    const second = comp.handleSubmit();
+
+    expect(comp.step).toBe('success');
+    expect(comp.errorMessage).toBe('');
+    await second;
+    expect(comp.step).toBe('success');
+    comp.destroy();
+  });
+
+  it('a second submit on a landed instance reaches no acquisition gate', async () => {
+    const comp = await landedSameAuthorForm();
+    const gate = vi.spyOn(comp, '_windowReady');
+
+    await comp.handleSubmit();
+
+    expect(gate).not.toHaveBeenCalled();
+    comp.destroy();
+  });
+
+  // Storage stays empty after a second submit for two reasons at once: the
+  // refusal in handleSubmit returns before the gate's flush, and the refusal
+  // in `_writeDraft` would answer that flush anyway. The empty key therefore
+  // cannot say which of them held. The call count can: a submit that is
+  // refused where it should be never asks the writer at all.
+  it('a second submit on a landed instance never reaches the draft writer', async () => {
+    const comp = await landedSameAuthorForm();
+    const writer = vi.spyOn(comp, '_writeDraft');
+
+    await comp.handleSubmit();
+
+    expect(writer).not.toHaveBeenCalled();
+    expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+    comp.destroy();
+  });
+
+  // The button is the other half of the refusal. The landed flag is its own
+  // term in the binding; `isSubmitting` and the label expression are left as
+  // they were, so the button reads its idle label, disabled.
+  it('the submit button is disabled by the landed flag', () => {
+    expect(editPageTemplate).toContain(
+      '<button type="submit" class="btn-primary w-full sm:w-auto shrink-0" :disabled="isSubmitting || _landed"',
+    );
+  });
+
+  // The string check in `the submit button is disabled by the landed flag`
+  // passes for any binding that contains the term, including one Alpine
+  // cannot evaluate. Here the real library evaluates the button exactly as
+  // the template declares it. The module-level `alpinejs` mock only serves
+  // the page factory, so the real one is loaded beside it, and the scope
+  // holds just the names the button's two expressions read.
+  it('real Alpine disables the submit button once the instance has landed', async () => {
+    const { default: RealAlpine } = await vi.importActual('alpinejs');
+    const button = editPageTemplate.match(/<button type="submit"[^>]*><\/button>/);
+    // Non-vacuous: the slice is the submit button, binding included.
+    expect(button).not.toBe(null);
+    expect(button[0]).toContain(':disabled=');
+
+    RealAlpine.magic('t', () => (key) => key);
+    RealAlpine.data('editSubmitButtonProbe', () => ({
+      isSubmitting: false, _landed: false, isContinuation: false,
+    }));
+    const host = document.createElement('div');
+    host.innerHTML = `<div x-data="editSubmitButtonProbe">${button[0]}</div>`;
+    document.body.appendChild(host);
     try {
-      const { invalidatePaperCache } = await import('../../src/api.js');
-      arrangeLoad([REV_ONE, REV_TWO], {
-        authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }],
-      });
+      RealAlpine.initTree(host);
+      const el = host.querySelector('button');
+      const scope = RealAlpine.$data(el);
 
-      const comp = loadedComponent();
-      mockStores.auth.username = 'bob';
-      await comp.loadPaperData();
-      comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
-      // Fixture-posture proof: this test exercises the continuation branch.
-      expect(comp.isContinuation).toBe(true);
+      // Non-vacuous: Alpine did evaluate the element, and an instance that
+      // has not landed leaves the button live.
+      expect(el.textContent).toBe('edit.saveButton');
+      expect(el.disabled).toBe(false);
 
-      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
-      let timerDuringInvalidation = null;
-      invalidatePaperCache.mockImplementation(async () => {
-        comp.title = 'Retitled while the invalidation was in flight';
-        comp._scheduleDraftSave();
-        timerDuringInvalidation = comp._draftTimer;
-        throw new Error('invalidate unavailable');
-      });
+      scope._landed = true;
+      await RealAlpine.nextTick();
 
-      await comp.handleSubmit();
+      expect(el.disabled).toBe(true);
+      // The idle label, disabled: the landed term is not routed through
+      // `isSubmitting`.
+      expect(el.textContent).toBe('edit.saveButton');
 
-      expect(timerDuringInvalidation).not.toBe(null);
-      expect(comp.step).toBe('error');
-      expect(comp._draftTimer).toBe(null);
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
-
-      vi.advanceTimersByTime(2000);
-
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
-      comp.destroy();
+      // The pre-existing term still disables on its own.
+      scope._landed = false;
+      await RealAlpine.nextTick();
+      expect(el.disabled).toBe(false);
+      scope.isSubmitting = true;
+      await RealAlpine.nextTick();
+      expect(el.disabled).toBe(true);
     } finally {
-      vi.useRealTimers();
+      RealAlpine.destroyTree(host);
+      host.remove();
     }
   });
 
-  // The resolving twin of the re-arm window. A save that FIRES inside the
-  // invalidation await writes the spent draft back, and leaving the page
-  // before the invalidation settles takes the `_mounted` guard after it.
-  // destroy() has nothing pending to cancel by then, so only a clear placed
-  // ahead of that guard can drop the rewritten draft. The await can hang up
-  // to the request timeout, which is the window a user leaves through.
-  it('an unmount across a resolving invalidation drops the draft a fired save wrote back', async () => {
-    vi.useFakeTimers();
-    try {
-      const { invalidatePaperCache } = await import('../../src/api.js');
-      arrangeLoad([REV_ONE, REV_TWO]);
-
-      const comp = loadedComponent();
-      await comp.loadPaperData();
-      comp.authorName = 'Alice';
-      comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
-      // Fixture-posture proof: this test exercises the same-author branch.
-      expect(comp.isContinuation).toBe(false);
-
-      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
-      let draftBeforeUnmount = null;
-      invalidatePaperCache.mockImplementation(async () => {
-        comp.title = 'Retitled while the invalidation was in flight';
-        comp._scheduleDraftSave();
-        vi.advanceTimersByTime(2000);
-        draftBeforeUnmount = localStorage.getItem(DRAFT_KEY);
-        comp.destroy();
-        return {};
-      });
-
-      await comp.handleSubmit();
-
-      expect(broadcastOps).toHaveBeenCalledTimes(1);
-      // Non-vacuous: the fired save really did write the draft back.
-      expect(JSON.parse(draftBeforeUnmount).title).toBe('Retitled while the invalidation was in flight');
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  // Twin on the continuation arm: each arm carries its own clear after the
-  // invalidation await, so the same-author fixture proves nothing about this
-  // one.
-  it('an unmount across a resolving invalidation drops the continuation draft a fired save wrote back', async () => {
-    vi.useFakeTimers();
-    try {
-      const { invalidatePaperCache } = await import('../../src/api.js');
-      arrangeLoad([REV_ONE, REV_TWO], {
-        authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }],
-      });
-
-      const comp = loadedComponent();
-      mockStores.auth.username = 'bob';
-      await comp.loadPaperData();
-      comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
-      // Fixture-posture proof: this test exercises the continuation branch.
-      expect(comp.isContinuation).toBe(true);
-
-      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
-      let draftBeforeUnmount = null;
-      invalidatePaperCache.mockImplementation(async () => {
-        comp.title = 'Retitled while the invalidation was in flight';
-        comp._scheduleDraftSave();
-        vi.advanceTimersByTime(2000);
-        draftBeforeUnmount = localStorage.getItem(DRAFT_KEY);
-        comp.destroy();
-        return {};
-      });
-
-      await comp.handleSubmit();
-
-      expect(broadcastOps).toHaveBeenCalledTimes(1);
-      // Non-vacuous: the fired save really did write the draft back.
-      expect(JSON.parse(draftBeforeUnmount).title).toBe('Retitled while the invalidation was in flight');
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  // The terminal catch clears only when the broadcast landed. A throw before
-  // that point (a failed upload, a failed broadcast) has put nothing on
-  // chain, so the draft `_windowReady` flushed is still the user's work and
-  // the retry needs it. Both arms share the one terminal catch, and a throw
-  // before the landing reaches its `if (landed)` guard with the marker still
-  // false whichever arm ran, so one same-author case witnesses that guard.
-  it('a broadcast that fails before landing keeps the flushed draft', async () => {
-    const { invalidatePaperCache } = await import('../../src/api.js');
-    arrangeLoad([REV_ONE, REV_TWO]);
-
-    const comp = loadedComponent();
-    await comp.loadPaperData();
-    comp.authorName = 'Alice';
+  // A rejected broadcast is not a landing. What the code knows is only that
+  // the broadcast call did not resolve: the transaction can still be on chain
+  // (ARCHITECTURE.md § 8, Limits), and the client cannot tell. The draft
+  // `_windowReady` flushed is kept either way, because losing typed work is
+  // the worse outcome, and the instance stays what it was before the submit:
+  // it keeps drafting, and it accepts another submit. A landed flag raised
+  // ahead of the broadcast await would break both without any visible sign,
+  // and each arm has its own broadcast await, so each arm has its own case.
+  async function expectRejectedBroadcastLeavesTheInstanceLive(comp) {
     comp.title = 'Retitled before a failing broadcast';
-    comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
-    // Fixture-posture proof: this test exercises the same-author branch.
-    expect(comp.isContinuation).toBe(false);
-
     broadcastOps.mockRejectedValue(new Error('broadcast unavailable'));
 
     await comp.handleSubmit();
@@ -3058,57 +3395,47 @@ describe('editPage draft carries the addressed-review ticks', () => {
     expect(broadcastOps).toHaveBeenCalledTimes(1);
     expect(invalidatePaperCache).not.toHaveBeenCalled();
     expect(comp.step).toBe('error');
+    expect(comp.errorMessage).toBe('common.editFailed');
+    expect(comp._landed).toBe(false);
     const saved = JSON.parse(localStorage.getItem(DRAFT_KEY));
     expect(saved.title).toBe('Retitled before a failing broadcast');
     expect(saved.addressedReviews).toEqual([addressed(REV_ONE)]);
+
+    // A later change is saved by the debounce.
+    vi.useFakeTimers();
+    try {
+      comp.title = 'Retitled after the failed broadcast';
+      comp._scheduleDraftSave();
+      vi.advanceTimersByTime(2000);
+      expect(JSON.parse(localStorage.getItem(DRAFT_KEY)).title)
+        .toBe('Retitled after the failed broadcast');
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // A later submit reaches the broadcast again.
+    await comp.handleSubmit();
+
+    expect(broadcastOps).toHaveBeenCalledTimes(2);
+    expect(comp.step).toBe('error');
     comp.destroy();
+  }
+
+  it('a broadcast call that does not resolve keeps the flushed draft and leaves the instance drafting and submittable', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expectRejectedBroadcastLeavesTheInstanceLive(await sameAuthorForm());
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
-  // The catch clear sits ahead of the catch's `_mounted` guard for the corner
-  // this case stages: the debounce FIRES inside a rejecting invalidation and
-  // the user leaves before it rejects. destroy() has no pending timer left to
-  // cancel, so the draft the fired save wrote back is dropped by the catch or
-  // not at all. By then the router params name the next paper, which has a
-  // draft of its own that the clear must leave alone: the catch clears by the
-  // key captured before the first await, not by the draftKey getter.
-  it('a catch entered unmounted after the debounce fired drops the rewritten draft by its captured key', async () => {
-    vi.useFakeTimers();
-    const OTHER_KEY = 'pevo-draft-edit-bob-p9';
+  it('a continuation broadcast call that does not resolve keeps the flushed draft and leaves the instance drafting and submittable', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const { invalidatePaperCache } = await import('../../src/api.js');
-      arrangeLoad([REV_ONE, REV_TWO]);
-
-      const comp = loadedComponent();
-      await comp.loadPaperData();
-      comp.authorName = 'Alice';
-      comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
-      // Fixture-posture proof: this test exercises the same-author branch.
-      expect(comp.isContinuation).toBe(false);
-
-      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
-      let draftBeforeUnmount = null;
-      invalidatePaperCache.mockImplementation(async () => {
-        comp.title = 'Retitled while the invalidation was in flight';
-        comp._scheduleDraftSave();
-        vi.advanceTimersByTime(2000);
-        draftBeforeUnmount = localStorage.getItem(DRAFT_KEY);
-        comp.destroy();
-        mockStores.router.params = { author: 'bob', permlink: 'p9' };
-        localStorage.setItem(OTHER_KEY, storedDraft());
-        throw new Error('invalidate unavailable');
-      });
-
-      await comp.handleSubmit();
-
-      // Non-vacuous: the fired save really did write the draft back.
-      expect(JSON.parse(draftBeforeUnmount).title).toBe('Retitled while the invalidation was in flight');
-      // The catch took its `_mounted` guard, so step never left the leg.
-      expect(comp.step).toBe('broadcasting');
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
-      expect(localStorage.getItem(OTHER_KEY)).toBe(storedDraft());
+      await expectRejectedBroadcastLeavesTheInstanceLive(await continuationForm());
     } finally {
-      mockStores.router.params = { author: 'alice', permlink: 'p1' };
-      vi.useRealTimers();
+      warnSpy.mockRestore();
     }
   });
 

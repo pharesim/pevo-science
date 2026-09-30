@@ -1185,6 +1185,453 @@ describe('publishPage', () => {
     });
   });
 
+  // Landing is terminal for the composer instance (ARCHITECTURE.md § 8).
+  // "Landed" means `broadcastWithFreshAuth` resolved with a result other than
+  // the FRESH_AUTH_REDIRECT_PENDING sentinel. From that moment `_markLanded`
+  // has removed the draft once and cancelled the debounce, `_writeDraft`
+  // refuses every later writer, and `handleSubmit` refuses a second submit. A
+  // rejection and the sentinel are not landings: both keep the draft and leave
+  // the instance drafting and submittable.
+  //
+  // Fixture posture shared by every spec here: `draftingComponent` sets
+  // `_initialLoadDone`, which `init()` sets in the app and which `_writeDraft`
+  // returns early without. A "nothing was written" assertion on a component
+  // that never had it set would pass with no barrier at all, so each spec that
+  // asserts nothing was written also captures the draft from inside the broadcast mock, where the entry gate's
+  // flush has just written it, and asserts on the capture once `handleSubmit`
+  // has returned. Asserting inside the mock would throw into `handleSubmit`'s
+  // catch and be swallowed.
+  describe('a landed broadcast ends the composer instance', () => {
+    const DRAFT_KEY = 'pevo-draft-publish';
+    const WINDOW_KEY = 'pevo_fresh_auth_session_proof';
+
+    function draftingComponent() {
+      const comp = createComponent();
+      comp.title = 'My Paper';
+      comp.abstract = 'Paper abstract';
+      comp.body = 'Body text';
+      comp.discipline = 'Physics';
+      comp.authorName = 'Alice';
+      comp._initialLoadDone = true;
+      return comp;
+    }
+
+    // A passwordless light account holding a live window: the account whose
+    // broadcast leg can end in the sentinel. Its gates pass on the cached
+    // window, and a 401 from the broadcast then closes the window and sends
+    // the retry's re-acquisition into the suppressed posture the page passes,
+    // which refuses with the re-authenticate toast and unwinds through
+    // FRESH_AUTH_REDIRECT_PENDING.
+    function stagePasswordlessWithLiveWindow() {
+      mockStores.auth.custody = 'light';
+      mockStores.auth.username = `user-${Math.random().toString(36).slice(2)}`;
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
+      sessionStorage.setItem(WINDOW_KEY, JSON.stringify({
+        token: 'live-window',
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
+        absoluteExpiresAt: new Date(Date.now() + 7_200_000).toISOString(),
+        idlePeriodMs: 900_000,
+      }));
+    }
+
+    function windowClosedError() {
+      return Object.assign(new Error('FRESH_AUTH_REQUIRED'), {
+        status: 401, code: 'FRESH_AUTH_REQUIRED', details: { reason: 'expired' },
+      });
+    }
+
+    beforeEach(() => {
+      // Reset rather than clear: a once-queue or an implementation left by an
+      // earlier describe would otherwise decide what these broadcasts return.
+      broadcastOps.mockReset();
+      mockStores.broadcastConfirm.request.mockReset();
+      mockStores.broadcastConfirm.request.mockResolvedValue(true);
+      mockStores.auth.isConnected = true;
+      mockStores.auth.isAccredited = true;
+      mockStores.auth.username = 'alice';
+      delete mockStores.auth.custody;
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: true } });
+      sessionStorage.clear();
+    });
+
+    afterEach(() => {
+      delete mockStores.auth.custody;
+      mockStores.auth.username = 'alice';
+      mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: true } });
+      sessionStorage.clear();
+    });
+
+    it('an unmount during the broadcast still drops the draft of the landed paper', async () => {
+      // The draft outlives the component. A user who leaves while the
+      // broadcast is in flight must not be offered the draft of a paper that
+      // is on chain on the next visit, so the landing runs ahead of the
+      // `_mounted` guard and only the component's own writes sit behind it.
+      let draftDuringBroadcast = null;
+      const comp = draftingComponent();
+      broadcastOps.mockImplementationOnce(async () => {
+        draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+        comp.destroy();
+        return { tx_id: 'tx' };
+      });
+
+      await comp.handleSubmit();
+
+      // Non-vacuous: the draft was in storage when the broadcast started.
+      expect(JSON.parse(draftDuringBroadcast)).toMatchObject({ title: 'My Paper' });
+      expect(broadcastOps).toHaveBeenCalledTimes(1);
+      expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+      // Fixture-posture proof: the instance really was unmounted when the
+      // broadcast resolved, so the component-owned writes did not happen.
+      expect(comp.step).toBe('broadcasting');
+    });
+
+    it('a save the debounce armed during the broadcast is cancelled at landing and never writes', async () => {
+      // The form stays interactive through the broadcast, so a change made in
+      // its last two seconds has a save armed when the landing removes the
+      // draft. The handle assertion is what makes the cancel visible: behind
+      // the refusal in `_writeDraft`, storage stays empty whether or not the
+      // timer was cancelled.
+      vi.useFakeTimers();
+      try {
+        let draftDuringBroadcast = null;
+        let timerDuringBroadcast = null;
+        const comp = draftingComponent();
+        broadcastOps.mockImplementationOnce(async () => {
+          draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+          comp.title = 'Changed During Broadcast';
+          comp._scheduleDraftSave();
+          timerDuringBroadcast = comp._draftTimer;
+          return { tx_id: 'tx' };
+        });
+
+        await comp.handleSubmit();
+
+        // Non-vacuous: a draft was there to remove and a save was armed.
+        expect(JSON.parse(draftDuringBroadcast)).toMatchObject({ title: 'My Paper' });
+        expect(timerDuringBroadcast).not.toBeNull();
+        expect(comp.step).toBe('success');
+        expect(comp._draftTimer).toBeNull();
+        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+
+        // With the timer cancelled nothing is left to fire, so `_writeDraft`
+        // is not reached at all. The refusal itself is pinned by
+        // `a save the debounce arms after the landing fires into the refusal
+        // and writes nothing`.
+        const writeSpy = vi.spyOn(comp, '_writeDraft');
+        vi.advanceTimersByTime(2000);
+        expect(writeSpy).not.toHaveBeenCalled();
+        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a flush of an emptied form on a landed instance leaves the shared key alone', async () => {
+      // `_writeDraft` removes the entry when the form holds no text. Every
+      // visit to this page shares the one key, so on a landed instance that
+      // removal would take whatever a later visit has drafted under it. The
+      // refusal therefore sits ahead of the removal as well as the write.
+      const laterVisitDraft = JSON.stringify({ title: 'Drafted by a later visit' });
+      const comp = draftingComponent();
+      broadcastOps.mockResolvedValueOnce({ tx_id: 'tx' });
+      try {
+        await comp.handleSubmit();
+        expect(comp.step).toBe('success');
+
+        localStorage.setItem(DRAFT_KEY, laterVisitDraft);
+        comp.title = '';
+        comp.abstract = '';
+        comp.body = '';
+        comp._flushDraftSave();
+
+        expect(localStorage.getItem(DRAFT_KEY)).toBe(laterVisitDraft);
+      } finally {
+        comp.destroy();
+        localStorage.removeItem(DRAFT_KEY);
+      }
+    });
+
+    it('a save the debounce arms after the landing fires into the refusal and writes nothing', async () => {
+      // The fields stay live after the landing and the scheduler is left
+      // alone, so a change made at success arms a save like any other. No
+      // cancel stands in front of this one: the timer fires, and the refusal
+      // in `_writeDraft` is the only thing between it and the spent draft.
+      vi.useFakeTimers();
+      try {
+        let draftDuringBroadcast = null;
+        const comp = draftingComponent();
+        broadcastOps.mockImplementationOnce(async () => {
+          draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+          return { tx_id: 'tx' };
+        });
+        await comp.handleSubmit();
+        expect(comp.step).toBe('success');
+        // Non-vacuous: the same writer wrote the draft before the landing.
+        expect(JSON.parse(draftDuringBroadcast)).toMatchObject({ title: 'My Paper' });
+        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+        expect(comp._draftTimer).toBeNull();
+
+        const writeSpy = vi.spyOn(comp, '_writeDraft');
+        comp.title = 'Typed After Landing';
+        comp._scheduleDraftSave();
+
+        // The scheduler still arms: the refusal is not at the scheduler.
+        expect(comp._draftTimer).not.toBeNull();
+        expect(writeSpy).not.toHaveBeenCalled();
+
+        vi.advanceTimersByTime(2000);
+
+        // Fixture-posture proof: the armed save really fired, with content
+        // that an unrefused write would have stored.
+        expect(writeSpy).toHaveBeenCalledTimes(1);
+        expect(comp.title.trim()).not.toBe('');
+        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('selecting a PDF at success, before the navigate timer fires, writes no draft', async () => {
+      // Only the submit control changes at landing: the file pickers stay
+      // live for the 1.5 s before the navigation. A selection flushes through
+      // `_windowReady`, which never passes the scheduler, so the refusal has
+      // to be in `_writeDraft` itself.
+      vi.useFakeTimers();
+      try {
+        let draftDuringBroadcast = null;
+        const comp = draftingComponent();
+        broadcastOps.mockImplementationOnce(async () => {
+          draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+          return { tx_id: 'tx' };
+        });
+        await comp.handleSubmit();
+        expect(comp.step).toBe('success');
+        // Non-vacuous: the same flush wrote the draft before the landing.
+        expect(JSON.parse(draftDuringBroadcast)).toMatchObject({ title: 'My Paper' });
+        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+
+        const file = { name: 'paper.pdf', size: 1024 };
+        await comp.handlePdfChange({ target: { files: [file] } });
+
+        // Fixture-posture proof: the handler ran through its gate to the end.
+        expect(comp.pdfFile).toBe(file);
+        expect(mockStores.router.navigate).not.toHaveBeenCalled();
+        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('selecting a supplementary file at success, before the navigate timer fires, writes no draft', async () => {
+      vi.useFakeTimers();
+      try {
+        let draftDuringBroadcast = null;
+        const comp = draftingComponent();
+        broadcastOps.mockImplementationOnce(async () => {
+          draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+          return { tx_id: 'tx' };
+        });
+        await comp.handleSubmit();
+        expect(comp.step).toBe('success');
+        // Non-vacuous: the same flush wrote the draft before the landing.
+        expect(JSON.parse(draftDuringBroadcast)).toMatchObject({ title: 'My Paper' });
+        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+
+        const target = { files: [{ name: 'data.csv', size: 10 }], value: 'C:\\fakepath\\data.csv' };
+        await comp.handleSupplementaryFiles({ target });
+
+        // Fixture-posture proof: the handler ran through its gate to the end.
+        expect(comp.supplementaryFiles).toHaveLength(1);
+        expect(mockStores.router.navigate).not.toHaveBeenCalled();
+        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a second handleSubmit after the landing broadcasts nothing, asks nothing and leaves step alone', async () => {
+      // The permlink is minted inside `handleSubmit`, so a second submit from
+      // a landed instance would be a second post. `isSubmitting` excludes
+      // 'success', so nothing but the landed refusal stands in the way.
+      vi.useFakeTimers();
+      try {
+        let draftDuringBroadcast = null;
+        const comp = draftingComponent();
+        broadcastOps.mockImplementation(async () => {
+          draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+          return { tx_id: 'tx' };
+        });
+        await comp.handleSubmit();
+        expect(comp.step).toBe('success');
+        expect(JSON.parse(draftDuringBroadcast)).toMatchObject({ title: 'My Paper' });
+        expect(broadcastOps).toHaveBeenCalledTimes(1);
+        expect(mockStores.broadcastConfirm.request).toHaveBeenCalledTimes(1);
+
+        // The refusal is ahead of every gate, so neither the gate nor the
+        // flush it starts with is reached. Without it the entry gate's flush
+        // would run into `_writeDraft`'s refusal and storage would stay empty
+        // all the same, so the spies are what show where the submit stopped.
+        const gateSpy = vi.spyOn(comp, '_windowReady');
+        const writeSpy = vi.spyOn(comp, '_writeDraft');
+        await comp.handleSubmit();
+
+        expect(gateSpy).not.toHaveBeenCalled();
+        expect(writeSpy).not.toHaveBeenCalled();
+        expect(broadcastOps).toHaveBeenCalledTimes(1);
+        expect(mockStores.broadcastConfirm.request).toHaveBeenCalledTimes(1);
+        expect(comp.step).toBe('success');
+        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('the submit button is disabled by the landed flag as its own term', async () => {
+      // `isSubmitting` and the label expression are left alone, so the button
+      // reads its idle label, disabled, until the navigation.
+      expect(publishPageTemplate).toContain(':disabled="isSubmitting || txBlock || _landed"');
+
+      // The expression is taken from the shipped submit button and evaluated
+      // with the component as its scope, which is how Alpine evaluates a
+      // binding. So this reads what the binding yields on a real instance
+      // before and after a real landing, not only that the text is present.
+      const submitButtons = [...publishPageTemplate.matchAll(/<button type="submit"[^>]*?:disabled="([^"]+)"/g)];
+      expect(submitButtons).toHaveLength(1);
+      const disabledFor = new Function('scope', `with (scope) { return (${submitButtons[0][1]}); }`);
+
+      vi.useFakeTimers();
+      try {
+        const comp = draftingComponent();
+        // Fixture-posture proof: an idle, unlanded instance has a live button.
+        expect(comp._landed).toBe(false);
+        expect(disabledFor(comp)).toBe(false);
+
+        broadcastOps.mockResolvedValueOnce({ tx_id: 'tx' });
+        await comp.handleSubmit();
+
+        // At success neither of the other two terms holds, so the landed flag
+        // alone is what disables the button.
+        expect(comp.step).toBe('success');
+        expect(comp.isSubmitting).toBe(false);
+        expect(comp.txBlock).toBe(false);
+        expect(disabledFor(comp)).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a redirect-pending result on an unmounted instance leaves step and the draft untouched', async () => {
+      // The sentinel is not a landing, so the draft stays. The `step` reset
+      // out of 'broadcasting' belongs to the component, so an instance that
+      // was torn down while the broadcast was in flight is not written to.
+      stagePasswordlessWithLiveWindow();
+      let draftDuringBroadcast = null;
+      const comp = draftingComponent();
+      broadcastOps.mockImplementationOnce(async () => {
+        draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+        comp.destroy();
+        throw windowClosedError();
+      });
+
+      await comp.handleSubmit();
+
+      // Fixture-posture proof: the broadcast leg ended in the sentinel, by
+      // the suppressed re-acquisition's refusal, not in a rejection or a
+      // navigation.
+      expect(broadcastOps).toHaveBeenCalledTimes(1);
+      expect(mockStartOrcid).not.toHaveBeenCalled();
+      expect(mockStores.toast.show).toHaveBeenCalledWith(
+        'Please confirm your identity again, then try once more.',
+        'error',
+      );
+      expect(comp.errorMessage).toBe('');
+      expect(comp.step).toBe('broadcasting');
+      expect(JSON.parse(draftDuringBroadcast)).toMatchObject({ title: 'My Paper' });
+      expect(localStorage.getItem(DRAFT_KEY)).toBe(draftDuringBroadcast);
+    });
+
+    it('a rejected broadcast keeps the flushed draft and leaves the instance drafting and submittable', async () => {
+      // What the code knows after a rejection is that the broadcast call did
+      // not resolve. The draft is kept because losing typed work is the worse
+      // outcome, and a barrier raised ahead of the broadcast would silently
+      // stop drafting for the rest of the visit.
+      vi.useFakeTimers();
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        let draftDuringBroadcast = null;
+        const comp = draftingComponent();
+        broadcastOps.mockImplementationOnce(async () => {
+          draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+          throw new Error('broadcast boom');
+        });
+
+        await comp.handleSubmit();
+
+        expect(comp.step).toBe('error');
+        expect(JSON.parse(draftDuringBroadcast)).toMatchObject({ title: 'My Paper' });
+        expect(localStorage.getItem(DRAFT_KEY)).toBe(draftDuringBroadcast);
+
+        // A later change is saved by the debounce.
+        comp.title = 'Later Title';
+        comp._scheduleDraftSave();
+        vi.advanceTimersByTime(2000);
+        expect(JSON.parse(localStorage.getItem(DRAFT_KEY))).toMatchObject({ title: 'Later Title' });
+
+        // A later submit reaches the broadcast again.
+        broadcastOps.mockResolvedValueOnce({ tx_id: 'tx' });
+        await comp.handleSubmit();
+        expect(broadcastOps).toHaveBeenCalledTimes(2);
+        expect(broadcastOps.mock.calls[1][1][0][1].title).toBe('Later Title');
+      } finally {
+        warnSpy.mockRestore();
+        vi.useRealTimers();
+      }
+    });
+
+    it('a redirect-pending result keeps the flushed draft and leaves the instance drafting and submittable', async () => {
+      // The round-trip is what the draft exists to survive, so the sentinel
+      // must not pass for a landing.
+      vi.useFakeTimers();
+      try {
+        stagePasswordlessWithLiveWindow();
+        let draftDuringBroadcast = null;
+        const comp = draftingComponent();
+        broadcastOps.mockImplementationOnce(async () => {
+          draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+          throw windowClosedError();
+        });
+
+        await comp.handleSubmit();
+
+        // Fixture-posture proof: the sentinel branch ran on a mounted
+        // instance, which resets the step machine and reports no error.
+        expect(broadcastOps).toHaveBeenCalledTimes(1);
+        expect(mockStartOrcid).not.toHaveBeenCalled();
+        expect(comp.step).toBe('idle');
+        expect(comp.errorMessage).toBe('');
+        expect(JSON.parse(draftDuringBroadcast)).toMatchObject({ title: 'My Paper' });
+        expect(localStorage.getItem(DRAFT_KEY)).toBe(draftDuringBroadcast);
+
+        // A later change is saved by the debounce.
+        comp.title = 'Later Title';
+        comp._scheduleDraftSave();
+        vi.advanceTimersByTime(2000);
+        expect(JSON.parse(localStorage.getItem(DRAFT_KEY))).toMatchObject({ title: 'Later Title' });
+
+        // A later submit is not refused: it reaches `_windowReady`. What the
+        // gate then does depends on the staged account, so it is stubbed to
+        // decline and the submit unwinds to idle.
+        const gateSpy = vi.spyOn(comp, '_windowReady').mockResolvedValue(false);
+        await comp.handleSubmit();
+        expect(gateSpy).toHaveBeenCalledTimes(1);
+        expect(comp.step).toBe('idle');
+        expect(broadcastOps).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe('_mergeCitationCollection', () => {
     it('merges citations from localStorage without duplicates', () => {
       const comp = createComponent();
