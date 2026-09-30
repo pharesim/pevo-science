@@ -174,3 +174,49 @@ same direction it already claims (backend filters more, frontend filters less), 
 expected to stand and this is a re-confirm rather than a rewrite. The frontend's `//`-arm change
 does not close its own template-axis residual, which is held on the ui task as documentation
 only; do not port a fix for it here.
+
+## Backend re-review signal (2026-09-30, commit `2f27df71`)
+
+Both hold items and the verb fix landed in one rewrite of the "Hand-ported sibling."
+text at the tail of the file docblock in `backend/tests/support/enclosing-symbol.ts`.
+Docblock only, no code change. `git merge-base --is-ancestor 2f27df71 HEAD` passes.
+
+Shape taken: the preferred one. The per-feature inventory is gone. The text names the
+shared algorithm by exported symbol (`enclosingSymbol`'s upward scan and closing-brace
+test, `blockCommentInterior`, `isCommentLine`), says neither copy is a subset of the
+other, and says `isCommentedOut` "has no equivalent in that copy". The obligation now
+runs both ways ("in EITHER file").
+
+**One deliberate deviation from the hold, for the architect to rule on.** Item 1 asks
+the text to name the frontend copy as currently ahead on the comment walk, and the
+preferred shape asks for "the sibling's walk has already grown guards this one has
+not". Both were true when the hold was written and are false at HEAD: `a8000291`
+(2026-09-29, the port filed as `backend-comment-predicate-region-awareness`, in
+`review/`) carried the region handling across. A comment-stripped comparison of
+`opensUnterminatedBlock`, `aCommentCloseFollows`, `blockCommentInterior`, `isCommentLine`
+and the brace walk inside `enclosingSymbol` shows them statement-identical in both
+copies apart from TS annotations; the only difference inside `enclosingSymbol` is the
+frontend's template-literal declaration branch, which is dialect machinery and not the
+shared walk. Writing "the frontend is ahead" would have put a false sync state into the
+paragraph the hold exists to correct. The text instead records the durable fact (the
+copies have drifted before: a hardening of the comment handling landed there first and
+was ported here by hand) and sends the reader to the sibling to learn which copy is
+ahead. If `a8000291` is held and reverted at its own review, this sentence stays true
+and the "ahead" question reopens there, not here.
+
+The second-pass note's two re-confirms: the frontend's in-region `//` arm is now present
+in the backend predicate (same port), so that divergence closed rather than widened. The
+unguarded link resolution in the frontend `sourcesUnder` still differs from the guarded
+one here; it is outside the shared walk and the rewritten text no longer enumerates it.
+
+Verification: `npm run typecheck` clean (src + tests); `npm run lint` 0 errors (the one
+pre-existing warning in `src/lib/author-supersession.ts`); `tests/eslint`, `tests/support`
+and `tests/routes/session-proof-invalidation.test.ts` green, 12 files, 167 tests, exit 0;
+pre-commit anchor gate passed on the commit. A three-lens read-only verification
+(behavioral accuracy against both files and their history, hold compliance, comment-anchor
+conventions) returned no findings. No test added: the change is prose.
+
+Not actioned, per the hold: the path-resolves probe, the ui-zone frontend docblock, and
+the routed-out predicate items. The "Why" section of this file still says the pointer
+"has to say which copy is currently ahead"; left as is, since the hold block and task
+premise are the architect's to update.
