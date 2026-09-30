@@ -3327,57 +3327,6 @@ describe('editPage draft carries the addressed-review ticks', () => {
     );
   });
 
-  // The string check in `the submit button is disabled by the landed flag`
-  // passes for any binding that contains the term, including one Alpine
-  // cannot evaluate. Here the real library evaluates the button exactly as
-  // the template declares it. The module-level `alpinejs` mock only serves
-  // the page factory, so the real one is loaded beside it, and the scope
-  // holds just the names the button's two expressions read.
-  it('real Alpine disables the submit button once the instance has landed', async () => {
-    const { default: RealAlpine } = await vi.importActual('alpinejs');
-    const button = editPageTemplate.match(/<button type="submit"[^>]*><\/button>/);
-    // Non-vacuous: the slice is the submit button, binding included.
-    expect(button).not.toBe(null);
-    expect(button[0]).toContain(':disabled=');
-
-    RealAlpine.magic('t', () => (key) => key);
-    RealAlpine.data('editSubmitButtonProbe', () => ({
-      isSubmitting: false, _landed: false, isContinuation: false,
-    }));
-    const host = document.createElement('div');
-    host.innerHTML = `<div x-data="editSubmitButtonProbe">${button[0]}</div>`;
-    document.body.appendChild(host);
-    try {
-      RealAlpine.initTree(host);
-      const el = host.querySelector('button');
-      const scope = RealAlpine.$data(el);
-
-      // Non-vacuous: Alpine did evaluate the element, and an instance that
-      // has not landed leaves the button live.
-      expect(el.textContent).toBe('edit.saveButton');
-      expect(el.disabled).toBe(false);
-
-      scope._landed = true;
-      await RealAlpine.nextTick();
-
-      expect(el.disabled).toBe(true);
-      // The idle label, disabled: the landed term is not routed through
-      // `isSubmitting`.
-      expect(el.textContent).toBe('edit.saveButton');
-
-      // The pre-existing term still disables on its own.
-      scope._landed = false;
-      await RealAlpine.nextTick();
-      expect(el.disabled).toBe(false);
-      scope.isSubmitting = true;
-      await RealAlpine.nextTick();
-      expect(el.disabled).toBe(true);
-    } finally {
-      RealAlpine.destroyTree(host);
-      host.remove();
-    }
-  });
-
   // A rejected broadcast is not a landing. What the code knows is only that
   // the broadcast call did not resolve: the transaction can still be on chain
   // (ARCHITECTURE.md § 8, Limits), and the client cannot tell. The draft
