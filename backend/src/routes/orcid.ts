@@ -744,8 +744,11 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
   // session and reaches no signing path. The row matched here is
   // finalized, which includes the state-G row whose `custody` column is NULL
   // because it never went through light signup; the helper resolves that one
-  // to `'self'`. The state-C passwordless shape (password_hash NULL) is
-  // defended at /upgrade per the § 6.4 re-auth contract, not here.
+  // to `'self'`. The state-C passwordless shape (password_hash NULL) is not
+  // defended here. On the custody routes it is
+  // `POST /api/custody/fresh-auth` and `POST /api/custody/session-auth` that
+  // branch on it, each refusing a row with no `password_hash`;
+  // `POST /api/custody/upgrade` never reads that column.
   const custody = custodyClaimFor(account);
   const token = jwt.sign(
     { sub: account.username, custody },

@@ -276,7 +276,15 @@ const ALLOWED_CLAIM_CARRY_SITES = ['routes/auth.ts#POST /session'];
  *  constant keeps the two bounds from drifting apart by hand.
  *
  *  `JOIN` belongs to `statementFrom` alone and counts the lines actually
- *  joined, so stepping over prose costs nothing there. */
+ *  joined, so stepping over prose costs nothing there. It is what stops a line
+ *  with no terminator of its own from gathering a long multi-line literal or
+ *  call into one statement, where an `upgraded_at` near the top and an
+ *  unrelated conditional yielding `'self'` or `'light'` several members
+ *  further down would read as one derivation.
+ *  What it costs is a derivation whose epoch read and yielding branch sit more
+ *  than four joined lines apart: that one escapes. The boundary is pinned in
+ *  both directions by the joined-count probes, so moving the cap means moving
+ *  those counts and the four stated here with it. */
 const STATEMENT_JOIN_CAP = 4;
 const STATEMENT_SCAN_CAP = 12;
 
@@ -893,6 +901,23 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
       );
     expect(offenders(splitBy(11))).not.toEqual([]);
     expect(offenders(splitBy(12))).toEqual([]);
+
+    // The joined-count cap has a boundary of its own, reached with no prose at
+    // all: the epoch read on the opening line and the yielding branch a number
+    // of joined lines further down, wrapped operands in between. Only the
+    // opening line carries `upgraded_at`, so whether the shape is reported
+    // turns on how many lines `statementFrom` joins from there, which is
+    // `STATEMENT_JOIN_CAP`. Pinned by count like the split-derivation pair: the
+    // branch as the fourth joined line is caught, as the fifth it is missed.
+    const branchAtJoinedLine = (joinedLine: number) =>
+      reader(
+        '  const custody = account.upgraded_at',
+        ...Array.from({ length: joinedLine - 1 }, (_, i) => `    && account.condition${i + 1}`),
+        "      ? 'self'",
+        "      : 'light';",
+      );
+    expect(offenders(branchAtJoinedLine(4))).not.toEqual([]);
+    expect(offenders(branchAtJoinedLine(5))).toEqual([]);
 
     // Controls. The licensed shape, and a refusal gate that reads the epoch to
     // say no without deriving anything, must stay clean across the same join.
