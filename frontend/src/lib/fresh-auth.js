@@ -670,7 +670,8 @@ export function cacheConsentOpProof(
 // routes whose request schema declares the proof as a bounded string answer a
 // non-string with a validation rejection rather than a fresh-auth one — the
 // accreditation-metadata edit and the admin authority actions. On those the
-// gate's clear never runs, so nothing else would drop the entry inside its TTL.
+// gate's clear never runs, so short of a subject scrub nothing else would drop
+// the entry inside its TTL.
 //
 // The drop sits with the corruption checks, BEFORE the target comparison, and
 // that ordering is load-bearing in both directions. An entry whose token is not
@@ -684,8 +685,9 @@ export function cacheConsentOpProof(
 // argue: the read, the type test and the removal are adjacent synchronous
 // statements in one function body. No await separates them, so a subject
 // teardown cannot land between the entry this sees and the slot it clears, and
-// the successor-pays-a-re-auth harm that gates the module's one gated clear —
-// the 401 eviction in `broadcastWithFreshAuth` — has no shape to take here.
+// the successor-pays-a-re-auth harm behind the teardown-gated dead-window
+// clear of the session-window slot in `broadcastWithFreshAuth` has no shape to
+// take here.
 // The tokenless and TTL drops it joins are ungated on the same grounds.
 //
 // The refusal a user can act on lives at the write instead, in the
@@ -1017,8 +1019,8 @@ export function abandonInFlightAcquisitions() {
 // uses. `null` is the registered redirect member, so a swallow into it would
 // manufacture the misread the mint callback's narrowing exists to prevent.
 //
-// Ungated, unlike the module's one gated clear, the 401 eviction in
-// `broadcastWithFreshAuth`. That eviction holds a real round-trip — the
+// Ungated, unlike the teardown-gated dead-window clear of the session-window
+// slot in `broadcastWithFreshAuth`. That clear holds a real round-trip — the
 // broadcast whose rejection it answers — between the window it read and the
 // clear it runs, so a teardown landing inside it leaves the successor's
 // freshly minted entry in the slot and dropping it would charge them a
@@ -1333,10 +1335,10 @@ export async function ensureSessionWindow({
   // to trust an eviction they cannot see from here, and a second drop of an
   // already-empty slot costs nothing.
   //
-  // Ungated, where the module's one GATED clear — the 401 eviction in
-  // `broadcastWithFreshAuth` — sits behind `!guard.tornDown()`. That one holds
-  // a real network round-trip between the window it read and the clear it
-  // runs, so a teardown landing inside it would drop a successor's freshly
+  // Ungated, where the dead-window clear of the session-window slot in
+  // `broadcastWithFreshAuth` is GATED: it sits behind `!guard.tornDown()`. That
+  // one holds a real network round-trip between the window it read and the
+  // clear it runs, so a teardown landing inside it would drop a successor's freshly
   // minted entry and charge them a re-auth that was never theirs. This clear
   // has no such gap: nothing is awaited between the acquisition resolving and
   // this line, and every flight that crosses a teardown boundary resolves
@@ -1517,8 +1519,9 @@ async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault, isSta
 
   // The one unwind, so no exit past the start round-trip can drift from the
   // ownership rule in the docblock. What decides is what the predicate ANSWERS,
-  // not that a caller supplied one: a stale flight leaves the keys alone, and
-  // every other exit removes them.
+  // not that a caller supplied one: a stale flight leaves the keys alone, every
+  // other failing exit removes them, and the navigating exit keeps them for the
+  // callback.
   const unwindFlowKeys = () => {
     if (isStale?.()) return;
     sessionStorage.removeItem(ORCID_MODE_KEY);
