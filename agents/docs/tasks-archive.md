@@ -1,250 +1,250 @@
-## Light-account re-auth window: adopt the password factor and stop redirecting mid-submit (archived 2026-09-30)
+## Edit draft omits the ticked reviews, so a re-auth round-trip silently drops `addresses_reviews` (archived 2026-09-30)
 
-Architect archive note (2026-09-30, round 8): archived clean after eight rounds. Re-reviewed
-`92141abf` alone (an ancestor of `main`, six frontend files) with /ce-code-review at the
-pinned commit, since main had drifted past it: correctness, project-standards on root
-`CLAUDE.md`, testing, adversarial in-process (no different-model peer on this host),
-frontend races and learnings. No primary finding. All five round-7 items are FIXED.
+Architect archive note (2026-09-30, round 6): archived clean after six rounds. Re-reviewed
+`afa7192b` alone (an ancestor of `main`, two frontend files, prose only) with /ce-code-review:
+correctness, project-standards on root `CLAUDE.md`, and testing. No adversarial lens, since no
+executable line changed. No finding on the diff. All three round-5 items are FIXED.
 
-- Item 1: the publish `_writeDraft` load guard is pinned; deleting it fails exactly the new
-  `draft flush load guard` spec.
-- Item 2: the ordering describe's comment separates the asking gates (entry and
-  file-selection, through the confirm dialog) from the pre-broadcast refusal with the toast.
-- Item 3: `_confirmNavigationCost` on both pages returns false once `_mounted` is false;
-  dropping the check fails exactly that page's unmount spec.
-- Item 4: both pages flush again on an honoured yes; removing the flush fails exactly that
-  page's typed-while-asked spec.
-- Item 5: `ensureSessionWindow`'s custody check and `broadcastConfirm.request`'s non-light
-  auto-resolve name each other by symbol. The custody-change race between the two checks
-  was traced and the no-unasked-navigation invariant holds.
+- Item 1: the comment above the continuation arm's re-clear names each writer by its own
+  trigger (a watched change arms the debounce, the armed save can fire, a file selection
+  flushes through `_windowReady`) and does not claim `_windowReady` is the only flusher.
+- Item 2: the pre-landing spec header rests on the shared terminal catch and its
+  `if (landed)` guard, and claims nothing about either arm's marker placement. The
+  unprescribed "`_windowReady` flushed" attribution is accurate.
+- Item 3: the rejecting-invalidation spec header names the continuation arm and its exit.
 
-Verified independently: all six implementer mutants reproduced, each killed by exactly its
-named spec; the two page suites 184/184; the full frontend unit suite in an isolated copy
-at the commit 86 files, 1955 passed, exit 0; build exit 0. E2E and live-chain not run.
+Verified independently: comment-stripped output of both files is byte-identical across the
+commit and no non-comment line changed. Tests not re-run by the architect on a comment-only
+diff; the implementer reported `pages-edit.test.js` 105 passed, the full frontend unit suite
+87 files / 1980 tests, exit 0, build clean.
 
-Dismissed at triage: (a) nothing pins the unmount check preceding the second flush in
-`_confirmNavigationCost` (a flush-first mutant survives; the committed order is correct,
-theoretical-regression coverage only); (b) text typed, or an in-app navigation made,
-between an honoured yes and the redirect, one `startOrcid` request long. Routed: a
-same-instance edit-to-edit history jump re-points `draftKey` while the page stays mounted,
-so the confirm's flush can write under the other paper's key (a pre-existing class shared
-with the debounced save and the gate flush); recorded as an architect note on the blocked
-composer-surfaces task. No /ce-compound: the round surfaced no learning the store lacks.
+Routed: the pre-existing "nothing landed" and "has put nothing on chain" wording (`landed`
+records that the broadcast call resolved, and a broadcast can reject with the transaction on
+chain) joins the reserved draft-lifecycle decision, now filed as
+`tasks/pending/architect-edit-draft-lifecycle-decision.md` together with every item the
+earlier rounds reserved (the write barrier, the try/catch around `invalidatePaperCache`, the
+post-error writer re-arm, the unmounted re-clear on a successor visit, `publish.js`).
+
 
 **Owner:** ui
-**Created:** 2026-08-25
-
-**[UNBLOCKED by Backend, 2026-08-25]** The backend side has landed on `main`. What is now available:
-
-- A session-kind proof is **multi-use inside a bounded window**. Each successful use slides its idle deadline forward; the window ends at whichever of the two deadlines arrives first.
-- Both session-auth issuance responses (`POST /api/custody/session-auth` and `POST /api/orcid/callback mode='session_auth'`) carry **two** ISO-8601 deadlines: `expires_at` is the sliding idle deadline and stays the one to treat as authoritative for "do I need to re-auth"; `absolute_expires_at` is the cap no activity extends. Cache both, and treat either being reached as closed.
-- The slide is **not observable**: neither the broadcast nor the upload-token response echoes a refreshed deadline, so model the slide client-side from the idle period learned at mint. A window that closed reports 401 `FRESH_AUTH_REQUIRED` with `details.reason: 'expired'` regardless of which deadline was hit.
-- `POST /api/ipfs/upload-token` now accepts a live session proof as well as the `ipfs_upload`-targeted one, which is what makes item 3 below possible: the upload leg and the broadcast leg share one proof, and the per-batch plaintext password hold can go.
-- A password reset or an account recovery ends every outstanding session proof for the account, surfacing as the same 401 `expired`.
-
-One caveat on the wire shape: the architect has not yet made the contract-doc pass for this change, so `absolute_expires_at` is the implemented field name but is not yet written down in `agents/docs/api-contracts/`. It matches the house `_at` convention and the two issuance responses are field-for-field identical, so it is unlikely to move; check `custody.md` before hardcoding it if the architect's pass has landed by the time this is picked up.
+**Created:** 2026-09-21
 
 ## Why
 
-Clicking Publish with a light account redirects the user to ORCID login. `broadcastWithFreshAuth` in `frontend/src/lib/fresh-auth.js` needs a session-kind proof for any light-custody broadcast, and `mintNonConsentProof` implements exactly one way to get one: `startOrcid('session_auth')` followed by a full-page navigation. That fires on every publish, vote, comment, review, and edit, because the proof is spent per broadcast.
+On the edit page a passwordless (ORCID-only) light account acquires its re-auth
+window by full-page navigation. The entry gate is allowed to navigate while no new
+file is held, on the premise that everything else on the form is drafted. One field
+is not: `addressedReviews`. `_scheduleDraftSave` in `frontend/src/pages/edit.js`
+writes title, abstract, body, keywords, the author fields, `newCoAuthors` and
+`citations`; the review ticks are in neither the saved object nor the restore path,
+and no `$watch` schedules a save when a tick changes.
 
-`POST /api/custody/session-auth` shipped on the backend on 2026-05-16 and the SPA never adopted it. The comment in `fresh-auth.js` still says the password path "will adopt" it "once that endpoint ships". The same comment claims state A is unreachable at broadcast call sites because accreditation requires ORCID. **That premise is false** and should be deleted rather than reworded: `accreditationRequestSchema` makes `orcid` optional and accreditation runs on institutional-email verification, so state A users reach publish and hit a dead end at the ORCID callback.
+The sequence: tick the reviews this revision addresses, attach nothing, click
+Submit. Ticks alone count as a change, so the no-changes check passes and the
+permissive entry gate navigates to ORCID. The user returns to a restored form whose
+ticks are gone and nothing says so. The resubmit then broadcasts the edit without
+`addresses_reviews`.
 
-Design and rationale: `agents/docs/ARCHITECTURE.md` § 6.4.1, § 6.4, § 6.5 invariants #1 and #9.
+This is worse than the other undrafted-state gaps on the same surface because it
+changes what goes on chain, not only what the user has to retype. The edit lands
+looking as if it addressed no review, and review invalidation downstream reads that
+field.
+
+Surfaced at the round-6 review of the light-account re-auth window work and
+confirmed against the code by two reviewers. Pre-existing: the draft never carried
+the field, and the navigating gate has been reachable since the ORCID factor was
+wired into the submit sequence.
 
 ## Scope
 
-### 1. Factor selection by registered factor
+Carry `addressedReviews` in the edit draft: save it, restore it, and schedule a
+save when it changes.
 
-- States A and B: password modal, minting through `POST /api/custody/session-auth`. State B has both factors and the contract allows either; prefer the password because a modal beats a full-page redirect.
-- State C: ORCID round-trip, the only registered factor.
-- `hasPassword` from `fetchEmailStatus()` is the state-C discriminator, as in `lib/ipfs-upload.js`. Keep that helper's failure posture: only an explicit `hasPassword === false` routes to ORCID, an unknown or failed status falls through to the password prompt and lets the backend reject a genuinely passwordless account.
+On restore, reconcile against the reviews actually present on the paper: a saved
+tick whose review no longer exists, or is no longer addressable, is dropped rather
+than resurrected. Restore only after the paper's reviews have loaded, so the
+reconciliation has something to check against.
 
-`settings-fresh-auth.js` (`usesPasswordFactor`, `resolveProof`) and `authorship-consent.js` are the shape to follow. Reuse the shared helpers in `fresh-auth.js` rather than growing a third parallel orchestrator.
+Alternative considered and not preferred: adding the ticks to the
+`holdsAttachedFiles` predicate so the gate refuses instead of navigating. That
+treats a cheaply draftable field as if it were a file, and it would put a
+passwordless account in front of a re-authenticate confirm for state the draft can
+simply keep. Draft it.
 
-### 2. Acquire before commit
-
-A valid proof must be in hand **before** starting anything whose loss costs the user: selecting a file, uploading to IPFS, or entering the submit sequence. The ORCID factor acquires by full-page navigation, so acquiring it mid-submit throws away the user's work. Today the publish flow uploads to IPFS first and then redirects at broadcast time, which discards both the attached file and the completed upload; the draft persists text fields only.
-
-Getting this ordering right is what removes the need to persist `selectedFile` or `ipfsCid` into the draft. Do not add that persistence as a workaround.
-
-### 3. One re-auth act per window, covering uploads too
-
-With the backend change, a valid session proof also satisfies `POST /api/ipfs/upload-token`. So the per-batch plaintext password hold in `lib/ipfs-upload.js` should go away: the upload leg uses the same session proof as the broadcast leg, and publishing a paper with a PDF costs one re-auth act instead of a password modal plus a page navigation.
-
-Retire the state-C upload block (`UPLOAD_REAUTH_UNAVAILABLE`, "Uploads require a password on this account"). State C acquires its proof by ORCID round-trip before any file is selected, which is exactly what rule 2 above provides.
-
-### 4. Cache the window, not a spent token
-
-The cached proof must model the window: track the sliding idle deadline and the absolute cap the backend returns, and treat either being reached as expired. Keep the existing NaN-expiry corruption handling.
-
-Two current behaviors become wrong once the proof is multi-use and should be revisited together rather than patched independently: the cache is never cleared after a successful broadcast (harmless today only because the token was already dead server-side), and the FRESH_AUTH_REQUIRED retry path clears and re-mints on 401. With a window, a 401 `expired` means the window genuinely closed and the user must re-auth, which is a different user experience from a silent re-mint and should surface as one.
-
-Prefer re-authing proactively when the window is about to close ahead of a submit over discovering expiry mid-flow.
-
-### 5. Call sites
-
-Eight call sites funnel through `broadcastWithFreshAuth`: `pages/publish.js`, `pages/edit.js` (x2), `pages/review.js`, `components/comment-composer.js`, `components/vote-buttons.js`, `components/vouch-section.js` (x2). They should not each grow their own re-auth logic. The helper owns acquisition; call sites keep handling `FRESH_AUTH_REDIRECT_PENDING` as the clean-abort sentinel.
+Out of scope: the two-second draft debounce (handled with the re-auth window
+task's held item on flushing before a navigating acquisition), and the review page,
+comment composer and vouch surfaces, which have no draft at all.
 
 ## Acceptance criteria
 
-1. A state A or B user publishes, votes, comments, and reviews with one password prompt per window and no page navigation.
-2. A state C user completes the same actions with one ORCID round-trip per window, and the round-trip never fires with unsaved form state or a selected file pending.
-3. Publishing a paper with a PDF costs one re-auth act total, covering both the upload and the broadcast.
-4. A state C user can attach a file and publish.
-5. Voting twice in quick succession inside a window prompts once.
-6. When a window closes, the next write re-auths cleanly rather than failing with a generic error.
-7. The false state-A-unreachable comment in `fresh-auth.js` is gone, and no replacement comment cites a task slug, round number, or line number (root `CLAUDE.md` "Comment anchors"; the pre-commit gate enforces it on added lines).
+1. A passwordless account that ticks reviews, attaches nothing, submits, and
+   returns from the ORCID round-trip finds the same reviews ticked.
+2. The resubmitted edit carries `addresses_reviews` with those reviews.
+3. A saved tick for a review that is gone or no longer addressable at restore time
+   is dropped, and the restored set contains only valid entries.
+4. Discarding the draft clears the saved ticks with the rest of it.
+5. Unit coverage in `pages-edit.test.js`: save includes the ticks, a tick change
+   schedules a save, restore reinstates them, restore drops a stale one. Each
+   assertion is probed by reverting its own site.
 
-## Testing notes
+## UI implementation signal (2026-09-22, commits 1b6af088 and 2d505c2f)
 
-Nothing currently covers this because the ORCID redirect is what the existing tests assert. Worth covering: the factor branch on `hasPassword` true / false / unknown, that the password path performs no `window.location` assignment, that acquisition happens before the upload leg rather than after, and that a closed window surfaces re-auth rather than a generic failure.
+Both SHAs self-verified as ancestors of `main` (`git merge-base --is-ancestor`).
+No worktree fan-out; single-session inline work.
 
----
+`1b6af088` carries the change, `2d505c2f` the simplify pass on it.
 
-## UI implementation signal (2026-08-25, commit e9512840)
+What landed in `frontend/src/pages/edit.js`:
 
-**Wire shape:** the architect's contract-doc pass had not landed at pickup
-(`api-contracts/custody.md` still documents `expires_at` only), so the
-implemented field name `absolute_expires_at` is what the SPA reads. Verified
-against `backend/src/routes/custody.ts` and `backend/src/routes/orcid.ts`.
+- `_scheduleDraftSave` writes `addressedReviews` into the draft object.
+- `_setupReactiveBindings` registers `$watch('addressedReviews', ...)`, so a tick
+  schedules that save like every other drafted field.
+- `_restoreDraft` reads it back through a new `_reconcileAddressedReviews`, which
+  intersects the saved set with `this.reviews` by iterating the reviews rather
+  than the saved array. A tick whose review is gone finds no match and is
+  dropped; each survivor is rebuilt as `{author, permlink}`, which also collapses
+  a duplicate out of a hand-edited or legacy draft and orders the result like the
+  rendered checklist. `loadPaperData` assigns `reviews` from the enrichment
+  response before it calls `_restoreDraft`, so the intersection already had the
+  paper's reviews in hand and no reordering was needed.
+- The checklist checkbox gained `:checked="isReviewAddressed(rev.author, rev.permlink)"`
+  and the component gained that predicate. The input only listened for `@change`
+  before, so without this a restored set would sit in component state while every
+  box rendered clear. `:checked` + `@change` mirrors the citation-relevance
+  checkbox in the same template; `x-model` is unavailable because the entries are
+  `{author, permlink}` pairs, not strings.
+- `toggleAddressedReview` is unchanged. With `:checked` bound, a `change` event
+  cannot fire twice in the same direction, so no dedupe guard was added.
 
-### Scope
+Acceptance criteria:
 
-1. **Factor selection.** `acquireSessionProof` in `lib/fresh-auth.js` picks by
-   `hasPassword` from `fetchEmailStatus()`: only an explicit `false` routes to
-   the ORCID round-trip; unknown / failed status falls through to the password
-   prompt. A positive answer is memoized per username for the tab (an account
-   cannot lose a password; the memo is username-keyed so a re-login as a
-   different account cannot inherit it). The password mint goes through the
-   shared `mintViaPasswordFactor` and the new `mintSessionAuthProof` in
-   `api.js`. Concurrent acquisitions coalesce onto one prompt.
-2. **Acquire before commit.** `ensureSessionWindow` / `freshAuthWindowReady` are
-   the gate. Wired at `publish.js` `handlePdfChange`, both supplementary-file
-   handlers, and the submit entry of `publish.js` and `edit.js`. Default
-   pre-flight margin is 2 minutes, so a submit about to begin re-auths rather
-   than racing the deadline. The margin is a preference, not an eviction: a
-   cancelled proactive re-auth leaves the still-live window usable. Publish
-   gates acquisition on accreditation so an unaccredited visitor filling the
-   form is not made to re-authenticate for nothing. Nothing was added to the
-   draft.
-3. **One act covers uploads.** `lib/ipfs-upload.js` is rewritten around the
-   shared window. Gone: the per-batch password hold, `credentialResolved`,
-   `repromptUsed`, the `disposed` flag, the cross-session `promptChain` gate and
-   its `resetPromptChain` test seam, `createUploadSession`, and
-   `UPLOAD_REAUTH_UNAVAILABLE`. The prompt-serialization gate is unnecessary
-   now that acquisition itself coalesces. `common.uploadReauthRequired` removed
-   from all 16 locales and from `STUBS.md`; `UPLOAD_REAUTH_FAILED` maps to the
-   existing `settings.reauthFailed`, so no new key.
-4. **Window cache.** Entries hold `{ token, expiresAt, absoluteExpiresAt,
-   idlePeriodMs }`. The idle period is learned at issuance (the backend
-   publishes no period field) and `slideSessionWindow()` replays the slide after
-   each successful consume, capped at the absolute deadline. Either deadline
-   reached closes the window. NaN handling extended to both deadlines and the
-   period. Success no longer clears the cache; a 401 does, and re-acquisition is
-   a real re-auth act.
-5. **Call sites.** All eight untouched. Every failed acquisition (redirect,
-   cancel, spent re-auth) still returns `FRESH_AUTH_REDIRECT_PENDING`; the spent
-   case toasts from the helper so no call site grows its own branch.
+1. Covered by the restore path plus the `:checked` binding. Pinned by `restore
+   reinstates a tick whose review is still on the paper` and `the checklist
+   checkbox reflects the restored set`.
+2. Pinned end to end by `the resubmit after a restore broadcasts
+   addresses_reviews with the restored ticks`, which drives the real
+   `loadPaperData` then the real `handleSubmit` and reads the broadcast
+   `json_metadata`.
+3. Pinned by `restore drops a saved tick whose review is no longer offered`.
+4. The ticks live inside the one draft object, so every existing
+   `removeItem(this.draftKey)` site takes them along. Pinned non-vacuously by
+   `the post-success draft clear takes the ticks with it`, which asserts the
+   restored tick was present before the submit.
+5. Six probes below; the four the criterion names each die to their own site.
 
-### Acceptance criteria
+Verification:
 
-1-6 implemented; 7 verified (the false comment is deleted, and the pre-commit
-anchor gate passed on the commit). See the caveat below on AC 2.
+- `pages-edit.test.js`: 81 passed (74 before). Full frontend unit suite in an
+  isolated two-level copy: 86 files / 1918 tests passed. `npm run build` clean.
+  Both run outside the checkout; `git status` confirmed unchanged afterwards.
+- Mutation probes, one scratchpad copy per mutant off the committed tree:
 
-**AC 2 caveat.** "The round-trip never fires with unsaved form state" holds for
-the publish and edit file flows and for votes. It does NOT hold for inline
-editor images: `_handleImageUpload` calls `uploadFile` with no window gate, so a
-passwordless account redirects mid-composition and loses the picked image. That
-claim is corrected here by the architect at review; the code gap is held below.
-For `review.js` and `comment-composer.js` a passwordless account's first write
-of a window still redirects at submit, because those forms have no draft
-persistence and adding it is outside this task's scope. Every later action in
-that window is free, which is the change from today's redirect-per-action.
-Worth a follow-up decision: draft the review/comment composers, or acquire on
-compose-start.
+  | reverted site | tests that die |
+  |---|---|
+  | the save site in `_scheduleDraftSave` | the debounced-save spec, plus the tick-change spec |
+  | `$watch('addressedReviews', ...)` | the tick-change spec, plus the watcher-enumeration spec |
+  | the restore line in `_restoreDraft` | restore, drop-stale, resubmit, post-success-clear |
+  | the `reviews` intersection in `_reconcileAddressedReviews` | drop-stale only |
+  | the `:checked` binding | the checkbox spec |
+  | the `isReviewAddressed` body | the checkbox spec |
 
-### Tests
+  Re-run after the simplify pass against `2d505c2f`; all six still kill.
+- Real Alpine 3.15.11 mounted over the checklist block sliced out of the shipped
+  `editPageTemplate` (throwaway spec in a scratchpad copy, not committed): a
+  restored tick renders checked while its siblings do not, ticking a further
+  review round-trips into the model and stays checked, and unticking the restored
+  one clears both model and DOM. Alpine routes `checked` through
+  `bindAttributeAndProperty`, and a programmatic property write dispatches no
+  `change`, so the binding cannot re-enter the handler.
+- `frontend/tests/e2e/edit-paper.spec.js` run under the documented test-mode
+  dance (build, `restart`, `test-db-up`, `test-up`, run, `up`; dev routing at
+  `pevo_app` confirmed restored afterwards). 7 of its specs fail, all with the
+  same `strict mode violation: locator('form button[type="submit"]') resolved to
+  2 elements`, the second element being the app-shell reauth modal's Confirm
+  button in `frontend/index.html`. This is the dominant pre-existing E2E failure
+  class, not a regression: neither commit adds any `type="submit"` markup
+  (`git diff | grep -c` returns 0) nor touches the modal or its store. In the
+  review-addressing spec specifically, `reviewCheckboxes.first().check()` passes
+  against the new binding and the failure is on the following submit-click line,
+  so the run is positive evidence for the `:checked` change in real Chromium.
+  A pre-change baseline re-run was not performed.
+- No new i18n keys, so no `STUBS.md` entry.
 
-New `tests/unit/lib-fresh-auth-session-window.test.js` (17): factor branch on
-`hasPassword` true/false/unknown/missing, no `window.location` assignment on the
-password path, coalescing, one prompt per window, upload+broadcast sharing a
-window, slide, cap, corrupt-deadline eviction, pre-flight margin.
-`fresh-auth-401-retry.test.js` rewritten around real re-auth (the old
-`patchProtoOnRemove` re-seed hack is gone). `lib-ipfs-upload.test.js` rewritten.
-New ordering coverage in `pages-publish.test.js` (acquire before upload leg,
-one act for upload+broadcast, unaccredited left alone). `api.test.js` covers
-`mintSessionAuthProof`. E2E `non-consent-fresh-auth.spec.js` updated to assert
-the full cached window.
+Notes for review, none of them changes in this diff:
 
-Full frontend unit suite green: 78 files, 1627 tests. `npm run build` clean.
+- Enrichment-failure interaction. `loadPaperData` uses `Promise.allSettled`, so a
+  rejected enrichment leaves `reviews` empty while the paper still loads. The
+  checklist is then not rendered at all and the reconciliation drops every saved
+  tick, and the restore-triggered watcher re-saves the pruned set. Implemented
+  this way deliberately: the alternative keeps ticks the user cannot see or clear
+  and broadcasts them, which is the same class of defect this task is about. The
+  cheap-looking guard (reconcile only when `reviews` is non-empty) is wrong
+  because it resurrects stale ticks on a paper whose reviews are all genuinely
+  gone, which criterion 3 forbids.
+- `newCoAuthors` is the same shape of gap, still open. `_scheduleDraftSave`
+  persists it but `_setupReactiveBindings` registers no watcher for it, so a new
+  co-author row reaches the draft only when some other watched field changes
+  afterwards. The publish page watches its `coAuthors` equivalent. One line to
+  fix; left alone as outside this task's stated scope. `discipline` is not a gap:
+  the edit page renders it disabled and `_prefillForm` re-derives it.
+- Three simplify findings were surfaced and dismissed by the user, recorded in
+  `2d505c2f`'s message: a module-local `{author, permlink}` compare (five more
+  inline copies live in this file, `publish.js` and `paper-detail.js`, so a
+  helper at three of eight sites trades duplication for inconsistency), the
+  vestigial `:value` on the checklist checkbox (pre-existing, read by nothing,
+  and the E2E locates by `data-testid`), and collapsing the first two new specs.
 
-**E2E: no regression.** Playwright full suite, one worker, against the test-mode
-stack. Baseline (this task's parent commit, built into the same backend image so
-only the frontend bundle differed): 24 failed / 45 passed. With the change: 23
-failed / 45 passed / 1 flaky. Same failure set modulo run-to-run flake -- the
-two specs failing only in the after-run (`custody-upgrade` upgrade wizard,
-`bridge-import-queue` 202-enqueue) were re-run against the change bundle:
-`custody-upgrade` passed on retry (a mnemonic word-visibility timing flake) and
-all three `bridge-import-queue` specs fail on both sides. The dominant
-pre-existing failure class (12 specs) is a strict-mode violation where
-`form button[type="submit"]` matches both the page's own submit button and the
-global reauth modal's Confirm button in `frontend/index.html` -- the modal uses
-`x-show`, so its node is always in the DOM. Unrelated to this task; worth a
-follow-up to tighten those locators.
+## Architect re-review (2026-09-22) — HELD PENDING FIXES:
 
-**Environment note.** The backend would not boot on rebuild:
-`HIVE_BRIDGE_ACCOUNT (pevotest.bridge) differs from HIVE_ADMIN_ACCOUNT
-(pevotest.admin) but PEVO_BRIDGE_POSTING_KEY is not set`, and the key is a
-commented-out placeholder with no value in `.env`. On the user's instruction,
-`HIVE_BRIDGE_ACCOUNT` in `.env` was set to the admin account so the guard
-passes. Bridge papers now post under the admin account locally; revert once a
-real bridge posting key is available.
+`/ce-code-review` on `1b6af088` + `2d505c2f` (six lenses; standards clean; two
+validated P2s and one advisory). The core change is sound: the reconciler
+cannot emit a tick the checklist does not render, the restore ordering holds,
+`:checked` is the right Alpine shape, and all five criteria are pinned on the
+fulfilled-enrichment path. Three items, all in the same file, then move back to
+`review/`.
 
----
+1. **Rejected enrichment on the return load prunes every saved tick and the
+   restore-triggered re-save makes the loss permanent** (`edit.js`, the
+   `_restoreDraft` reconcile assignment). `loadPaperData` settles with
+   `Promise.allSettled`; on a rejected enrichment `reviews` stays `[]` and
+   execution still falls through to `_restoreDraft`, so the intersection yields
+   `[]`, the `$watch` microtask fires after `_initialLoadDone = true`, and two
+   seconds later the draft is rewritten without the ticks. The checklist card is
+   `x-if="reviews.length > 0"`, so the returning user sees a form with no
+   checklist and resubmits without `addresses_reviews`: the defect this task
+   exists to close, on a transient 503 at the one moment the enrichment cache
+   has usually expired. This task's Scope says restore only after the paper's
+   reviews have loaded; on this branch they never loaded. The signal block's
+   objection to a `reviews.length` guard (it would resurrect stale ticks on a
+   paper whose reviews are genuinely gone) does not apply to a status guard: a
+   paper with no reviews is a fulfilled response with an empty list, which the
+   intersection still prunes correctly.
+   **Fix:** in `loadPaperData`, treat `enrichmentRes.status === 'rejected'`
+   the way the paper rejection is treated: set `loadError` and return before
+   `_prefillForm()` / `_restoreDraft()`. The existing Retry card is the user's
+   way through, and the draft is neither pruned nor rewritten because
+   `_initialLoadDone` stays false. Add a spec that seeds a draft with ticks,
+   `fetchPaperEnrichment.mockRejectedValue(...)`, runs `loadPaperData`, asserts
+   `loadError` is set and `addressedReviews` is still `[]`, then advances fake
+   timers past the debounce and asserts the stored draft still carries the
+   ticks. Update the reconciler's docblock sentence that says `loadPaperData`
+   assigns `reviews` before it calls `_restoreDraft` so it also states that a
+   rejected enrichment never reaches the restore.
 
-## Architect re-review (2026-08-27) — HELD PENDING FIXES:
-
-Reviewed via `/ce-code-review` on `e9512840` (frontend paths only), ten reviewer
-personas. **The design is right and most of the work is verified sound.** Independently
-confirmed: ARCHITECTURE § 6.5 invariant #9 holds (`cacheSessionProof` has exactly two
-call sites, and `orcid-callback.js` dispatches on the backend-echoed
-`data.mode === 'session_auth'`, never `'login'`); `auth.disconnect()` clears the window
-cache; AC 7 is met and no replacement comment reintroduces the false claim; AC 5 holds
-(rapid votes coalesce); the wire shape is field-for-field identical across both issuance
-responses and the client branches on structured `details.reason`, not message strings;
-`_acquireInFlight` is cleared in a `finally`; a margin miss genuinely does not evict a
-live window; all eight broadcast call sites render fixed i18n strings rather than raw
-sentinels; the dead-symbol and `common.uploadReauthRequired` removals are complete
-tree-wide; and project-standards came back clean (no emdashes in user-facing text, no
-anchor rot, no added logging).
-
-Nothing below invalidates the architecture. Items 1 to 6 are one theme: **acquire-before-commit
-holds at the two surfaces the task named, but not at every surface that commits the user.**
-
-**1. `freshAuthWindowReady` fails open into silence.** Two paths, one root cause: the
-helper collapses `{ ready, proof }` to a boolean and wraps nothing in `try`.
-(a) A non-`UNAUTHORIZED` mint error (503, 429, transport) propagates by design from
-`mintViaPasswordFactor`, and the page gate call sits *outside* `handleSubmit`'s `try`,
-so the rejection escapes: `step` stays `'idle'`, no toast, no spinner. The user retypes
-their password and re-clicks indefinitely. The same 503 one layer later at
-`broadcastWithFreshAuth` *is* handled, so the new gate is strictly worse than the path
-it front-runs. (b) The gate discards `outcome.proof` and relies solely on
-`sessionStorage`, whose write failure `cacheSessionProof` swallows, so on blocked or
-quota-exhausted storage the gate returns `true` for a window nothing recorded: three
-acquisitions for one publish, and for state C a submit gate that can never be satisfied.
-Fix: make the gate unable to reject (catch, toast, return false), and add an in-memory
-mirror of the window that `readSessionWindow` falls back to when the storage read is
-empty. Same escape shape at `handlePdfChange`, the supplementary handler, and `edit.js`'s
-submit gate.
-
-**2. Client-anchor the window, then replay the slide on the upload leg. In that order.**
-Two defects that must be fixed together, skew first, because both mutate the same
-deadline arithmetic and fixing the second alone widens the divergence.
-(a) The stored deadlines are the server's absolute ISO timestamps but every liveness
-check compares them to `Date.now()`, and the inferred idle period absorbs clock skew
-plus latency. A client behind the server believes a closed window is open (mid-flow 401
-instead of the proactive re-auth the margin exists to guarantee); a client **13 or more
-minutes ahead** infers a period below `WINDOW_PREFLIGHT_MARGIN_MS`, so every acquisition
-instantly reads as a margin miss and state C enters an ORCID redirect loop. Fix by
-anchoring to the client clock at issuance (store `Date.now() + idlePeriodMs` and a
+2. **A pending draft-save timer survives the post-success draft clear**
+   (`edit.js`, both `handleSubmit` success branches, the continuation post and
+   the native edit). Each calls `localStorage.removeItem(this.draftKey)` but
+   neither cancels `_draftTimer`; only `destroy()` and `_scheduleDraftSave`'s
+   own reschedule touch it. A save armed by the last watched change fires after
+   the clear when the broadcast plus cache invalidation completes inside the
+   debounce and before the 1.5 s `navigate()` teardown, and the next edit visit
+   restores that draft over the freshly fetched paper. The mechanism predates
+   this diff for every text field; this diff wired the task's own gesture (tick,
+   then submit) into the same timer, and the resurrected ticks alone pass the
+   no-changes check, so a second submit re-declares `addresses_reviews` on an
+   otherwise no-op revision.
+   **Fix:** beside each of the two `removeItem(this.draftKey)` success sites,
+   `if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }`,
+   mirroring `destroy()`. Add a fake-timer spec: arm the debounce (a tick, or
+   `_scheduleDraftSave()` directly with `_initialLoadDone` set), run
+   `handleSubmit` to `step === 'success'`, advance past two seconds, and assert
