@@ -327,7 +327,7 @@ export function initAccreditationPage() {
 
       // Subject pin, the same shape as settings.js handleOrcidLink: opened
       // before the start await and read through `tornDown` alone, so a stale
-      // start ends silently.
+      // start ends silently, whether it resolves or rejects.
       const guard = subjectTeardownGuard();
 
       try {
@@ -348,12 +348,17 @@ export function initAccreditationPage() {
         window.location.href = data.redirect_url;
       } catch (err) {
         if (!this._mounted) return;
+        // A start that fails past a teardown unwinds the same way one that
+        // succeeds does: no message for a click the present subject never
+        // made, and no removal of a marker that is a later flow's by now.
+        if (guard.tornDown()) {
+          this.orcidLoading = false;
+          return;
+        }
         console.warn('[accreditation orcid verify]', err);
         Alpine.store('toast').show(this.$t('accreditation.orcidVerifyFailed'), 'error');
         this.orcidLoading = false;
-        // A stale flow's marker is already gone (see the subject pin), so a
-        // removal past a teardown could only take a later flow's.
-        if (!guard.tornDown()) sessionStorage.removeItem('pevo_orcid_mode');
+        sessionStorage.removeItem('pevo_orcid_mode');
       }
     },
   }));

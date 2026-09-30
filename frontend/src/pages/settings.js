@@ -879,8 +879,9 @@ export function initSettingsPage() {
       // clicked, and the round-trip is an await a subject teardown can land in
       // (a login as another user, a cross-tab sign-out). Opened before the
       // await, and read through `tornDown` alone: this flow never calls the
-      // guard's `cancel`, so a stale start ends silently rather than telling
-      // the next subject about a click that was not theirs.
+      // guard's `cancel`, so a stale start ends silently, whether it resolves
+      // or rejects, rather than telling the next subject about a click that
+      // was not theirs.
       const guard = subjectTeardownGuard();
 
       try {
@@ -900,6 +901,13 @@ export function initSettingsPage() {
         }
         window.location.href = data.redirect_url;
       } catch (err) {
+        // A start that fails past a teardown unwinds the same way one that
+        // succeeds does: the failure is of a click the present subject never
+        // made, and the marker it would remove is a later flow's by now.
+        if (guard.tornDown()) {
+          this.orcidLinking = false;
+          return;
+        }
         // Sanitization pattern (shared with executeUpgrade()): the
         // DOM-bound error takes a generic localized message rather than
         // `err.message`, which is x-text'd directly. The raw error still
@@ -909,9 +917,7 @@ export function initSettingsPage() {
         console.warn('[orcid link]', err);
         this.orcidError = this.$t('settings.orcidLinkFailed');
         this.orcidLinking = false;
-        // A stale flow's marker is already gone (see the subject pin), so a
-        // removal past a teardown could only take a later flow's.
-        if (!guard.tornDown()) sessionStorage.removeItem('pevo_orcid_mode');
+        sessionStorage.removeItem('pevo_orcid_mode');
       }
     },
 

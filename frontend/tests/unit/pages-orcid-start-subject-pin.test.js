@@ -27,11 +27,11 @@
 // dependencies of the two pages and the store; no case here exercises them.
 // Clause (b): no auth middleware is mocked and no cryptographic verification
 // is bypassed; these cases assert what the client does with a start whose
-// subject is gone. Clause (c): the integrated start-then-callback path runs
-// real in `frontend/tests/e2e/settings-orcid-factor.spec.js` and
-// `frontend/tests/e2e/orcid-no-password.spec.js`; no e2e spec changes the
-// subject while a start is parked, so the mid-await class is covered here
-// only.
+// subject is gone. Clause (c): no real-path companion exists for the start leg
+// of these two flows. `frontend/tests/e2e/orcid-link.spec.js` runs the link
+// mode's callback leg real, entering at `/orcid/callback`; no e2e spec clicks
+// either start handler, and none changes the subject while a start is parked,
+// so both the start leg and the mid-await class are covered here only.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { stores, mockStartOrcid } = vi.hoisted(() => ({
@@ -119,6 +119,9 @@ const FLOWS = [
     start: (comp) => comp.handleOrcidLink(),
     busyFlag: 'orcidLinking',
     mode: 'link',
+    // Where this flow tells the user something went wrong: the inline
+    // message for settings, the toast for accreditation.
+    reported: (comp) => comp.orcidError !== null,
   },
   {
     name: 'accreditation ORCID verify',
@@ -126,6 +129,7 @@ const FLOWS = [
     start: (comp) => comp.handleOrcidVerify(),
     busyFlag: 'orcidLoading',
     mode: 'accredit',
+    reported: (comp) => comp.errorMessage !== '' || stores.toast.show.mock.calls.length > 0,
   },
 ];
 
@@ -156,6 +160,16 @@ const SUBJECT_CHANGES = [
   {
     name: 'a sign-out in this tab',
     apply: (auth) => auth.disconnect(),
+  },
+  // The username matches again afterwards, but the sign-out's scrub took the
+  // marker and the re-login does not restore it: a navigation here dead-ends
+  // at the callback exactly as a cross-user one does.
+  {
+    name: 'a sign-out followed by a login as the same user',
+    apply: (auth) => {
+      auth.disconnect();
+      auth.loginFromResponse(session('alice'));
+    },
   },
 ];
 
@@ -231,11 +245,11 @@ describe.each(FLOWS)('$name: subject pin across the start round-trip', (flow) =>
       expect(comp[flow.busyFlag]).toBe(false);
       expectSuccessorFlowKeysIntact();
       // A silent cancel: the click belonged to a subject that has left.
-      expect(stores.toast.show).not.toHaveBeenCalled();
+      expect(flow.reported(comp)).toBe(false);
     },
   );
 
-  it('leaves a later flow its keys when a stale start rejects', async () => {
+  it('unwinds silently and leaves a later flow its keys when a stale start rejects', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const comp = flow.mount();
     const parked = parkStart();
@@ -250,6 +264,9 @@ describe.each(FLOWS)('$name: subject pin across the start round-trip', (flow) =>
     expect(window.location.href).toBe('');
     expect(comp[flow.busyFlag]).toBe(false);
     expectSuccessorFlowKeysIntact();
+    // Silent here too: the failure is of a click the present subject never made.
+    expect(flow.reported(comp)).toBe(false);
+    expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 
@@ -264,6 +281,7 @@ describe.each(FLOWS)('$name: subject pin across the start round-trip', (flow) =>
 
     expect(comp[flow.busyFlag]).toBe(false);
     expect(sessionStorage.getItem(ORCID_MODE_KEY)).toBeNull();
+    expect(flow.reported(comp)).toBe(true);
     warnSpy.mockRestore();
   });
 
