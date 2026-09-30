@@ -978,8 +978,9 @@ describe('withSettingsFreshAuth', () => {
   });
 
   it('a wrong password whose 401 lands after a subject change does not re-prompt', async () => {
-    // The observed-factor sibling of the case above: without the teardown
-    // check at the catch entry, a mistyped password would open a SECOND prompt
+    // The observed-factor sibling of the assumed-password 401 that lands
+    // after a subject change: without the teardown check at the catch
+    // entry, a mistyped password would open a SECOND prompt
     // — carrying the previous action's copy — for whoever the tab now
     // represents, and that prompt would then own the singleton modal.
     let rejectMint;

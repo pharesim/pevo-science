@@ -24,8 +24,8 @@
  * tests removed their former `test.fixme` skips. The set-password real round-trip
  * this header previously listed is driven by the set_password round-trip test in
  * settings-orcid-factor.spec.js (against the orcid-stub) and is not duplicated
- * here. See the docblock above the real round-trip describe for the full
- * rationale.
+ * here. See the docblock on the 'real-backend ORCID null-password round-trips'
+ * describe for the full rationale.
  *
  * Mocking justification (project-CLAUDE.md "Carve-out for deterministic
  * edge-case coverage", clause a) for the two real-backend round-trips: every

@@ -1058,7 +1058,7 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
     // teardown boundary a cross-tab subject change is likeliest to land in.
     // It is also the pre-call re-check `mintViaPasswordFactor`'s default
     // guard depends on (see its docblock): nothing may be awaited between
-    // here and the call below.
+    // this re-check and the `mintViaPasswordFactor` call.
     if (guard.tornDown()) return guard.cancel();
     if (!factor.usesPassword) return orcidOrRefuse();
 

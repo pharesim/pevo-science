@@ -578,9 +578,9 @@ describe('auth store', () => {
     });
 
     it('same-subject re-login leaves an open re-auth prompt alone', () => {
-      // The pair-partner of the test above: no subject change means no scrub,
-      // and dismissing a prompt the same account opened would cost a re-auth
-      // the user does not owe.
+      // The pair-partner of the different-username prompt-dismissal test: no
+      // subject change means no scrub, and dismissing a prompt the same
+      // account opened would cost a re-auth the user does not owe.
       loginAs('alice');
       reauthCancel.mockClear();
 

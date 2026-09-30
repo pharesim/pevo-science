@@ -120,7 +120,8 @@ describe('beginSettingsActionOrcidFreshAuth', () => {
     // The other direction of the same branch, and the one every production
     // caller is in: all of them thread a teardown guard, so the unwind must
     // turn on what the predicate ANSWERS, not on whether one was supplied.
-    // The case above passes none, which cannot tell those two apart.
+    // The no-predicate startOrcid-throws case passes none, which cannot tell
+    // those two apart.
     mockStartOrcid.mockRejectedValue(new Error('network down'));
 
     await expect(beginSettingsActionOrcidFreshAuth('set_password', () => false))
@@ -157,8 +158,8 @@ describe('beginSettingsActionOrcidFreshAuth', () => {
   });
 
   it('a fresh (non-stale) predicate leaves the navigation untouched', async () => {
-    // The control for the case above: threading the predicate must cost the
-    // ordinary flow nothing.
+    // The control for the stale-start clean-cancel case: threading the
+    // predicate must cost the ordinary flow nothing.
     mockStartOrcid.mockResolvedValue({ redirect_url: 'https://orcid.org/oauth/authorize?x=1' });
 
     const res = await beginSettingsActionOrcidFreshAuth('change_email', () => false);

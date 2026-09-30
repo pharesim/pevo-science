@@ -1379,12 +1379,12 @@ export function initSettingsPage() {
         // allowed `{token: new, expires_at: undefined}` to persist a
         // server-invalidated old token with new expiry. `username` is the
         // pinned upgrade subject rather than the store's current value:
-        // belt-and-braces now that the guard above has already established
-        // they are the same, and it keeps the helper's current-username
-        // fallback out of this call site entirely. is_accredited and
-        // accreditation are omitted from the data payload so the helper
-        // preserves them (the upgrade flips custody and rotates session
-        // credentials, not accreditation status).
+        // belt-and-braces now that the `_upgradeSubjectDiverged` guard has
+        // already established they are the same, and it keeps the helper's
+        // current-username fallback out of this call site entirely.
+        // is_accredited and accreditation are omitted from the data payload
+        // so the helper preserves them (the upgrade flips custody and
+        // rotates session credentials, not accreditation status).
         Alpine.store('auth').loginFromResponse({
           token: result.data?.token,
           expires_at: result.data?.expires_at,

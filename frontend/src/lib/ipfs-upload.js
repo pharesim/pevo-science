@@ -127,9 +127,9 @@ const UPLOAD_ERROR_TEXT = Object.freeze({
   [UPLOAD_SUBJECT_CHANGED]: 'Session changed. Upload abandoned.',
 });
 
-// Every UploadSessionError this module raises is built here, so the table above
-// stays the per-code index its docblock claims rather than losing entries to
-// inline strings at the raise sites.
+// Every UploadSessionError this module raises is built here, so
+// `UPLOAD_ERROR_TEXT` stays the per-code index its docblock claims rather than
+// losing entries to inline strings at the raise sites.
 const uploadError = (code) => new UploadSessionError(code, UPLOAD_ERROR_TEXT[code]);
 
 async function windowProof(guard) {
