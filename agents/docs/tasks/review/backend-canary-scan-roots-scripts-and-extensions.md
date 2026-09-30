@@ -301,3 +301,48 @@ DISMISSED at triage (recorded so they are not picked up under this hold):
 - The `.json` collector is refused as empty coverage while two empty local
   walkers are admitted: the difference (the fixture pins them, and the
   reader already reads their spellings) is unstated, and stays so.
+
+## Backend re-review signal (2026-09-30, commit 078550bc):
+
+SHA verified as an ancestor of `main`. Prose only: comment-stripped output
+and the parser leaf stream are identical before and after the change. No
+walker, arm, or fixture assertion changed, and no DISMISSED item was
+picked up.
+
+a. The module-DDL KNOWN LIMITS entry no longer lists a rule as a silent
+   shape. It says a rule whose action spells the `UPDATE accounts SET
+   updated_at = ...` statement is read by the writer arms like any other
+   statement text, and names the trigger whose function writes
+   `NEW.updated_at := now()` as what no arm reads. The entry's opening
+   sentence was reworded with it: "a trigger or rule installed at runtime
+   from a MODULE's SQL string is judged by no arm" carried the same
+   overclaim, and now says the routine arm's refusal does not reach one.
+b. The walker-fixture comment names `moduleResourcesUnder` as the dropped
+   walker the plausibility spec cannot see, and notes that a union that
+   dropped `sourcesUnder` is the one it does see.
+c. The roots paragraph is rewrapped. Its longest line is the untouched
+   opening line at 78 columns, and its words are unchanged.
+
+Verification: a four-lens adversarial workflow (rule facts, walker
+mutations, conventions and hold fidelity, cold read) with two refuters per
+finding ran in scratch copies on the first draft. One finding survived
+both refuters and is fixed in the commit: the draft said a rule is always
+read and the trigger is the only shape left. Probes showed a module rule
+with an `ON UPDATE TO` event and an unreadable action head (quoted
+identifier, variable table) stays green, because the event clause reads as
+an earlier statement head and lends its table, where the same statement
+outside a rule fails closed. The committed wording claims only the plainly
+spelled rule and defers the unread spellings to the list's other entries,
+where the quoted-identifier entry records that lend-its-table edge. The
+final wording was not re-run through the workflow; it narrows the draft to
+claims the probes had already confirmed.
+
+[TODO Architect] Triage call, not acted on here: whether the rule
+event-clause edge deserves its own sentence in the quoted-identifier
+entry. A rule with an UPDATE event always supplies the earlier readable
+head, so the fail-closed resolution arm is bypassed for that shape.
+
+Clean tree: `tests/eslint/` 9 files / 140 tests green with exit 0,
+`npm run typecheck` passes, `npm run lint` has only its one existing
+warning, and the anchor-gate patterns replicated over the added lines gave
+zero hits with control lines firing.
