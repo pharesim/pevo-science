@@ -79,6 +79,18 @@ vi.mock('../../src/lib/fresh-auth.js', async (importActual) => ({
 
 const reauthRequest = vi.fn();
 const authDisconnect = vi.fn();
+// One store object for the whole file, so what a disconnect does to it is
+// still there on the next read. The liveness flip lives in the method body
+// rather than in the spy's implementation, where a per-test reset or a
+// one-shot override would strip it.
+const authStore = {
+  username: 'carol',
+  isConnected: true,
+  disconnect(...a) {
+    this.isConnected = false;
+    return authDisconnect(...a);
+  },
+};
 const toastShow = vi.fn();
 let i18nMessages = null;
 vi.mock('alpinejs', () => ({
@@ -100,7 +112,7 @@ vi.mock('alpinejs', () => ({
       // `username` matches the LIGHT ctx below so the shared resolver's
       // username-keyed memo branches are live in this suite; without it the
       // memo is never read or written and the retry-gate reuse is untestable.
-      if (name === 'auth') return { disconnect: (...a) => authDisconnect(...a), username: 'carol' };
+      if (name === 'auth') return authStore;
       if (name === 'toast') return { show: (...a) => toastShow(...a) };
       if (name === 'i18n') return { messages: i18nMessages };
       return null;
@@ -206,6 +218,7 @@ describe('withAuthorshipFreshAuth', () => {
     mockBeginAuthorshipOrcid.mockReset();
     reauthRequest.mockReset();
     authDisconnect.mockReset();
+    authStore.isConnected = true;
     toastShow.mockReset();
     mockGetCachedConsentOpProof.mockReturnValue(null);
     mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });

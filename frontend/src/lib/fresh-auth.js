@@ -151,9 +151,29 @@ export function passwordPromptMessage() {
 // teardown completes before the toast fires and there is no toast-vs-teardown
 // race. Lib code cannot use `$t`; read the i18n store directly with an English
 // fallback for the not-yet-loaded-bundle case.
+//
+// A repeat detection does not disconnect again and does not repeat the
+// re-login message. Several flights can detect the same corrupted session (the
+// publish page's inline-image upload and its submit broadcast), and to the
+// user that is one incident. Only the detector that finds the store still
+// connected tears it down and shows the re-login message; a detector that
+// finds it already disconnected leaves the generation and the first
+// detector's claim untouched, and says nothing when that teardown has already
+// been narrated. When the store was disconnected by something that never
+// spoke (a sign-out in this tab or another), it shows the once-per-teardown
+// session-changed message instead, so the already-reported shape its caller
+// returns stays true. The store's `isConnected` is the signal, not the
+// teardown claim: each disconnect bumps the generation, so a second
+// disconnect would mint a teardown the claim has never seen. This gate does
+// not protect a session established after the flight began; a detector that
+// finds the store connected always disconnects it.
 export function handleSessionInconsistency() {
   const auth = Alpine.store('auth');
   if (auth) {
+    if (!auth.isConnected) {
+      reportTeardownOnce();
+      return;
+    }
     auth.disconnect();
     // The disconnect runs the subject scrub, which abandons every in-flight
     // acquisition. Claim that teardown before speaking: the message below is
@@ -173,8 +193,7 @@ export function handleSessionInconsistency() {
 // back to English for the not-yet-loaded-bundle case; this is that read plus
 // the show, in one place, so the fallback policy and the severity cannot drift
 // between the sites that raise messages (the session-inconsistency teardown
-// above, the window-outcome dispatch below, and the cancel closure of
-// `subjectTeardownGuard`).
+// above, the window-outcome dispatch below, and `reportTeardownOnce`).
 function toastLocalized(section, name, fallback) {
   const msg = Alpine.store('i18n')?.messages?.[section]?.[name] || fallback;
   Alpine.store('toast')?.show(msg, 'error');
@@ -337,17 +356,24 @@ export function subjectTeardownGuard() {
   return {
     tornDown: () => generation !== _acquireGeneration,
     cancel: () => {
-      if (_reportedTeardownGeneration !== _acquireGeneration) {
-        claimTeardownReport();
-        toastLocalized(
-          'auth',
-          'reauthCancelled',
-          'Your session changed, so the confirmation was cancelled.',
-        );
-      }
+      reportTeardownOnce();
       return FRESH_AUTH_CANCELLED;
     },
   };
+}
+
+// Report the current teardown unless a message for it has already gone out.
+// Shared by `subjectTeardownGuard`'s cancel and by a session-inconsistency
+// detection that finds the store already disconnected, so both key on the
+// same claim and cannot stack.
+function reportTeardownOnce() {
+  if (_reportedTeardownGeneration === _acquireGeneration) return;
+  claimTeardownReport();
+  toastLocalized(
+    'auth',
+    'reauthCancelled',
+    'Your session changed, so the confirmation was cancelled.',
+  );
 }
 
 // The teardown generation whose message has already been delivered. Compared
@@ -362,8 +388,8 @@ export function subjectTeardownGuard() {
 // mark, and the first guard to unwind under it speaks again.
 let _reportedTeardownGeneration = -1;
 
-// Mark the current teardown as narrated. Called by `cancel()` as it reports,
-// and by any teardown that shows a message of its own BEFORE the flights it
+// Mark the current teardown as narrated. Called by `reportTeardownOnce` as it
+// reports, and by any teardown that shows a message of its own BEFORE the flights it
 // abandoned resume — those flights then unwind silently rather than adding a
 // second message about one event.
 function claimTeardownReport() {

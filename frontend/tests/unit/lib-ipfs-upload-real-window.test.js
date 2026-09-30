@@ -72,7 +72,9 @@ vi.mock('../../src/api.js', async (importOriginal) => {
 
 const mockReauthModal = { request: vi.fn() };
 const mockToastStore = { show: vi.fn() };
-const mockAuthStore = { custody: 'light', username: 'alice', token: 'jwt', disconnect: vi.fn() };
+const mockAuthStore = {
+  custody: 'light', username: 'alice', token: 'jwt', isConnected: true, disconnect: vi.fn(),
+};
 
 vi.mock('alpinejs', () => ({
   default: {
@@ -86,7 +88,7 @@ vi.mock('alpinejs', () => ({
   },
 }));
 
-const { uploadFile, describeUploadError, UPLOAD_REAUTH_FAILED } =
+const { uploadFile, describeUploadError, UPLOAD_REAUTH_FAILED, UPLOAD_SESSION_TORN_DOWN } =
   await import('../../src/lib/ipfs-upload.js');
 const { clearCachedSessionProof, clearPasswordFactorMemo, abandonInFlightAcquisitions } =
   await import('../../src/lib/fresh-auth.js');
@@ -119,6 +121,13 @@ beforeEach(() => {
   abandonInFlightAcquisitions();
   mockAuthStore.custody = 'light';
   mockAuthStore.username = 'alice';
+  // The production disconnect as far as this module can see it: the liveness
+  // flag drops and the subject scrub abandons every flight in the air.
+  mockAuthStore.isConnected = true;
+  mockAuthStore.disconnect.mockImplementation(() => {
+    mockAuthStore.isConnected = false;
+    abandonInFlightAcquisitions();
+  });
   mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
   mockReauthModal.request.mockResolvedValue('hunter2');
   mockMintSessionAuthProof.mockImplementation(async () => issuance('window-proof'));
@@ -186,5 +195,41 @@ describe('the upload pre-flight over the real window', () => {
     expect(err?.code).toBe(UPLOAD_REAUTH_FAILED);
     expect(describeUploadError(err)).toBe('settings.reauthFailed');
     expect(mockUploadFileToIpfs).not.toHaveBeenCalled();
+  });
+});
+
+describe('a corrupted session detected on the upload surface', () => {
+  const mismatch = () => new ApiRequestError(
+    'FRESH_AUTH_REQUIRED',
+    'FRESH_AUTH_REQUIRED',
+    null,
+    { reason: 'username_mismatch' },
+  );
+
+  it('two uploads detecting the same corrupted session tear down and report once', async () => {
+    // Inline images go up side by side, so one corrupted session can be
+    // detected by every transfer in the air. The user is owed one teardown
+    // and one re-login message for it; each upload still rejects with the
+    // already-reported code so the page stacks nothing on top.
+    const rejects = [];
+    mockUploadFileToIpfs.mockImplementation(
+      () => new Promise((_, reject) => { rejects.push(reject); }),
+    );
+
+    const first = uploadFile(file()).then(() => null, (e) => e);
+    const second = uploadFile(file()).then(() => null, (e) => e);
+    await vi.waitFor(() => expect(rejects).toHaveLength(2));
+
+    rejects[0](mismatch());
+    rejects[1](mismatch());
+
+    expect((await first)?.code).toBe(UPLOAD_SESSION_TORN_DOWN);
+    expect((await second)?.code).toBe(UPLOAD_SESSION_TORN_DOWN);
+    expect(mockAuthStore.disconnect).toHaveBeenCalledTimes(1);
+    expect(mockToastStore.show).toHaveBeenCalledTimes(1);
+    expect(mockToastStore.show).toHaveBeenCalledWith(
+      'Session inconsistency detected. Please sign in again.',
+      'error',
+    );
   });
 });

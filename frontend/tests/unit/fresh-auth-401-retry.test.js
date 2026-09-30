@@ -46,7 +46,7 @@ const mockStartOrcid = vi.fn();
 const mockFetchEmailStatus = vi.fn();
 const mockMintSessionAuthProof = vi.fn();
 const mockAuthStore = {
-  custody: 'light', username: 'alice', token: 'jwt-abc', disconnect: vi.fn(),
+  custody: 'light', username: 'alice', token: 'jwt-abc', isConnected: true, disconnect: vi.fn(),
 };
 const mockToastStore = { show: vi.fn() };
 const mockReauthModal = { request: vi.fn() };
@@ -132,6 +132,13 @@ function issuance(token) {
   };
 }
 
+// The production disconnect in full, as far as this module can see it: the
+// liveness flag drops and the subject scrub abandons every flight in the air.
+function scrubbingDisconnect() {
+  mockAuthStore.isConnected = false;
+  abandonInFlightAcquisitions();
+}
+
 function freshAuthError(status, reason) {
   return Object.assign(new Error('FRESH_AUTH_REQUIRED'), {
     status, code: 'FRESH_AUTH_REQUIRED', details: { reason },
@@ -143,6 +150,12 @@ describe('broadcastWithFreshAuth — error-recovery paths', () => {
     vi.clearAllMocks();
     mockAuthStore.custody = 'light';
     mockAuthStore.username = 'alice';
+    // The store's liveness flag moves the way the real disconnect moves it, so
+    // a teardown leaves the store looking torn down to whoever reads it next.
+    // Installed per test: the store object is shared across the file, and a
+    // flag left false would silence every later detection.
+    mockAuthStore.isConnected = true;
+    mockAuthStore.disconnect.mockImplementation(() => { mockAuthStore.isConnected = false; });
     sessionStorage.clear();
     // Password factor by default; the reauth modal returns a password and the
     // mint succeeds, so re-auth is inline and observable.
@@ -289,7 +302,7 @@ describe('broadcastWithFreshAuth — error-recovery paths', () => {
     // The window is seeded short: past the gate's pre-flight margin (so the
     // gate acquires cold and parks) but still live for the broadcast, whose
     // acquisition takes no margin at all.
-    mockAuthStore.disconnect.mockImplementation(() => { abandonInFlightAcquisitions(); });
+    mockAuthStore.disconnect.mockImplementation(scrubbingDisconnect);
     // The tab-lifetime factor memo would answer the gate's status question
     // without a round-trip, leaving nothing parked for the teardown to land in.
     clearPasswordFactorMemo();
@@ -308,6 +321,63 @@ describe('broadcastWithFreshAuth — error-recovery paths', () => {
     // Exactly one message, and it is the teardown's own.
     expect(mockToastStore.show).toHaveBeenCalledTimes(1);
     expect(mockToastStore.show).toHaveBeenCalledWith(LOCALIZED_SENTINEL, 'error');
+  });
+
+  it('two flights detecting the same corrupted session tear down and report once', async () => {
+    // To the user, one corrupted session is one incident however many
+    // requests were in the air when it surfaced. Each detector's disconnect
+    // would run the scrub again and mint a generation the teardown claim has
+    // never seen, so the claim cannot collapse them; the store's liveness is
+    // what tells the second detector the work is done.
+    mockAuthStore.disconnect.mockImplementation(scrubbingDisconnect);
+    setWindow('proof-x');
+    let rejectFirst;
+    let rejectSecond;
+    mockBroadcastOps
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectFirst = reject; }))
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectSecond = reject; }));
+
+    const first = broadcastWithFreshAuth('alice', [['vote', {}]]);
+    const second = broadcastWithFreshAuth('alice', [['vote', {}]]);
+    await tick();
+    // Both flights are parked in their broadcast, so both guards pre-date the
+    // teardown and neither unwinds through its guard instead of detecting.
+    expect(mockBroadcastOps).toHaveBeenCalledTimes(2);
+
+    rejectFirst(freshAuthError(403, 'username_mismatch'));
+    rejectSecond(freshAuthError(403, 'username_mismatch'));
+
+    expect(await first).toBe(FRESH_AUTH_REDIRECT_PENDING);
+    expect(await second).toBe(FRESH_AUTH_REDIRECT_PENDING);
+    expect(mockAuthStore.disconnect).toHaveBeenCalledTimes(1);
+    expect(mockToastStore.show).toHaveBeenCalledTimes(1);
+    expect(mockToastStore.show).toHaveBeenCalledWith(LOCALIZED_SENTINEL, 'error');
+  });
+
+  it('a mismatch landing on a session that was ended in silence still says one word', async () => {
+    // A sign-out (this tab's, or another tab's arriving over the storage
+    // event) disconnects without a message of its own. A mismatch that lands
+    // afterwards finds nothing left to tear down, and its caller still returns
+    // the already-reported shape, so a bare return here would end the action
+    // with no word at all. The re-login message would be wrong too: the user
+    // was not thrown out, they left.
+    setWindow('proof-x');
+    let rejectBroadcast;
+    mockBroadcastOps.mockImplementationOnce(
+      () => new Promise((_, reject) => { rejectBroadcast = reject; }),
+    );
+
+    const pending = broadcastWithFreshAuth('alice', [['vote', {}]]);
+    await tick();
+    expect(mockBroadcastOps).toHaveBeenCalledTimes(1);
+    scrubbingDisconnect(); // the sign-out, which shows nothing
+
+    rejectBroadcast(freshAuthError(403, 'username_mismatch'));
+
+    expect(await pending).toBe(FRESH_AUTH_REDIRECT_PENDING);
+    expect(mockAuthStore.disconnect).not.toHaveBeenCalled();
+    expect(mockToastStore.show).toHaveBeenCalledTimes(1);
+    expect(mockToastStore.show).toHaveBeenCalledWith(TEARDOWN_CANCEL_SENTINEL, 'error');
   });
 
   it('a late 401 from a departed subject leaves the successor\'s window alone', async () => {

@@ -17,9 +17,9 @@ export const UPLOAD_CANCELLED = 'UPLOAD_CANCELLED';
 export const UPLOAD_REAUTH_FAILED = 'UPLOAD_REAUTH_FAILED';
 export const UPLOAD_REAUTH_REQUIRED = 'UPLOAD_REAUTH_REQUIRED';
 export const UPLOAD_REAUTH_BUSY = 'UPLOAD_REAUTH_BUSY';
-// Already-reported outcome: the session teardown in `uploadFile` has shown its
-// own re-login toast before this code is thrown, so consumers must surface
-// nothing on top of it (mirrors FRESH_AUTH_REDIRECT_PENDING's
+// Already-reported outcome: a message for the session teardown has been shown
+// before this code is thrown (the re-login toast, by whichever flight detected
+// the corrupted session first), so consumers must surface nothing on top of it (mirrors FRESH_AUTH_REDIRECT_PENDING's
 // message-suppression contract on the broadcast surface). `describeUploadError`
 // maps it to null rather than an i18n key.
 export const UPLOAD_SESSION_TORN_DOWN = 'UPLOAD_SESSION_TORN_DOWN';
