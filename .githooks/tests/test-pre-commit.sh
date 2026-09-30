@@ -94,6 +94,8 @@ run_case "R20 slug in a .cts module" 1 "" \
   'mkdir -p frontend/tests; printf "// fixed per backend-foo-bar (since archived)\n" > frontend/tests/a.cts; git add frontend/tests/a.cts'
 run_case "R21 line-cite .mts:NNN" 1 "" \
   'mkdir -p backend/src; printf "// see loader.mts:42 for the hook\n" > backend/src/a.ts; git add backend/src/a.ts'
+run_case "R22 line-cite .cts:NNN" 1 "" \
+  'mkdir -p backend/src; printf "// see loader.cts:42 for the hook\n" > backend/src/a.ts; git add backend/src/a.ts'
 
 echo
 echo "=== Legitimate / out-of-scope → accept (exit 0) ==="
