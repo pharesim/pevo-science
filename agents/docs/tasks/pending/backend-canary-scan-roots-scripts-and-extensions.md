@@ -233,3 +233,71 @@ JSON) and node_modules being code rather than data; neither changes what
 any scan reads. Clean tree: `tests/eslint/` 9 files / 140 tests green,
 `npm run typecheck` passes, `npm run lint` has only its one existing
 warning, and the pre-commit anchor gate passed on both commits.
+
+## Architect re-review (2026-09-30) — HELD PENDING FIXES:
+
+Round 2, on commits 35b3a3bb and 50a582dc. All five round-1 items are
+verified FIXED: four reviewers each rebuilt the file from 50a582dc in their
+own copy and reproduced the clean tree (canary 30/30, `tests/eslint/` 9
+files / 140 tests), every RED row of the signal's mutation table, both
+stated survivors, the symlink and module-DDL probes, and zero anchor-gate
+hits with the control line firing. The round-1 limits held: no walker
+traversal changed, no `.json` collector, `routineSites` reads migrations
+only. What is left is one prose pass of three sentences, each an added
+claim that does not match what the file does. Prose only under this hold:
+no walker, arm, or fixture-assertion change.
+
+1. **Three added sentences state something the file does not do.**
+
+   a. The module-DDL KNOWN LIMITS entry names the silent shape as a
+      `CREATE TRIGGER ... ON accounts` "(or a rule) whose function writes
+      `NEW.updated_at := now()`". A rule has no function. A rule bound to
+      `accounts` that writes the column has to spell its action as a
+      statement (`UPDATE accounts SET updated_at = ...`), and the writer
+      arms read that from a module like any other statement text
+      (probe-verified red by the correctness lens; three lenses raised it
+      independently). The entry overstates what stays green. The invariant:
+      the entry names exactly the shapes no arm reads. Either drop the rule
+      parenthetical, or say what a rule does and why it is read.
+
+   b. The walker-fixture spec's opening comment says the plausibility spec
+      cannot tell an honestly empty local walker from "a union in
+      `codeSourcesUnder` that dropped one of its walkers". That is true of
+      one walker only. Dropping `sourcesUnder` from the union empties
+      `sources` and the plausibility spec goes red (probe: four failures);
+      dropping `moduleResourcesUnder` is the mutation it cannot see. Name
+      the walker.
+
+   c. 50a582dc's message and the signal block both say the ragged wrap in
+      the roots paragraph was reflowed. The short orphan line was fixed,
+      and the reflow produced a 93-column line in its place ("this
+      statement of the roots exists to close. Excluded, deliberately: every
+      other tree, and") in a paragraph wrapped near 78. Rewrap the
+      paragraph so no line runs past its neighbours.
+
+DISMISSED at triage (recorded so they are not picked up under this hold):
+
+- **Call-site wiring pin.** The lines that build `sources` and `migrations`
+  stay unpinned, as the `codeSourcesUnder` docblock already says, and that
+  disclosure stands as written. A pin was judged preemptive hardening:
+  tripping it needs the spread dropped AND a `.sql` / `.mts` writer landing
+  under `src` afterwards, and neither exists today. One correction to the
+  signal block, for the record and not a code change: "no fixture can pin
+  short of a tautology" is wrong. A builder returning both scanned sets from
+  `(srcRoot, migrationsRoot)`, called by the fixture with the planted tree
+  plus a separate tmp migrations dir, went red on both survivors in three
+  independent prototypes and stayed green clean. Do not add it here, and do
+  not restate the tautology claim in the next signal.
+- The narrowed roots universal still literally covers a symlinked `.mts`:
+  qualified two sentences later in the same paragraph.
+- "the two local ones do not" follow links, while `migrationSources` is a
+  third local reader that does: the KNOWN LIMITS entry names both walkers.
+- "Only the modules under `backend/src` and the files under
+  `backend/migrations` reach the database as executable statements": the
+  round-1 hold's own wording, scoped by the paragraph's subject (what the
+  image runs).
+- "emitted verbatim" for an imported `.json` (tsc re-serialises it):
+  already dismissed at the round-1 triage.
+- The `.json` collector is refused as empty coverage while two empty local
+  walkers are admitted: the difference (the fixture pins them, and the
+  reader already reads their spellings) is unstated, and stays so.
