@@ -974,8 +974,10 @@ function isConsentOpSpent(token: string): boolean {
 }
 
 /** Retry the compensating deletes a flap left undone, retiring each ledger
- *  entry only once its delete is CONFIRMED — the `DEL` resolving is the one
- *  event that proves the canonical key unreadable. A delete that was merely
+ *  entry only once its delete is CONFIRMED. An entry leaves the ledger on
+ *  either of two events, a `DEL` that resolved or a later presentation's own
+ *  resolved `GETDEL`, and the first is the only one this drain can produce, so
+ *  it is the one the drain waits for. A delete that was merely
  *  dispatched proves nothing: it can time out against a stalled-but-ready
  *  server, or die with a socket whose close flushes it out of the resend
  *  lineage, and either way the key may stand while an on-dispatch drop would
@@ -1282,14 +1284,13 @@ export async function issueSessionFreshAuthToken(
   const expiresAt = new Date(effectiveExpiresAtMs).toISOString();
   const absoluteExpiresAtIso = new Date(absoluteExpiresAt).toISOString();
 
-  // Write to memStore as a backup whenever Redis-issuance succeeds (same
+  // Write to memStore as the flap backup before the Redis write, and
+  // independently of whether that write succeeds, is skipped, or rejects (same
   // recovery rationale as `issueFreshAuthToken`). Storing the token only in
   // Redis on the happy path means that if Redis flaps between issue and
   // consume, the consume side falls through to memStore.get(token) → empty →
   // spurious 'expired' 401 (the user just authenticated). With the backup
-  // write, a Redis-down consume can recover the entry from memStore. This block
-  // is NOT dead code in the Redis-success branch — it is the recovery path for
-  // a flap between issue and consume.
+  // write, a Redis-down consume can recover the entry from memStore.
   memStore.set(token, { entry, expiresAt: effectiveExpiresAtMs });
 
   const redis = getRedis();

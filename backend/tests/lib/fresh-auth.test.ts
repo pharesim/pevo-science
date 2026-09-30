@@ -137,6 +137,7 @@ import {
   _resetFreshAuthMemStoreForTests,
   _restartCleanupForTests,
   _setMemStoreEntryForTests,
+  _setSpentConsentOpForTests,
   _stopCleanupForTests,
   type FreshAuthTarget,
 } from '../../src/lib/fresh-auth.js';
@@ -713,9 +714,9 @@ describe('Redis-flap recovery via memStore backup', () => {
   // silently passing an assertion-free body.
   it.skipIf(!redisAvailable)('Redis-issuance success + Redis read throws on consume → memStore backup recovers the token', async () => {
     // Under fake Redis-flap shape: issue against a healthy Redis, then make the
-    // consume-side Redis read throw. Issuance writes a backup to memStore on
-    // Redis-issuance success; consume recovers via the fallback rather than
-    // returning `'expired'`.
+    // consume-side Redis read throw. Issuance writes the memStore backup
+    // unconditionally, ahead of its Redis write; consume recovers via the
+    // fallback rather than returning `'expired'`.
     const redis = getRedis()!;
     const issued = await issueFreshAuthToken('carol', 'password', T);
     // Single-call mock: the consume falls through to memStore (which has the
@@ -864,6 +865,63 @@ describe('Symmetric dual-tier deletion', () => {
       getdelSpy.mockRestore();
       delSpy.mockRestore();
     }
+  });
+
+  it.skipIf(!redisAvailable)('a spent-proof ledger entry survives a presentation whose own GETDEL rejects, and retires on the one whose GETDEL resolves', async () => {
+    // Both directions of the `alreadySpent` branch, in the order a flap
+    // produces them. The planted state is what a replay finds when the
+    // compensating delete never landed: canonical key readable, in-memory
+    // record absent, ledger entry held.
+    const redis = getRedis()!;
+    const token = 'ledger-retained-on-rejected-getdel-token';
+    const key = `${config.appTag}:fresh_auth:token:${token}`;
+    await redis.set(
+      key,
+      JSON.stringify({
+        username: 'ledger-retained-user',
+        mechanism: 'password',
+        issued_at: Date.now() - 60_000,
+        kind: 'consent_op',
+        target_hash: TH,
+      }),
+      'EX',
+      FRESH_AUTH_TTL_SECONDS,
+    );
+    _setSpentConsentOpForTests(token);
+
+    // Retained direction. The read is left real, so the presentation finds the
+    // standing key and reaches the burn; only the burn's `GETDEL` rejects. A
+    // rejected `GETDEL` proves nothing about the canonical copy, so the entry
+    // must still be standing afterwards. Retiring it here regardless would
+    // leave the key readable with nothing left to refuse it.
+    const getdelSpy = vi
+      .spyOn(redis, 'getdel')
+      .mockRejectedValueOnce(new Error('simulated flap on the replay burn'));
+    let refusedUnderFlap;
+    try {
+      refusedUnderFlap = await consumeFreshAuthToken(token, 'ledger-retained-user', TH);
+      // The refusal came from the burn and not from the read finding nothing.
+      expect(getdelSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      getdelSpy.mockRestore();
+    }
+    expect(refusedUnderFlap.valid).toBe(false);
+    if (!refusedUnderFlap.valid) {
+      expect(refusedUnderFlap.reason).toBe('expired');
+    }
+    expect(_getSpentConsentOpsSizeForTests()).toBe(1);
+    expect(await redis.exists(key)).toBe(1);
+
+    // Release direction. Redis is "recovered", so this presentation's own
+    // `GETDEL` resolves: it is still refused, and that resolution is the proof
+    // the canonical copy is gone, which retires the entry along with the key.
+    const refusedAfterRecovery = await consumeFreshAuthToken(token, 'ledger-retained-user', TH);
+    expect(refusedAfterRecovery.valid).toBe(false);
+    if (!refusedAfterRecovery.valid) {
+      expect(refusedAfterRecovery.reason).toBe('expired');
+    }
+    expect(_getSpentConsentOpsSizeForTests()).toBe(0);
+    expect(await redis.exists(key)).toBe(0);
   });
 });
 
@@ -1157,7 +1215,9 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
       .mockImplementationOnce(realGetdel)
       .mockImplementation(() => Promise.reject(new Error('forced Redis flap mid-burn')));
     // The compensating delete an in-memory-arbitrated burn issues after its
-    // ledger write, stubbed so that path settles without a round trip.
+    // ledger write, stubbed so that path settles without a round trip under
+    // the mutation. With the lock in place it is never issued at all, which is
+    // asserted alongside the winner count.
     const delSpy = vi.spyOn(redis, 'del').mockResolvedValue(0);
     try {
       const [a, b] = await Promise.all([
@@ -1169,6 +1229,12 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
       // The loser was refused by the lock BEFORE its burn, not inside it: a
       // second `GETDEL` is issued only when the lock is gone.
       expect(getdelSpy).toHaveBeenCalledTimes(1);
+      // And the one burn that ran was arbitrated on the Redis tier. The
+      // compensating delete is issued only by a burn whose `GETDEL` did not
+      // resolve and whose in-memory delete won, so its absence is what shows
+      // the winner's `GETDEL` resolved against real Redis instead of the win
+      // falling to the in-memory backup.
+      expect(delSpy).not.toHaveBeenCalled();
     } finally {
       getSpy.mockRestore();
       getdelSpy.mockRestore();
@@ -1176,7 +1242,7 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
     }
   });
 
-  it('consumeFreshAuthToken no-Redis: Promise.all dual consume → exactly one winner', async () => {
+  it('consumeFreshAuthToken no-Redis:Promise.all dual consume → exactly one winner', async () => {
     // Real no-Redis-path companion (carve-out clause c): if Redis is absent
     // in the suite environment, the consume already runs through the
     // memStore-only branch. This test exercises that path directly without
@@ -1372,6 +1438,9 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
       const winners = [a, b].filter((r) => r.valid);
       expect(winners).toHaveLength(1);
       expect(getdelSpy).toHaveBeenCalledTimes(1);
+      // The winning helper's burn was arbitrated on the Redis tier: no
+      // compensating delete means its `GETDEL` resolved, whichever helper won.
+      expect(delSpy).not.toHaveBeenCalled();
     } finally {
       getSpy.mockRestore();
       getdelSpy.mockRestore();
