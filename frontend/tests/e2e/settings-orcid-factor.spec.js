@@ -266,7 +266,9 @@ test.describe('settings — ORCID-factor set_password (State C)', () => {
 
     // The consent-op cache holds the proof bound to the exact target triple the
     // settings resume looks up: (set_password, <username>, ''). A regression in
-    // the callback dispatch or the cache-key shape fails here.
+    // the callback dispatch or the cache-key shape fails here. A settings action
+    // echoes no credit fields, and cacheConsentOpProof normalizes both to null
+    // rather than omitting them, so the exact entry carries all seven keys.
     const cached = await page.evaluate((key) => window.sessionStorage.getItem(key), CONSENT_OP_KEY);
     expect(cached).toBeTruthy();
     expect(JSON.parse(cached)).toEqual({
@@ -275,6 +277,8 @@ test.describe('settings — ORCID-factor set_password (State C)', () => {
       action: 'set_password',
       rootAuthor: TEST_USERNAME,
       rootPermlink: '',
+      authorIndex: null,
+      claimer: null,
     });
 
     // Re-submit set-password. withSettingsFreshAuth finds the cached proof
