@@ -1461,7 +1461,9 @@ export async function freshAuthWindowReady(opts = {}) {
 // `beginOrcidUnderGuard`. The page-level ORCID flows (login, signup, recover,
 // the settings link, accreditation) do not come through here at all — they
 // write their own mode marker and call `startOrcid` directly — so the
-// parameter is optional for the unit seam, not for a second caller class.
+// parameter is optional for the unit seam, not for a second caller class. The
+// two of those that start under an authenticated subject (the settings link
+// and accreditation) hold the same pin inline, through `subjectTeardownGuard`.
 //
 // The predicate also gates every unwind past that await, because the flow keys
 // the start wrote are the subject scrub's to remove and not this unwind's: the

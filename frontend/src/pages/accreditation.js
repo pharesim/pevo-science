@@ -4,7 +4,7 @@ import { formatDate } from '../components/paper-card.js';
 import { getAccreditedSince } from '../lib/accreditation-tenure.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 import { createOrcidRedirectGuard } from '../lib/orcid-redirect-guard.js';
-import { ORCID_REDIRECT_HOSTS } from '../lib/fresh-auth.js';
+import { ORCID_REDIRECT_HOSTS, subjectTeardownGuard } from '../lib/fresh-auth.js';
 
 const template = `
       <div x-data="accreditationPage" class="container-narrow py-8">
@@ -325,9 +325,22 @@ export function initAccreditationPage() {
       // beginOrcidFreshAuthRedirect for the cross-tab-interference rationale.
       sessionStorage.setItem('pevo_orcid_mode', 'accredit');
 
+      // Subject pin, the same shape as settings.js handleOrcidLink: opened
+      // before the start await and read through `tornDown` alone, so a stale
+      // start ends silently.
+      const guard = subjectTeardownGuard();
+
       try {
         const data = await startOrcid('accredit');
         if (!this._mounted) return;
+        // A subject teardown landed inside the start await. Navigating would
+        // send the tab to ORCID for a subject it no longer represents. No key
+        // is removed: the scrub that tore the subject down already took this
+        // flow's marker, and whatever stands there now is a later flow's.
+        if (guard.tornDown()) {
+          this.orcidLoading = false;
+          return;
+        }
         const target = new URL(data.redirect_url);
         if (!ORCID_REDIRECT_HOSTS.includes(target.hostname)) {
           throw new Error('Invalid ORCID redirect URL');
@@ -338,7 +351,9 @@ export function initAccreditationPage() {
         console.warn('[accreditation orcid verify]', err);
         Alpine.store('toast').show(this.$t('accreditation.orcidVerifyFailed'), 'error');
         this.orcidLoading = false;
-        sessionStorage.removeItem('pevo_orcid_mode');
+        // A stale flow's marker is already gone (see the subject pin), so a
+        // removal past a teardown could only take a later flow's.
+        if (!guard.tornDown()) sessionStorage.removeItem('pevo_orcid_mode');
       }
     },
   }));

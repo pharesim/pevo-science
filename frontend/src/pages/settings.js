@@ -7,7 +7,7 @@ import { isPasswordValid } from '../password-policy.js';
 import { getAppTag } from '../config.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 import { createOrcidRedirectGuard } from '../lib/orcid-redirect-guard.js';
-import { ORCID_REDIRECT_HOSTS } from '../lib/fresh-auth.js';
+import { ORCID_REDIRECT_HOSTS, subjectTeardownGuard } from '../lib/fresh-auth.js';
 
 // Number of words to re-enter for confirmation
 const CONFIRM_WORD_COUNT = 3;
@@ -875,8 +875,25 @@ export function initSettingsPage() {
       // scopes `pevo_orcid_mode` to the originating tab.
       sessionStorage.setItem('pevo_orcid_mode', 'link');
 
+      // Subject pin. The start request is made under the JWT of whoever
+      // clicked, and the round-trip is an await a subject teardown can land in
+      // (a login as another user, a cross-tab sign-out). Opened before the
+      // await, and read through `tornDown` alone: this flow never calls the
+      // guard's `cancel`, so a stale start ends silently rather than telling
+      // the next subject about a click that was not theirs.
+      const guard = subjectTeardownGuard();
+
       try {
         const data = await startOrcid('link');
+        // Navigating now would send the tab to ORCID on behalf of a subject it
+        // no longer represents, and the callback would dead-end: the scrub
+        // that tore the subject down removed the mode marker written before
+        // the await. That same scrub is why nothing is removed here. Whatever
+        // stands in the flow keys now was written by a later flow.
+        if (guard.tornDown()) {
+          this.orcidLinking = false;
+          return;
+        }
         const target = new URL(data.redirect_url);
         if (!ORCID_REDIRECT_HOSTS.includes(target.hostname)) {
           throw new Error('Invalid ORCID redirect URL');
@@ -892,7 +909,9 @@ export function initSettingsPage() {
         console.warn('[orcid link]', err);
         this.orcidError = this.$t('settings.orcidLinkFailed');
         this.orcidLinking = false;
-        sessionStorage.removeItem('pevo_orcid_mode');
+        // A stale flow's marker is already gone (see the subject pin), so a
+        // removal past a teardown could only take a later flow's.
+        if (!guard.tornDown()) sessionStorage.removeItem('pevo_orcid_mode');
       }
     },
 
