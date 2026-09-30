@@ -1,250 +1,250 @@
-## Retire the "Disconnect" label in favour of "Sign out" (archived 2026-09-30)
+## The assembled-write scan reads one head where the shared set names two (archived 2026-09-30)
 
-Architect note (2026-09-30): archived clean at round 2. Re-reviewed commit 13eaa4dc with
-/ce-code-review (correctness, project-standards, learnings-researcher): no findings. The
-one item held on 2026-09-23 is FIXED: da, de, fa, fr, he and nl hold "Sign out" via
-one-line textual replaces (numstat 1/1 per file), all sixteen locale files parse with
-`header.disconnect` equal to "Sign out", the anchored per-key grep on STUBS.md returns
-fifteen `<locale>:` lines under the single `### Updated 2026-09-14` heading, and the entry
-prose describes what the files contain, keeping the sign-in / sign-out pair observation
-as a translator hint. Architect re-ran i18n, components-header and the custody-upgrade
-subject-pin unit files: 55 of 55, exit 0. Still open by the Notes' assignment: the
-`toMatch(/sign out/i)` pin in the custody-upgrade copy-contract test can pin
-`messages.header.disconnect`, for whoever touches that test next.
+Architect archive note (2026-09-30, round 6): archived clean after six rounds. Re-reviewed
+`f9a839a8` alone (an ancestor of `main`, 11 added and 9 removed comment lines) with
+/ce-code-review: correctness, project-standards on root `CLAUDE.md`, adversarial in-process
+(the reviewed tree was not the checkout, and this host has no different-model peer) and
+learnings. No actionable finding. Both round-5 items are FIXED.
+
+- Item 1: header item 4 and the `assembledWrites` docblock state the bucketing consequent
+  with the defined verb and defer what reaching asks of a read, by name, to the
+  dynamic-SQL entry under KNOWN LIMITS. "runs on to the assignment" occurs nowhere in the
+  file. The hold's plant reds `every updated_at assignment resolves to the table it writes`
+  (1 failed | 29 passed, exit 1) and its closed-value control is 30/30, re-measured by the
+  architect. Item 2: `UNRESOLVED_TABLE` carries the two-disjunct form, one disjunct per
+  `targetTable` return site; the no-head, closed-nearest-head and near/far plants each red
+  the fail-closed arm and the near/far control is 30/30.
+- Three parties planted independently (correctness 12, adversarial 21, the architect 9) and
+  found no layout where a rewritten sentence plus the deferred definition predicts one
+  outcome and the canary does another. The entry holds one definition of reach and it maps
+  term for term onto `targetTable`'s `reaches` expression.
+- Architect intake from a `git archive f9a839a8` copy: canary 30/30, all nine `tests/eslint`
+  files 140/140 with exit 0 and no `Errors` line, `npm run typecheck` and `npx eslint` on
+  the file exit 0. Prose only, verified mechanically: the non-JSDoc parser-leaf streams at
+  base and head are identical (23141 leaves, zero parse diagnostics, a mutation control
+  that differs). The anchor gate is zero-hit over the 11 added lines with a firing control.
+  Project standards is clean.
+- Routed, by user triage, to `backend-head-line-read-silences-fail-closed-backstop`
+  (commit `f3e8048a`, which also merges `backend-opened-above-head-lends-its-table` into
+  it): the one P3 advisory of this round (the reach definition says "did not give up" and
+  never links `SqlStatement.stopped`; correctness and adversarial, independently); the
+  pre-existing header scan 2 sentence that promises the fail-closed red bar as a universal
+  (silent under an opened-above preceding head: plant 30/30, control reds, reproduced by
+  the architect); the two sentences that state the refusal in terminator terms; the
+  no-terminator member of the opened-above layout; and the round-6 `[TODO Architect]` on
+  the quoted-identifier bullet (reproduced: red where the sentence predicts silence,
+  control 30/30).
+- Dismissed by the user in triage, recorded so they are not re-raised: the
+  `SqlStatement.stopped` docblock's "runs on past everything below it, so it does reach a
+  write there" (a write past `LITERAL_CAP` is not reached; loud direction, statements over
+  40 lines only, the same class as the round-5 `targetTable` dismissal); the unpinned
+  `reach.closedAt === -1 ||` disjunct (deleting it leaves the suite 30/30; a regression
+  there errs loud, and the no-new-fixture decision stands). Not held, nothing false: the
+  `assembledWrites` lead-in "whether its read spans the ASSIGNMENT", the two bare pronouns
+  in "where it does reach it", the numeral in "the three buckets", and the deferral name
+  resolving by convention.
+- Learnings: no new entry. The recurrence goes into
+  `conventions/a-readers-bound-restated-at-n-sites-reads-as-sufficient-at-each.md` and the
+  stale `targetTable` summary in the comment-normalization entry is corrected, both via
+  /ce-compound-refresh in the same pass, as the round-3 to round-5 notes planned.
+- Sibling commit `078550bc` landed on the file during the review; its hunks touch none of
+  the reviewed sentences. Line numbers in the rounds below are as of each round's commit.
 
 
-**Owner:** ui
-**Created:** 2026-09-08
+**Owner:** backend
+**Created:** 2026-09-16
 
-Routed out of the architect round-6 re-review of `ui-custody-upgrade-subject-pin`.
-Recorded there, not held: the before-cleanup recovery copy tells the reader to
-"Sign out" while the only sign-out affordance renders `header.disconnect`
-("Disconnect"). Keeping the verb was the right call for that task; retiring the
-jargon is the better fix and is bigger than that task's scope.
+Routed out of the round-2 architect review of the ALTER `IF EXISTS` pin. Pre-existing
+and untouched by that round, and a file-wide decision rather than an ALTER-arm one, so
+it is filed here rather than held there.
 
 ## Why
 
-Two user-facing strings already instruct the reader to sign out using the verb
-rather than the rendered label: `upgrade.sessionChangedBeforeCleanup` and
-`upgrade.backendTimeout` ("Sign out and sign back in"). No control anywhere in
-the app is labelled "Sign out". The header renders `header.disconnect` on
-desktop and again in the mobile menu, and that is the only way to end a session.
+`READ_FROM_HEADS` exists to be the single enumeration of every head a statement is read
+FROM, and it names two patterns: `ACCOUNTS_STATEMENT_RE` and `ALTER_ACCOUNTS_RE`. Two
+scan sites iterate it. Two others do not: `accountsColumnWriters` and `assembledWrites`
+each walk `ACCOUNTS_STATEMENT_RE` alone.
 
-So a reader following either instruction has to infer that "Disconnect" is the
-sign-out control. In the before-cleanup flow that inference happens while the
-user holds a freshly rotated seed phrase that exists nowhere else, which is the
-worst moment to make someone guess. The sibling instruction in the same message
-does not make them guess: it names the sign-in control by the label the header
-renders and a test pins it.
-
-"Disconnect" is also wallet jargon inherited from the Keychain-only era. Light
-accounts sign in with an email and a password and never connect anything, so the
-label describes the minority path. Relabeling removes the jargon and makes both
-existing strings accurate, rather than pushing the jargon into more copy.
+For `assembledWrites` that is a silent pass in the direction the file cares about. An
+ALTER against `accounts` whose column name is interpolated is not reported as an
+assembled write, because the scan never sees the head. The file's own docblock argues
+the opposite of this scoping, and the dynamic-SQL entry in KNOWN LIMITS leans on an
+assignment backstop that the ALTER head does not have: an ALTER carries no assignment
+token for another arm to resolve, so one dynamic identifier is enough to go quiet.
 
 ## Scope
 
-1. Change the English value of `header.disconnect` to "Sign out". Keep the key
-   name; renaming it churns every locale file for no reader benefit and breaks
-   the ledger's per-key history.
-2. Update the fifteen locale stubs and record the change in
-   `frontend/public/messages/STUBS.md`. This key has been translated in the
-   past, so this is a genuine `### Updated` entry, unlike the case the
-   custody-upgrade task is fixing. Follow
-   `agents/docs/solutions/conventions/i18n-stubs-added-vs-updated-scope-never-translated-keys-2026-06-09.md`
-   and check which locales carry a real translation before deciding what each
-   stub line should say.
-3. Audit for other copy that names the control or the action. Grep the message
-   files for "disconnect", "sign out", and "log out" and reconcile whatever
-   turns up so the app uses one term for the action.
-4. Check the aria-label, title, and any test selector bound to the old label.
-   `components-header.test.js` and the e2e specs locate controls by visible
-   text in places, so a label change can break a selector that has nothing to
-   do with this work.
+1. Decide whether the two single-head sites should read from `READ_FROM_HEADS`. They are
+   not obviously the same case: `assembledWrites` looks unintended, while
+   `accountsColumnWriters` may be deliberately column-write-shaped. Say which is which
+   from the code and its docblocks, not from this task file.
+2. For whichever sites should widen, point them at the shared set, matching the two arms
+   that already iterate it.
+3. For whichever should not, record the narrowing where a reader will hit it — including
+   a sentence in the dynamic-SQL KNOWN LIMITS entry saying its assignment-backstop
+   reasoning does not extend to the ALTER head.
+4. Check whether any OTHER consumer of a head pattern in this file spells its own walk
+   instead of reading the shared enumeration, and report what the sweep covered from the
+   code rather than asserting completeness.
 
 ## Acceptance criteria
 
-1. The header's sign-out control renders "Sign out" on desktop and in the
-   mobile menu.
-2. `upgrade.sessionChangedBeforeCleanup` and `upgrade.backendTimeout` name a
-   control the app actually renders, with no copy change needed in either.
-3. All sixteen locale files and the ledger agree, and the ledger entry is
-   scoped correctly for a previously-translated key.
-4. The frontend unit suite and the header-touching e2e specs pass, including
-   any selector that matched the old label.
+1. An interpolated `ALTER TABLE accounts DROP COLUMN ${column}` planted in a `src` file
+   is either reported as an assembled write, or its absence is recorded as a named limit
+   with the reasoning that makes it acceptable. Demonstrated by planting, either way.
+2. The clean tree stays green, and the allowed-alteration tally is unchanged.
+3. If a site is widened, a fixture reds when it is pointed back at the single head, so
+   the widening is pinned rather than asserted.
 
 ## Notes
 
-Deliberately NOT in scope: pinning the sign-out step in the custody-upgrade
-copy-contract test. Once the label and the verb agree, that assertion can pin
-the rendered label the way the sign-in half does, but that is a one-line change
-on the custody-upgrade task's own test and belongs with whoever touches it next.
-Raise it in the signal if you land this first.
+Verified live at review time: an interpolated ALTER head planted in a `src` file leaves
+the suite green, while the same text in a migration reds. The two `READ_FROM_HEADS`
+iterations and the two single-head walks are all in this one file, so the blast radius
+is the canary itself.
 
-UI implementation signal (2026-09-14, commit 027c1b32):
+## Backend implementation signal (2026-09-21, commits 43545ee4, 24c5e332, 72f1196d)
 
-- Landed in commit `027c1b32` on main. Self-verified: `git merge-base
-  --is-ancestor 027c1b32 main` passes, and `git show --stat` lists
-  index.html, STUBS.md, en.json and the nine re-stubbed locale files.
-- Scope 1. `header.disconnect` now reads "Sign out" in English; the key name is
-  unchanged.
-- Scope 2, decision to flag. The key carried a real translation in every
-  locale (born translated in the SPA import; never under an `### Added`
-  heading), so the ledger entry is `### Updated 2026-09-14
-  (ui-header-disconnect-label-signout)`. Rather than re-stub all fifteen
-  locales, each prior translation was judged against the locale's own sign-in
-  label (`signIn.signInButton`). Six already rendered a consistent sign-in /
-  sign-out pair and keep their translation: da (Log ind / Log ud), de
-  (Anmelden / Abmelden), fa (ورود / خروج), fr (Se connecter / Se déconnecter),
-  he (התחברות / התנתקות), nl (Inloggen / Afmelden). The nine that paired a
-  login verb with a connection-cutting verb (ar cs es it pl pt sv tr zh) are
-  re-stubbed to "Sign out" and listed; the per-key grep of STUBS.md yields
-  exactly those nine. This narrows the "re-stubbed with the new English"
-  sentence in `agents/ui/CLAUDE.md` § Internationalization on purpose:
-  re-stubbing a locale whose label was already right would swap a correct
-  native string for English with nothing for a translator to fix. If the
-  literal rule is preferred, the flip is mechanical: re-stub the six and add
-  their lines under the same heading.
-- Scope 3. Grepping en.json for disconnect / sign out / log out turns up only
-  `header.disconnect` and the two upgrade strings; both now name a control
-  the header renders, with no copy change (AC 2). No other user-facing copy
-  names the action.
-- Scope 4. No aria-label, title, unit-test assertion or e2e locator bound to
-  the old visible text (`components-header.test.js` mocks the store method;
-  the only header text locator in e2e is "Sign in"). The stale
-  `<!-- Disconnect -->` markup comment was updated. `handleDisconnect()` and
-  the `auth.disconnect()` store API are internal names and were left alone.
-- Verification. Frontend unit suite: 85 files, 1890 tests green; three
-  unhandled rejections from `tests/unit/pages-edit.test.js` (`$refs.abstractEditor`
-  in the editor mount) reproduce in isolation and are unrelated. Header-touching
-  e2e subset (10 specs, 32 tests, test-mode stack, DB reset by global-setup):
-  21 passed, 11 failed. Ten failures are the documented pre-existing
-  strict-mode clash (`form button[type="submit"]` also matches the global
-  re-auth modal); the eleventh, `settings-orcid-factor.spec.js:207`, is a
-  pre-existing assertion drift (the cached proof now carries `authorIndex` /
-  `claimer`, written by committed `fresh-auth.js`) and reproduces alone. No
-  failure output mentions the label. Browser check (Playwright against the
-  rebuilt bundle): the desktop user menu and the mobile menu render "Sign out"
-  in English, and de renders "Abmelden".
-- Independent verification workflow (8 agents, 0 errors): three judges
-  unanimously classified all fifteen prior translations (four sign-out verbs,
-  eleven connection metaphors); the ledger and file-integrity lenses came back
-  clean; the copy lens raised the fr / he pair point, which produced the
-  pair rule above.
-- Not done, per the Notes: the copy-contract test in
-  `tests/unit/pages-settings-custody-upgrade-subject-pin.test.js` still pins
-  the sign-out step with `toMatch(/sign out/i)`. Now that label and verb agree
-  it can pin `messages.header.disconnect` the way the sign-in half pins
-  `signIn.signInButton`; one-line change for whoever touches that test next.
+All three are on `main` (`git merge-base --is-ancestor` checked) and touch only
+`backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`.
 
-Architect re-review (2026-09-23) — HELD PENDING FIXES:
+- `43545ee4`: `assembledWrites` iterates `READ_FROM_HEADS`. A fixture pins the ALTER head
+  (interpolation and concatenation, with controls on the ALTER arm and the fail-closed arm).
+  The docblocks record the narrowing.
+- `24c5e332`: prose corrections after adversarial verification of `43545ee4` (see below).
+- `72f1196d`: pins for the case fold and the whole-statement read on the ALTER head.
 
-Reviewed at 027c1b32 with /ce-code-review (correctness, project-standards,
-learnings-researcher). The code and the ledger are internally consistent, both
-header bindings render the new value through `$t`, no selector, aria-label or
-title was bound to the old text, and `### Updated` is the correct heading
-variant for a previously translated key. One item held. The decision the signal
-block flagged for the architect is resolved in favour of the literal rule.
+### Scope decisions
 
-1. Re-stub all fifteen non-English locales, not nine. `agents/ui/CLAUDE.md`
-   § Internationalization defines an `### Updated` entry as one where the
-   non-English locale files are re-stubbed with the new English in the same
-   commit, and that sentence stands as written for this task. Set
-   `header.disconnect` to "Sign out" in da, de, fa, fr, he and nl with a
-   textual replace (not a JSON parse-and-serialize round-trip, so the escaped
-   non-ASCII sequences elsewhere in those files survive), and add the six
-   `<locale>: header.disconnect` lines under the existing
-   `### Updated 2026-09-14 (ui-header-disconnect-label-signout)` heading so the
-   per-key grep yields fifteen `<locale>:` lines. Rewrite the prose paragraph
-   in that entry so it no longer says six locales were kept and are not listed;
-   keeping the observation that those six prior values already paired correctly
-   with the locale's sign-in label is welcome as a hint to translators, but the
-   entry must describe what the files contain. Rationale for the rule over the
-   pair judgment: the `<locale>:` lines are what translators and later sweeps
-   read, and a locale missing from the list is indistinguishable from one the
-   reword never touched. If the pair rule should become policy, that is a
-   change to the sentence in `agents/ui/CLAUDE.md` (architect-owned) and
-   belongs in its own task, not in this task's ledger prose.
+1. Which is which. `assembledWrites` widened. Its own rationale (the reading arm meets a
+   placeholder) applies to the ALTER arm, and an ALTER column clause has no second catcher,
+   so the single-head walk was a silent pass. `accountsColumnWriters` stays on the write
+   head on purpose. Every text `writesColumn` accepts spells `\bupdated_at\b`, and
+   `accountsColumnAlterations` reads the ALTER statement from the same position with that
+   test, so widening would only double-count. Exception, recorded in its docblock: inside
+   the licensed migration, count licensing absorbs an in-place edit, and widening would not
+   close that either (a retype to `USING now()` carries no comparison).
+2. The widened site iterates `READ_FROM_HEADS` with the same nested loop as
+   `unreadableStatements`.
+3. The narrowing is recorded in four places:
+   - the `accountsColumnWriters` docblock;
+   - the `READ_FROM_HEADS` docblock, which names both single-head walks and the routine head;
+   - `accountsColumnAlterations`, which now gives its own reason;
+   - the dynamic-SQL KNOWN LIMITS entry. It says the assignment backstop does not reach a
+     column list held in a variable or, as a rule, the ALTER head. It names the two joins
+     the assembled scan recognises (`${...}` and a `+` beside the quote), and says a
+     same-line `.join`, `.concat` or `+=` goes unreported.
+4. Sweep, read from the code at `72f1196d`. There are six production walks that run
+   `line.matchAll(new RegExp(X.source, 'gi'))` over a head:
+   - `statementHead`: `HEAD_PATTERNS` (UPDATE/INSERT/MERGE target, any table, captures the
+     name). It is a separate enumeration by purpose, reached through `targetTable` from
+     `columnAssignments`.
+   - `accountsColumnWriters`: `ACCOUNTS_STATEMENT_RE` alone, on purpose (docblock).
+   - `assembledWrites`: `READ_FROM_HEADS` (widened here).
+   - `accountsColumnAlterations`: `ALTER_ACCOUNTS_RE` alone, on purpose (docblock).
+   - `unreadableStatements`: `READ_FROM_HEADS`.
+   - `routineSites`: `ROUTINE_CREATION_RE`. Not an accounts head, so it stays out of
+     `READ_FROM_HEADS` (docblock).
 
-Recorded, not held. The three testing gaps the review surfaced are dismissed
-at triage: the `toMatch(/sign out/i)` pin in
-`tests/unit/pages-settings-custody-upgrade-subject-pin.test.js` stays with the
-Notes' assignment (whoever touches that test next); a render test for the
-header label and a mechanical STUBS.md invariant check are preemptive hardening
-with no observed failure. Also recorded: a bare `grep header.disconnect
-STUBS.md` returns the heading and one prose line in addition to the `<locale>:`
-lines; earlier `### Updated` entries have the same shape and the `<locale>:`
-pattern is the invariant, so no change is asked.
+   The text patterns are tested against a statement already read and walk no lines:
+   `COLUMN_ASSIGNMENT_RE`, `ROW_TARGET_LIST_RE`, the three column-list patterns (the INSERT
+   and COPY ones re-spell the accounts qualifier, consistently), `BOUND_TO_ACCOUNTS_RE`
+   (narrower qualifier, TODO item 4), `SQL_INTERPOLATION_RE` and `JOINED_*`. The end-state
+   arm re-runs `blankAll` but walks no head. Each fixture helper (`unreadableIn`,
+   `unresolvedIn`, `scansOf`, `how`, `alterations`, `caught`) calls an arm function. Test
+   bodies call `statementAt`, `statementHead` and `targetTable` at hand-picked positions and
+   `.test()` the head constants, but none loops over heads, so no copied walk exists. "Two
+   scan sites iterate it" was one function before this change (`unreadableStatements`,
+   called by the arm and by `unreadableIn`). Now it is two.
 
-UI re-review signal (2026-09-29, commit 13eaa4dc):
+### Acceptance evidence
 
-- Hold item 1 landed in commit 13eaa4dc on main. Self-verified:
-  `git merge-base --is-ancestor 13eaa4dc main` passes, and
-  `git show --numstat` lists STUBS.md plus the six locale files with
-  exactly one changed line each, so the escaped non-ASCII sequences
-  elsewhere in those files are untouched (textual replace, no JSON
-  round-trip).
-- da, de, fa, fr, he and nl now hold "Sign out". All sixteen locale
-  files parse and `header.disconnect` is "Sign out" in every one.
-- The six `<locale>: header.disconnect` lines sit in alphabetical
-  order under the existing `### Updated 2026-09-14
-  (ui-header-disconnect-label-signout)` heading;
-  `grep -cE '^[a-z]{2}: header\.disconnect$'` on STUBS.md returns 15.
-- The entry prose now states that all fifteen non-English locales are
-  re-stubbed and listed, and keeps the sign-in / sign-out pair
-  observation as a translator hint naming the six prior values as
-  restoration candidates, per the hold's allowance.
-- Verification: `tests/unit/i18n.test.js` 31/31 green;
-  `tests/unit/components-header.test.js` and
-  `tests/unit/pages-settings-custody-upgrade-subject-pin.test.js`
-  24/24 green, exit 0. No browser pass this round: only JSON values
-  changed and the `$t` binding was verified in the prior round.
+All from scratch copies built with `git archive`, never the shared checkout.
 
-## The outcome tally's source sentence still binds three sites to the raw result (archived 2026-09-30)
+- AC1: `src/zz-probe-alter.ts` holding
+  ``await pool.query(`ALTER TABLE accounts DROP COLUMN ${column}`)``:
+  - at `eff8d6b9`, 25/25 green (the silent pass);
+  - at `43545ee4` and `24c5e332`, 1 failed:
+    `[interpolation] zz-probe-alter.ts:2 (probeAlter)` on the assembled arm;
+  - the `'...' + column` spelling reds as `[concatenation]`.
+- AC2: the clean tree is 25/25 at every commit. `ALLOWED_COLUMN_ALTERATIONS` is
+  byte-identical (`016: 3`). Runtime tallies are unchanged: src writers `/confirm:1`,
+  `/link:1`; migration writers `016:1`; alterations `016:3`; assembled `[]`. All 9
+  `tests/eslint` files pass (135 tests).
+- AC3: these mutants of `assembledWrites` each red the fixture:
+  - `[ACCOUNTS_STATEMENT_RE]` in place of `READ_FROM_HEADS` (checked at `72f1196d`);
+  - `READ_FROM_HEADS.slice(0, 1)`, and `READ_FROM_HEADS` without the ALTER head (checked at
+    `43545ee4`);
+  - `'gi'` to `'g'` (the lowercase pin), plus `SQL_INTERPOLATION_RE.test(line)` and the
+    first-line-only read (the wrapped pin), checked at `72f1196d`.
+- Correction to this task's Notes: the interpolated ALTER in a migration does not red as an
+  assembled write, before or after this change. It reds only without a `;`, and then through
+  the every-statement-readable arm (a missing terminator), identically at base. The assembled
+  arm reads `sources` only.
 
-Architect note (2026-09-30): retired as superseded, no implementation under this task.
-Commit a9150a6f (the fresh-auth clear-and-site-counts task) landed exactly this scope:
-the `WINDOW_OUTCOME_BY_SENTINEL` header now says `acquisitionAborted` reads the raw
-result while `freshAuthWindowReady` and `windowProof` act on the outcome object
-`ensureSessionWindow` derives, and the reconciling clause in `evictUnnamedAcquisition`'s
-docblock is gone. Verified at HEAD against all three acceptance criteria: no sentence
-binds the page gate or the upload pre-flight to the raw result; no cross-docblock
-assertion survives (the TWO-site sentence names its own members); a9150a6f is
-comment-only (47 of 47 changed lines are `//` lines) and passed /ce-code-review on those
-sentences the same day. The one item that review held concerns a different count (the
-gated-clear sentences) and stays with the clear-and-site-counts task.
+Verification: workflow `wf_b138cadd-7ec` ran four lenses (plant, mutation, claims, sweep),
+with two verifiers per finding. Its confirmed claim corrections are in `24c5e332`. Backend did
+not run code review (agents/backend/CLAUDE.md assigns `/ce-code-review` to the architect).
+Dismissed by the user in triage:
+- per-walk `'gi'` spelling (the constants' own `/i` is unused);
+- the one-report-per-line `return`;
+- the header's proposed CHECK tripping the ALTER pin.
 
+### [TODO Architect] Pre-existing gaps the sweep found, recorded here at the user's direction
 
-**Owner:** ui
-**Created:** 2026-09-09
+1. (medium) The routine arms read `migrations` only (both call `routineSites(migrations)`). A
+   `CREATE FUNCTION ... NEW.updated_at := now()` plus `CREATE TRIGGER ... ON accounts` run
+   from `src` through `pool.query` leaves the suite 25/25 green. The header says nothing in
+   the application writes the column. Handing both calls `[...sources, ...migrations]` is
+   green today.
+2. (low) `NOT_A_TABLE` misses DDL uses of `UPDATE`. `ON UPDATE CASCADE`, `RESTRICT`,
+   `NO ACTION`, `BEFORE UPDATE ON`, `GRANT UPDATE ON` and `UPDATE OR` resolve to tables named
+   `cascade`, `restrict`, `no`, `on` and `or`. An `updated_at =` later in the same DDL then
+   resolves to that table, and the fail-closed arm goes quiet. The set's own docblock calls
+   this the silent direction. Adding the words is green today.
+3. (low) The allowlists license by count, so an in-place edit of a licensed 016 statement is
+   absorbed. A retype edited to `USING now()`, or the back-fill losing its
+   `WHERE updated_at IS NULL`, stays green, and `deploy.sh` re-applies every migration on
+   every run. Suggest a KNOWN LIMITS entry at least, or pinning by normalised text.
+4. (low) Routine binding reads a statement that nothing holds to a terminator.
+   `BOUND_TO_ACCOUNTS_RE` misses `ON accounts` when 41 blanked comment lines before `ON` hit
+   `LITERAL_CAP`, or when an `EXECUTE` string joined across lines stops the read. It also
+   spells `(?:public\.)?` where the heads accept `public . accounts`. Separately, an
+   `<unnamed>` routine key can be exempted, although its docblock says "no exemption can
+   match". Nothing changes in outcome while `ROUTINES_THAT_CANNOT_REACH_ACCOUNTS` is empty.
+   What weakens is the guarantee that a bound trigger "cannot be listed here at all".
 
-Routed out of the re-review of the broadcast-path window eviction task, which
-corrected the reading site but not the sentence that seeded the miscount. Raised
-independently by two review lenses and confirmed at validation.
+## Architect re-review (2026-09-21, round 1) — HELD PENDING FIXES:
 
-## Why
+Reviewed `eff8d6b9..72f1196d` via `/ce-code-review` across five lenses (correctness,
+project-standards, testing, adversarial, learnings) plus one validator batch that
+re-measured every surviving finding in its own `git archive 72f1196d` copy. All three
+commits are ancestors of `main`. Every line number below is a line number in the file AT
+`72f1196d`. The cross-model adversarial pass did NOT run (no different-provider route is
+installed on this host), so the adversarial lens ran in-process and has no
+independent-family corroboration. No reviewer touched a database or the shared checkout.
 
-`evictUnnamedAcquisition`'s docblock now correctly says TWO sites read the raw
-acquisition result: the fail-closed guard in `ensureSessionWindow` and the
-broadcast unwinder `acquisitionAborted`. To reconcile that against the THREE-site
-tally in `WINDOW_OUTCOME_BY_SENTINEL`'s docblock, it added a clause asserting that
-the other tally "tallies who acts on an outcome ... not who reads the raw result".
+**What held up, so it is not redone.** AC1, AC2 and AC3 all hold, each re-derived by
+execution rather than taken from the signal block: three independent plants of the
+interpolated ALTER red the assembled arm by name; the clean tree is 25/25 and
+`ALLOWED_COLUMN_ALTERATIONS` is untouched; pointing `assembledWrites` back at
+`[ACCOUNTS_STATEMENT_RE]` reds the fixture, each of the four new ALTER assertions reds
+independently under that mutant, and `'gi'` to `'g'` and the head-line-only interpolation
+test red their own pins. The two silent-arm controls prove what their comment says. The
+sweep in Scope decision 4 was re-enumerated from the code by the architect: exactly six
+production line-walks over a head, the six the signal block names, and no test body loops
+over heads. Probed true: `.join`, `.concat` and `+=` are silent on the statement's own
+line; an equality inside a USING expression or a CHECK reds the fail-closed arm;
+`ALTER TABLE ${table}` reds nowhere; `src` spells no ALTER; every text `writesColumn`
+accepts also satisfies the ALTER arm's test, so the single-head argument in the
+`accountsColumnWriters` docblock holds. Project standards is clean. The
+shared-constant-unification learning is honored by a real membership fixture.
 
-That sentence does not say what the clause says it says. It reads that
-`acquireSessionProof` "resolves to a proof string or to one of the sentinels
-below, and three independently owned sites consume the result", then names
-`freshAuthWindowReady`, `acquisitionAborted` and `windowProof`. The definite
-article binds all three to `acquireSessionProof`'s result, and two of the three
-provably never see it: `freshAuthWindowReady` and `windowProof`
-(`lib/ipfs-upload.js`) both consume `ensureSessionWindow`'s derived outcome
-object. Only `acquisitionAborted` is a member of both tallies.
+The hold is prose only. Both items are claims this range added that the code falsifies.
 
-So the module reconciles a real imprecision from a distance, by asserting a
-reading of a sentence rather than amending it. The next reader who checks the
-claim against the sentence finds they disagree, which is the same rot the
-corrected count was fixing. The correct phrasing already exists in the module's
-own dispatch suite header.
+### Item 1 (required). The `+` recognition is stated without the bound that makes it true.
 
-## Scope
+Measured three times (correctness, adversarial, validator), same result each time. With
+the template's opening backtick on the line ABOVE the head,
 
-1. Amend `WINDOW_OUTCOME_BY_SENTINEL`'s docblock so its tally binds to the outcome
+    const sql = `
