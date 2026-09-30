@@ -1,250 +1,250 @@
-## Drive a light-account fresh-auth broadcast and upload end to end in the e2e suite (archived 2026-09-30)
+## The mis-cited spec's own header still claims the coverage it lacks (archived 2026-09-30)
 
-Architect archive note (2026-09-30, round 3): archived clean after three rounds. Re-reviewed
-`1ebbb379` alone (an ancestor of `main`, six files under `frontend/tests`, +51/-16,
-comment-dominant) with /ce-code-review at the pinned commit, since main had drifted past it:
-correctness, project-standards on root `CLAUDE.md`, testing, adversarial in-process (no
-different-model peer on this host) and learnings. No primary finding. All five items held
-on 2026-09-28 are FIXED, and no later commit on main changed a sentence `1ebbb379` wrote.
+Architect archive note (2026-09-30, round 2): archived after two rounds with one P3 routed
+onward. Re-reviewed `7551b218` alone (an ancestor of `main`, four files under
+`frontend/tests`, +21/-16, comment-only) with /ce-code-review: correctness,
+project-standards on root `CLAUDE.md`, testing, adversarial in-process (no different-model
+peer on this host) and learnings. All three items held on 2026-09-22 and the same-day
+architect note are FIXED.
 
-- Item 1: the fixture docblock carries the by-design accreditation rationale in one
-  sentence, matching ARCHITECTURE "Accredited-Only Data Policy" (the upload pre-flight
-  check is resource gating; signup already establishes qualification).
-- Item 2: the trace scan has its own `known fresh-auth test password` arm. Removing or
-  relabelling the arm fails exactly the new unit test; no alternation shadowing, and the
-  group-offset bookkeeping resolves the arm to its own label.
-- Item 3: all three wide reason lists are `['expired']`. `consumeFreshAuthTokenForSurface`
-  returns `expired` on any lookup miss before `validateStoredEntry`, the only `malformed`
-  source, can run; `missing` needs an absent token. A spent consent-op replay is `expired`
-  on every ordering traced (Redis up, Redis down, a flap at burn time, concurrent
-  presentation). Exactly four `reasons:` call sites exist; the fourth is the untouched
-  `kind_mismatch` pin. Status and code pins are unchanged.
-- Item 4: both fresh-auth specs state the real retry model. Playwright 1.59.1's dispatcher
-  stops a failed worker and runs the retry in a new one.
-- Item 5: the `lib-authorship-consent.test.js` clause-(c) paragraph attributes the
-  spent-replay and kind_mismatch controls to the backend surface and states that the
-  orchestrator's handling of a refused consent-op broadcast has no real-path companion.
+- Items 1 and 2 and the two further citers: all seven sites name the posting-key
+  availability guard. Checked against the custody broadcast handler on both the consent-op
+  and session-window paths: row read, missing-row 401, upgrade 403, then the guard's 500
+  `Posting key not available`, with `decryptKey` on the next statement.
+  `expectPostGateStop` pins exactly that envelope. `git grep "posting-key decrypt"` and
+  `"first post-gate"` over `frontend/tests` are empty.
+- Item 3: clause (a) states the actual condition (the ORCID test stubs the callback at the
+  network layer instead of driving the in-network stub). Clause (c)'s gap sentence is
+  unchanged and still true.
+- Comment-only confirmed; no new slug, ordinal, line, SHA or bare positional anchor.
 
-Verified independently: `global-teardown.test.js` 15 passed and
-`lib-authorship-consent.test.js` 37 passed, exit 0, in an isolated copy at the commit. The
-e2e claim (5 passed across both fresh-auth specs) was not re-run.
+One finding, P3, four lenses: `expectPostGateStop`'s JSDoc says the outer catch's generic
+envelope "would mean a step past the guard threw", but the account-row read sits in the
+same `try` ahead of the guard. The wording was transcribed from the hold's own
+prescription. User triage: not worth a third hold; folded into
+`ui-non-consent-spec-comment-options-pin-flip`.
 
-Dismissed at triage: (a) the scan arm, the unit-test input and the fixture's
-`TEST_PASSWORD` are three independent copies of the literal, so rotating the fixture
-constant would leave the arm stale with tests green (theoretical-only); (b) the consent-op
-replay comment's "removed the entry from both storage tiers" is exact for the
-Redis-available path the e2e runs, while under a Redis flap the spent-proof ledger refuses
-instead, still as `expired`; (c) `consent-op-fresh-auth.spec.js`'s own clause-(c) sentence
-calls itself the companion for "the orchestration" without the qualification the citing
-unit header now carries (not false; the clause-(c) duty sits on the mocked suite's header);
-(d) the same spec's bare "the broadcast handler performs no accreditation check" in its
-clause-(a) paragraph (true, reads as the scope of the stub, and was not held at round 2).
+Drift, not caused by this task: backend `4cb4347b` admitted `comment_options` to the
+custody allowlist, which falsifies this spec's known-defect paragraph, its "vote is the
+only broadcast that reaches the gate" sentence and the comment test's 403 pin. Routed to
+the same new ui task. `790eee0e` touched none of the reworded sentences.
 
-Routed: the false retry-model comment surviving in six sibling e2e specs, and the
-`scanTracesForSecrets` docblock listing specs that do not type `E2eTestPass1`, are filed as
-`ui-e2e-retry-model-comment-sweep`.
+The e2e suite was not re-run; the review was by reading. The clause-(a) solutions entry
+written during the hold is refreshed via /ce-compound-refresh alongside this archive. No
+new /ce-compound entry.
 
-Left open for the user, not decided here: (1) whether to extend the trace scan to the six
-other typed password literals (every spec that types one sets `trace: 'off'`, so it would
-be a backstop only); (2) the comment test's known-defect pin in
-`non-consent-fresh-auth.spec.js` now reddens by design because backend `4cb4347b` admits
-`comment_options`; the ui flip to `expectPostGateStop` is a `[TODO Architect]` routing row
-on `backend-custody-allowlist-comment-options` and is to be routed at that task's review.
-
-No /ce-compound entry: once the sweep task lands, the specs themselves carry the correct
-retry model.
+# The mis-cited spec's own header still claims the coverage it lacks
 
 **Owner:** ui
 **Created:** 2026-09-06
 
-Routed out of the architect round-4 review of `ui-consent-op-teardown-guard`. Filed to
-give the fresh-auth unit suites a clause-c real-path companion that actually exists: four
-of them currently cite one that does not cover what they claim, and a fifth surface (the
-authorship consent-op e2e spec) discharges clause (c) by pointing at this task.
+Routed out of the architect round-5 review of `ui-consent-op-teardown-guard` (archived
+2026-09-06). That review corrected five suite headers which cited
+`frontend/tests/e2e/non-consent-fresh-auth.spec.js` as exercising broadcast, upload, or
+window acquisition against the real backend. The five citers were fixed. The spec they
+cited was not, and its own docblock is where the claim originates.
 
 ## Why
 
-Root `CLAUDE.md`'s "Carve-out for deterministic edge-case coverage" permits mocking only
-when, among other things, clause (c) holds: the same risk class is covered by a real-path
-test elsewhere, OR a follow-up task is filed to add such coverage. Four unit suites
-discharge that clause by citing `frontend/tests/e2e/non-consent-fresh-auth.spec.js`:
+The spec's opening paragraph states its subject as:
 
-- `lib-ipfs-upload.test.js` — "exercises upload + broadcast against the real backend"
-- `fresh-auth-401-retry.test.js` — "exercises broadcastWithFreshAuth against the real
-  backend for the happy path and the window-reuse path"
-- `lib-fresh-auth-session-window.test.js` — "exercises acquisition + broadcast against the
-  real backend"
-- `lib-fresh-auth-outcome-dispatch.test.js` — "exercises acquisition against the real
-  backend"
+> Non-consent broadcast paths must attach a `fresh_auth_proof` to
+> `/api/custody/broadcast`, and the `/orcid/callback` page must handle the `session_auth`
+> mode by caching the issued proof in sessionStorage and bouncing the user back to the
+> page that initiated the broadcast.
 
-That spec contains exactly one test. It route-stubs `/api/orcid/callback` and asserts the
-`session_auth` handler caches the issued window in sessionStorage. It drives no broadcast
-and no upload. Its own closing note records the second test — a real vote through the
-paper-detail page — as prototyped and removed, because the production bundle does not
-expose `lib/fresh-auth.js` for dynamic import and the paper-detail mount needs more
-fixture surface (full enrichment shape, paper-card data, accreditation polling stubs) than
-a wire-contract assertion was judged to be worth. That note closes by naming the follow-up
-this task is: drive the comment-composer path with full fixture data.
+The file contains one test. It registers a single route stub, on `**/api/orcid/callback`,
+hand-seeds the ORCID mode and return path that `beginSessionAuthOrcidRedirect` would have
+written, and asserts the `session_auth` handler caches the issued window in
+sessionStorage. It issues no broadcast: every occurrence of `/api/custody/broadcast` in
+the file is inside a comment. The first half of that opening sentence describes a
+requirement the spec does not exercise, stated in the same voice as the half it does.
 
-So the acquisition half of those citations is defensible and the broadcast and upload
-halves are not. The risk classes left with no real-path companion are the ones the mocked
-suites exist to cover: a window proof actually reaching `/api/custody/broadcast`, and a
-window rejected between the IPFS pre-flight and the transfer.
+This is the sentence that made the five downstream citations plausible. Anyone reading the
+spec's header rather than its body would conclude it drives a proof-carrying broadcast,
+which is exactly the inference those five headers encoded and the round-5 review had to
+unwind. Leaving it in place leaves the trap armed for the next reader.
 
-There is no mechanical backstop. `backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`
-resolves citations under `backend/tests/` only, so a frontend suite can cite a spec that
-does not cover it indefinitely without any check failing.
+Two further claims in the same header need checking, both the same unverified-prose class:
+
+1. **Its own clause-(c) companion sentence** says the `orcid-link` / `orcid-no-password`
+   specs cover the `/api/orcid/start` and `/api/orcid/callback` real-path edges for
+   sibling modes, and that this spec "layers the session_auth mode atop the same proven
+   plumbing." Partially supported, not wholly. `orcid-link.spec.js` does contain a
+   genuine real-path test that posts to both endpoints against a live backend, but its
+   earlier tests stub `/api/orcid/callback`, and `orcid-no-password.spec.js` stubs
+   `/api/orcid/start` with an error in at least one test. The "layers atop the same proven
+   plumbing" clause is the weakest part: this spec stubs the callback outright, so its own
+   test layers on nothing real.
+2. **The real-path companion can silently not run.** `orcid-link.spec.js`'s real-path test
+   calls `test.skip(true, ...)` when `/api/orcid/start` returns a non-success status,
+   on the theory that ORCID config is missing in that environment. A companion that skips
+   itself when its dependency is absent discharges clause (c) only when it actually runs,
+   and nothing reports that it did not. Compare `settings-orcid-factor.spec.js`, whose
+   equivalent real-path test carries no conditional skip, so a missing sidecar fails
+   loudly instead of quietly voiding the companion.
+
+The clause-(a) sentence is sound and should be left alone: the cryptographic verification
+it points at is genuinely covered by `backend/tests/routes/custody-non-consent-fresh-auth.test.ts`,
+which runs the real `verifyHiveSignature` against signed requests.
 
 ## Scope
 
-1. Add e2e coverage that drives a light account through a fresh-auth broadcast with a
-   proof attached, against the real backend. The comment-composer path is the shape the
-   removed prototype's note recommends: it needs less fixture surface than paper-detail,
-   and a comment is a real `custody/broadcast` with a session-window proof.
-2. Add e2e coverage for the upload leg on the light-account path, where a window proof IS
-   involved (`publish.spec.js` drives the upload endpoint only on self-custody, where none
-   is). The window-rejected-mid-flight retry does not need to be reproduced; exercising the
-   integrated path with real infrastructure is what clause (c) asks for, not mirroring the
-   mocked assertion.
-3. Add e2e coverage for the light-account **consent-op** leg: one authorship consent
-   action (`author_accept` or `author_resign`) broadcast with a target-bound consent-op
-   proof attached, against the real backend. This is a distinct mechanism from legs 1
-   and 2, not a variant of them: the consent-op proof is minted by
-   `mintAuthorshipFreshAuthProof` at `POST /custody/fresh-auth` and cached under
-   `CONSENT_OP_PROOF_KEY`, while the session window is minted by `mintSessionAuthProof`
-   at `POST /custody/session-auth` and cached under `SESSION_PROOF_KEY`. Per
-   `ARCHITECTURE.md` 6.4.1 a session-window proof is rejected on the consent-op surface
-   with `kind_mismatch`, so legs 1 and 2 cannot cover this risk class however thoroughly
-   they are built. `frontend/tests/e2e/authorship-consent-actions.spec.js` is the header
-   that depends on this leg.
-4. Point the five headers at whatever this task actually lands, and drop the claims it
-   does not support. Coordinate with the header corrections landed on
-   `ui-consent-op-teardown-guard`, which discharges clause (c) through this task in the
-   interim. While in `lib-fresh-auth-session-window.test.js`, correct its two stale
-   "one case ... reaches the real upload module" statements: two `it()` blocks drive the
-   real upload module, not one.
-
-If either leg proves impractical for the same reason the earlier prototype was removed,
-record that finding in this file and say plainly in the headers that no real-path
-companion exists for that risk class. A stated gap is honest; a false citation is not.
+1. Rewrite the opening paragraph so it states what the single test actually drives, and
+   names the broadcast-attach requirement as the thing this spec does **not** exercise.
+   The five corrected headers are the model for the wording: say what runs, then say what
+   does not, plainly. Keep the paragraph's explanation of *why* the requirement matters if
+   it still reads as useful background, but it must not read as a description of this
+   spec's coverage.
+2. Resolve the clause-(c) companion sentence against what `orcid-link.spec.js` and
+   `orcid-no-password.spec.js` actually drive. Credit the real-path test that exists,
+   drop or qualify the parts the stubs contradict, and drop the "layers atop the same
+   proven plumbing" claim unless you can defend it.
+3. Decide the conditional-skip question and record the decision in the header. Either
+   remove the skip so a missing ORCID sidecar fails loudly, or state in the citation that
+   the companion is environment-gated and does not always run. Removing the skip is
+   preferred if the sidecar is a standard part of the e2e environment; check before
+   changing it, since a hard failure in an environment that legitimately lacks the config
+   is worse than a disclosed gap.
+4. Do not re-sweep the six suites that cite this spec. All six already carry the corrected
+   form, describing what the spec does not do. Confirm that is still true at the head you
+   work from, then leave them alone.
 
 ## Acceptance criteria
 
-1. At least one e2e spec drives a light-account operation that attaches a session-window
-   fresh-auth proof to a real backend request, and asserts the request carried it.
-2. At least one e2e spec drives the light-account upload leg against the real upload
-   endpoint with a window proof.
-3. At least one e2e spec drives a light-account consent-op broadcast that attaches a
-   target-bound consent-op proof to a real backend request, and asserts the request
-   carried it. A session-window proof does not satisfy this criterion.
-4. The clause-c paragraph in each of the four unit suites named above, and in
-   `frontend/tests/e2e/authorship-consent-actions.spec.js`, resolves to a spec that
-   genuinely exercises the risk class that suite mocks, or states the gap explicitly.
-5. No suite's clause-c paragraph names a spec that does not cover it, and no suite
-   discharges clause (c) by citing a filed follow-up whose planned proof kind cannot
-   apply to that suite's surface.
-6. `lib-fresh-auth-session-window.test.js` no longer states that one case reaches the
-   real upload module.
+1. No sentence in `non-consent-fresh-auth.spec.js`'s docblock describes coverage the file
+   does not provide, in either half of a compound sentence.
+2. The docblock names, in behavioural terms, what its single test drives and what it does
+   not.
+3. The clause-(c) companion sentence resolves to specs that genuinely exercise what is
+   claimed of them, or states the gap.
+4. The environment-gated behaviour of the cited real-path test is either removed or
+   disclosed in the header.
+5. No added line carries a task slug, a path or file redirect to a task, a round or hold
+   ordinal, a line-number or SHA anchor, or a bare positional anchor. State the condition,
+   not the coordination artifact.
+6. The e2e suite is no worse than its recorded baseline. This is a comment-only change
+   unless scope item 3 removes the skip, in which case say which specs you ran and what
+   they returned.
 
 ## Notes
 
-Clause (c) does not require the companion to assert what the mocked test asserts. Root
-`CLAUDE.md` is explicit: the companion "does NOT need to assert the same thing as the
-mocked test, only to exercise the integrated path with real infrastructure so a different
-mutation class is caught." A thin but genuine end-to-end path satisfies it; a thorough
-mocked one does not.
+Nothing mechanical will catch a regression here. The carve-out citation canary resolves
+citations under `backend/tests/` only, so a frontend spec can describe coverage it does
+not have indefinitely with every check green. That gap is recorded separately and is not
+this task's job to close.
 
-Worth considering while in here, but not required by this task: whether the backend
-citation canary should grow a frontend counterpart. Nothing currently prevents a frontend
-suite from citing a spec that does not exist at all.
+Scope item 3 may turn out to be a real decision rather than an edit. If removing the skip
+would red the suite in a normal developer environment, say so in this file and take the
+disclosure option instead; do not remove a guard that is load-bearing for people without
+the ORCID sidecar.
 
-## UI implementation signal (2026-09-14, commits 58ad7918 and 306d84f4)
+## Note (2026-09-14, from the light-account fresh-auth e2e task)
 
-Both commits verified as ancestors of `main` with `git merge-base --is-ancestor`.
+The docblock this task targets was rewritten at 58ad7918 and 306d84f4, when the spec gained
+three light-account tests against the real backend. Scope 1 is overtaken: the opening
+paragraph now names the four tests and what each drives. Scope 2 is overtaken: the clause-(c)
+sentence credits `settings-orcid-factor.spec.js` as the real ORCID round-trip (no conditional
+skip), names `orcid-link.spec.js`'s cross-user test as environment-gated by its skip, and the
+"layers atop the same proven plumbing" claim is gone. Scope 4's premise is now false: all six
+citing suites were re-swept for the new coverage. Scope 3 took the disclosure option inside
+the docblock; whether to remove the skip in `orcid-link.spec.js` remains this task's
+decision. Re-read acceptance criteria 1 to 5 against the current file before editing.
 
-**What landed.**
+## UI implementation signal (2026-09-21, commit b6866ddc)
 
-- `frontend/tests/e2e/non-consent-fresh-auth.spec.js` (rewritten): the existing ORCID
-  callback test, plus three light-account tests against the real test-mode backend. A vote
-  from paper-detail: real `POST /custody/session-auth` mint through the reauth modal, real
-  `POST /custody/broadcast` carrying the window past the fresh-auth gate to the seeded
-  account's posting-key stop, a tampered-proof control refused at the gate, and a replay
-  accepted again (multi-use). A comment from the composer: same acquisition, request
-  asserted unmasked, response pinned as today's pre-gate refusal (defect below). A publish
-  with a PDF: window acquired at file selection, real `POST /ipfs/upload-token` consumes it
-  (with a tampered-proof control), real `POST /ipfs/upload` returns a CID, and the broadcast
-  request carries the same window and that CID.
-- `frontend/tests/e2e/consent-op-fresh-auth.spec.js` (new): `author_accept` from the accept
-  affordance, target-bound proof minted at the real `POST /custody/fresh-auth`, consumed at
-  the real `POST /custody/broadcast` past the gated-op scan to the posting-key stop; the
-  replay is refused as spent (401 expired) and a freshly minted session-kind proof is
-  refused with 403 `kind_mismatch`.
-- `frontend/tests/e2e/fixtures/light-account.js` (new): seeded light row (argon2 password
-  hash, no posting key), reauth-modal and confirm-dialog drivers, post-gate-stop and
-  gate-refusal assertions, `postTo`. `fixtures/paper-mocks.js` gains `buildPaper`,
-  `installAuthedBootMocks`, and a `comments` stub option; `authorship-consent-actions.spec.js`
-  imports them instead of local copies.
-- Headers corrected to what the specs genuinely drive: the four suites this task names,
-  `authorship-consent-actions.spec.js`, and three siblings that made the same now-false claim
-  (`lib-authorship-consent.test.js`, `lib-fresh-auth-consent-op-eviction.test.js`,
-  `lib-fresh-auth-teardown.test.js`).
+Re-audited the current docblock sentence by sentence against the four tests, the
+custody broadcast handler, the four SPA post-building surfaces, the cited unit
+suites, and the ORCID specs. Findings were adversarially verified before any edit.
 
-**Why each leg stops where it does.** The seeded rows carry no encrypted posting key, so the
-custody handler consumes the proof, reads the row, and refuses at the posting-key decrypt
-(500 INTERNAL_ERROR, "Posting key not available"), the first refusal a fully seeded row can
-reach past the gate. Nothing is signed and no Hive node is reached. The upload pre-flight
-gates on HAF accreditation after the consume, so the publish test seeds its light row under a
-HAF-accredited username (removed again in afterAll) and skips itself when HAF lists none.
+**Acceptance criteria 1 and 2.** Three sentences described coverage the file does
+not provide; all three are corrected.
 
-**Test runs (test-mode stack, 2026-09-14).** `non-consent-fresh-auth.spec.js` (4 tests),
-`consent-op-fresh-auth.spec.js` (1), `authorship-consent-actions.spec.js` (4): 9 passed,
-0 skipped (HAF listed an accredited researcher, so the publish leg ran and pinned a real
-CID). Touched unit suites: 188 tests passed at 58ad7918; the four re-amended at 306d84f4
-passed again (121 tests).
+1. "refuses at its first post-gate step, the posting-key decrypt" was wrong on both
+   halves. Five steps run between `consumeSessionFreshAuthToken` and `decryptKey`
+   (the idempotency block, the pool guard, the account-row read, the missing-row
+   401, the upgrade-stamp 403). The seeded row stops at the posting-key
+   availability guard immediately before the decrypt, and the envelope
+   `expectPostGateStop` pins is that guard's, so the decrypt provably never runs.
+   The header now says so.
+2. "Where the real-backend broadcast legs stop" read as a claim about all three
+   broadcasts. Only the vote reaches the gate; `ALLOWED_OPS` refuses the comment
+   and publish bundles inside the per-op validation loop, before
+   `findGatedOpsInBundle` and before either consume call. The known-defect
+   paragraph already said this, so the topic sentence contradicted its own
+   docblock. Now scoped to the vote, with the earlier refusal named.
+3. Clause (a) said the ORCID test "covers the return leg's cache write only",
+   which contradicted the opening paragraph and understated the test: it also
+   polls for the bounce to the seeded return path and asserts the in-flight mode
+   and return-path keys are cleared. Clause (a) now names all three.
 
-**Acceptance criteria.**
+**Acceptance criterion 3.** The clause-(c) parenthetical listed four citing unit
+suites as a closed set. `lib-ipfs-upload-real-window.test.js` carries the same
+"Clause-c real-path companion" citation and was missing; added.
+`lib-fresh-auth-teardown.test.js` names this spec only to say no companion exists
+for its risk class, so its omission is correct and stays.
 
-1. Met by the vote test: a session-window proof on a real custody broadcast, the request
-   asserted to carry it, the gate passed.
-2. Met by the publish test: the window proof on the real upload-token pre-flight, then the
-   real upload and its CID.
-3. Met by the consent-op test: a target-bound proof on a real custody broadcast, the request
-   asserted to carry it; the `kind_mismatch` control shows a session-window proof cannot
-   satisfy it.
-4. and 5. Met: every clause-(c) paragraph in the five named headers resolves to a spec that
-   drives the risk class or states the gap, and the three sibling headers likewise. A grep of
-   `frontend/tests` for "follow-up is filed", "prototyped and removed", and "none exists"
-   finds no remaining stale citation of these specs.
-6. Already satisfied before this task: the two "one case ... reaches the real upload module"
-   sentences left `lib-fresh-auth-session-window.test.js` at 1c03368c, when the teardown
-   cases were split into `lib-fresh-auth-teardown.test.js`, whose header says two cases
-   drive the real upload module. Verified no such sentence remains.
+**Acceptance criterion 4 (scope 3) — the skip is REMOVED.** The decision, and the
+evidence behind it:
 
-Not done, optional per the Notes: a frontend counterpart of the backend citation canary.
+- The guard was added 2026-04-21 while upgrading a `test.fixme` into a real test.
+  Its commit cites no observed failure; it is a hedge.
+- The orcid-stub OAuth sidecar landed 2026-06-09, seven weeks later.
+  `docker-compose.test.override.yml` sets `ORCID_CLIENT_ID`,
+  `ORCID_CLIENT_SECRET` and `ORCID_BASE_URL` unconditionally, and
+  `deploy.sh test-up` always layers that override, which the UI role file
+  mandates for every executing Playwright run. The one non-200 cause that means
+  "not configured" cannot fire in the documented environment.
+- The guard fired on ANY non-200. A start-limiter 429, a bearer the backend
+  rejects (a drifted `frontend/.env.test` SESSION_SECRET is the likely one), a
+  session-check 503 and a Redis-flap 500 were all reported as a missing ORCID
+  config and turned green. The current design converted the one plausible flake
+  into a silent pass, which is worse than the red it was avoiding.
+- It protected nothing that was not already unprotected. Four tests across
+  `settings-orcid-factor.spec.js` and `orcid-no-password.spec.js` drive the real
+  `/api/orcid/start` through `routeOrcidStubBridge` with no skip, so an
+  unconfigured environment already reds the suite four times over.
 
-**Surfaced defect (needs triage; backend zone).** `backend/src/routes/custody.ts` admits only
-`comment`, `vote`, and `custom_json` on the custody broadcast, while every new post the SPA
-builds (comment composer, publish page, review page, edit-page continuation post) bundles a
-`comment_options` op for the rewards policy. The handler refuses the bundle with 403
-FORBIDDEN, "Operation 'comment_options' is not allowed for custodial accounts", BEFORE the
-fresh-auth gate. Both sides date from the initial light-accounts commit (92c2e6b6), so a
-light account's comment, review, and publish have never worked through custody; votes and
-the edit page's same-author native edit (a lone comment op) are unaffected. Reproduced
-outside Playwright with a minted JWT: comment plus comment_options is refused in 4 ms with
-no gate log line, while comment-only and vote-only bundles reach the gate. The comment test
-pins the refusal as a positive assertion under a `known-defect` annotation; once the
-allowlist admits the op (author and permlink bound to the bundled comment and the JWT
-subject, plus a decision on server-side `percent_hbd` enforcement), that pin reddens and is
-replaced by `expectPostGateStop`. No backend task was filed from this session (ui zone);
-the architect should file one.
+Replaced with `expect(startResp.status(), await startResp.text()).toBe(200)` so a
+failure carries its own status and body. The spec's inline rationale claiming
+`/start` on mode=link "requires the victim to be accredited in some backends, and
+it requires admin key to be configured" was itself unverified prose and is gone:
+`AUTHENTICATED_MODES` contains `link`, the handler runs no accreditation check for
+any mode (the `getAccreditedSet` / `hasUnliftedSanction` pair lives in
+`handleAccredit`, on the callback side), and `/start` reads no admin key. The
+clause-(c) sentence in the non-consent docblock was updated to match: neither
+cited ORCID companion is environment-gated any more.
 
-**Overlap with sibling ui tasks (a note appended to each).**
+**Acceptance criterion 5.** Clean. Ran `anchor_violation()` from the pre-commit
+gate standalone over every added line with `ALLOW_MARKER` set explicitly, proving
+the harness non-vacuous first with three control lines (slug + round-ordinal,
+bare positional, file:line) that all fired. Zero hits on the added lines.
 
-- `ui-non-consent-spec-header-overclaims`: Scope 1 (opening paragraph), Scope 2 (ORCID
-  companion sentence), and Scope 4 (the six citing suites) are overtaken by the rewritten
-  docblock; Scope 3 took the disclosure option (orcid-link's real-path test is named as
-  environment-gated by its conditional skip); the skip-removal decision stays with that task.
-- `ui-positional-anchor-sweep-frontend`: item 1 ("is covered by the test above") no longer
-  exists; the closing note it lived in was replaced.
+**Acceptance criterion 6.** Specs run against the test stack (`deploy.sh restart`
+-> `test-db-up` -> `test-up`, dev routing restored afterwards):
 
-**Review.** An ultracode workflow ran three simplification personas and six review lenses
+- `orcid-link.spec.js` — 3 passed. The formerly-skipped test now RUNS and passes
+  (409-461ms across two runs), which is the empirical answer to scope 3: the
+  assertion works in the documented environment and the guard was masking a
+  passing test.
+- `non-consent-fresh-auth.spec.js` — 4 passed, including the publish test (HAF
+  indexed an accredited researcher, so the upload leg ran and pinned a CID).
+- All three specs that hit the real `/api/orcid/start` in one run — 13 passed,
+  1 failed. No rate-limit refusal, which was the named residual risk of removing
+  the skip.
+
+The one failure is PRE-EXISTING and unrelated: `settings-orcid-factor.spec.js`
+"the fresh_auth callback caches the proof under (set_password, username, "") and
+the re-submit sends it" fails a `toEqual` because the cached consent-op object now
+carries `authorIndex: null` and `claimer: null`. That file is unmodified, imports
+none of the files touched here, and fails identically when run standalone. The
+extra fields come from the recent fresh-auth work in `authorship-consent.js` /
+`settings-fresh-auth.js`; the spec's exact-match assertion was not updated. Not
+fixed here, flagged for triage.
+
+## Out-of-scope findings, surfaced not fixed (user triaged: leave alone)
+
+Three defects surfaced during the audit that sit outside this task's scope. The
+user reviewed them and chose not to widen scope; recorded here for the architect.
+
+1. `frontend/tests/unit/lib-fresh-auth-outcome-dispatch.test.js` states that this
