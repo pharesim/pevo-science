@@ -1026,3 +1026,113 @@ say "the clear after the invalidation await".
   comments pass the anchor rules. It raised one nit, a garbled sentence in
   the continuation unmount twin's header comment, fixed in `323b550b`. The
   re-run gave 103 passed, exit 0.
+
+## Architect re-review (2026-09-30) — HELD PENDING FIXES:
+
+`/ce-code-review` on `23d72b81` + `323b550b` (seven lenses; standards clean
+including the comment-anchor sweep of every added line; an independent
+validator confirmed 4/4 findings with its own re-measurements). All four
+round-4 items are FIXED: each arm's post-invalidation clear sits ahead of its
+`_mounted` guard and dies per arm to its own resolving-invalidation spec
+(moved below the guard or deleted), the pre-landing witness kills the
+unconditional catch clear alone, the fired-then-unmounted catch spec kills
+both the swapped-order and the getter-key catch mutants alone, and the
+continuation unmount twin is now the only kill for the continuation early
+clear. All twelve new-site rows of the signal's mutation table reproduce
+exactly, re-measured by three lenses. The invariant holds on every
+post-landing exit of both arms (an 88-cell staged exit matrix differs from
+the base in exactly four cells, all leak-to-clean), and both keep-draft
+invariants hold. The production code is verified; this is a prose-only hold.
+Three items, no new specs required, then move back to `review/`.
+
+1. **The re-clear's rationale attributes the synchronous flush to a watched
+   change** (`edit.js`, the comment above the continuation arm's
+   `_clearDraft(draftKey)` that follows `await invalidatePaperCache(...)`).
+   It says a watched change there "can arm the debounce, or fire it, or
+   flush the draft synchronously". No watched change flushes: every
+   `$watch` registered in `_setupReactiveBindings` calls
+   `_scheduleDraftSave()`, and the synchronous writer in that window is the
+   supplementary-file input, `handleSupplementaryFiles` reaching
+   `_windowReady`'s `_flushDraftSave()`, which involves no watcher and no
+   debounce. A reader tracing the third writer from this comment looks on
+   the scheduler path and misses the file input.
+   **Fix:** reword the sentence so each writer is named by its own trigger:
+   a watched change arms the debounce, the armed save can fire, and a file
+   selection flushes through `_windowReady`. Check the wording against the
+   current tree rather than the reviewed commit: `_confirmNavigationCost`
+   has since gained a `_flushDraftSave()` call of its own, so do not write
+   that `_windowReady` is the only caller. The rest of the comment (why the
+   re-clear sits ahead of the guard) is accurate; leave it, and leave the
+   native arm's pointer to the continuation branch as it is.
+
+2. **The pre-landing spec's header misstates where the guard sits and
+   claims both arms** (`pages-edit.test.js`, the header of `a broadcast
+   that fails before landing keeps the flushed draft`). "The guard sits
+   ahead of either arm's landed marker, so one same-author case witnesses
+   it for both arms." The `if (landed)` guard is in the shared terminal
+   catch, textually after both `landed = true` markers, and this file uses
+   "sits ahead of" for static position in the header of `a catch entered
+   unmounted after the debounce fired drops the rewritten draft by its
+   captured key`. The conclusion is also wider than the evidence: the one
+   case witnesses the shared guard, not each arm's marker placement
+   (hoisting the continuation marker above its broadcast leaves the file
+   green, while the native mirror dies to this spec). The sentence follows
+   the wording of the round-4 hold, which was imprecise on exactly this
+   point; that is the architect's error, not the implementer's.
+   **Fix:** reword to the real reason: both arms share the one terminal
+   catch, and a throw before the landing reaches its `if (landed)` guard
+   with the marker still false whichever arm ran, so one same-author case
+   witnesses that guard. Do not claim it witnesses either arm's marker
+   placement. A continuation twin is NOT required (dismissed at triage); if
+   you add one anyway, say so in the signal and drop nothing from the
+   reworded sentence on its account.
+
+3. **A relative reference whose target moved** (`pages-edit.test.js`, the
+   header of `the continuation post drops the draft when the cache
+   invalidation rejects`). Its first sentence still reads "Twin of the
+   unmount-during-broadcast case on the other branch arm, and it takes the
+   other exit." This diff inserted the continuation unmount twin directly
+   above it, so there are now two unmount-during-broadcast cases and the
+   nearest one is on the SAME arm as this spec. Only the "other branch arm"
+   half is stale; "takes the other exit" still holds against either
+   neighbour.
+   **Fix:** name the arm and the exit instead of relating them to a
+   neighbouring spec: this is the continuation arm, through its
+   rejecting-invalidation exit. The header's remaining sentences are
+   accurate; leave them.
+
+Dismissed at triage, no action: the three surviving mutants at the
+post-invalidation clears (a bare `removeItem`, the `draftKey` getter, and a
+clear that runs only when unmounted; none is a realistic refactor, deleting
+or moving either clear dies per arm, and the getter form is the accepted
+captured-key gap at a site that now runs unmounted), the continuation twin
+of the pre-landing spec (item 2's reword stops claiming it), a storage throw
+at the relocated clear leaving `step` at `'broadcasting'` (the throwing-storage
+corner dismissed last round, one line earlier), and a queued `$watch` job
+arming a save after `destroy()` (no production writer shares a task with the
+page teardown). One item stays open with the architect and is not part of
+this hold: the unmounted re-clear now deletes a successor visit's draft when
+the invalidation RESOLVES, where the base did so only on a rejection. The
+round-4 hold prescribed that placement, so it is recorded as a widened
+advisory, and it joins the reserved draft-lifecycle decision (a write barrier
+in `_writeDraft` versus exit-by-exit clears, the try/catch around
+`invalidatePaperCache`, and the same clear-without-cancel shape on
+`publish.js`).
+
+Verification note: baseline at `323b550b` is 103 passed, exit 0, no Errors
+line, in an isolated copy; the full unit suite there is 86 files / 1950
+tests with one failure, the known 1 ms absolute-cap flake in
+`lib-fresh-auth-session-window` (untouched by this diff, 3 of 3 green alone);
+`npm run build` clean. `92141abf` landed on both files after the reviewed
+range; build on it. This is a prose-only round: no fresh mutation table is
+needed, but state the count and exit code and confirm that no executable
+line changed. The replacement text must itself pass the comment-anchor
+rules: no "the spec above", no round or item numbers. At archive time,
+`/ce-compound-refresh` the discriminating-spec solutions entry (no clear
+sits beside `step = 'success'` any more, there are three clears not two, and
+two exit-table rows plus six measurement rows are stale at `323b550b`) and
+the one stale phrase each in the pre-fix-shape and per-site entries; the
+per-arm `landed` marker read by a terminal catch placed ahead of the unmount
+guard is still undocumented and remains a `/ce-compound` candidate. Do not
+cite this hold, its item numbers, or the task slug in code or test comments;
+anchor on the symbols named above.
