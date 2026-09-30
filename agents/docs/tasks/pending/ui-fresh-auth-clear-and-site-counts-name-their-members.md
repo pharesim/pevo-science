@@ -198,3 +198,108 @@ after; `npm run build` clean; the pre-commit anchor gate passed at commit time.
   docblock (`persistWindow` has exactly two callers), and "both now inherit
   the one eviction" in the `ensureSessionWindow` guard comment (the guard's
   own clear is called a restatement in the same block).
+
+## Architect re-review (2026-09-30, second pass) — HELD PENDING FIXES:
+
+Reviewed commit 590d211a against its parent. Comment-only confirmed (the
+comment-stripped file is byte-identical across the commit), the anchor gate
+has no hit on the added lines, the build is clean, and the suite count matches
+the signal at 87 files / 1980 tests.
+
+Hold item 1 of the previous block is met. The three rewritten sentences are
+true against the code, and the deviation from the example wording is accepted
+on both points: a sentence that names the clear and carries no count is the
+better repair, and "401 eviction" was wrong for the reason the signal gives
+(the clear runs on every `FRESH_AUTH_REQUIRED`, ahead of the status test). The
+three-way `unwindFlowKeys` sentence is accurate for every exit past the start
+round-trip. Two items hold AC 1.
+
+1. **"short of a subject scrub nothing else would drop the entry inside its
+   TTL" is still a false total.** It closes the paragraph in
+   `getCachedConsentOpProof`'s docblock that opens "A token that is not a
+   string is corruption", and 590d211a wrote it. The consent-op slot is one
+   unkeyed `CONSENT_OP_PROOF_KEY` entry, and three paths other than the
+   subject scrub remove or replace whatever it holds, whichever target the
+   entry was minted for:
+   - `clearCachedConsentOpProof()` after `run(proof)` resolves, in
+     `withSettingsFreshAuth` (`lib/settings-fresh-auth.js`) and in
+     `withAuthorshipFreshAuth` (`lib/authorship-consent.js`). It takes no
+     target, so a successful action on any target empties the slot.
+   - `consentOpFreshAuthRetryGate`'s `clearProofCache()`, which runs on any
+     action's `FRESH_AUTH_REQUIRED`.
+   - the `cacheConsentOpProof` write in the `/orcid/callback` fresh-auth
+     handler, which overwrites the slot.
+
+   One path that shows it: a non-string token sits cached for one admin
+   authority action; the user runs a different one; the lookup misses on the
+   action and returns null without removing; a proof is minted; the run
+   succeeds; the success clear empties the slot inside the entry's TTL, and no
+   subject scrub ran.
+
+   Fix, comment-only: drop the total and say only what the paragraph needs,
+   which is that nothing on the refused action's own path retires the entry.
+   Do not repair it by naming more exceptions; the previous round added one
+   member to the universal instead of re-deriving the set, and that is how the
+   sentence stayed false. A shape, to be checked against the code before use
+   and not copied on trust: "On those the gate's clear never runs, so inside
+   its TTL nothing on that action's own path would drop the entry: each retry
+   of it would re-read the entry and draw the same validation rejection."
+
+   Same paragraph, same edit: the sentence before it, "The entry cannot
+   outlive that refusal by way of the retry gate either", reads as the
+   opposite of what its own explanation shows. The gate rethrows before it
+   reaches `clearProofCache`, so the gate does not retire the entry and the
+   entry does outlive the refusal. It predates 590d211a and is not charged to
+   that commit; it is folded in here because it is the premise of the sentence
+   this item rewrites. State it the right way round.
+
+2. **"Only a rejection of the password retires it" carries no scope of its
+   own.** It is in `mintViaPasswordFactor`'s docblock. The subject scrub
+   (`_scrubSubjectBoundState` in `auth.js`) also calls
+   `clearPasswordFactorMemo()`, with no mint attempted and no password
+   rejected, and the memo's own docblock in the same file says "the two
+   erasers (the subject scrub and the mint route's second consecutive
+   rejection)". The signal judged the sentence scoped by its second clause.
+   Two of the four review lenses read it that way too; the validation pass did
+   not, because "on the retry mint" sits in the clause after the semicolon and
+   modifies only the transport failure. Read alone, the first clause gives one
+   eraser where the memo docblock gives two.
+
+   Fix, comment-only: put the scope in the clause that makes the claim, for
+   example "On the retry mint, only a rejection of the password retires it; a
+   transport failure there leaves the memo standing."
+
+For the sweep that accompanies these: where a kept sentence says only, nothing
+else, every or no other about what removes an entry, derive the remover set
+from the slot (every caller of its clear function, plus every write that
+replaces it), not from the path the surrounding paragraph is discussing. The
+last sweep checked each sentence against its own paragraph: it gave item 1's
+sentence one more member and judged item 2's correct as written.
+
+Dismissed at this triage, do not reopen:
+
+- "both now inherit the one eviction rather than each owning its own" in the
+  `ensureSessionWindow` guard comment. Raised by three lenses and rejected at
+  validation. Every value that guard refuses has already been through the drop
+  in `evictUnnamedAcquisition`, so the guard's own `clearCachedSessionProof()`
+  restates a drop that has already run, and `acquisitionAborted` carries no
+  clear.
+- "every other failing exit removes them" against a throw from the
+  `ORCID_MODE_KEY` write: that write sits ahead of the start round-trip, and
+  the comment scopes itself to exits past it.
+- "A miss (window already closed) is a no-op" in `slideSessionWindow`'s
+  docblock: it describes the slide, which writes nothing on a miss.
+- The "a no-op when the password factor was used" parentheticals beside the
+  success clears in `lib/settings-fresh-auth.js` and
+  `lib/authorship-consent.js`: other files, outside this task.
+- The one 84-column line the reflow left in the `ensureSessionWindow` guard
+  comment: style only, not held. Rewrap it if an edit takes you into that
+  paragraph.
+
+Open, not part of this hold: "every teardown boundary a flight crosses
+resolves FRESH_AUTH_CANCELLED" (`evictUnnamedAcquisition`'s docblock, restated
+in the `ensureSessionWindow` guard comment) is not universal, since a stale
+ORCID start that rejects propagates the rejection, as
+`beginOrcidFreshAuthRedirect`'s docblock says. It counts neither clears nor
+consumers, so it is outside this task's population, and where it lands is
+awaiting a triage decision. Leave both sentences as they are under this hold.
