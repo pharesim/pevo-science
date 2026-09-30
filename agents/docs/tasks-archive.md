@@ -1,3 +1,205 @@
+## Retire the "Disconnect" label in favour of "Sign out" (archived 2026-09-30)
+
+Architect note (2026-09-30): archived clean at round 2. Re-reviewed commit 13eaa4dc with
+/ce-code-review (correctness, project-standards, learnings-researcher): no findings. The
+one item held on 2026-09-23 is FIXED: da, de, fa, fr, he and nl hold "Sign out" via
+one-line textual replaces (numstat 1/1 per file), all sixteen locale files parse with
+`header.disconnect` equal to "Sign out", the anchored per-key grep on STUBS.md returns
+fifteen `<locale>:` lines under the single `### Updated 2026-09-14` heading, and the entry
+prose describes what the files contain, keeping the sign-in / sign-out pair observation
+as a translator hint. Architect re-ran i18n, components-header and the custody-upgrade
+subject-pin unit files: 55 of 55, exit 0. Still open by the Notes' assignment: the
+`toMatch(/sign out/i)` pin in the custody-upgrade copy-contract test can pin
+`messages.header.disconnect`, for whoever touches that test next.
+
+
+**Owner:** ui
+**Created:** 2026-09-08
+
+Routed out of the architect round-6 re-review of `ui-custody-upgrade-subject-pin`.
+Recorded there, not held: the before-cleanup recovery copy tells the reader to
+"Sign out" while the only sign-out affordance renders `header.disconnect`
+("Disconnect"). Keeping the verb was the right call for that task; retiring the
+jargon is the better fix and is bigger than that task's scope.
+
+## Why
+
+Two user-facing strings already instruct the reader to sign out using the verb
+rather than the rendered label: `upgrade.sessionChangedBeforeCleanup` and
+`upgrade.backendTimeout` ("Sign out and sign back in"). No control anywhere in
+the app is labelled "Sign out". The header renders `header.disconnect` on
+desktop and again in the mobile menu, and that is the only way to end a session.
+
+So a reader following either instruction has to infer that "Disconnect" is the
+sign-out control. In the before-cleanup flow that inference happens while the
+user holds a freshly rotated seed phrase that exists nowhere else, which is the
+worst moment to make someone guess. The sibling instruction in the same message
+does not make them guess: it names the sign-in control by the label the header
+renders and a test pins it.
+
+"Disconnect" is also wallet jargon inherited from the Keychain-only era. Light
+accounts sign in with an email and a password and never connect anything, so the
+label describes the minority path. Relabeling removes the jargon and makes both
+existing strings accurate, rather than pushing the jargon into more copy.
+
+## Scope
+
+1. Change the English value of `header.disconnect` to "Sign out". Keep the key
+   name; renaming it churns every locale file for no reader benefit and breaks
+   the ledger's per-key history.
+2. Update the fifteen locale stubs and record the change in
+   `frontend/public/messages/STUBS.md`. This key has been translated in the
+   past, so this is a genuine `### Updated` entry, unlike the case the
+   custody-upgrade task is fixing. Follow
+   `agents/docs/solutions/conventions/i18n-stubs-added-vs-updated-scope-never-translated-keys-2026-06-09.md`
+   and check which locales carry a real translation before deciding what each
+   stub line should say.
+3. Audit for other copy that names the control or the action. Grep the message
+   files for "disconnect", "sign out", and "log out" and reconcile whatever
+   turns up so the app uses one term for the action.
+4. Check the aria-label, title, and any test selector bound to the old label.
+   `components-header.test.js` and the e2e specs locate controls by visible
+   text in places, so a label change can break a selector that has nothing to
+   do with this work.
+
+## Acceptance criteria
+
+1. The header's sign-out control renders "Sign out" on desktop and in the
+   mobile menu.
+2. `upgrade.sessionChangedBeforeCleanup` and `upgrade.backendTimeout` name a
+   control the app actually renders, with no copy change needed in either.
+3. All sixteen locale files and the ledger agree, and the ledger entry is
+   scoped correctly for a previously-translated key.
+4. The frontend unit suite and the header-touching e2e specs pass, including
+   any selector that matched the old label.
+
+## Notes
+
+Deliberately NOT in scope: pinning the sign-out step in the custody-upgrade
+copy-contract test. Once the label and the verb agree, that assertion can pin
+the rendered label the way the sign-in half does, but that is a one-line change
+on the custody-upgrade task's own test and belongs with whoever touches it next.
+Raise it in the signal if you land this first.
+
+UI implementation signal (2026-09-14, commit 027c1b32):
+
+- Landed in commit `027c1b32` on main. Self-verified: `git merge-base
+  --is-ancestor 027c1b32 main` passes, and `git show --stat` lists
+  index.html, STUBS.md, en.json and the nine re-stubbed locale files.
+- Scope 1. `header.disconnect` now reads "Sign out" in English; the key name is
+  unchanged.
+- Scope 2, decision to flag. The key carried a real translation in every
+  locale (born translated in the SPA import; never under an `### Added`
+  heading), so the ledger entry is `### Updated 2026-09-14
+  (ui-header-disconnect-label-signout)`. Rather than re-stub all fifteen
+  locales, each prior translation was judged against the locale's own sign-in
+  label (`signIn.signInButton`). Six already rendered a consistent sign-in /
+  sign-out pair and keep their translation: da (Log ind / Log ud), de
+  (Anmelden / Abmelden), fa (ورود / خروج), fr (Se connecter / Se déconnecter),
+  he (התחברות / התנתקות), nl (Inloggen / Afmelden). The nine that paired a
+  login verb with a connection-cutting verb (ar cs es it pl pt sv tr zh) are
+  re-stubbed to "Sign out" and listed; the per-key grep of STUBS.md yields
+  exactly those nine. This narrows the "re-stubbed with the new English"
+  sentence in `agents/ui/CLAUDE.md` § Internationalization on purpose:
+  re-stubbing a locale whose label was already right would swap a correct
+  native string for English with nothing for a translator to fix. If the
+  literal rule is preferred, the flip is mechanical: re-stub the six and add
+  their lines under the same heading.
+- Scope 3. Grepping en.json for disconnect / sign out / log out turns up only
+  `header.disconnect` and the two upgrade strings; both now name a control
+  the header renders, with no copy change (AC 2). No other user-facing copy
+  names the action.
+- Scope 4. No aria-label, title, unit-test assertion or e2e locator bound to
+  the old visible text (`components-header.test.js` mocks the store method;
+  the only header text locator in e2e is "Sign in"). The stale
+  `<!-- Disconnect -->` markup comment was updated. `handleDisconnect()` and
+  the `auth.disconnect()` store API are internal names and were left alone.
+- Verification. Frontend unit suite: 85 files, 1890 tests green; three
+  unhandled rejections from `tests/unit/pages-edit.test.js` (`$refs.abstractEditor`
+  in the editor mount) reproduce in isolation and are unrelated. Header-touching
+  e2e subset (10 specs, 32 tests, test-mode stack, DB reset by global-setup):
+  21 passed, 11 failed. Ten failures are the documented pre-existing
+  strict-mode clash (`form button[type="submit"]` also matches the global
+  re-auth modal); the eleventh, `settings-orcid-factor.spec.js:207`, is a
+  pre-existing assertion drift (the cached proof now carries `authorIndex` /
+  `claimer`, written by committed `fresh-auth.js`) and reproduces alone. No
+  failure output mentions the label. Browser check (Playwright against the
+  rebuilt bundle): the desktop user menu and the mobile menu render "Sign out"
+  in English, and de renders "Abmelden".
+- Independent verification workflow (8 agents, 0 errors): three judges
+  unanimously classified all fifteen prior translations (four sign-out verbs,
+  eleven connection metaphors); the ledger and file-integrity lenses came back
+  clean; the copy lens raised the fr / he pair point, which produced the
+  pair rule above.
+- Not done, per the Notes: the copy-contract test in
+  `tests/unit/pages-settings-custody-upgrade-subject-pin.test.js` still pins
+  the sign-out step with `toMatch(/sign out/i)`. Now that label and verb agree
+  it can pin `messages.header.disconnect` the way the sign-in half pins
+  `signIn.signInButton`; one-line change for whoever touches that test next.
+
+Architect re-review (2026-09-23) — HELD PENDING FIXES:
+
+Reviewed at 027c1b32 with /ce-code-review (correctness, project-standards,
+learnings-researcher). The code and the ledger are internally consistent, both
+header bindings render the new value through `$t`, no selector, aria-label or
+title was bound to the old text, and `### Updated` is the correct heading
+variant for a previously translated key. One item held. The decision the signal
+block flagged for the architect is resolved in favour of the literal rule.
+
+1. Re-stub all fifteen non-English locales, not nine. `agents/ui/CLAUDE.md`
+   § Internationalization defines an `### Updated` entry as one where the
+   non-English locale files are re-stubbed with the new English in the same
+   commit, and that sentence stands as written for this task. Set
+   `header.disconnect` to "Sign out" in da, de, fa, fr, he and nl with a
+   textual replace (not a JSON parse-and-serialize round-trip, so the escaped
+   non-ASCII sequences elsewhere in those files survive), and add the six
+   `<locale>: header.disconnect` lines under the existing
+   `### Updated 2026-09-14 (ui-header-disconnect-label-signout)` heading so the
+   per-key grep yields fifteen `<locale>:` lines. Rewrite the prose paragraph
+   in that entry so it no longer says six locales were kept and are not listed;
+   keeping the observation that those six prior values already paired correctly
+   with the locale's sign-in label is welcome as a hint to translators, but the
+   entry must describe what the files contain. Rationale for the rule over the
+   pair judgment: the `<locale>:` lines are what translators and later sweeps
+   read, and a locale missing from the list is indistinguishable from one the
+   reword never touched. If the pair rule should become policy, that is a
+   change to the sentence in `agents/ui/CLAUDE.md` (architect-owned) and
+   belongs in its own task, not in this task's ledger prose.
+
+Recorded, not held. The three testing gaps the review surfaced are dismissed
+at triage: the `toMatch(/sign out/i)` pin in
+`tests/unit/pages-settings-custody-upgrade-subject-pin.test.js` stays with the
+Notes' assignment (whoever touches that test next); a render test for the
+header label and a mechanical STUBS.md invariant check are preemptive hardening
+with no observed failure. Also recorded: a bare `grep header.disconnect
+STUBS.md` returns the heading and one prose line in addition to the `<locale>:`
+lines; earlier `### Updated` entries have the same shape and the `<locale>:`
+pattern is the invariant, so no change is asked.
+
+UI re-review signal (2026-09-29, commit 13eaa4dc):
+
+- Hold item 1 landed in commit 13eaa4dc on main. Self-verified:
+  `git merge-base --is-ancestor 13eaa4dc main` passes, and
+  `git show --numstat` lists STUBS.md plus the six locale files with
+  exactly one changed line each, so the escaped non-ASCII sequences
+  elsewhere in those files are untouched (textual replace, no JSON
+  round-trip).
+- da, de, fa, fr, he and nl now hold "Sign out". All sixteen locale
+  files parse and `header.disconnect` is "Sign out" in every one.
+- The six `<locale>: header.disconnect` lines sit in alphabetical
+  order under the existing `### Updated 2026-09-14
+  (ui-header-disconnect-label-signout)` heading;
+  `grep -cE '^[a-z]{2}: header\.disconnect$'` on STUBS.md returns 15.
+- The entry prose now states that all fifteen non-English locales are
+  re-stubbed and listed, and keeps the sign-in / sign-out pair
+  observation as a translator hint naming the six prior values as
+  restoration candidates, per the hold's allowance.
+- Verification: `tests/unit/i18n.test.js` 31/31 green;
+  `tests/unit/components-header.test.js` and
+  `tests/unit/pages-settings-custody-upgrade-subject-pin.test.js`
+  24/24 green, exit 0. No browser pass this round: only JSON values
+  changed and the `$t` binding was verified in the prior round.
+
 ## The outcome tally's source sentence still binds three sites to the raw result (archived 2026-09-30)
 
 Architect note (2026-09-30): retired as superseded, no implementation under this task.
@@ -46,205 +248,3 @@ own dispatch suite header.
 ## Scope
 
 1. Amend `WINDOW_OUTCOME_BY_SENTINEL`'s docblock so its tally binds to the outcome
-   vocabulary rather than to `acquireSessionProof`'s result, and so it says which
-   of the three named sites read the raw result and which read the derived
-   outcome. Naming the members inline is preferred over restating a count.
-2. With the source sentence precise, shrink or drop the reconciling clause in
-   `evictUnnamedAcquisition`'s docblock. Two hand-maintained tallies in one file
-   that need a third sentence to stay consistent is the shape to remove, not to
-   document better.
-3. Out of scope: the two counts themselves are both correct as numbers, and
-   `acquireSessionProof`'s eviction behaviour is settled. This is a prose accuracy
-   task, not a behaviour change. No production logic may change.
-
-## Acceptance criteria
-
-1. No sentence in `lib/fresh-auth.js` binds `freshAuthWindowReady` or `windowProof`
-   to `acquireSessionProof`'s raw result.
-2. Any surviving cross-reference between the two docblocks is checkable against
-   the text it points at, not an assertion about what that text means.
-3. Suite green, build clean. No production logic changed: the diff is comments
-   only, confirmed by reading it.
-
-## Notes
-
-The sibling work this was going to be sequenced behind has already landed
-(f9b6ad8d, the broadcast path's unnamed refusal). It rewrote the closing paragraph
-of the `ensureSessionWindow` guard docblock and added the `?? 'failed'`
-fall-through in `acquisitionAborted`, but touched neither sentence this task is
-about: both were confirmed present and unchanged at that commit. So there is no
-sequencing constraint left. Re-read both docblocks from the committed tree anyway
-before starting, since that file is edited often.
-
-Nothing mechanically pins either tally. A third raw-result reader added later
-inherits the producer eviction automatically, so the exposure is documentation
-drift rather than a lockout regression, which is why this is prose-only and
-carries no canary.
-
-## Four more fresh-auth docblock tallies disagree with the tree (archived 2026-09-30)
-
-Architect review (2026-09-30): archived clean at round 2. /ce-code-review on c12eab4f
-(correctness, project-standards, testing, learnings; no adversarial lens, the commit is
-comment-only and every changed line is a `//` comment). Zero findings. All three round-1
-hold items are closed and stand at HEAD: `evictUnnamedAcquisition` reads "every later
-broadcast action"; the permissive-default control comment states the complement of the
-publish and edit submit sequences; `toastLocalized` locates its third caller as the cancel
-closure of `subjectTeardownGuard`. The one sentence past the item-2 scope lift (the mint-leg
-recurrence comment in the test file) is accepted: same drift, same file, true as written.
-Censuses re-derived from the tree: nine `broadcastWithFreshAuth` call sites (three
-suppressed, six permissive), three `toastLocalized` callers, three `REMINTABLE_REASONS`
-consumers, five `handleSessionInconsistency` call sites on three surfaces. No
-vote/comment/review triple remains in either file.
-
-
-**Owner:** ui
-**Created:** 2026-09-28
-
-Routed out of the semantic sweep in
-`ui-fresh-auth-clear-and-site-counts-name-their-members` (in `review/`): the
-sweep's lenses covered clears and acquisition-result consumers, and these
-four sit in adjacent populations (retry gates, teardown callers, broadcast
-call sites, corrupt-entry drops), so they were surfaced for triage rather
-than fixed there. User triaged them into this task. All four are the class
-`agents/docs/solutions/conventions/sibling-docblock-tallies-must-each-state-precisely-what-they-count-2026-09-09.md`
-documents: a hand-maintained count or universal that drifted when a new
-member joined its population, or that overquantifies read alone.
-
-## Why
-
-Each claim below was verified against the working tree by the origin sweep's
-independent call-graph traces (two sweep agents and a reconcile-hunt agent
-converged on all four).
-
-1. **`REMINTABLE_REASONS` docblock: "the three retry gates".** The sentence
-   says the constant is "shared by both fresh-auth orchestrators (settings +
-   authorship consent ops) and the session-kind retry gate in
-   broadcastWithFreshAuth below, so the three retry gates cannot drift on
-   which 401 reasons are recoverable." The upload surface's session-window
-   retry in `lib/ipfs-upload.js` imports and consumes the same constant: a
-   fourth gate the enumeration and the purpose clause both miss.
-
-2. **`handleSessionInconsistency` docblock: "all three fresh-auth
-   orchestrators".** The caller set is four surfaces: the shared
-   `consentOpFreshAuthRetryGate` (serving both `withSettingsFreshAuth` and
-   `withAuthorshipFreshAuth`), `broadcastWithFreshAuth` (first attempt and
-   retry legs), and the upload surface's torn-down handler in
-   `lib/ipfs-upload.js`. The parenthetical about "surface-appropriate
-   sentinel" shapes also omits the upload surface's shape: it throws a coded
-   upload-session error rather than returning `FRESH_AUTH_REDIRECT_PENDING`
-   or `{ sessionInconsistent: true }`.
-
-3. **`acquisitionAborted` docblock: "the eight broadcast call sites".** The
-   tree has nine `broadcastWithFreshAuth` call expressions: two in
-   `components/vote-buttons.js`, two in `components/vouch-section.js`, two in
-   `pages/edit.js`, and one each in `pages/publish.js`, `pages/review.js`,
-   `components/comment-composer.js`. No counting scheme (per expression, per
-   file) yields eight. Same population, same file: the census implied by
-   `broadcastWithFreshAuth`'s own docblock sentence "the vote/comment/review
-   call sites keep the permissive default" omits `vouch-section.js`'s two
-   permissive-default sites; every stated fact there is true, but the two
-   clauses read as a complete permissive-vs-suppressed partition and are not.
-
-4. **`cacheSessionProof` comment: "matching every other corrupt-entry case in
-   this module: drop the slot".** Defensible counterexample: the consent-op
-   reader's `catch` in `getCachedConsentOpProof` swallows a JSON.parse
-   failure (unparseable text in the consent-op key) and returns null WITHOUT
-   removing the entry, while the session slot's `storedWindow` drops on the
-   same corruption. Read as "every handled corruption branch drops" the
-   sentence is true; read as "every corrupt entry gets dropped" it is not.
-
-## Scope
-
-Comment-only. No executable line changes, no test changes, suite count
-byte-identical before and after. Per the sibling-tallies learning, prefer
-naming members over restating a number ("A, B and C do X" cannot drift the
-way "three sites do X" can), and never add a clause explaining why two
-counts differ: make each sentence say precisely what it counts.
-
-1. Rewrite the `REMINTABLE_REASONS` sentence to name its consumers,
-   including the upload retry in `lib/ipfs-upload.js`, or to state the
-   sharing without a numeral.
-2. Rewrite the `handleSessionInconsistency` sentence to name the actual
-   caller surfaces and extend (or reword away) the sentinel parenthetical so
-   the upload surface's thrown-code shape is not silently absent.
-3. Replace "the eight broadcast call sites" with a form that cannot rot on
-   the next call site (the numeral has drifted once already): quantify
-   without a census ("every broadcast call site keeps its one clean-abort
-   branch") or name per-file members if the enumeration earns its keep. Fix
-   the permissive/suppressed census in `broadcastWithFreshAuth`'s docblock
-   the same way (its suppressed-side enumeration is exact; the permissive
-   side should not read as a closed list while omitting members).
-4. Scope the `cacheSessionProof` universal to what the code does: the
-   explicit corruption BRANCHES all drop; the consent-op reader's parse
-   catch is a swallow, not a drop. Reword the universal rather than
-   annotating the exception from a distance. Do not change the catch itself;
-   whether that swallow should become a drop is a behavior question outside
-   this task.
-5. Before landing, sweep the file for any other sentence counting these
-   populations (retry gates consuming `REMINTABLE_REASONS`; callers of
-   `handleSessionInconsistency`; `broadcastWithFreshAuth` call sites;
-   corrupt-entry drops) and check each semantically, not by phrase. The
-   origin task's sweep ran with different lenses, so this task's populations
-   have not had their own exhaustive pass.
-
-## Acceptance criteria
-
-1. Every sentence in `fresh-auth.js` that counts or characterizes these four
-   populations agrees with the code and with every other such sentence in
-   the file, read in isolation.
-2. No numeral-only tally remains for a population that has already drifted
-   once (items 1-3); members are named or the count is removed.
-3. The replacement text carries no line numbers, SHAs, task slugs, round
-   ordinals, or bare positional anchors; `.githooks/pre-commit` passes on
-   the staged diff.
-4. Full frontend unit suite green with an unchanged count; `npm run build`
-   clean.
-
-## Notes
-
-Checked during the origin sweep and found defensible as written, do not
-reopen without new evidence: `WINDOW_OUTCOME_TOASTS`' "in one table so no
-consuming site can drift" (reads as sites consuming that table, and the
-now-precise `showWindowOutcomeToast` docblock directly below it names the
-caller set); the `ensureSessionWindow` guard comment's "those two legs" (the
-claim verifies against the code); `evictUnnamedAcquisition`'s "both writers
-of that slot" (the behavioral claim verifies under the natural reading
-writers = `cacheSessionProof` + `slideSessionWindow`).
-
-## UI implementation signal (2026-09-29, commit 5cb292ba)
-
-All scope items landed in commit 5cb292ba (comment-only, fresh-auth.js):
-
-1. `REMINTABLE_REASONS`: consumers named (the consent-op gate
-   `consentOpFreshAuthRetryGate` serving both orchestrators, the
-   session-kind retry in `broadcastWithFreshAuth`, and the upload retry in
-   `uploadFile`, lib/ipfs-upload.js); numeral removed.
-2. `handleSessionInconsistency`: caller surfaces named
-   (`broadcastWithFreshAuth` both legs, `consentOpFreshAuthRetryGate`,
-   `tornDownSession` in lib/ipfs-upload.js); the parenthetical now carries
-   all three shapes including the upload throw (`UPLOAD_SESSION_TORN_DOWN`).
-3. "the eight broadcast call sites" is now "every broadcast call site". The
-   permissive census in `broadcastWithFreshAuth`'s docblock is now the
-   complement form ("every other call site keeps the permissive default");
-   the suppressed enumeration (publish + edit submit sequences) re-verified
-   exact against the tree and kept.
-4. `cacheSessionProof`'s universal scoped to "the module's other explicit
-   corruption checks"; the consent-op reader's parse catch is outside the
-   stated class and its behavior untouched.
-5. Item-5 sweep findings, fixed in the same commit: the recurrence example
-   ("the next vote, comment and review" is now "each broadcast action that
-   follows"); the stale "call-site discriminators (publish.js,
-   vote-buttons.js, vouch-section.js)" parenthetical (no call site inspects
-   the rejection shape today; now subjunctive); and the per-surface
-   wire-shape claims in the `isUsernameMismatch` and
-   `consentOpFreshAuthRetryGate` docblocks. Those two claimed all
-   consent-op/settings/upload errors are status-less api.js
-   ApiRequestErrors, but the authorship orchestrator's guarded call is
-   signer.js `broadcastOps` (pages/paper-detail.js `_broadcastConsentOp`)
-   whose errors carry `status` (403 on a mismatch); only settings and
-   upload raise the status-less shape. Verified directly at the
-   paper-detail run callback, the signer.js error shaping, and the api.js
-   ApiRequestError constructor.
-
-Verification: five-agent adversarial census workflow (one independent
-census per population plus a cross-refuter), all clean, converging on the
