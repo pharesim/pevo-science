@@ -36,3 +36,24 @@ run of that file and will be read as fallout from whatever landed last.
 2. No e2e spec asserts the consent-op entry with the five-key shape.
 3. That e2e file is green under the E2E recipe in `agents/ui/CLAUDE.md`; any
    pre-existing failures elsewhere in the run are noted, not chased.
+
+## UI implementation signal (2026-09-30, commit 660f2703)
+
+- **Scope 1.** `660f2703` adds `authorIndex: null, claimer: null` to the expected
+  object in the stubbed-callback case of `tests/e2e/settings-orcid-factor.spec.js`.
+  The assertion stays `toEqual`, so an extra key still fails it.
+- **Scope 2.** Re-enumerated from the code: `CONSENT_OP_KEY` is read back at three
+  sites, all in that one file. The stubbed-callback case was the only five-key
+  `toEqual`. The real-backend case uses `toMatchObject` on the triple plus a token
+  type check (the token and deadline are backend-minted, so an exact match is not
+  available there), and the mismatch case asserts `toBeNull`. No other e2e spec
+  reads the slot.
+- **Scope 3.** `tests/e2e/consent-op-fresh-auth.spec.js` has landed and does not
+  read the slot, so there was nothing to fold into; fixed in place.
+- **Verification.** Under the E2E recipe (restart, test-db-up, test-up):
+  `npx playwright test tests/e2e/settings-orcid-factor.spec.js` ran 4 passed,
+  exit 0. Only that file was run, so there are no elsewhere-failures to note. The
+  pre-fix red was not re-observed in this session; it follows from `toEqual`
+  not equating a missing key with `null`. Dev routing restored with
+  `./deploy.sh up`.
+- SHA self-verified: `git merge-base --is-ancestor 660f2703 main` exits 0.
