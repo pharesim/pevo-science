@@ -1,3 +1,86 @@
+## The outcome tally's source sentence still binds three sites to the raw result (archived 2026-09-30)
+
+Architect note (2026-09-30): retired as superseded, no implementation under this task.
+Commit a9150a6f (the fresh-auth clear-and-site-counts task) landed exactly this scope:
+the `WINDOW_OUTCOME_BY_SENTINEL` header now says `acquisitionAborted` reads the raw
+result while `freshAuthWindowReady` and `windowProof` act on the outcome object
+`ensureSessionWindow` derives, and the reconciling clause in `evictUnnamedAcquisition`'s
+docblock is gone. Verified at HEAD against all three acceptance criteria: no sentence
+binds the page gate or the upload pre-flight to the raw result; no cross-docblock
+assertion survives (the TWO-site sentence names its own members); a9150a6f is
+comment-only (47 of 47 changed lines are `//` lines) and passed /ce-code-review on those
+sentences the same day. The one item that review held concerns a different count (the
+gated-clear sentences) and stays with the clear-and-site-counts task.
+
+
+**Owner:** ui
+**Created:** 2026-09-09
+
+Routed out of the re-review of the broadcast-path window eviction task, which
+corrected the reading site but not the sentence that seeded the miscount. Raised
+independently by two review lenses and confirmed at validation.
+
+## Why
+
+`evictUnnamedAcquisition`'s docblock now correctly says TWO sites read the raw
+acquisition result: the fail-closed guard in `ensureSessionWindow` and the
+broadcast unwinder `acquisitionAborted`. To reconcile that against the THREE-site
+tally in `WINDOW_OUTCOME_BY_SENTINEL`'s docblock, it added a clause asserting that
+the other tally "tallies who acts on an outcome ... not who reads the raw result".
+
+That sentence does not say what the clause says it says. It reads that
+`acquireSessionProof` "resolves to a proof string or to one of the sentinels
+below, and three independently owned sites consume the result", then names
+`freshAuthWindowReady`, `acquisitionAborted` and `windowProof`. The definite
+article binds all three to `acquireSessionProof`'s result, and two of the three
+provably never see it: `freshAuthWindowReady` and `windowProof`
+(`lib/ipfs-upload.js`) both consume `ensureSessionWindow`'s derived outcome
+object. Only `acquisitionAborted` is a member of both tallies.
+
+So the module reconciles a real imprecision from a distance, by asserting a
+reading of a sentence rather than amending it. The next reader who checks the
+claim against the sentence finds they disagree, which is the same rot the
+corrected count was fixing. The correct phrasing already exists in the module's
+own dispatch suite header.
+
+## Scope
+
+1. Amend `WINDOW_OUTCOME_BY_SENTINEL`'s docblock so its tally binds to the outcome
+   vocabulary rather than to `acquireSessionProof`'s result, and so it says which
+   of the three named sites read the raw result and which read the derived
+   outcome. Naming the members inline is preferred over restating a count.
+2. With the source sentence precise, shrink or drop the reconciling clause in
+   `evictUnnamedAcquisition`'s docblock. Two hand-maintained tallies in one file
+   that need a third sentence to stay consistent is the shape to remove, not to
+   document better.
+3. Out of scope: the two counts themselves are both correct as numbers, and
+   `acquireSessionProof`'s eviction behaviour is settled. This is a prose accuracy
+   task, not a behaviour change. No production logic may change.
+
+## Acceptance criteria
+
+1. No sentence in `lib/fresh-auth.js` binds `freshAuthWindowReady` or `windowProof`
+   to `acquireSessionProof`'s raw result.
+2. Any surviving cross-reference between the two docblocks is checkable against
+   the text it points at, not an assertion about what that text means.
+3. Suite green, build clean. No production logic changed: the diff is comments
+   only, confirmed by reading it.
+
+## Notes
+
+The sibling work this was going to be sequenced behind has already landed
+(f9b6ad8d, the broadcast path's unnamed refusal). It rewrote the closing paragraph
+of the `ensureSessionWindow` guard docblock and added the `?? 'failed'`
+fall-through in `acquisitionAborted`, but touched neither sentence this task is
+about: both were confirmed present and unchanged at that commit. So there is no
+sequencing constraint left. Re-read both docblocks from the committed tree anyway
+before starting, since that file is edited often.
+
+Nothing mechanically pins either tally. A third raw-result reader added later
+inherits the producer eviction automatically, so the exposure is documentation
+drift rather than a lockout regression, which is why this is prose-only and
+carries no canary.
+
 ## Four more fresh-auth docblock tallies disagree with the tree (archived 2026-09-30)
 
 Architect review (2026-09-30): archived clean at round 2. /ce-code-review on c12eab4f
@@ -165,86 +248,3 @@ All scope items landed in commit 5cb292ba (comment-only, fresh-auth.js):
 
 Verification: five-agent adversarial census workflow (one independent
 census per population plus a cross-refuter), all clean, converging on the
-same censuses (three retry gates; five mismatch-teardown call sites on
-three surfaces; nine broadcast call sites split three suppressed / six
-permissive; corruption checks all drop with the parse catch outside the
-class). Frontend unit suite 86 files / 1944 tests green, exit 0, count
-unchanged before and after; `npm run build` clean; `.githooks/pre-commit`
-anchor gate passed on the staged diff.
-
-Out-of-scope observations for architect triage (not fixed):
-
-- tests/unit/fresh-auth-401-retry.test.js carries the same permissive
-  census drift in a test comment ("vote/comment/review call sites pass no
-  option"; vouch-section's two sites also pass none). Task scope says no
-  test changes.
-- `toastLocalized`'s docblock locates its third call site "in the
-  password-factor mint", but the call lives in `subjectTeardownGuard`'s
-  cancel closure, which fires from teardown cancels across several flows,
-  not only the mint. toastLocalized call sites are outside this task's
-  four populations.
-
-## Architect re-review (2026-09-29) — HELD PENDING FIXES:
-
-Round 1 review of commit 5cb292ba: every rewritten claim verified true
-against the tree (censuses re-derived independently and converging with the
-signal block), standards and conventions clean, all universals survived
-adversarial falsification. Held on one validated in-file miss plus the two
-out-of-scope observations above, which the user routed back onto this task.
-All three are comment-only rewording; the Scope section's "no test changes"
-line is lifted for item 2 only.
-
-1. `evictUnnamedAcquisition` docblock: "to be re-read and re-refused on
-   every later vote, comment and review until the entry's idle deadline
-   arrived" still enumerates the triple as if it were the census; the vouch,
-   retract-vouch, publish and edit broadcasts re-read the same stranded slot
-   (six of the nine call sites are not vote/comment/review). Reword to the
-   quantified form this commit adopted for the identical phrase in
-   `acquisitionAborted`'s docblock, e.g. "on every later broadcast action".
-   Acceptance criterion 1 covers this sentence; the item-5 sweep missed it.
-
-2. tests/unit/fresh-auth-401-retry.test.js: the test comment
-   "vote/comment/review call sites pass no option" carries the same
-   permissive-census drift (vouch-section's two sites also pass none).
-   Reword so the sentence does not read as a closed member list: quantify
-   ("the call sites outside the publish and edit submit sequences pass no
-   option") or name all six. Comment-only; suite count must not change.
-
-3. `toastLocalized` docblock: locate the third call site by the symbol that
-   owns it — `subjectTeardownGuard`'s cancel closure — rather than "in the
-   password-factor mint", which names only one of the flows that reach it.
-
-Acceptance criteria 3-4 apply unchanged to all three items (no rot-class
-anchors in replacement text; `.githooks/pre-commit` passes; suite count
-byte-identical; `npm run build` clean). When landed, `git mv` this file
-back to tasks/review/ per rule #8.
-
-## UI re-review signal (2026-09-29, commit c12eab4f)
-
-All three hold items landed in c12eab4f (comment-only):
-
-1. `evictUnnamedAcquisition` docblock: "every later vote, comment and
-   review" is now "every later broadcast action".
-2. tests/unit/fresh-auth-401-retry.test.js permissive-default control: "the
-   call sites outside the publish and edit submit sequences pass no option".
-   Same-class sweep of the test file found one more instance, which is fixed
-   in the same commit: the mint-leg recurrence comment ("prompts for the
-   password on every vote, comment and review") is now "on every broadcast
-   action". This goes one sentence past the item-2 scope lift. It is the
-   same drift in the same file, so revert it if you want that lift to stay
-   strict.
-3. `toastLocalized` docblock: the third caller is located as "the cancel
-   closure of `subjectTeardownGuard`".
-
-Verification: an adversarial census workflow with four lenses (broadcast
-call sites, toastLocalized and subjectTeardownGuard callers, the
-REMINTABLE_REASONS, handleSessionInconsistency and corrupt-entry
-populations, and a diff audit) plus refuters found no disagreement in either
-file. Censuses: nine broadcast call sites, three suppressed and six
-permissive; three toastLocalized callers; three retry gates; five
-mismatch-teardown call sites on three surfaces. Its one note was a
-111-column overlong wrap in the rewritten test comment, rewrapped before the
-commit. Frontend unit suite: 86 files, 1955 tests, exit 0. The count grew
-from the round-1 figure of 1944 because of sibling commits in between; this
-diff is comment-only. `npm run build` is clean, and the `.githooks/pre-commit`
-anchor gate passed on the commit.
