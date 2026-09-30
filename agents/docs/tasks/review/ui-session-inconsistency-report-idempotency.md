@@ -80,3 +80,43 @@ Related but distinct from the report-collapse mechanism already in `fresh-auth.j
 one dedups several flights abandoned by ONE scrub, and works. This is about several scrubs
 raised by several detectors of one underlying fault. Do not widen the existing claim to
 cover this case without first settling the question above.
+
+UI implementation signal (2026-09-30, commit `790eee0e`):
+
+**Decision: a repeat detection is quiet.** Only the detector that finds the store
+still connected disconnects and shows the re-login message. Recorded in the
+`handleSessionInconsistency` docblock (AC1).
+
+The proposal's bare `return` was amended. A detector that finds the store already
+disconnected calls `reportTeardownOnce()` (the claim-keyed report extracted from
+the guard's `cancel`) and then returns. After a sibling detector that is silent,
+because the first detector claimed the generation. After a sign-out that showed
+nothing (this tab's, or another tab's over the storage event) it shows the
+session-changed message once. Reason: with a bare return that second sequence
+ends with no message at all, since every caller shape is silent at the page
+layer, which AC4 rules out. The liveness check and the claim both stay inside the
+`if (auth)` branch.
+
+- AC2: `fresh-auth-401-retry.test.js` "two flights detecting the same corrupted
+  session tear down and report once" (one disconnect, one toast). Observed red
+  before the change (2 and 2). A second pin covers the upload leg through the
+  real window and the real `tornDownSession`
+  (`lib-ipfs-upload-real-window.test.js`), and a third covers the mismatch that
+  lands after a silent sign-out.
+- AC3: the three suites that run the real handler on a mismatch
+  (`fresh-auth-401-retry`, `lib-settings-fresh-auth`, `lib-authorship-consent`)
+  now carry `isConnected` and a disconnect that flips it. The consent-op suites
+  returned a fresh store literal per read; they now return one object. Suites
+  that never drive a mismatch into the real handler were left alone.
+- AC4: full unit suite green, 87 files, 1980 tests, exit 0. No Playwright run
+  (no e2e spec induces `username_mismatch`).
+
+**For architect triage, not fixed here (pre-existing, out of this task's scope):**
+none of the five mismatch arms consults its teardown guard before calling
+`handleSessionInconsistency`. If a login lands before the mismatch response
+(another tab signs in as someone else, or a re-login inside the round trip),
+the store reads connected again and the handler disconnects the successor's
+healthy session with the re-login message. The liveness gate neither causes nor
+cures this, and the docblock says so. Closing it means threading the guard into
+the arms, which changes what the primary single-flight mismatch does, so it is a
+decision rather than a fix.
