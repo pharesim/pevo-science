@@ -1,7 +1,7 @@
 ---
 title: "A source-scanning canary must normalize comments before it matches, and a prescribed mutation-probe list can only confirm the items it names"
 date: 2026-09-08
-last_updated: 2026-09-22
+last_updated: 2026-09-30
 category: conventions
 module: backend/tests/eslint + code-review process
 problem_type: convention
@@ -246,9 +246,11 @@ The reader in the accounts-updated-at writer canary is the worked example.
 `blankLine` and `blankAll` are the shared normalization layer, the second
 returning the end state the assertion above reads, `statementAt`
 reads a whole statement from a head to its terminator over the blanked text,
-`targetTable` resolves an assignment to the statement head that actually
-reaches its position and fails closed rather than borrowing a nearer
-statement's table, and `assignmentIndexes` tallies every write rather than
+`targetTable` takes the NEAREST statement head at or above an assignment,
+keeps that head's table only when the statement it opens reaches the
+assignment (the read did not give up, and ended past where the assignment's
+column token begins), and otherwise fails closed to `UNRESOLVED_TABLE` without
+climbing to a farther head, and `assignmentIndexes` tallies every write rather than
 every line, which is what stops a second write from hiding beside a licensed
 one inside the same long route handler. A separate arm refuses any statement
 too long to read to a terminator, because a statement the scan could not read
