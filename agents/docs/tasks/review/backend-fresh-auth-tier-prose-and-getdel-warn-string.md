@@ -84,3 +84,32 @@ The per-file `${appTag}:*` Redis flush collides across files.
 
 `backend-fresh-auth-module-split` (in `blocked/`) requires that no other task hold an
 open diff against `fresh-auth.ts`. This task is such a diff until it is archived.
+
+---
+
+Backend implementation signal (2026-09-30, commit `83e3ce9a`):
+
+All four items landed in `83e3ce9a`, which is an ancestor of `main`
+(`git merge-base --is-ancestor 83e3ce9a main`). The diff is one log message string
+in `backend/src/lib/fresh-auth.ts` plus comments in that file and in
+`backend/tests/lib/fresh-auth.test.ts`. No logic changed.
+
+- Item 1: the warn string uses the refuter's suggested wording. No test, frontend
+  file, contract doc, or `ARCHITECTURE.md` passage matches the old or new string.
+- Item 2: the describe comment also states the no-Redis arm. Neither test in that
+  describe is `skipIf`-gated, so without Redis no spy is installed and the guard is
+  reached through the never-attempted leg, not a rejected `GET`.
+- Items 3 and 4: wording is "answers only when" (the three cases are necessary, not
+  sufficient, since the tier must also hold an unexpired copy) and "a plain write"
+  (the `XX` write the Redis-served leg issues cannot plant an absent key).
+
+A read-only refuter per item plus a diff-scope check ran against the first draft.
+Three of the four refuters found an over-general clause (the three points noted
+above); those were fixed before the commit. The corrected wording was not sent
+through a second refuter pass.
+
+Verification: `npm run typecheck` and `npm run lint` exit 0. The three fresh-auth
+suites pass run one file at a time, exit 0 each, none skipped: `fresh-auth.test.ts`
+109, `fresh-auth-redis-unavailable-burn.test.ts` 5,
+`fresh-auth-consent-op-burn-offline-queue.test.ts` 4. After the wording fixes only
+typecheck, lint and `fresh-auth.test.ts` were re-run (comment-only delta).
