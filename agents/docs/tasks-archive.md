@@ -1,3 +1,115 @@
+## Draft lifecycle on the composer pages: decide between a write barrier and exit-by-exit clears (archived 2026-09-30) — decided: write barrier, landing is terminal; no implementer rounds
+
+### Architect decision (2026-09-30)
+
+Decided: a write barrier, not exit-by-exit clears. Recorded in `ARCHITECTURE.md` § 8 ("Composer
+Drafts") as "landing is terminal for the composer instance": from the moment the broadcast call
+resolves with a result, the draft is removed once, the instance writes no draft again (the refusal
+is in `_writeDraft`, which every writer passes through), it accepts no further submit, and nothing
+after that point ends in the failure state. Implemented by `ui-composer-landing-is-terminal` on
+both `edit.js` and `publish.js`. § 8 and the ui task went through `/ce-doc-review` (coherence,
+feasibility, scope-guardian, adversarial, design-lens) before filing; the user approved the
+findings and the open decisions as recommended.
+
+Per item:
+
+1. Try/catch around `invalidatePaperCache`: yes, caught where it is called, continue to `success`,
+   and run it whether or not the component is still mounted. A landed post reported as "edit
+   failed" invites a second submit.
+2. Writer re-arm after an error: closed by the barrier. No clear could close it, because a resting
+   state has no exit to hang one on.
+3. The unmounted re-clear deleting a later visit's draft: closed by removing every clear after the
+   landing clear. `savedAt` scoping not adopted: a timestamp cannot tell this instance's late
+   writes from a later visit's, and it leaves item 2 open. The landing clear itself can still
+   remove a draft written during the broadcast await; recorded as a limit.
+4. `publish.js`: audited. Its `_mounted` guard precedes its only clear (leaving during the
+   broadcast keeps the draft of a landed paper), the clear does not cancel the debounce, and a file
+   selection in the success window flushes the draft back. Same rule, same task.
+5. `landed` means the call resolved: kept as the definition, the two overclaiming comments are
+   reworded in the ui task. The untraced retry is traced and is NOT safe: a second native edit
+   re-sends a patch against the pre-edit body and `applyHivePatch` applies it to the patched body
+   (insertions doubled, a second similar passage deleted). Routed to
+   `architect-composer-retry-safety-and-draft-binding`, question 1.
+6. Coverage of the file-selection writer: required by the ui task. It is the spec that tells a
+   barrier in `_writeDraft` from one placed only in the scheduler.
+
+Added beyond the six items: the second-submit refusal. `isSubmitting` excludes `success`, so the
+submit button is live for the 1.5 s before the navigate, and the edit page has no confirm dialog.
+
+Found at review and not closed here: the paper-detail cache entry lasts 30 minutes and only the
+invalidation evicts it, so a failed invalidation leaves a fresh edit page with a stale diff base
+(three reviewers, independently). Recorded as a § 8 limit and routed to the same architect task,
+which also carries what a draft is bound to (no account, no chain head, silent restore on the edit
+page). The same-instance `draftKey` re-pointing residual is untouched by the barrier and stays
+with `tasks/blocked/ui-composer-surfaces-navigate-over-undrafted-work.md`.
+
+
+**Owner:** architect
+**Created:** 2026-09-30
+
+## Why
+
+The edit-draft ticks task (archived 2026-09-30, clean at round 6) closed every
+post-landing exit of `handleSubmit` in `frontend/src/pages/edit.js` with a clear
+placed at that exit: one after each arm's broadcast, one after each arm's
+`invalidatePaperCache` await, and one in the shared terminal catch behind the
+`landed` marker. Across its six rounds a set of related questions was
+deliberately kept out of the implementer's scope and reserved for one architect
+decision. They lived only in that task's hold blocks, which the archive trim
+drops. This file is their home.
+
+## The decision
+
+Whether a spent draft stays protected by exit-by-exit clears, or by a write
+barrier in `_writeDraft` (a `_draftSpent` style flag set once the broadcast
+lands, so no writer can put the draft back). The barrier removes the class; the
+clears are what is on main and what the specs pin per arm and per exit.
+
+## Items that ride on it
+
+1. **The try/catch around `invalidatePaperCache`.** A rejecting invalidation
+   sends a landed post to `step = 'error'`. Catching it locally would turn that
+   exit into a success. Held back in every round so the clears could be fixed
+   without it.
+2. **Writer re-arm after an error.** At `step = 'error'` the form is
+   interactive, so a keystroke re-arms the debounce and a file selection flushes
+   through `_windowReady`. After a landed post that writes the spent draft back.
+3. **The unmounted re-clear deletes a successor visit's draft.** The clears
+   ahead of the `_mounted` guard run by captured key after the component is
+   gone. A later visit to the same paper shares that key. The base did this only
+   on a rejecting invalidation; the round-4 prescription widened it to the
+   resolving exit. A `savedAt` scoping of the clear was floated as an
+   alternative to the barrier.
+4. **The same clear-without-cancel shape on `publish.js`.** Not audited exit by
+   exit the way `edit.js` was.
+5. **`landed` records that the broadcast call resolved, not that nothing is on
+   chain.** A broadcast can reject with the transaction on chain: on the light
+   path a lost response or an error status after the server-side broadcast, on
+   the Keychain path a late node error after acceptance. The client cannot tell,
+   and keeping the draft is the right default. Two comments say more than the
+   code knows: the terminal catch comment in `handleSubmit` ("nothing landed")
+   and the header of the spec `a broadcast that fails before landing keeps the
+   flushed draft` in `frontend/tests/unit/pages-edit.test.js` ("has put nothing
+   on chain"). Reword both to "the broadcast did not resolve" when this area is
+   next touched. Not traced: what a retry from the kept draft does after an edit
+   that did land, since the form has not reloaded the new chain head it diffs
+   against.
+6. **Coverage note.** No spec drives the file-selection writer
+   (`handleSupplementaryFiles` reaching `_windowReady`'s flush) during the
+   invalidation await. The specs stage only the debounce arm.
+
+## Related
+
+`agents/docs/tasks/blocked/ui-composer-surfaces-navigate-over-undrafted-work.md`
+carries the same-instance edit-to-edit `draftKey` re-pointing residual. A write
+barrier or a captured key would both bear on it.
+
+## Output
+
+A decision recorded in `agents/docs/ARCHITECTURE.md`, and a ui task under
+`tasks/pending/` if the decision changes code. Items 5 and 6 can ride with that
+task or be dismissed there.
+
 ## The mis-cited spec's own header still claims the coverage it lacks (archived 2026-09-30)
 
 Architect archive note (2026-09-30, round 2): archived after two rounds with one P3 routed
@@ -136,115 +248,3 @@ this task's job to close.
 
 Scope item 3 may turn out to be a real decision rather than an edit. If removing the skip
 would red the suite in a normal developer environment, say so in this file and take the
-disclosure option instead; do not remove a guard that is load-bearing for people without
-the ORCID sidecar.
-
-## Note (2026-09-14, from the light-account fresh-auth e2e task)
-
-The docblock this task targets was rewritten at 58ad7918 and 306d84f4, when the spec gained
-three light-account tests against the real backend. Scope 1 is overtaken: the opening
-paragraph now names the four tests and what each drives. Scope 2 is overtaken: the clause-(c)
-sentence credits `settings-orcid-factor.spec.js` as the real ORCID round-trip (no conditional
-skip), names `orcid-link.spec.js`'s cross-user test as environment-gated by its skip, and the
-"layers atop the same proven plumbing" claim is gone. Scope 4's premise is now false: all six
-citing suites were re-swept for the new coverage. Scope 3 took the disclosure option inside
-the docblock; whether to remove the skip in `orcid-link.spec.js` remains this task's
-decision. Re-read acceptance criteria 1 to 5 against the current file before editing.
-
-## UI implementation signal (2026-09-21, commit b6866ddc)
-
-Re-audited the current docblock sentence by sentence against the four tests, the
-custody broadcast handler, the four SPA post-building surfaces, the cited unit
-suites, and the ORCID specs. Findings were adversarially verified before any edit.
-
-**Acceptance criteria 1 and 2.** Three sentences described coverage the file does
-not provide; all three are corrected.
-
-1. "refuses at its first post-gate step, the posting-key decrypt" was wrong on both
-   halves. Five steps run between `consumeSessionFreshAuthToken` and `decryptKey`
-   (the idempotency block, the pool guard, the account-row read, the missing-row
-   401, the upgrade-stamp 403). The seeded row stops at the posting-key
-   availability guard immediately before the decrypt, and the envelope
-   `expectPostGateStop` pins is that guard's, so the decrypt provably never runs.
-   The header now says so.
-2. "Where the real-backend broadcast legs stop" read as a claim about all three
-   broadcasts. Only the vote reaches the gate; `ALLOWED_OPS` refuses the comment
-   and publish bundles inside the per-op validation loop, before
-   `findGatedOpsInBundle` and before either consume call. The known-defect
-   paragraph already said this, so the topic sentence contradicted its own
-   docblock. Now scoped to the vote, with the earlier refusal named.
-3. Clause (a) said the ORCID test "covers the return leg's cache write only",
-   which contradicted the opening paragraph and understated the test: it also
-   polls for the bounce to the seeded return path and asserts the in-flight mode
-   and return-path keys are cleared. Clause (a) now names all three.
-
-**Acceptance criterion 3.** The clause-(c) parenthetical listed four citing unit
-suites as a closed set. `lib-ipfs-upload-real-window.test.js` carries the same
-"Clause-c real-path companion" citation and was missing; added.
-`lib-fresh-auth-teardown.test.js` names this spec only to say no companion exists
-for its risk class, so its omission is correct and stays.
-
-**Acceptance criterion 4 (scope 3) — the skip is REMOVED.** The decision, and the
-evidence behind it:
-
-- The guard was added 2026-04-21 while upgrading a `test.fixme` into a real test.
-  Its commit cites no observed failure; it is a hedge.
-- The orcid-stub OAuth sidecar landed 2026-06-09, seven weeks later.
-  `docker-compose.test.override.yml` sets `ORCID_CLIENT_ID`,
-  `ORCID_CLIENT_SECRET` and `ORCID_BASE_URL` unconditionally, and
-  `deploy.sh test-up` always layers that override, which the UI role file
-  mandates for every executing Playwright run. The one non-200 cause that means
-  "not configured" cannot fire in the documented environment.
-- The guard fired on ANY non-200. A start-limiter 429, a bearer the backend
-  rejects (a drifted `frontend/.env.test` SESSION_SECRET is the likely one), a
-  session-check 503 and a Redis-flap 500 were all reported as a missing ORCID
-  config and turned green. The current design converted the one plausible flake
-  into a silent pass, which is worse than the red it was avoiding.
-- It protected nothing that was not already unprotected. Four tests across
-  `settings-orcid-factor.spec.js` and `orcid-no-password.spec.js` drive the real
-  `/api/orcid/start` through `routeOrcidStubBridge` with no skip, so an
-  unconfigured environment already reds the suite four times over.
-
-Replaced with `expect(startResp.status(), await startResp.text()).toBe(200)` so a
-failure carries its own status and body. The spec's inline rationale claiming
-`/start` on mode=link "requires the victim to be accredited in some backends, and
-it requires admin key to be configured" was itself unverified prose and is gone:
-`AUTHENTICATED_MODES` contains `link`, the handler runs no accreditation check for
-any mode (the `getAccreditedSet` / `hasUnliftedSanction` pair lives in
-`handleAccredit`, on the callback side), and `/start` reads no admin key. The
-clause-(c) sentence in the non-consent docblock was updated to match: neither
-cited ORCID companion is environment-gated any more.
-
-**Acceptance criterion 5.** Clean. Ran `anchor_violation()` from the pre-commit
-gate standalone over every added line with `ALLOW_MARKER` set explicitly, proving
-the harness non-vacuous first with three control lines (slug + round-ordinal,
-bare positional, file:line) that all fired. Zero hits on the added lines.
-
-**Acceptance criterion 6.** Specs run against the test stack (`deploy.sh restart`
--> `test-db-up` -> `test-up`, dev routing restored afterwards):
-
-- `orcid-link.spec.js` — 3 passed. The formerly-skipped test now RUNS and passes
-  (409-461ms across two runs), which is the empirical answer to scope 3: the
-  assertion works in the documented environment and the guard was masking a
-  passing test.
-- `non-consent-fresh-auth.spec.js` — 4 passed, including the publish test (HAF
-  indexed an accredited researcher, so the upload leg ran and pinned a CID).
-- All three specs that hit the real `/api/orcid/start` in one run — 13 passed,
-  1 failed. No rate-limit refusal, which was the named residual risk of removing
-  the skip.
-
-The one failure is PRE-EXISTING and unrelated: `settings-orcid-factor.spec.js`
-"the fresh_auth callback caches the proof under (set_password, username, "") and
-the re-submit sends it" fails a `toEqual` because the cached consent-op object now
-carries `authorIndex: null` and `claimer: null`. That file is unmodified, imports
-none of the files touched here, and fails identically when run standalone. The
-extra fields come from the recent fresh-auth work in `authorship-consent.js` /
-`settings-fresh-auth.js`; the spec's exact-match assertion was not updated. Not
-fixed here, flagged for triage.
-
-## Out-of-scope findings, surfaced not fixed (user triaged: leave alone)
-
-Three defects surfaced during the audit that sit outside this task's scope. The
-user reviewed them and chose not to widen scope; recorded here for the architect.
-
-1. `frontend/tests/unit/lib-fresh-auth-outcome-dispatch.test.js` states that this
