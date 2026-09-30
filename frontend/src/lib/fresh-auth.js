@@ -180,10 +180,18 @@ export function handleSessionInconsistency() {
 // check this helper does not make: that the rejected token is still the one
 // the store holds.
 export function handleSessionRevoked() {
-  tearDownSessionWithMessage(
-    'sessionRevoked',
-    "You were signed out because this account's password or keys were changed. Please sign in again.",
-  );
+  tearDownSessionWithMessage('sessionRevoked', SESSION_REVOKED_FALLBACK);
+}
+
+// The revoked-session copy, for a surface that outlives the teardown's
+// message: the store shows it inside the sign-in prompt it opens, so the
+// reason is still on screen after the message has timed out. Worded without
+// naming a cause, because a password reset, a recovery that changes the email
+// or removes the password, and a key upgrade all end a session this way.
+const SESSION_REVOKED_FALLBACK =
+  "You were signed out because this account's sign-in details were changed. Please sign in again.";
+export function sessionRevokedMessage() {
+  return Alpine.store('i18n')?.messages?.auth?.sessionRevoked || SESSION_REVOKED_FALLBACK;
 }
 
 // The teardown both session-ending detections share; `handleSessionInconsistency`

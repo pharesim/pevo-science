@@ -12,6 +12,8 @@ export function initSignInModal() {
     value: '',
     error: null,
     _resolve: null,
+    // Why the modal opened, when the user did not open it themselves.
+    notice: null,
     // Email fields
     emailValue: '',
     passwordValue: '',
@@ -25,9 +27,14 @@ export function initSignInModal() {
      * Open the modal in chooser mode.
      * For Keychain path: returns a Promise that resolves with
      * the entered username or null if cancelled.
+     *
+     * `notice` is an already-localized line shown above the options for as
+     * long as the modal is open, for an opener that was not the user's own
+     * click and so owes them the reason the prompt appeared.
      */
-    prompt() {
+    prompt({ notice = null } = {}) {
       return new Promise((resolve) => {
+        this.notice = notice;
         this.value = '';
         this.error = null;
         this.emailValue = '';

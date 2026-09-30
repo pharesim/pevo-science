@@ -170,6 +170,8 @@ describe('a revoked bearer token on an authenticated api.js request', () => {
     await fetchNotifications(0).catch(() => {});
 
     expect(modal.prompt).toHaveBeenCalledTimes(1);
+    // The reason rides into the prompt, which outlives the timed message.
+    expect(modal.prompt).toHaveBeenCalledWith({ notice: REVOKED_COPY });
   });
 
   it('does not open a second prompt over a sign-in modal that is already open', async () => {
@@ -222,6 +224,34 @@ describe('a revoked bearer token on an authenticated api.js request', () => {
     expect(JSON.parse(localStorage.getItem(SESSION_KEY)).token).toBe('new-jwt');
     expect(stores.toast.items).toEqual([]);
     expect(modal.prompt).not.toHaveBeenCalled();
+  });
+
+  it('adopts a reissued session already in storage instead of tearing down', async () => {
+    const modal = mountSignInModal();
+    // Another tab saved the reissued session; this tab has not yet processed
+    // the storage event when the old token's rejection arrives.
+    localStorage.setItem(SESSION_KEY, saved('new-jwt'));
+
+    await expect(fetchNotifications(0)).rejects.toMatchObject({ code: 'SESSION_INVALIDATED' });
+
+    expect(stores.auth.isConnected).toBe(true);
+    expect(stores.auth.token).toBe('new-jwt');
+    expect(JSON.parse(localStorage.getItem(SESSION_KEY)).token).toBe('new-jwt');
+    expect(stores.toast.items).toEqual([]);
+    expect(modal.prompt).not.toHaveBeenCalled();
+  });
+
+  it('tears down when the only other stored session has expired', async () => {
+    localStorage.setItem(
+      SESSION_KEY,
+      JSON.stringify({ ...JSON.parse(saved('stale-jwt')), expiresAt: '2000-01-01T00:00:00.000Z' }),
+    );
+
+    await fetchNotifications(0).catch(() => {});
+
+    expect(stores.auth.isConnected).toBe(false);
+    expect(localStorage.getItem(SESSION_KEY)).toBeNull();
+    expect(stores.toast.items.map((t) => t.message)).toEqual([REVOKED_COPY]);
   });
 
   it('leaves the session alone on any other 401', async () => {

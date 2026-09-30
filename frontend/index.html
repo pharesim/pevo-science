@@ -367,6 +367,10 @@
            role="dialog" aria-modal="true" aria-labelledby="signin-modal-title">
         <div class="bg-white rounded-lg shadow-xl w-full max-w-sm mx-4 p-6">
 
+          <template x-if="notice">
+            <p class="mb-4 rounded-md border border-parchment-dark bg-parchment px-3 py-2 text-sm text-ink" role="status" x-text="notice"></p>
+          </template>
+
           <!-- Mode: choose -->
           <template x-if="mode === 'choose'">
             <div>

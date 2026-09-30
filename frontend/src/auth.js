@@ -10,6 +10,7 @@ import {
   abandonInFlightAcquisitions,
   dismissOpenReauthPrompt,
   handleSessionRevoked,
+  sessionRevokedMessage,
 } from './lib/fresh-auth.js';
 // TAB_SUBJECT_KEY: the per-tab marker naming the JWT subject this tab's
 // subject-bound sessionStorage state (fresh-auth proof caches, ORCID flow
@@ -72,12 +73,13 @@ export function initAuth() {
       });
     },
 
-    async connect() {
+    // `notice` is passed through to the sign-in modal; see its `prompt`.
+    async connect({ notice } = {}) {
       // Open sign-in modal — may resolve with username (Keychain path) or null (email path or cancel)
       const el = document.querySelector('[x-data="signInModal"]');
       const modal = el && Alpine.$data(el);
       if (!modal) throw new Error('Sign-in modal not found');
-      const inputUsername = await modal.prompt();
+      const inputUsername = await modal.prompt({ notice });
       if (!inputUsername) return;
 
       const accreditationPromise = fetchAccreditationStatus(inputUsername).catch(() => null);
@@ -228,10 +230,13 @@ export function initAuth() {
     // the first one cleared it. A same-subject token swap does not run the
     // subject scrub, so a teardown guard cannot stand in for this check.
     //
-    // The comparison covers that one ordering only. A rejection that arrives
-    // before the reissued token does (the server revokes the old token a
-    // moment before it answers the upgrade) still finds the old token here
-    // and tears the session down.
+    // The opposite ordering exists too: the server revokes the old token a
+    // moment before it answers the upgrade, so a rejection can arrive while
+    // this store still holds the old token. When the upgrading tab has
+    // already saved the reissued session, this tab has simply not processed
+    // the storage event yet, so the stored session is read first and a newer
+    // one is adopted instead of torn down. A rejection that lands before any
+    // tab has saved the reissued session still tears this one down.
     //
     // The user did not sign out, so the teardown says why the session ended
     // and then offers sign-in where they are. Staying on the page matches the
@@ -242,12 +247,33 @@ export function initAuth() {
     // Returns true when this call tore the session down.
     handleRevokedSession(sentToken) {
       if (!sentToken || sentToken !== this.token) return false;
+      if (this._adoptStoredSessionOtherThan(sentToken)) return false;
       handleSessionRevoked();
       this._offerSignIn();
       return true;
     },
 
-    // Open the sign-in modal without a user gesture. Fire-and-forget: the
+    // Take up the stored session when it carries a token other than
+    // `rejectedToken`, exactly as the storage event for it would have. Returns
+    // false, leaving the store untouched, when storage holds the rejected
+    // token, nothing readable, or a session that has expired.
+    _adoptStoredSessionOtherThan(rejectedToken) {
+      let stored = null;
+      try {
+        stored = JSON.parse(localStorage.getItem(SESSION_KEY));
+      } catch {
+        /* unreadable entry: nothing to adopt */
+      }
+      if (!stored?.token || stored.token === rejectedToken) return false;
+      this._restoreSession();
+      if (this.token !== stored.token) return false;
+      this._startAccreditationPolling();
+      return true;
+    },
+
+    // Open the sign-in modal without a user gesture, carrying the reason: the
+    // teardown's message times out, and a user returning to a background tab
+    // would otherwise find a bare sign-in prompt. Fire-and-forget: the
     // caller is an error path that must not wait on the user, so a failed
     // sign-in is reported here the way the header's Sign in button reports it.
     // Skipped when the modal is missing or already open, since a second
@@ -256,7 +282,7 @@ export function initAuth() {
       const el = document.querySelector('[x-data="signInModal"]');
       const modal = el && Alpine.$data(el);
       if (!modal || modal.open) return;
-      this.connect().catch((err) => {
+      this.connect({ notice: sessionRevokedMessage() }).catch((err) => {
         console.warn('[auth] sign in after revoked session failed:', err);
         const msg = Alpine.store('i18n')?.messages?.common?.connectionFailed || 'Connection failed';
         Alpine.store('toast')?.show(msg, 'error');
