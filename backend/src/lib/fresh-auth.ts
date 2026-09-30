@@ -966,9 +966,10 @@ const spentConsentOps = new Set<string>();
  *  already SPENT, and a spent proof is not retryable by design (the burn runs
  *  ahead of the username and target checks, so even a proof refused by those is
  *  deliberately not reusable). The worst this costs is refusing that proof
- *  again. The ledger is bounded by confirmed sweeps, not by time; the drain
- *  documents the shapes that retain an entry indefinitely, and why that is
- *  accepted. */
+ *  again. The ledger is bounded by proof that the canonical key is gone (a
+ *  `DEL` that resolved, or a replay's own resolved `GETDEL`), not by time;
+ *  `drainSpentConsentOps` documents the shapes that retain an entry
+ *  indefinitely, and why that is accepted. */
 function isConsentOpSpent(token: string): boolean {
   return spentConsentOps.has(token);
 }
@@ -1099,7 +1100,8 @@ function armDrainOnReady(client: Redis): void {
   client.on('ready', onRedisReadyDrain);
 }
 
-/** Periodic cleanup so `memStore` doesn't grow unbounded under no-Redis ops,
+/** Periodic cleanup so `memStore` doesn't grow unbounded (every issuance
+ *  writes its backup there whether or not Redis is in use),
  *  and so the ledger drain has a backstop trigger when no `ready` transition
  *  follows. Only the `memStore` half prunes during an outage: the drain keeps
  *  every ledger entry while no client is reachable, deliberately.

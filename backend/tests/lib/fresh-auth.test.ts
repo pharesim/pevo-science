@@ -1242,7 +1242,7 @@ describe('concurrent dual-consume produces exactly one winner (in-process lock)'
     }
   });
 
-  it('consumeFreshAuthToken no-Redis:Promise.all dual consume → exactly one winner', async () => {
+  it('consumeFreshAuthToken no-Redis: Promise.all dual consume → exactly one winner', async () => {
     // Real no-Redis-path companion (carve-out clause c): if Redis is absent
     // in the suite environment, the consume already runs through the
     // memStore-only branch. This test exercises that path directly without
