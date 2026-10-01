@@ -85,7 +85,10 @@ import {
  *  region-aware skip the primary side uses reads prose as live wherever the
  *  region pass under-reports a comment (a block comment opened mid-line, a
  *  line-start opener refused by an inverted template-parity count). The
- *  shape test in `isCommentedOut` keeps that prose out. */
+ *  shape test in `isCommentedOut` keeps out each line of that prose that
+ *  begins with `*`, `//` or `/*`; a continuation written with no prefix,
+ *  inside a comment opened after code on its line, still reads as live, a
+ *  residual the shared module names at `skipCommentLine`. */
 const skipCommentedOut = (line: string, lineIndex: number, lines: string[]): boolean =>
   isCommentedOut(line, lineIndex, lines);
 
@@ -165,23 +168,25 @@ function fieldlessSurfaces(files: ScannedSource[]) {
 }
 
 /** The text a key's value occupies: the remainder of the line after the first
- *  colon following `name`, joined with the next non-comment line when the key
- *  is wrapped (colon at end of line). Returns null when `name` is written in
- *  shorthand position (no colon), which for the epoch field means a
- *  pass-through of the same-named binding. */
-function valueTextAfterKey(
-  lines: string[],
-  lineIndex: number,
-  name: string,
-  interior?: boolean[],
-): string | null {
+ *  colon following `name`, or, when the key is wrapped (colon at end of line),
+ *  the next line `isCommentedOut` does not read as commented out. Returns null
+ *  when `name` is written in shorthand position (no colon), which for the
+ *  epoch field means a pass-through of the same-named binding.
+ *
+ *  The wrapped lookup reads by shape because the epoch value it returns is
+ *  satisfying-side: a prose line naming the epoch, sitting behind a region
+ *  the region pass under-reports, would otherwise become the value and vouch
+ *  for a surface whose real value is a literal. Skipping a live star line
+ *  instead reads the line after it, which at worst leaves the field without
+ *  an epoch reference, an offender. */
+function valueTextAfterKey(lines: string[], lineIndex: number, name: string): string | null {
   const line = lines[lineIndex];
   const m = line.match(new RegExp(`(?<!\\.)\\b${name}\\b\\s*(:)?`));
   if (!m || !m[1]) return null;
   const after = line.slice((m.index ?? 0) + m[0].length);
   if (after.trim() !== '') return after;
   for (let j = lineIndex + 1; j < lines.length; j++) {
-    if (isCommentLine(lines[j], interior?.[j]) || lines[j].trim() === '') continue;
+    if (isCommentedOut(lines[j], j, lines) || lines[j].trim() === '') continue;
     return lines[j];
   }
   return '';
@@ -227,7 +232,7 @@ function literalEpochSurfaces(files: ScannedSource[]) {
       if (isCommentLine(line, interior[i])) return;
       const key = () => `${rel}#${enclosingSymbol(lines, i)}`;
       if (ACCEPT_SESSION_WRITE_RE.test(line)) {
-        const value = valueTextAfterKey(lines, i, 'acceptSession', interior);
+        const value = valueTextAfterKey(lines, i, 'acceptSession');
         if (value !== null && !/^\s*false\b/.test(value)) {
           const f = factFor(key());
           f.accepting = true;
@@ -235,12 +240,13 @@ function literalEpochSurfaces(files: ScannedSource[]) {
         }
       }
       if (SURFACE_FIELD_WRITE_RE.test(line)) {
-        const value = valueTextAfterKey(lines, i, 'sessionsInvalidatedAtMs', interior);
+        const value = valueTextAfterKey(lines, i, 'sessionsInvalidatedAtMs');
         const f = factFor(key());
         if (value === null || EPOCH_REF_RE.test(value)) {
           // Satisfying-side, so read by shape like the epoch pairing: a
           // write behind a comment close, or on a star line the region pass
-          // left live, does not vouch for the surface.
+          // left live, does not vouch for the surface. A wrapped value is
+          // read by shape inside valueTextAfterKey for the same reason.
           if (!isCommentedOut(line, i, lines)) f.epochRef = true;
         } else if (LITERAL_VALUE_RE.test(value)) {
           f.literal = true;
@@ -476,6 +482,28 @@ describe('every session-window consume carries the account revocation epoch', ()
       ],
     };
     expect(literalEpochSurfaces([epochBehindClose]).offenders).toHaveLength(1);
+
+    // And the wrapped VALUE: prose naming the epoch, on a star line the
+    // region pass leaves live because a stray backtick refused its opener,
+    // must not become the field's value in front of the real literal.
+    const wrappedValueBehindProse: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'const TICK_RE = /`/;',
+        'async function consumeValueInProse(token: string) {',
+        '  return consumeFreshAuthTokenForSurface(token, {',
+        '    acceptSession: true,',
+        '    sessionsInvalidatedAtMs:',
+        '      /**',
+        '       * hiveSessionsInvalidatedAt belongs here once wired',
+        '       */',
+        '      undefined,',
+        '  });',
+        '}',
+      ],
+    };
+    expect(blockCommentInterior(wrappedValueBehindProse.lines)[6]).toBe(false);
+    expect(literalEpochSurfaces([wrappedValueBehindProse]).offenders).toHaveLength(1);
   });
 
   it('a session-accepting surface with a literal epoch value is an offender', () => {

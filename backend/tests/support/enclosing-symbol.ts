@@ -30,15 +30,16 @@
  * all (an object-method shorthand, a class member) resolves to
  * {@link MODULE_SCOPE}.
  *
- * WHICH BRACE THE WALK SEES. Every wrong answer this docblock names follows
- * from one rule, so it is stated once. Walking down from a declaration to the target line,
- * the walk takes a `}` as the end of that declaration's block when the `}`
- * leads its trimmed line at or left of the declaration's indentation, or
- * leads the code after a comment close the walk reads, at any indentation. It
- * reads a close in two places: the close of a block comment it is tracking
- * (one opened at line start, outside a template literal, whose close it can
- * see by the target line), and a close that begins its trimmed line. A brace
- * on a line inside a tracked region is prose.
+ * WHICH BRACE THE WALK SEES. Every brace error this docblock names follows
+ * from one rule, so it is stated once. Walking down from a declaration to the
+ * target line, the walk takes a `}` as the end of that declaration's block
+ * when the `}` leads its trimmed line at or left of the declaration's
+ * indentation, or leads the code after a comment close the walk reads, at any
+ * indentation. It reads a close in two places: the close of a block comment
+ * it is tracking, and a close that begins its trimmed line. It tracks a block
+ * comment opened at the start of a line, or at the start of the code after a
+ * close it reads, outside a template literal, whose close it can see by the
+ * target line. A brace on a line inside a tracked region is prose.
  *
  * Comment boundaries are read no further than that, because telling a real
  * mid-line opener from the same two characters inside a string literal, a
@@ -46,9 +47,9 @@
  * lexer is the dependency this module exists to avoid. A brace the rule
  * reads too EARLY resolves OUTWARD; a brace it misses resolves INWARD.
  *
- *  - OUTWARD: a block comment OPENED mid-line is not tracked, so a brace
- *    leading one of its lines reads as live and can close the declaration
- *    early. So can a `}` leading a line of template content. And a `}` after
+ *  - OUTWARD: a block comment OPENED mid-line after other code is not
+ *    tracked, so a brace leading one of its lines reads as live and can
+ *    close the declaration early. So can a `}` leading a line of template content. And a `}` after
  *    a read close ends the declaration even where it really closes an inner
  *    block. The answer is the enclosing function, or module scope.
  *  - INWARD: the brace that really ends the block is missed, so the
@@ -66,6 +67,14 @@
  *    copy's walk shares. The inversions are pinned as residuals in the
  *    machinery's own suite beside this file.
  *
+ * One wrong answer does not come from a brace at all. The upward scan tests
+ * every line it passes against the declaration patterns, comment and string
+ * text included, so a declaration-shaped phrase in prose or in a literal
+ * (`// same derivation as router.get('/email', ...)`, a log string naming
+ * `function licensedMint(`) is read as a declaration, and a match below it in
+ * the real function resolves to that FABRICATED name. Where the fabricated
+ * name equals a licensed key, the match is absorbed.
+ *
  * The consequence in every case is a WRONG symbol — and how that fails
  * depends on the assertion consuming it:
  *
@@ -73,14 +82,16 @@
  *    set) fail closed only when the wrong symbol is a key the allowed set does
  *    not hold. An INWARD answer names a declaration that really sits above
  *    the match, and if that declaration is an allowed key the violation is
- *    absorbed: that is the silent pass, and every INWARD shape above can
- *    produce it. An OUTWARD answer names an enclosing scope, which fails
- *    closed exactly when that scope is not licensed itself. Two cases are:
- *    an allowed function enclosing a nested declaration, and module scope
- *    where an assertion licenses it. The keyspace-literal assertion in
+ *    absorbed: that is the silent pass, and every INWARD shape can produce
+ *    it. A FABRICATED name produces it the same way when it equals an allowed
+ *    key. An OUTWARD answer names an enclosing scope, which fails closed
+ *    exactly when that scope is not licensed itself. Two cases are: an
+ *    allowed function enclosing a nested declaration, and module scope where
+ *    an assertion licenses it. The keyspace-literal assertion in
  *    `no-session-proof-mint-outside-reauth-routes.test.ts` licenses
- *    `lib/fresh-auth.ts` at {@link MODULE_SCOPE}, so an outward answer that
- *    lands at that file's module scope is absorbed there.
+ *    `lib/fresh-auth.ts` at {@link MODULE_SCOPE}, a key that stands for every
+ *    module-scope line of that file, so an outward answer landing there is
+ *    absorbed.
  *
  *  - PAIRING assertions (every occurrence of X must have a Y in the same
  *    symbol) do NOT inherit that property. When both sides of a pair resolve to
@@ -97,7 +108,9 @@
  * {@link enclosingSymbol}'s upward declaration scan and its closing-brace test
  * (a declaration whose block closed at or left of its own indentation is
  * rejected), the region pass in {@link blockCommentInterior}, and the comment
- * predicate {@link isCommentLine}. They stay separate deliberately, because
+ * predicate {@link isCommentLine}. The closing-brace test is shared only up to
+ * the comment close: reading the code after a close that begins its line, and
+ * taking a brace there at any indentation, landed in this copy first. They stay separate deliberately, because
  * each is written for the declaration shapes and the scan contract of its own
  * tree, and neither is a subset of the other: {@link isCommentedOut} here has
  * no equivalent in that copy, and that copy carries machinery of its own that
@@ -127,8 +140,9 @@ import path from 'node:path';
  *  keyword, or leaves more parens open than closed (a parameter list wrapping
  *  onto the next line). The paren count is naive about parens inside string
  *  literals — a miscount yields a wrong symbol, which under a set-equality
- *  assertion is a red bar, and under a pairing assertion is excluded from
- *  satisfying by the module-scope rule below only when it lands at module
+ *  assertion fails closed only when it is not an allowed key, and under a
+ *  pairing assertion is excluded from satisfying by the module docblock's
+ *  PAIRING rule ({@link isModuleScopeKey}) only when it lands at module
  *  scope; the guard exists to make the common expression shape resolve past
  *  the local instead of stopping at it. */
 const DECLARATION_PATTERNS: Array<{
@@ -306,8 +320,10 @@ export function enclosingSymbol(lines: string[], lineIndex: number): string {
     // with wrapped parameters resolve to module scope. A brace inside a
     // comment is prose and does not count either: a `//` line or a `*`
     // continuation begins with its own marker and can never begin with `}`,
-    // so the one comment shape that needs handling is the interior of a block
-    // comment opened at line start, tracked as a running open/closed state.
+    // so the comment shape that needs handling is the interior of a block
+    // comment, tracked as a running open/closed state for one opened at line
+    // start or at the start of the code after a close; a block comment opened
+    // after other code on its line is not tracked.
     //
     // The state is entered only for a region the walk can SEE close, and only
     // for an opener outside a template literal. An unterminated line-start
@@ -486,9 +502,11 @@ export function sourcesUnder(root: string): ScannedSource[] {
  *
  *  Passing nothing is NOT the pure shape test (a line is comment when its
  *  trimmed text begins with `*`, `//` or `/*`). It presumes a star line
- *  continues a comment and then answers every prefixed line but a `//` line
- *  by its close search, as an open region does, so code behind a close is
- *  live: `/* call *\/ code` and ` * prose *\/ code` both read as live. That
+ *  continues a comment, reads a `//` line as comment on its shape, and
+ *  answers every other prefixed line by its close search, so code behind a
+ *  close is live: `/* call *\/ code` and ` * prose *\/ code` both read as
+ *  live. It differs from an open region only on `//`, which an open region
+ *  also answers by its close search. That
  *  suits a caller with no file in hand (a single-line planted pin, an
  *  import-clause walk); a SCAN must pass the region, because reading live
  *  code as prose there is the violation going unreported. A caller that
@@ -612,7 +630,11 @@ export type SkipLine = (
  *
  *  Not for a scan whose match SATISFIES a demand. Prose behind a region the
  *  region pass under-reports reads as live here, which on that side is a
- *  satisfied pair nobody wrote; those scans take {@link isCommentedOut}. */
+ *  satisfied pair nobody wrote; those scans take {@link isCommentedOut},
+ *  which keeps out such a line when it begins with `*`, `//` or `/*`. A line
+ *  of that prose with no prefix (a continuation written without a leading
+ *  star inside a comment opened after code on its line) reads as live to
+ *  both, and closing it needs the lexer this module declines. */
 export const skipCommentLine: SkipLine = (line, _lineIndex, _lines, insideRegion) =>
   isCommentLine(line, insideRegion);
 
@@ -636,10 +658,11 @@ export function skipCommentOr(definition: RegExp): SkipLine {
  * region, computed once per file by {@link blockCommentInterior} because a
  * leading star cannot be read from one line alone.
  *
- * A forbidden-shape or demand-side scan passes {@link skipCommentLine}, or
- * {@link skipCommentOr} when it also skips a definition line, rather than a
- * closure of its own: a closure that drops the region argument still
- * compiles and quietly falls back to the no-region reading.
+ * A forbidden-shape or demand-side scan whose only extra skip is a definition
+ * line passes {@link skipCommentLine}, or {@link skipCommentOr}, rather than
+ * a closure of its own: a closure that drops the region argument still
+ * compiles and quietly falls back to the no-region reading. A scan with a
+ * composite skip of its own threads the fourth argument through itself.
  */
 export function occurrencesOf(
   files: ScannedSource[],

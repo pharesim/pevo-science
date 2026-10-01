@@ -122,9 +122,10 @@ describe('enclosing-symbol: the comment predicate, the brace walk and the region
         true,
       ),
     ).toBe(true);
-    // With no region known, the shape reading stands, which is what a caller
-    // with no file in hand (a planted single-line pin, the import-clause
-    // walk) relies on.
+    // With no region known, a star line is presumed to continue a comment,
+    // so it is prose unless code follows a close on it, which is what a
+    // caller with no file in hand (a planted single-line pin, the
+    // import-clause walk) relies on.
     expect(isCommentLine('  * the epoch travels on req.hiveSessionsInvalidatedAt')).toBe(true);
     expect(isCommentLine('  * CASE WHEN cpq.is_self THEN 0 ELSE 1 END /* short */')).toBe(true);
     expect(isCommentLine('  * CASE WHEN cpq.is_self THEN 0 ELSE 1 END /* short */', true)).toBe(true);
@@ -158,9 +159,9 @@ describe('enclosing-symbol: the comment predicate, the brace walk and the region
   });
 
   it('the exported skips read the region, and the combinator adds a definition line', () => {
-    // The one region-aware skip every forbidden-shape and demand-side scan
-    // takes. A star-leading live line is counted; a docblock continuation
-    // quoting the same token is spared.
+    // The region-aware skip the generic forbidden-shape and demand-side
+    // scans take. A star-leading live line is counted; a docblock
+    // continuation quoting the same token is spared.
     const starLeadingLive = [
       'function weightedClaim(account: AccountRow) {',
       '  return Number(account.active)',
