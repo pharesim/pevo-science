@@ -161,3 +161,19 @@ Unblocks when that task is ARCHIVED, not when it reaches `review/`. Archive is
 the point at which the walk, the comment predicate and the residual paragraph
 stop moving under this one. The ui agent moves this file back to `pending/`
 then.
+
+### Unblocked (2026-10-01)
+
+`ui-factor-resolver-source-discipline-canary` was archived on 2026-09-22
+(`0ed67fb1`), after round 7. Re-checked against HEAD before the move:
+
+- All three gaps are still present. The walk root is `frontend/src` and nothing
+  reads `frontend/index.html` (which still holds no factor reference). The star
+  re-export ban still runs through the per-line `occurrencesOf`, and its matcher
+  self-test feeds single-line strings only. The floor is still `> 40` against 86
+  `.js` files, 20 of them under `components/`, with no membership assertion
+  there.
+- The canary file was last touched on 2026-09-14, and no task in `pending/` or
+  `review/` edits it. The backend tasks that cite the frontend
+  `isCommentLine` / `sourcesUnder` shapes read them as the reference for a
+  backend port and do not change them.
