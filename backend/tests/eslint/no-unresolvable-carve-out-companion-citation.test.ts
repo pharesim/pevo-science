@@ -46,9 +46,9 @@
  *
  * The reverse form carries no risk-class token, and the citation that answers
  * it must be a forward one. Those are the two halves of one decision. A
- * reverse declaration discharges no clause of its own: the file writing it
- * mocks nothing, so it is a signpost rather than a justification, and what has
- * to be checkable about a signpost is that it points somewhere. The forward
+ * reverse declaration discharges no clause of its own: it is a signpost rather
+ * than a justification, and what has to be checkable about a signpost is that
+ * it points somewhere. The forward
  * citation it points at is resolved and token-checked in its own right, so
  * the risk class is already witnessed once, by the end that owes the
  * justification; spelling it a second time on the reverse form would raise the
@@ -57,12 +57,39 @@
  * closes mutual vouching, where two files declare each other companions and no
  * token is named at either end.
  *
+ * Whether the file writing a reverse declaration mocks anything is not
+ * something this canary can read off the file. `vi.fn` and `vi.spyOn` occur in
+ * nearly every suite, and keying on module replacement alone (`vi.mock`,
+ * `vi.doMock`) was measured and declined: a real-path companion commonly
+ * replaces some unrelated module (the chain client, the cache) and states a
+ * carve-out of its own for it, so that key refused the reverse form in the
+ * very suites it exists for. What it checks is the BLOCK. A reverse
+ * declaration in a block that states its file's own carve-out, recognised by
+ * a clause-(a) or clause-(b) marker in any spelling `OWN_CARVE_OUT_RE` reads,
+ * is a violation whatever it names, because there it reads as that file's own
+ * clause (c) and a signpost discharges nothing. The marker test is a
+ * heuristic, not a parse of the carve-out: any `(a)` or `(b)` enumeration in
+ * the block trips it, and the message gives the way through.
+ * Without that arm, two suites mocking the same surface discharge each other:
+ * one writes the reverse form, the other a forward citation of a token the
+ * first spells in code, and every other arm holds. A real-path suite that also
+ * takes a carve-out of its own therefore writes its self-declaration in a
+ * comment separated from that statement by code; comments separated only by
+ * blank lines are one block here, so a second docblock under the header is not
+ * enough.
+ *
  * What that link does NOT establish: that the two files stand in a mocked /
- * real-path relationship at all. Two files can cite each other honestly in
- * form while neither mocks anything, and the forward citation's token then
- * witnesses a risk class in a suite nobody needed a companion for. Whether a
- * carve-out was owed in the first place is a review judgement, as it is for
- * every citation here.
+ * real-path relationship at all. The block arm refuses the reverse form only
+ * where the block carries a clause-(a) or clause-(b) marker. A carve-out
+ * stated in prose without one, or a mocking suite whose reverse declaration
+ * sits in a comment of its own, is not seen, and nothing here reads which
+ * surfaces either file replaces; a `vi.spyOn` stubbing the very function the
+ * risk class depends on is as invisible as a `vi.mock` of it. Two files can cite each other honestly in
+ * form while neither mocks anything, or while both mock the cited surface,
+ * and the forward citation's token then witnesses a risk class in a suite
+ * that is no real path for it. Whether a carve-out was owed in the first
+ * place, and whether the declaring suite runs the real path, are review
+ * judgements, as they are for every citation here.
  *
  * WHAT IS CHECKED, per structured citation:
  *
@@ -93,6 +120,9 @@
  * with a FORWARD citation, which is then resolved and token-checked in its own
  * right (THE STRUCTURED FORM, arms 1 to 5), so the risk class is witnessed at
  * the end that owes the justification rather than on the reverse declaration.
+ * And the block carrying a reverse declaration must not state its own file's
+ * carve-out (`statesOwnCarveOut`, applied in `validationViolations`, which is
+ * the one place that sees the block beside the citation).
  *
  * WHY THE TOKEN AND NOT THE FILENAME. A check built on finding the cited
  * FILENAME inherits the exact blindness it exists to remove: the filename is
@@ -1201,6 +1231,32 @@ function proseRemainder(text: string): string {
   return text.replace(forwardPattern(), ' ').replace(reversePattern(), ' ');
 }
 
+/** A clause-(a) or clause-(b) marker, in every spelling the corpus writes one:
+ *  `(a)`, `clause (a)`, `clause-(a)`, `clause a)` and `clause-a`. Either
+ *  clause is enough, so a statement that writes only its justification, or
+ *  only its auth acknowledgement, still reads as one. A parenthesised letter
+ *  directly after an identifier (`fn(b)`) is a call, not a marker. Carve-out
+ *  WORDING is deliberately not read: a real-path suite declaring itself names
+ *  the carve-out and its clause (c) as naturally as a mocked suite writes its
+ *  justification. */
+const OWN_CARVE_OUT_RE = /(?<![\w)])\([ab]\)|\bclause[\s-]*\(?[ab]\b/i;
+
+/** Does this block state its own file's carve-out? A reverse declaration in
+ *  such a block reads as that file's own clause (c), which a signpost cannot
+ *  discharge. See the header on the reverse form. */
+export function statesOwnCarveOut(text: string): boolean {
+  return OWN_CARVE_OUT_RE.test(rejoined(text));
+}
+
+const REVERSE_IN_OWN_CARVE_OUT =
+  'a reverse declaration (`Real-path companion for:`) sits in a block that states this ' +
+  'file\'s own carve-out (a clause-(a) or clause-(b) marker), where it reads as this ' +
+  'file\'s own clause (c), and a signpost discharges nothing. If this file takes the ' +
+  `carve-out, cite its real-path companion in the forward form: ${STRUCTURED_FORM}. ` +
+  'If it is the real-path suite declaring itself, move the declaration into a comment ' +
+  'of its own, separated from the carve-out statement by code (comments separated ' +
+  'only by blank lines are one block)';
+
 // --- validation --------------------------------------------------------------
 
 /** Calls whose bodies are a mock, a stub or a spy rather than the code under
@@ -1476,7 +1532,9 @@ function deficitByFile(cls: RatchetClass, from: readonly BlockAudit[]): Map<stri
 
 const at = (a: BlockAudit): string => `${a.repoPath} (comment block opening at line ${a.block.firstLine})`;
 
-/** Every structured citation in every block, whatever its class, validated. */
+/** Every structured citation in every block, whatever its class, validated,
+ *  plus the one arm that needs the block beside the citation: a reverse
+ *  declaration in a block that states its own file's carve-out. */
 function validationViolations(
   from: readonly BlockAudit[],
   sources: readonly ScannedSource[],
@@ -1484,7 +1542,9 @@ function validationViolations(
 ): string[] {
   const out: string[] = [];
   for (const audit of from) {
+    const ownCarveOut = statesOwnCarveOut(audit.block.text);
     for (const citation of audit.citations) {
+      if (citation.kind === 'reverse' && ownCarveOut) out.push(`${at(audit)} — ${REVERSE_IN_OWN_CARVE_OUT}`);
       for (const reason of citationViolations(audit.repoPath, citation, sources, readSource)) {
         out.push(`${at(audit)} — ${reason}`);
       }
@@ -2663,5 +2723,97 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     expect(snapshotDigest({ [A]: 2, [B]: 1 })).toBe(snapshotDigest({ [B]: 1, [A]: 2 }));
     expect(snapshotDigest({ [A]: 2, [B]: 1 })).not.toBe(snapshotDigest({ [A]: 2, [C]: 1 }));
     expect(snapshotDigest({ [A]: 2, [B]: 1 })).not.toBe(snapshotDigest({ [A]: 2, [B]: 2 }));
+  });
+
+  it('a reverse declaration does not discharge the clause (c) of a block stating its own file\'s carve-out', () => {
+    const validate = (syn: ScannedSource[]): string[] =>
+      validationViolations(auditSources(syn).audits, syn,
+        (p) => syn.find((s) => repoPathOf(s.rel) === p)?.lines.join('\n') ?? null);
+    const header = (...clauseC: string[]): string[] => [
+      '/**',
+      ' * Carve-out justification:',
+      ' *   (a) The pool module is mocked; a pool failure cannot be forced per test.',
+      ' *   (b) verifyHiveSignature is not mocked.',
+      ...clauseC.map((l) => ` *   ${l}`),
+      ' */',
+    ];
+    const poolMock = "vi.mock('../../src/db.js', () => ({ getPool: vi.fn() }));";
+
+    // Two suites mocking the same surface, each discharging the other: A's
+    // clause (c) is a reverse declaration naming B, and B cites A forward
+    // with a token A spells in code outside any mocking call. Every arm of
+    // `citationViolations` holds for both citations, so the block arm is the
+    // only thing that can see it, and it names A's block alone.
+    const a: ScannedSource = { rel: 'routes/pair-a.test.ts', lines: [
+      ...header('(c) Real-path companion for: `backend/tests/routes/pair-b.test.ts`'),
+      poolMock, 'const PAIR_TOKEN = 1;',
+    ] };
+    const b: ScannedSource = { rel: 'routes/pair-b.test.ts', lines: [
+      ...header('(c) Real-path companion: `backend/tests/routes/pair-a.test.ts` [PAIR_TOKEN]'),
+      poolMock,
+    ] };
+    const pair = validate([a, b]);
+    expect(pair).toHaveLength(1);
+    expect(pair[0]).toMatch(/^backend\/tests\/routes\/pair-a\.test\.ts \(comment block opening at line \d+\) — a reverse declaration/);
+    expect(pair[0]).toContain('states this file\'s own carve-out');
+    // And per citation, the pair is clean, which is why the arm sits where
+    // the block is visible rather than inside `citationViolations`.
+    const readPair = (p: string): string | null => [a, b].find((s) => repoPathOf(s.rel) === p)?.lines.join('\n') ?? null;
+    for (const s of [a, b]) {
+      for (const c of citationsInSource(s.lines.join('\n'))) {
+        expect(citationViolations(repoPathOf(s.rel), c, [a, b], readPair)).toEqual([]);
+      }
+    }
+
+    // The honest pairing: a real-path suite that takes a carve-out of its own
+    // (it stubs a client downstream of the gate it exercises) declares itself
+    // in a comment separated from its carve-out statement by code, answered
+    // by the mocked suite's forward citation. Clean.
+    const real: ScannedSource = { rel: 'routes/honest-real.test.ts', lines: [
+      ...header('(c) The stub is downstream of the gate this file exercises.'),
+      "vi.mock('../../src/hive.js', () => ({ hiveClient: {} }));",
+      '',
+      '// Real-path companion for: `backend/tests/routes/honest-mocked.test.ts`',
+      'const HONEST_TOKEN = 2;',
+    ] };
+    const mocked: ScannedSource = { rel: 'routes/honest-mocked.test.ts', lines: [
+      ...header('(c) Real-path companion: `backend/tests/routes/honest-real.test.ts` [HONEST_TOKEN]'),
+      poolMock,
+    ] };
+    expect(validate([real, mocked])).toEqual([]);
+    // The same declaration moved into that suite's carve-out header is red:
+    // the cost of keying on the block, pinned so it stays a visible choice.
+    // A blank line alone does not separate it, since comments separated only
+    // by blank lines are one block.
+    const inHeader: ScannedSource = { rel: real.rel, lines: [
+      ...header('(c) The stub is downstream of the gate this file exercises.'),
+      '',
+      '// Real-path companion for: `backend/tests/routes/honest-mocked.test.ts`',
+      "vi.mock('../../src/hive.js', () => ({ hiveClient: {} }));",
+      'const HONEST_TOKEN = 2;',
+    ] };
+    expect(validate([inHeader, mocked])).toEqual([expect.stringContaining('states this file\'s own carve-out')]);
+    // A reverse declaration with no carve-out statement beside it, in a file
+    // that mocks the cited surface, is NOT seen. Recorded in the header as a
+    // review judgement; pinned so closing it later is a visible probe edit.
+    const bareA: ScannedSource = { rel: a.rel, lines: [
+      '// Real-path companion for: `backend/tests/routes/pair-b.test.ts`', poolMock, 'const PAIR_TOKEN = 1;',
+    ] };
+    expect(validate([bareA, b])).toEqual([]);
+
+    // The detector, in every spelling the corpus writes a clause-(a) or
+    // clause-(b) marker, a wrapped one included, and not on what is no marker:
+    // a clause-(c) reference, carve-out wording alone, or a call.
+    for (const marker of ['(a) x', '(B) x', 'per clause (a)', 'per clause-(b)', 'clause a) x', 'see clause-b', 'per clause-\n(a)']) {
+      expect(statesOwnCarveOut(marker), JSON.stringify(marker)).toBe(true);
+    }
+    for (const prose of [
+      'This is the carve-out clause-(c) real-path companion for the sibling',
+      'clause (c) only',
+      'calls fn(a) and g(b)',
+      'the clause about it',
+    ]) {
+      expect(statesOwnCarveOut(prose), JSON.stringify(prose)).toBe(false);
+    }
   });
 });
