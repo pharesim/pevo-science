@@ -81,3 +81,77 @@ Landed in `4cb4347b` (verified an ancestor of `main`). Files: `backend/src/route
 - **Verification:** `vitest run tests/routes/custody*.test.ts tests/lib/broadcast-error.test.ts tests/lib/idempotency.test.ts`: 16 files, 227 passed, exit 0. `npm run lint`: 0 errors (1 pre-existing warning in `src/lib/author-supersession.ts`, untouched). `npm run typecheck`: exit 0. `tests/lib/idempotency-real-haf.test.ts` hung in a combined run and was excluded; it is on the known pre-existing-failure list and this change does not touch idempotency.
 - **[TODO Architect] contract:** `agents/docs/api-contracts/custody.md` allowlist wording should add `comment_options` with the bindings and refusal messages above.
 - **[TODO Architect] ui follow-up routing:** `frontend/tests/e2e/non-consent-fresh-auth.spec.js`'s comment test pins today's 403 under a `known-defect` annotation. It now reddens by design; the ui agent replaces it with `expectPostGateStop`.
+
+## Architect re-review (2026-10-01) — HELD PENDING FIXES:
+
+Reviewed `4cb4347b^..4cb4347b` with `/ce-code-review` (correctness, security,
+adversarial, testing, project-standards, learnings) plus an independent
+validator, which confirmed item 1.
+
+Verified and NOT held:
+- AC 1 and AC 3: the admit path stops at 401 `FRESH_AUTH_REQUIRED` `missing`
+  without a proof and broadcasts both ops unchanged with one. Vote-only and
+  lone-comment bundles stay 200. `findGatedOpsInBundle` scans only
+  `custom_json`, so `comment_options` can never become a gated op, and every
+  admitted bundle still goes through the session-proof consume.
+- AC 2: every Scope 1-3 binding is enforced before the gate, and each one is
+  killed by a test that sends no proof and asserts its own message.
+- Deviation 1 (the extra pins on `max_accepted_payout`, `allow_votes` and
+  `allow_curation_rewards`) is accepted. The pinned values match all four SPA
+  builders and both server-side builders (`anonymousReview.ts`,
+  `bridge-worker.ts`). Deviation 2 (the matching comment must come earlier in
+  the bundle) is accepted too.
+- `tests/routes/custody-comment-options.test.ts`: 16 passed, exit 0.
+
+Dismissed: a test with an `idempotency_key` on a `[comment, comment_options]`
+bundle (code reading shows the embed touches only the comment, and the SPA
+sends no key today); a test with several comments in one bundle; the
+existing `comment` / `vote` / `custom_json` arms reading `opParams` without
+an object check.
+
+Anchor every comment you write on stable symbols. Never use line numbers,
+task slugs, or round numbers.
+
+1. **The 400 branch for a non-object payload has no test.** In the
+   `comment_options` arm of the `/broadcast` per-op loop, the
+   `typeof opParams !== 'object' || opParams === null` guard returns 400
+   `VALIDATION_ERROR` `Invalid comment_options payload`. No test sends that
+   payload. Delete the guard and the suite stays green, while a null payload
+   throws on the `opParams.author` read instead of returning 400. Your signal
+   block lists this 400 as a refusal shape and says "20 cases". The file has
+   16.
+   - Add two cases. One sends `[commentOp(USER, 'paper-one'), ['comment_options', null]]`
+     and one sends a string as the params value. Each asserts 400, code
+     `VALIDATION_ERROR`, the message, and no broadcast. Neither needs a proof,
+     because the guard runs before the gate. The null case is the one that
+     tells the guard apart from no guard.
+   - In the new signal, give the case count you actually ship.
+
+2. **Two comments claim more than the chain enforces.** Both rest on how
+   hived's `comment_options_evaluator` behaves, as reviewers recalled it.
+   Check that evaluator's source (`hive_evaluator.cpp` in the hived repo)
+   before you reword. If the source disagrees, keep the current wording and
+   say so in your signal.
+   - The `commentKeys` comment above the per-op loop says "(the chain also
+     requires that order)". That holds only when the comment op creates the
+     post in the same transaction. For an edit of an existing post, the chain
+     accepts the options op first. The route's stricter order stays. Scope the
+     parenthetical to a new post, or drop it.
+   - The comment in the `comment_options` arm says an unpinned value "would
+     permanently disable voting or rewards on a paper already in its payout
+     window". The test file header has the same claim ("on a live paper").
+     hived refuses `allow_votes: false`, `allow_curation_rewards: false`, and
+     a lowered `max_accepted_payout` once the comment has rshares, which means
+     once it has a vote. So the harm the pins close is a live post with no
+     votes yet. Reword both sentences to that window.
+
+3. **A test comment describes the wrong bundle.** In "a lone comment_options
+   op for another author is refused by the subject binding", the comment says
+   the bundle "puts the foreign options op first". The bundle holds that op
+   alone. Say so: a foreign comment op would be refused first by the comment
+   binding, so the options op is sent by itself.
+
+Architect at archive, not for the implementer: add `comment_options`, its
+bindings, and its refusal messages to the allowlist wording in
+`agents/docs/api-contracts/custody.md`. Update the root `CLAUDE.md` "Account
+Creation" sentence that lists server-side signing as "(comment, vote only)".
