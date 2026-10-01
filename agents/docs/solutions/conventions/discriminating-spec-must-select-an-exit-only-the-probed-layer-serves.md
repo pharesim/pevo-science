@@ -1,7 +1,7 @@
 ---
 title: "A probe spec must select an exit only the layer under test serves: on a shared path the downstream backstop absorbs the mutant"
 date: 2026-09-24
-last_updated: 2026-09-30
+last_updated: 2026-10-01
 category: conventions
 module: frontend/src/pages/edit.js + architect re-review intake
 problem_type: convention
@@ -62,9 +62,16 @@ That two-clear layout is the one this entry's lesson was measured on, and it is 
 longer the layout on main. Later fixes on the same method added a clear in the
 terminal catch, run only when a `landed` marker says the broadcast resolved, and moved
 the late clear from beside `step = 'success'` to directly after the invalidation
-await, ahead of that arm's `_mounted` guard. Each arm now has three clears on its
+await, ahead of that arm's `_mounted` guard, which gave each arm three clears on its
 paths: post-broadcast, post-invalidation, and the shared catch. The lesson is
 unchanged. The exit table is not, and how it changed is the second half of the lesson.
+
+Neither multi-clear layout is on main any more. ARCHITECTURE.md § 8 ("Landing is
+terminal") replaced them with one removal at landing (`_markLanded`, inside the shared
+`_finishLanded` tail) and a refusal in `_writeDraft`, so `_clearDraft`, the `landed`
+marker and every later clear are gone. The tables below are kept as the worked example.
+"The single-landing layout" under Examples records how the same question reads on the
+current code.
 
 The hold prescribed the discriminating spec as a variant of the existing
 `the post-success clear cancels a save the debounce still has armed`: arm the debounce
@@ -284,6 +291,25 @@ Twenty-six mutants, same method. The rows for the clear sites:
 Every site is discriminated per arm and per exit, and each of those specs takes an
 exit no other clear serves. Known survivors at the post-invalidation clears: a bare
 `removeItem`, the `draftKey` getter, and a clear that runs only when unmounted.
+
+### The single-landing layout
+
+On the current code there is one removal, so there is no second clear left to absorb a
+mutant at the removal site. The overlap moved to a different pair: `_markLanded`'s
+debounce cancel and the barrier in `_writeDraft`. A save armed before the landing fires
+into the barrier whether or not the cancel ran, so every storage assertion is green on
+the cancel's deletion. This is the same shape as the two-clear case, and the remedy is
+the same: move the probe. The specs that pin the cancel read the `_draftTimer` handle
+(null once `handleSubmit` returns) or spy on `_writeDraft`'s call count. They do not
+read storage. On the publish page that handle assertion is the only kill for the cancel.
+
+The removal's later-visit risk inverted too. The multi-clear layouts needed a clear past
+the invalidation await. Under the barrier such a clear is the defect, because it runs by
+key after the component is gone and can delete a draft a later visit wrote. The spec that
+pins its absence stages that later write after `destroy()` inside the invalidation mock.
+Known survivor: a removal reinstated after the invalidation await but behind the
+`_mounted` guard turns nothing red. Only another tab can reach it, which § 8 Limits
+accepts.
 
 ## Related
 

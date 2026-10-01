@@ -151,6 +151,13 @@ A platform operation marking a paper as retracted, after which the paper remains
 
 Either the paper author or the platform authority (the signer) may retract, the authority case being for misconduct. Listings can opt back in to including retracted papers. Retraction is also the only state in which a paper's pinned IPFS files may be unpinned.
 
+### Composer Draft
+
+The browser-local copy of an unsubmitted paper or paper edit that the publishing and editing forms keep while the user types, so the text survives a reload or a full-page re-authentication round-trip.
+*Avoid:* autosave, saved draft.
+
+A draft ends at **landing**: the moment the broadcast of the paper or edit returns a result. From then on the form instance that composed it is finished. It removes the draft once, writes no draft again, and accepts no second submit. A second submit would mean a second post, or a patch computed against a body the chain no longer holds. A broadcast that fails, or that is cut short by a re-authentication redirect, is not a landing, so the draft is kept even though a failed broadcast may still have reached the chain: losing typed work is the worse outcome. Because a draft is stored per paper and outlives the form that wrote it, a finished instance must not touch the stored copy after landing, or it can delete a draft a later visit to the same paper wrote.
+
 ## Authorship
 
 ### Authorship Slot
