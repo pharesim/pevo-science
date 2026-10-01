@@ -1,6 +1,7 @@
 ---
 title: "Bounding the quantifier the report names is not enough: catastrophic backtracking stays open while any other unbounded run shares its character class"
 date: 2026-09-14
+last_updated: 2026-10-01
 category: conventions
 module: backend/tests/eslint + code-review process
 problem_type: convention
@@ -17,12 +18,15 @@ applies_when:
   - "Authoring or editing a source-discipline canary whose detection is a regex over comment text rather than a parse"
   - "Two composed regex fragments have character classes that share a member, so the same character can be consumed by either"
   - "Sizing a timing probe for a synchronous hot path, where the failing case can outrun the test timeout without yielding"
+  - "Writing or reviewing a sentence that says which timing-probe shape pins a quantifier bound, or why a shape does not"
 symptoms:
   - "Label matching over a separator run grows four-fold per doubling of the run, invisible at the length the probe happens to use"
   - "The cheaper entry point is probed and the hot one is not, understating production cost by about half"
   - "An earlier round bounded the implicated runs and its docblock then claimed constant cost; measurement showed the cost was still quadratic"
   - "A run built from a character shared by two classes costs orders of magnitude more than the reported run, and does not return at all at moderate length"
   - "The canary stalls on an ordinary authoring shape, a section underline written directly against the label text"
+  - "A timing shape documented as pinning a bound stays green when that bound alone is reverted"
+  - "A loop whose shortest length is sized against the long pass hangs, rather than fails, on the costliest regression it guards"
 tags:
   - canary-tests
   - source-discipline
@@ -68,6 +72,8 @@ Work it in this order.
 
 The underscore belongs to four of those five classes at once. It is a `\w` character, a member of the emphasis class, and a member of both wrapper classes. The backtick belongs to three, and the asterisk to three. Any character sitting in two or more classes is a partition seam: a run built out of it can be split between the two quantifiers in every possible way, and the engine will try all of them.
 
+Sharing a class is necessary, not sufficient: the two runs must also be able to sit against the same stretch of input. The markup alternative's tag name `[a-z]` is a subset of `\w`, but a literal `<` and `>` fence it on both sides, so no run can be split between it and the qualifier word. It is bounded (`{1,16}`) only so that the docblock's "every run in the label is bounded" holds by construction, and reverting that bound is green by design.
+
 **3. Construct an adversarial run out of each intersecting character and measure, doubling the length.** Four-fold cost per doubling is quadratic. With the qualifier word left unbounded, `labelCount` on the label text plus N dashes measured:
 
 | N | `labelCount` | `citationsIn` |
@@ -100,11 +106,32 @@ Every finite bound costs something at its far side. Say so in the docblock, and 
 
 **7. Measure every entry point that embeds the pattern source.** `citationsIn` reaches the same `LABEL_SRC` through `forwardPattern` and `reversePattern`, runs first on every comment block, costs roughly twice `labelCount`, and had no probe at all. A probe on the cheaper entry point understates production cost by a factor of two and leaves the hot path unpinned.
 
-**8. Size the probe as a window, not a threshold, and run two lengths shortest first.** A probe that is too short cannot catch the regression. A probe that is too long turns a failure into a hang: at 100,000 characters the quadratic pattern never returns, and because a regex match is synchronous it blocks the event loop, so the runner's own test timeout cannot interrupt it. A canary that looks hung gets disabled, which is the same outcome as no canary. Two lengths in one loop, short first, gives both properties: the short pass aborts the spec on the expensive regressions before the long pass ever runs, and the long pass catches the cheap ones. Here 6400 catches the word-class revert at 8.4s through the spec path, the same revert the table above measures at 9.3s in isolation, and the wrapper revert at 5.9s, while 100,000 catches the emphasis revert, which is only 53ms at 6400 and 4.5s at 100,000. Bounded, the slowest shape is 2ms to 3ms at either length against a 250ms threshold. Take the measurement warm, the way the spec will actually run it, and know which of warm and cold you quoted.
+**8. Size the probe as a window, not a threshold, and run several lengths shortest first, the shortest sized against the costliest regression it guards.** A probe that is too short cannot catch the regression. A probe that is too long turns a failure into a hang: at 100,000 characters the quadratic pattern never returns, and because a regex match is synchronous it blocks the event loop, so the runner's own test timeout cannot interrupt it. A canary that looks hung gets disabled, which is the same outcome as no canary. Lengths in one loop, short first, give both properties, and each length exists for a regression class the others miss:
+
+- **400** catches the costliest class. Reverting `QUALIFIER`'s trailing separator `[\s-]{1,4}` to `[\s-]+` gives no verdict at 6400 within 90 seconds, so a loop that starts at 6400 hangs on exactly the regression it should report. At 400 the same revert fails in two to three seconds.
+- **6400** catches quadratic growth the shortest pass cannot see: the word-class revert is green at 400 and fails at 6400 in 8 to 11 seconds through the spec path, depending on load (the table above measures 9.3s in isolation), and the wrapper revert fails at 5.9s.
+- **100,000** catches the cheap shapes: the outer emphasis revert is only 53ms at 6400 and about 4.5s at 100,000.
+
+The probe first landed with only the two longer lengths. That pinned the expensive reverts and hung on the worst one, because its shortest length had been chosen relative to the long pass rather than to the costliest regression in the guarded set. Bounded, every shape stays in single-digit milliseconds at every length against a 250ms threshold. Take the measurement warm, the way the spec will actually run it, and know which of warm and cold you quoted.
 
 **9. Mutation-verify each bound, and make the restore path a guard rather than a habit.** Eleven mutants were applied one at a time to an isolated copy, run, then restored with a byte-comparison against a gold copy before the next went in. A run whose restore path was misconfigured refused every mutant rather than probing a dirty tree, which is the behaviour to build in: a mutation harness that cannot prove it restored cleanly must decline to report.
 
-Ten mutants went red, each failing within seconds. One survived: reverting only the trailing emphasis run's bound leaves the suite green, because that run is linear on its own. It backtracks n ways with a constant check after it, not n by m. It stays bounded anyway so the invariant "every quantified run in the label is bounded" holds by construction rather than by a neighbour's bound, and the signal recorded it as not independently pinned rather than claiming coverage.
+Ten mutants went red, each failing within seconds. One survived: reverting only the trailing emphasis run's bound leaves the suite green, because the only thing after each place that run can stop is the literal `companion`, which fails at once. It backtracks n ways with constant work at each, not n ways with a re-split at each, so its cost per character is too small for any length in the loop to see. That it is linear is not the reason; item 10 shows a linear run that does pin. It stays bounded anyway so the invariant "every quantified run in the label is bounded" holds by construction rather than by a neighbour's bound, and the signal recorded it as not independently pinned rather than claiming coverage.
+
+**10. A timing shape pins a bound only when its run character is also in a neighbouring quantifier's class, and the reason is work per character, not growth order.** The bound in question is the `[\s-]{0,4}` inside the emphasis group `(?:[*_\x60]{1,4}[\s-]{0,4})?`. No suffix-only shape puts a long run in that slot: the mixed shape's leading `_` reaches it, but hands it at most one dash before the next emphasis character. So the loop gained two prefixed shapes, `real-path_` and `real-path*` each followed by a run.
+
+The run has to be dashes. A dash is in that bound's `[\s-]` and in `QUALIFIER`'s `[\w-]` word class, so at each dash the unbounded run can stop and hand what follows to the two qualifier slots, which re-split it in a bounded but large number of ways. A space is outside `[\w-]`, so at each space the qualifier fails at once. With only that bound reverted to `[\s-]*` and every other run bounded, both shapes are linear. The dash shapes roughly double per doubling, about 140ms at 400, 1.4s at 3200 and 2.8s at 6400. The space shape stays near 0ms through 100,000. Bounded, the dash shapes take about 2.5ms and the space shape stays near zero.
+
+Two wrong sentences preceded this one, each in the same comment and each caught by reverting the bound alone:
+
+- The first version paired `real-path*` with a SPACE run and said both prefixed shapes pinned the bound. With the dash pair deleted and the bound reverted, the suite stayed green at 11 of 11.
+- The correction explained the space shape's non-pin as "stays linear with the bound removed". That implied the pinning dash shape is super-linear, and it is not. The wrong mechanism came from review prose, which the implementer copied faithfully into the comment, so the rule binds hold text as much as source comments.
+
+How to apply:
+
+- Before writing "this shape pins that bound", revert that bound alone and run each candidate shape alone. Both pinning pairs must go red on their own.
+- Before writing why a shape pins or does not, time both shapes at n, 2n and 4n.
+- A linear reading is not a clean reading. Judge it by its per-character cost against the threshold at the lengths the loop uses.
 
 All measurement was done on isolated copies of `backend/tests`, never in the shared checkout.
 
@@ -136,22 +163,25 @@ const LABEL_SRC =
   String.raw`real[\s-]{0,4}path[\s-]{0,4}(?:[*_\x60]+[\s-]{0,4})?${QUALIFIER}{0,2}(?:<[a-z]+>|[*_\x60]+)?companions?(?:\(s\))?`;
 ```
 
-**The pattern, after.** Every run carries a repetition bound, including the four the dash report did not implicate:
+**The pattern, after.** Every run carries a repetition bound, including the four the dash report did not implicate. The tag name's `{1,16}` was added afterwards, for the reason given under item 2:
 
 ```js
 const QUALIFIER = String.raw`(?:(?!(?:${STOP_WORDS})(?![\w-]))[(\[\x60'"*_]{0,4}[\w-]{1,64}[)\]\x60'"*_]{0,4}[\s-]{1,4})`;
 const LABEL_SRC =
-  String.raw`real[\s-]{0,4}path[\s-]{0,4}(?:[*_\x60]{1,4}[\s-]{0,4})?${QUALIFIER}{0,2}(?:<[a-z]+>|[*_\x60]{1,4})?companions?(?:\(s\))?`;
+  String.raw`real[\s-]{0,4}path[\s-]{0,4}(?:[*_\x60]{1,4}[\s-]{0,4})?${QUALIFIER}{0,2}(?:<[a-z]{1,16}>|[*_\x60]{1,4})?companions?(?:\(s\))?`;
 ```
 
 The landed pattern is flat in input length: about 2.1ms at 6400, at 19,443, at 50,000 and at 120,000 characters. That flatness is the guarantee the `LABEL_SRC` docblock is now entitled to state, and it states the measured basis alongside it, including that bounding only the dash-or-space runs was tried, measured, and is not enough.
 
-**The probe, as landed**, in the spec titled `the label and both citation parsers stay flat on a separator run`. Two lengths, short first, every intersecting character as its own separator shape, plus mixed shapes, and both entry points timed:
+**The probe, as it stands**, in the spec titled `the label and both citation parsers stay flat on a separator run`. Three lengths, shortest first, every intersecting character as its own separator shape, mixed shapes, two prefixed shapes, and both entry points timed:
 
 ```js
-for (const runLength of [6_400, 100_000]) {
-  for (const sep of ['-', '_', '*', '`', 'a-', 'a_', '_-*`']) {
-    const adversarial = `real-path${sep.repeat(Math.ceil(runLength / sep.length))}x`;
+for (const runLength of [400, 6_400, 100_000]) {
+  for (const [prefix, sep] of [
+    ['', '-'], ['', '_'], ['', '*'], ['', '`'], ['', 'a-'], ['', 'a_'], ['', '_-*`'],
+    ['_', '-'], ['*', '-'],
+  ] as const) {
+    const adversarial = `real-path${prefix}${sep.repeat(Math.ceil(runLength / sep.length))}x`;
     for (const [name, run] of [
       ['labelCount', (): void => expect(labelCount(adversarial)).toBe(0)],
       ['citationsIn', (): void => expect(citationsIn(adversarial)).toHaveLength(0)],
@@ -160,7 +190,7 @@ for (const runLength of [6_400, 100_000]) {
 }
 ```
 
-The `'a-'` and `'a_'` shapes exist because the rejected `\w[\w-]*` candidate is green on a pure separator run and quadratic on an alternating one. Keeping those shapes in the loop means the probe refuses the fix that only looks linear.
+The `'a-'` and `'a_'` shapes exist because the rejected `\w[\w-]*` candidate is green on a pure separator run and quadratic on an alternating one. Keeping those shapes in the loop means the probe refuses the fix that only looks linear. The two prefixed shapes exist for item 10: they are the only shapes that put a long dash run in the slot the emphasis group's inner bound guards.
 
 **Verification of the landed change.** 11 of 11 specs green on the canary; 9 files and 131 tests across `backend/tests/eslint/`; `npm run typecheck` green; a whole-tree census of every scanned file's label count, citation set and ratchet class byte-identical before and after, so no file changed class and no backlog pin moved; and the repo's `.githooks/pre-commit` anchor gate run standalone over all 272 added lines with zero hits and five control lines firing. The census is the part that makes a regex bound safe to land: the runtime measurement proves the pattern got faster, and only the census proves it still recognises the same corpus.
 
@@ -169,5 +199,5 @@ The `'a-'` and `'a_'` shapes exist because the rejected `\w[\w-]*` candidate is 
 - `carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02.md` is where this canary was specified and argued for. It enumerates the design constraints such a guard must satisfy: near-zero false positives, an explicit diff-versus-whole-tree scoping decision, a per-line escape marker, a mirrored self-test. The constraint this entry adds to that list is cost. A pattern built to satisfy the other four can still be the thing that takes the guard down.
 - `source-discipline-canary-comment-normalization-and-lens-vs-probe-coverage-2026-09-08.md` is the sibling rung, and the entry most likely to be read as contradicting this one. It rejects a bounded lookahead because a bound on a SEARCH silently answers "not a comment" for anything longer than the bound. A bound on a quantified RUN is the other case, and the distinction is drawn in the guidance above under bound runs, do not bound searches.
 - `source-discipline-canary-detection-must-survive-ordinary-authoring-shapes-2026-08-31.md` is the detection-reach rung of the same ladder: which legal spellings a textual matcher fails to see. This entry is the cost rung. Both share a root cause, closing the one instance that was observed instead of the class it belongs to.
-- `backtracking-probe-terminator-must-defeat-the-pattern-tail-2026-09-16.md` is the measurement rung: a probe that reports zero may never have engaged the pattern at all. It applies to the probe above, whose zero-match assertions are sound only because the label pattern's tail requires the literal word `companions`, which no run of separator characters can satisfy. That is a property of that pattern rather than of the idiom, so the terminator is re-derived per pattern.
+- `backtracking-probe-terminator-must-defeat-the-pattern-tail-2026-09-16.md` is the measurement rung: a probe that reports zero may never have engaged the pattern at all. It applies to the probe above, whose zero-match assertions are sound only because the label pattern's tail requires the literal word `companions`, which no run of separator characters can satisfy. That is a property of that pattern rather than of the idiom, so the terminator is re-derived per pattern. Its growth curve separates an engaged probe from a vacuous one and quadratic cost from linear; item 10 above is why a linear reading still has to be judged by its per-character cost.
 - `mutation-kill-claims-must-match-assertion-and-corpus-2026-05-15.md` covers why a mutation sweep's own completeness claim gets audited rather than accepted.

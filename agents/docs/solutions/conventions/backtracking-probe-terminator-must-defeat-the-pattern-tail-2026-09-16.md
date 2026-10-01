@@ -1,6 +1,7 @@
 ---
 title: "A backtracking probe that reports zero may not have engaged: the terminator must defeat that pattern's own tail, and the growth curve is the only signal"
 date: 2026-09-16
+last_updated: 2026-10-01
 category: conventions
 module: backend/tests/eslint
 problem_type: convention
@@ -84,8 +85,16 @@ was guarding stayed correct.
 **4. The growth curve is the signal.** Double the run and look for roughly four-fold. That is
 the one reading which distinguishes "this pattern is flat" from "this probe did not engage",
 because a probe that does not engage is flat under doubling too but sits at zero, while a
-genuinely linear pattern is flat at a small non-zero cost that tracks the input. Any
+genuinely linear pattern shows a non-zero cost that roughly doubles with the input. Any
 conclusion drawn from a single length is a conclusion about the probe as much as the pattern.
+
+The curve answers two questions, whether the probe engaged and what the growth order is. It
+does not answer whether the cost matters. A linear reading can still be expensive: with every
+run but one bounded, an unbounded run whose character a bounded neighbour also accepts is
+linear, yet each character is a point where that neighbour re-splits what follows, and the
+carve-out canary measured such a run at seconds for a few thousand characters. Read a linear
+curve against its per-character cost at the lengths the probe uses, not as a clean result
+(`backtracking-fix-must-bound-every-quantifier-whose-class-overlaps-2026-09-14.md`, item 10).
 
 **5. Validate a fast reading against a known-slow control in the same run.** The cheapest
 guard against all of the above is to measure one pattern already known to be quadratic
@@ -164,9 +173,10 @@ match returns true in both rows. Only the clock tells them apart.
 | 50,000 | 832.1ms | 4.1x |
 | 100,000 | 3,328.7ms | 4.0x |
 
-Four-fold per doubling is the quadratic signature. A pattern that is genuinely flat shows a
-small cost that grows about linearly; a probe that is not engaging shows zero at every row,
-which is the shape to be suspicious of rather than reassured by.
+Four-fold per doubling is the quadratic signature. A pattern that is not quadratic shows a
+cost that grows about linearly, which may still be large per character; a probe that is not
+engaging shows zero at every row, which is the shape to be suspicious of rather than
+reassured by.
 
 ## Related
 
@@ -177,13 +187,13 @@ which is the shape to be suspicious of rather than reassured by.
   This entry owns trusting the reading. The division matters because that entry's own worked
   probe asserts a zero match count, and is correct to, only because its pattern's tail
   requires the literal word `companions`, which no adversarial run character can satisfy. That
-  safety is a property of that pattern, not of the idiom, and it is not stated there as
-  something to re-derive per pattern. Flagged for refresh on that ground rather than edited
-  here, since amending another entry belongs to a refresh pass.
+  entry now states the safety as a property of that pattern rather than of the idiom, with the
+  terminator re-derived per pattern. Its item 10 is the complement to item 4 here: a linear
+  curve is judged by its per-character cost.
 - `sql-grammar-questions-are-settled-against-a-nonexistent-relation-2026-09-16.md` is the
   sibling from the same review round and the same file. Its closing note says that widening a
   head pattern is exactly the moment to re-check the cost rung; this entry is what that
-  re-check ran into. It should gain a citation to this one on the next refresh pass.
+  re-check ran into, and it cites this one.
 - `tests-must-fail-on-mutation-of-code-under-test-2026-04-22.md` is the root convention
   underneath both. A probe whose terminator satisfies the tail is a test that cannot fail for
   the reason it exists, which is the same defect in a timing register rather than an
