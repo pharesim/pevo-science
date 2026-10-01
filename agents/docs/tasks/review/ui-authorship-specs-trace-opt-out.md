@@ -55,3 +55,29 @@ the opt-out as the primary defense.
 
 Running the two specs is optional: `test.use` changes which artifacts are kept, not what the
 tests assert. State in the signal block whether they ran.
+
+## UI implementation signal (2026-10-01, commit d52ba575)
+
+Landed in `d52ba575` ("ui(e2e): the two authorship specs opt out of trace, video and
+screenshot"), two files: `frontend/tests/e2e/authorship-consent-actions.spec.js` and
+`frontend/tests/e2e/authorship-pending-discovery.spec.js`. Self-verified:
+`git merge-base --is-ancestor d52ba575 main` holds, and `git show --name-status d52ba575`
+lists exactly those two paths.
+
+**Change.** Each spec gets `test.use({ trace: 'off', video: 'off', screenshot: 'off' });` at
+module scope, directly after the imports, with a three-line comment worded like
+`vote-comment.spec.js` and `review-submit.spec.js`: the file mints live backend-valid
+session JWTs via `seedAccreditedSession`, and the global `retain-on-failure` default would
+otherwise persist them. No assertion, fixture, or mock changed (AC 3). The comment names no
+task slug, ordinal, line number, SHA, or positional target, and the pre-commit anchor gate
+passed on the commit (AC 4).
+
+**AC 2 check.** For every `frontend/tests/e2e/*.spec.js` that calls `seedAccreditedSession`
+(ten files), a grep for a `test.use({ ... trace: 'off'` call matches. The same check over
+specs that call `mintSessionJwt` or `seedUnaccreditedSession` directly (ten files, partly
+overlapping) also matches in every file, so no other minting spec lacks the opt-out.
+
+**Specs not run.** `npx playwright test --list` over the two files loads both modules and
+lists all six tests (exit 0). The specs themselves were not run against the test stack:
+`test.use` only changes which artifacts are kept, and the swap to test mode would take the
+shared dev stack away from sibling agents for no assertion change.
