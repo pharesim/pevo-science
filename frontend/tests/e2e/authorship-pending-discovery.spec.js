@@ -17,6 +17,11 @@
 import { test, expect } from '@playwright/test';
 import { seedAccreditedSession } from './fixtures/auth.js';
 
+// Specs in this file mint live backend-valid session JWTs via seedAccreditedSession.
+// Disable trace/video/screenshot to keep those tokens out of trace.zip artifacts
+// (the global default `trace: 'retain-on-failure'` would otherwise persist them).
+test.use({ trace: 'off', video: 'off', screenshot: 'off' });
+
 const USERNAME = 'e2econsentuser';
 
 // Mock the boot-time authed GETs the global header depends on so the dropdown

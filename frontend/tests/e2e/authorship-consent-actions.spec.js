@@ -28,6 +28,11 @@ import { test, expect } from './fixtures/keychain.js';
 import { installPaperMocks, installAuthedBootMocks, buildPaper } from './fixtures/paper-mocks.js';
 import { seedAccreditedSession } from './fixtures/auth.js';
 
+// Specs in this file mint live backend-valid session JWTs via seedAccreditedSession.
+// Disable trace/video/screenshot to keep those tokens out of trace.zip artifacts
+// (the global default `trace: 'retain-on-failure'` would otherwise persist them).
+test.use({ trace: 'off', video: 'off', screenshot: 'off' });
+
 const APP_TAG = 'pevotest';
 
 // Keep the boot-time authed GETs quiet, and seed the pending-authorships store.
