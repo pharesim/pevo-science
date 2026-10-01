@@ -80,7 +80,8 @@ async function unpinFromKubo(ipfsApiUrl, cid) {
  *
  * `trace.zip` is a ZIP archive of JSONL. We unzip via `unzip -p`; if that
  * binary is unavailable the scan is skipped (with a warning) rather than
- * failing the run — the opt-out pattern in actions #1 is the primary defense.
+ * failing the run — the per-spec `test.use({ trace: 'off', ... })` opt-out
+ * is the primary defense.
  */
 export function scanTracesForSecrets() {
   const testResultsDir = resolve(FRONTEND_ROOT, 'test-results');

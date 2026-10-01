@@ -64,9 +64,9 @@ const TEST_FIELD = 'Test Science';
  * instead of closing over module-scope constants.
  */
 async function seedActiveUser(request, pool, testEmail, testUsername) {
-  // Clean any leftover row from a prior partial run (test DB is reset
-  // between runs by global-setup, but a retry within the same run can hit
-  // UNIQUE(email)).
+  // Defensive cleanup: remove any row that already holds this email or
+  // username before the signup. The test DB is reset between runs by
+  // global-setup, and the test body builds both identifiers per attempt.
   await pool.query('DELETE FROM accounts WHERE email = $1 OR username = $2', [
     testEmail,
     testUsername,

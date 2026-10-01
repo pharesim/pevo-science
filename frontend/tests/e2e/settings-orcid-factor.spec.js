@@ -62,9 +62,13 @@ const STUB_PROOF = 'stub-fresh-auth-proof-orcid-factor';
 const NEW_PASSWORD = 'OrcidFactorPass1';
 const CONSENT_OP_KEY = 'pevo_fresh_auth_consent_op_proof';
 
-// Populated in beforeAll from (Date.now, testInfo.retry); beforeAll is where
-// testInfo carries the retry index. A retry runs in a fresh worker process, so
-// module scope re-runs too and beforeAll runs again; the retry index plus the
+// Populated in the happy-path describe's beforeAll from (Date.now,
+// testInfo.retry); beforeAll is where testInfo carries the retry index. A
+// retry runs in a fresh worker process, so module scope re-runs too and these
+// start out undefined there. The happy-path describe's beforeAll runs again
+// only in a worker that runs one of the happy-path describe's tests; a worker
+// that runs only the mismatch describe's test leaves these undefined, and
+// that test reads its own NEG_* identifiers instead. The retry index plus the
 // fresh timestamp keep each attempt off a colliding
 // UNIQUE(email)/UNIQUE(username)/partial-UNIQUE(orcid) row left by a failed attempt.
 let RUN_SUFFIX;
@@ -143,8 +147,9 @@ test.describe('settings — ORCID-factor set_password (State C)', () => {
     TEST_EMAIL = `e2e+orcidfactor-${RUN_SUFFIX}@pevo.test`;
     // Synthetic 16-digit ORCID iD in the standard 4-4-4-4 grouping. State C
     // requires orcid SET; accounts.orcid carries a partial UNIQUE index
-    // (WHERE orcid IS NOT NULL) and every run/retry inserts a fresh row, so the
-    // iD must be per-run-unique like email/username or a second run collides on
+    // (WHERE orcid IS NOT NULL) and every run of this hook inserts a fresh row
+    // (its email is new each time), so the iD must be unique per run of this
+    // hook like email/username, or a later run in the same test DB collides on
     // the index. Derived from (now, retry); the value is opaque (no checksum
     // validation on the column) and never sent through a real ORCID exchange.
     const orcidDigits = `${now}${testInfo.retry}`.padStart(16, '0').slice(-16);
@@ -428,8 +433,9 @@ test.describe('settings — ORCID-factor set_password registered-factor mismatch
     NEG_USERNAME = `e2e-orcidneg-${suffix}`;
     NEG_EMAIL = `e2e+orcidneg-${suffix}@pevo.test`;
     // Seeded iD A. Same partial-UNIQUE(orcid) constraint as the happy-path
-    // account, so it must be per-run-unique. The leading '1' keeps it clear of
-    // both the happy-path derivation and the fixed mismatch iD B below.
+    // account, so it must be unique per run of this hook too. The leading '1'
+    // keeps it clear of both the happy-path derivation and the fixed mismatch
+    // iD B below.
     const orcidDigits = `1${now}${testInfo.retry}`.padStart(16, '0').slice(-16);
     NEG_ORCID = orcidDigits.replace(/(\d{4})(\d{4})(\d{4})(\d{4})/, '$1-$2-$3-$4');
     pool = openAppPool();

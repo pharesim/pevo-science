@@ -37,7 +37,8 @@ const TEST_PASSWORD = 'E2eLoginPass1';
 const WRONG_PASSWORD = 'NotMyPassword9';
 
 // Populated in beforeAll from (Date.now, testInfo.retry). Declared with `let`
-// so the two tests below see whatever the most recent beforeAll computed.
+// so that hook can assign them; seedLightAccount and the tests in the
+// 'email+password login' describe read the values it computed in their worker.
 let RUN_SUFFIX;
 let TEST_EMAIL;
 let TEST_USERNAME;
@@ -63,10 +64,13 @@ test.describe('email+password login', () => {
   let pool;
 
   test.beforeAll(async ({}, testInfo) => {
-    // Recompute RUN_SUFFIX per beforeAll invocation. Playwright runs
-    // beforeAll again on retries, so including `testInfo.retry` guarantees
-    // retries see a distinct suffix and don't collide on UNIQUE(email) /
-    // UNIQUE(username) against rows left by the failed attempt.
+    // A retry starts a fresh worker and this hook runs again there, so
+    // RUN_SUFFIX is recomputed in every worker that runs a test in this
+    // describe. The `testInfo.retry` read here is the retry index of the test
+    // whose start triggered the hook, so it can repeat from one worker to the
+    // next, a test's failed attempt and its own retry included. The retry
+    // index plus the fresh timestamp keep this worker's email and username
+    // off the UNIQUE(email) / UNIQUE(username) rows a failed attempt left.
     RUN_SUFFIX = `${Date.now().toString(36).slice(-6)}r${testInfo.retry}`;
     TEST_EMAIL = `e2e+login-${RUN_SUFFIX}@pevo.test`;
     TEST_USERNAME = `e2e-login-${RUN_SUFFIX}`;
