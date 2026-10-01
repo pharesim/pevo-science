@@ -660,6 +660,14 @@ export class PevoEditor {
       },
     });
 
+    // Keep the tiptap editor out of Alpine's reactivity. A page holds this
+    // object in its reactive state, so every read through it comes back
+    // wrapped in a proxy, and ProseMirror compares node types by identity: a
+    // transaction built through those proxies fails to apply ("Applying a
+    // mismatched transaction"). This is the marker the reactivity library
+    // checks before it wraps an object.
+    Object.defineProperty(this.editor, '__v_skip', { value: true });
+
     // Fullscreen Escape handler
     this._escHandler = (e) => {
       if (e.key === 'Escape' && this.isFullscreen) this._toggleFullscreen();
@@ -695,6 +703,24 @@ export class PevoEditor {
     } else {
       this.editor.commands.clearContent(false);
     }
+  }
+
+  // Dispatch one empty transaction. The editor rewrites some markdown it was
+  // given (a list's spacing, for one) in an append-transaction that runs on
+  // the first transaction dispatched after the content is set, and reports the
+  // rewritten text through onChange. Calling this makes that happen now, so a
+  // caller can read the text the editor will hold, rather than whenever the
+  // first transaction happens to arrive.
+  normalize() {
+    if (!this.editor) return;
+    this.editor.view.dispatch(this.editor.state.tr);
+  }
+
+  // Lock or unlock the content. No update is emitted, so locking does not
+  // re-serialise the content into onChange.
+  setEditable(editable) {
+    if (!this.editor) return;
+    this.editor.setEditable(editable, false);
   }
 
   getMarkdown() {

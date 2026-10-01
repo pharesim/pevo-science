@@ -163,9 +163,9 @@ test('publish form: accredited co-author prefills+locks ORCID; non-accredited st
 
   // Clear any draft from a previous run so prefill assertions read fresh
   // state (matches publish.spec.js).
-  await page.addInitScript(() => {
-    window.localStorage.removeItem('pevo-draft-publish');
-  });
+  await page.addInitScript((key) => {
+    window.localStorage.removeItem(key);
+  }, `pevo-draft-publish:${A.username}`);
 
   await page.goto('/en/publish');
   await page.waitForSelector('[x-data="publishPage"]');
@@ -230,9 +230,9 @@ test('publish broadcast carries accredited co-author ORCID in json_metadata.auth
     username: A.username,
     accreditation: A.accreditation,
   });
-  await page.addInitScript(() => {
-    window.localStorage.removeItem('pevo-draft-publish');
-  });
+  await page.addInitScript((key) => {
+    window.localStorage.removeItem(key);
+  }, `pevo-draft-publish:${A.username}`);
 
   // Capture the IPFS upload response so we can assert the broadcast metadata
   // carries the same CID (mirrors publish.spec.js).
@@ -393,7 +393,7 @@ test('edit form: existing co-author with accredited hive stays disabled; new co-
     ({ key }) => {
       window.localStorage.removeItem(key);
     },
-    { key: `pevo-draft-edit-${paper.author}-${paper.permlink}` },
+    { key: `pevo-draft-edit:${A.username}:${paper.author}:${paper.permlink}` },
   );
 
   await page.goto(`/en/edit/${paper.author}/${paper.permlink}`);

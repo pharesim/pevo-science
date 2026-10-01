@@ -124,7 +124,17 @@ export function initRouter() {
     params: initial.params,
     query: initial.query,
     locale: initial.locale || DEFAULT_LOCALE,
+    // pageMount re-renders the current page when this changes, as it does on
+    // a route change. Bumped only by remount().
+    generation: 0,
     _navigationGuards: [],
+
+    // Destroy the mounted page and render it again for the same route, so a
+    // page bound to what it captured at mount (the composers' account and
+    // paper) can start over when that stops matching, without a route change.
+    remount() {
+      this.generation += 1;
+    },
 
     // Does NOT intercept popstate (browser back/forward) — that path
     // goes around `navigate()`. In-page navigation in PEvO uses

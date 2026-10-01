@@ -9,10 +9,19 @@ import { sha256File, slugify } from '../crypto.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 import { loadAccreditedDirectory, lookupAccredited, applyHiveChangePrefill, applyAccreditedPrefill } from '../lib/accredited-directory.js';
 import { accreditationBannerTemplate } from '../components/accreditation-banner.js';
+import {
+  publishDraftKey,
+  removeLegacyDrafts,
+  readDraftEntry,
+  draftHasText,
+  composeDraftEntry,
+  snapshotFields,
+  fieldsMatchSnapshot,
+} from '../lib/composer-drafts.js';
+import { relativeTime } from '../lib/relative-time.js';
 
 import { getAppTag, getAppId, getMaxUploadSize, getMaxUploadSizeMB } from '../config.js';
 
-const DRAFT_KEY = 'pevo-draft-publish';
 const MARKDOWN_IMAGE_RE = /!\[[^\]]*\]\(([^)]+)\)/g;
 const ABSTRACT_MAX_CHARS = 2000;
 const TX_WARN_BYTES = 55000;
@@ -27,19 +36,6 @@ const DISCIPLINE_TAXONOMY = [
   { field: 'Social Sciences', subfields: ['Psychology', 'Economics', 'Education', 'Sociology', 'Law', 'Political Science', 'Geography'] },
   { field: 'Humanities and Arts', subfields: ['History', 'Philosophy', 'Languages and Literature', 'Arts', 'Theology'] },
 ];
-
-
-function relativeTime(timestamp, t) {
-  const seconds = Math.floor((Date.now() - timestamp) / 1000);
-  if (seconds < 60) return t('time.justNow');
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return t('time.minutesLong', { count: minutes });
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return t('time.hoursLong', { count: hours });
-  const days = Math.floor(hours / 24);
-  if (days === 1) return t('time.yesterday');
-  return t('time.daysLong', { count: days });
-}
 
 function composePostBody(abstract, fullText) {
   if (!fullText) return '## Abstract\n\n' + abstract;
@@ -57,11 +53,22 @@ const template = `
         <p class="text-ink-muted mb-8" x-text="$t('publish.description')"></p>
 
         <!-- Draft restored banner -->
-        <template x-if="draftRestored && draftSavedAt">
-          <div class="card bg-pevo-teal-light border-pevo-teal/30 mb-6">
+        <template x-if="draftRestored && draftSavedAt && !_landed">
+          <div class="card bg-pevo-teal-light border-pevo-teal/30 mb-6" data-testid="draft-restored-card">
             <div class="flex items-center justify-between">
               <p class="text-sm text-ink" x-text="$t('publish.draftRestored', { time: draftTimeAgo() })"></p>
               <button type="button" class="text-sm font-medium text-pevo-teal hover:text-pevo-teal-dark" @click="discardDraft()" x-text="$t('common.discard')"></button>
+            </div>
+          </div>
+        </template>
+
+        <!-- A stored draft the form's own work would overwrite: the form stays read-only until the user picks -->
+        <template x-if="draftChoice">
+          <div class="card bg-pevo-gold-light border-pevo-gold/30 mb-6" data-testid="draft-choice-card">
+            <p class="text-sm text-ink" x-text="draftChoiceMessage"></p>
+            <div class="flex items-center gap-4 mt-3">
+              <button type="button" class="btn-primary text-xs" @click="restorePendingDraft()" x-text="$t('common.restore')"></button>
+              <button type="button" class="text-sm font-medium text-pevo-teal hover:text-pevo-teal-dark" @click="discardPendingDraft()" x-text="$t('common.discard')"></button>
             </div>
           </div>
         </template>
@@ -93,7 +100,8 @@ const template = `
           </div>
         </template>
 
-        <form @submit.prevent="isAccredited ? handleSubmit() : null" class="space-y-6">
+        <form @submit.prevent="isAccredited ? handleSubmit() : null">
+          <fieldset class="space-y-6 min-w-0" :disabled="!!draftChoice">
           <!-- Title -->
           <div class="card">
             <label for="paper-title" class="block text-sm font-semibold text-ink mb-2" x-text="$t('publish.paperTitle')"></label>
@@ -331,6 +339,7 @@ const template = `
               <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-primary w-full sm:w-auto shrink-0 text-center no-underline" x-text="$t('common.getAccredited')"></a>
             </template>
           </div>
+          </fieldset>
         </form>
 
         <p class="text-sm text-ink-muted mt-4">
@@ -369,8 +378,28 @@ export function initPublishPage() {
 
     draftRestored: false,
     draftSavedAt: null,
+    // 'saved' while the choice card stands: an account signed in under a form
+    // that already held work, and its stored draft would have overwritten that
+    // work. Null otherwise. The form is read-only and nothing is drafted until
+    // the user restores or discards the stored draft (_pendingDraft).
+    draftChoice: null,
+    _pendingDraft: null,
     _draftTimer: null,
-    _initialLoadDone: false,
+    // The account this instance drafts for and the key it drafts under,
+    // captured once (ARCHITECTURE.md § 8, "Composer Drafts"). Null while the
+    // instance has no account: a signed-out visitor drafts nothing until an
+    // account signs in under the form and the instance adopts it.
+    _draftAccount: null,
+    _draftKey: null,
+    // The form as loaded, in two halves: the plain fields once the prefill is
+    // done, the editor fields once both editors have normalised their content.
+    // Nothing is drafted until both exist, and a form equal to them holds no
+    // user work.
+    _baselineFields: null,
+    _baselineEditors: null,
+    // Set when another account signed in; the instance is replaced once no
+    // submit is in flight.
+    _remountRequested: false,
     // True from the moment the broadcast resolves with a result. Set only by
     // _markLanded and never reset: a landed instance is finished.
     _landed: false,
@@ -440,42 +469,27 @@ export function initPublishPage() {
       return 'bg-pevo-teal-light border-pevo-teal/30';
     },
 
+    get draftChoiceMessage() {
+      if (!this._pendingDraft) return '';
+      return this.$t('publish.draftSavedChoice', { time: relativeTime(this._pendingDraft.savedAt, this.$t) });
+    },
+
+    get _hasBaseline() {
+      return !!(this._baselineFields && this._baselineEditors);
+    },
+
+    // Whether both editors still hold the text they normalised the loaded
+    // form to.
+    get editorsAtBaseline() {
+      return !!this._baselineEditors && fieldsMatchSnapshot(this._editorFields(), this._baselineEditors);
+    },
+
     init() {
-      // Restore accreditation info
-      const acc = this.accreditation;
-      if (acc) {
-        if (!this.authorName) this.authorName = acc.name || '';
-        if (!this.authorAffiliation) this.authorAffiliation = acc.institution || '';
-      }
-
-      // Restore draft
-      try {
-        const raw = localStorage.getItem(DRAFT_KEY);
-        if (raw) {
-          const draft = JSON.parse(raw);
-          if (draft && typeof draft.title === 'string') {
-            this.title = draft.title;
-            this.abstract = draft.abstract;
-            this.body = draft.body;
-            this.discipline = draft.discipline;
-            this.keywordsText = draft.keywordsText;
-            this.coAuthors = draft.coAuthors || [];
-            this.citations = draft.citations || [];
-            if (draft.authorName) this.authorName = draft.authorName;
-            if (draft.authorAffiliation) this.authorAffiliation = draft.authorAffiliation;
-            if (draft.authorOrcid) this.authorOrcid = draft.authorOrcid;
-            this.draftSavedAt = draft.savedAt;
-            this.draftRestored = true;
-          }
-        }
-      } catch {
-        localStorage.removeItem(DRAFT_KEY);
-        console.warn('Draft recovery failed');
-      }
-      this._initialLoadDone = true;
-
-      // Merge citation collection from localStorage
-      this._mergeCitationCollection();
+      this._captureAccount(this.username);
+      this._applyAccreditationPrefill();
+      // The plain half of the baseline. The draft is restored only once the
+      // editor half exists (_onEditorsMounted), so neither half sees it.
+      this._baselineFields = snapshotFields(this._plainFields());
 
       // Listen for cross-tab citation collection changes
       this._storageListener = (e) => {
@@ -506,6 +520,175 @@ export function initPublishPage() {
       this.$watch('authorName', () => this._scheduleDraftSave());
       this.$watch('authorAffiliation', () => this._scheduleDraftSave());
       this.$watch('authorOrcid', () => this._scheduleDraftSave());
+
+      this.$watch('$store.auth.username', (next) => this._onAccountChange(next));
+      this.$watch('step', () => this._remountWhenSettled());
+    },
+
+    _captureAccount(account) {
+      this._draftAccount = account || null;
+      this._draftKey = account ? publishDraftKey(account) : null;
+      if (account) removeLegacyDrafts();
+    },
+
+    // Fill the author fields the form leaves empty from the account's
+    // accreditation, and return the names of the fields it filled.
+    _applyAccreditationPrefill() {
+      const acc = this.accreditation;
+      const filled = [];
+      if (!acc) return filled;
+      if (!this.authorName && acc.name) { this.authorName = acc.name; filled.push('authorName'); }
+      if (!this.authorAffiliation && acc.institution) { this.authorAffiliation = acc.institution; filled.push('authorAffiliation'); }
+      return filled;
+    },
+
+    // The account in the store changed (ARCHITECTURE.md § 8, "The instance
+    // is bound to the account and the paper it loaded for"). A change to no
+    // account (a sign-out, a session teardown) changes nothing here: the
+    // instance keeps drafting under the key it captured, so work typed after a
+    // teardown survives the trip to the sign-in page, and the same account
+    // signing back in finds the instance as it left it. A custody upgrade
+    // keeps the username and never reaches this. An instance that captured no
+    // account adopts the one that signs in. Any other account gets a fresh
+    // instance, because this one's form and key belong to the captured account.
+    _onAccountChange(next) {
+      if (!next || next === this._draftAccount) return;
+      if (this._draftAccount === null) {
+        this._adoptAccount(next);
+        return;
+      }
+      this._remountRequested = true;
+      this._remountWhenSettled();
+    },
+
+    // A submit in flight finishes before the instance is replaced: whether an
+    // account change between its legs may still send anything is the upload
+    // batch guard's decision, not this one's. The pending debounce is flushed
+    // first, under the key this instance captured.
+    _remountWhenSettled() {
+      if (!this._remountRequested || this.isSubmitting || !this._mounted) return;
+      this._remountRequested = false;
+      this._flushDraftSave();
+      Alpine.store('router').remount();
+    },
+
+    // A sign-in under an instance that captured no account. The form is kept
+    // and becomes this account's, attached files included. Author fields the
+    // user left empty take the accreditation prefill, and the baseline moves
+    // with them, since a prefill is not the user's work. A draft the account
+    // already stored is restored silently over a form still at its baseline,
+    // and otherwise offered through the choice card; then whatever the form
+    // holds is drafted under the new key.
+    _adoptAccount(account) {
+      this._captureAccount(account);
+      for (const field of this._applyAccreditationPrefill()) {
+        this._baselineFields[field] = JSON.stringify(this[field]);
+      }
+      // Editors still mounting: _onEditorsMounted restores under the key
+      // captured here.
+      if (!this._baselineEditors) return;
+      this._restoreDraft();
+      this._writeDraft();
+    },
+
+    _plainFields() {
+      return {
+        title: this.title, discipline: this.discipline, keywordsText: this.keywordsText,
+        coAuthors: this.coAuthors, citations: this.citations, authorName: this.authorName,
+        authorAffiliation: this.authorAffiliation, authorOrcid: this.authorOrcid,
+      };
+    },
+
+    _editorFields() {
+      return { abstract: this.abstract, body: this.body };
+    },
+
+    // The text fields a draft stores.
+    _draftFields() {
+      return { ...this._plainFields(), ...this._editorFields() };
+    },
+
+    _formAtBaseline(fields) {
+      return fieldsMatchSnapshot(fields, { ...this._baselineFields, ...this._baselineEditors });
+    },
+
+    // Both editors are up. Normalise them, take the editor half of the
+    // baseline, and only then restore: the baseline is the form without the
+    // draft, and taken after a restore it would make a draft that only
+    // touched the editors look like no work at all. The citation collection
+    // merges last, so a restored draft cannot replace what it adds.
+    _onEditorsMounted() {
+      if (this._abstractEditor) this._abstractEditor.normalize();
+      if (this._bodyEditor) this._bodyEditor.normalize();
+      this._baselineEditors = snapshotFields(this._editorFields());
+      this._restoreDraft();
+      this._mergeCitationCollection();
+    },
+
+    // Restore the captured account's stored draft. Over a form still at its
+    // baseline it is restored silently, with the "draft restored" card. Over a
+    // form that already holds work (typed before an account signed in) it
+    // waits on the choice card, so neither text replaces the other unseen.
+    _restoreDraft() {
+      if (!this._draftKey) return;
+      const draft = readDraftEntry(this._draftKey);
+      if (!draftHasText(draft)) return;
+      if (this._formAtBaseline(this._draftFields())) {
+        this._applyDraft(draft);
+        return;
+      }
+      this._pendingDraft = draft;
+      this.draftChoice = 'saved';
+      this._syncEditorsEditable();
+    },
+
+    _applyDraft(draft) {
+      this.title = draft.title;
+      this.abstract = draft.abstract || '';
+      this.body = draft.body || '';
+      this.discipline = draft.discipline || '';
+      this.keywordsText = draft.keywordsText || '';
+      this.coAuthors = draft.coAuthors || [];
+      this.citations = draft.citations || [];
+      if (draft.authorName) this.authorName = draft.authorName;
+      if (draft.authorAffiliation) this.authorAffiliation = draft.authorAffiliation;
+      if (draft.authorOrcid) this.authorOrcid = draft.authorOrcid;
+      applyAccreditedPrefill(this.coAuthors, this.accreditedDirectory);
+      if (this._abstractEditor) this._abstractEditor.setContent(this.abstract);
+      if (this._bodyEditor) this._bodyEditor.setContent(this.body);
+      this.draftSavedAt = draft.savedAt ?? null;
+      this.draftRestored = true;
+    },
+
+    // The choice card's Restore: the stored draft replaces what the form held.
+    restorePendingDraft() {
+      if (this._landed || !this._pendingDraft) return;
+      const draft = this._pendingDraft;
+      this._clearDraftChoice();
+      this._applyDraft(draft);
+      this._mergeCitationCollection();
+    },
+
+    // The choice card's Discard: the stored draft goes, and the form's own
+    // work, held back while the card stood, is drafted in its place.
+    discardPendingDraft() {
+      if (this._landed || !this._pendingDraft) return;
+      this._clearDraftChoice();
+      localStorage.removeItem(this._draftKey);
+      this._writeDraft();
+      this._mergeCitationCollection();
+    },
+
+    _clearDraftChoice() {
+      this.draftChoice = null;
+      this._pendingDraft = null;
+      this._syncEditorsEditable();
+    },
+
+    _syncEditorsEditable() {
+      const editable = !this.draftChoice;
+      if (this._abstractEditor) this._abstractEditor.setEditable(editable);
+      if (this._bodyEditor) this._bodyEditor.setEditable(editable);
     },
 
     async _mountEditors() {
@@ -550,6 +733,7 @@ export function initPublishPage() {
           initialMarkdown: this.body,
         });
       }
+      this._onEditorsMounted();
     },
 
     destroy() {
@@ -562,7 +746,6 @@ export function initPublishPage() {
     },
 
     _scheduleDraftSave() {
-      if (!this._initialLoadDone) return;
       if (this._draftTimer) clearTimeout(this._draftTimer);
       this._draftTimer = setTimeout(() => this._writeDraft(), 2000);
     },
@@ -582,10 +765,13 @@ export function initPublishPage() {
     // - the removal, once. The form stays interactive after it too, and every
     //   later writer is answered by the refusal in _writeDraft, not by a
     //   second removal.
-    _markLanded() {
+    //
+    // The key is passed in from handleSubmit, which captures it at entry, so
+    // the removal names the account the broadcast ran for.
+    _markLanded(key) {
       this._landed = true;
       if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }
-      localStorage.removeItem(DRAFT_KEY);
+      localStorage.removeItem(key);
     },
 
     // Persist the draft now and cancel any pending debounce. Called before an
@@ -598,40 +784,46 @@ export function initPublishPage() {
       this._writeDraft();
     },
 
-    // The draft body, shared by the debounced save and the flush so the two
-    // cannot persist different shapes. The load guard belongs here rather than
-    // only at the scheduler: a flush can fire from a gate before the restore
-    // has run, and writing the empty form then would overwrite a real draft
-    // with nothing.
+    // The one function every draft write passes through: the debounced save
+    // and every gate's flush both end here, so each of its refusals holds for
+    // both. It writes only user work under the captured key (ARCHITECTURE.md
+    // § 8, "A draft holds user work only"):
     //
-    // The landed refusal belongs here for the same reason: the debounce and
-    // the flush both end in this function, so a refusal at the scheduler alone
-    // would leave every gate's flush writing the spent draft back. It sits
-    // ahead of the empty-form removal as well as the write, since every visit
-    // to this page shares the one key and a finished instance has no business
-    // touching what is under it. The scheduler is deliberately left alone, and
-    // a timer armed after the landing fires into this refusal.
+    // - nothing after the landing. A refusal at the scheduler alone would
+    //   leave every gate's flush writing the spent draft back, and the
+    //   scheduler is deliberately left alone: a timer armed after the landing
+    //   fires into this refusal;
+    // - nothing without a captured account, which a signed-out visitor has
+    //   none of until the instance adopts one;
+    // - nothing before the baseline exists. A flush can fire from a gate
+    //   before the restore has run, and writing then would replace a real
+    //   draft with a form that does not hold it yet;
+    // - nothing while the choice card stands, so what the form holds cannot
+    //   overwrite the stored draft before the user has seen it.
+    //
+    // A form back at its baseline drops the stored text instead of storing it.
     _writeDraft() {
-      if (!this._initialLoadDone) return;
       if (this._landed) return;
-      const hasContent = this.title.trim() || this.abstract.trim() || this.body.trim();
-      if (!hasContent) {
-        localStorage.removeItem(DRAFT_KEY);
+      if (!this._draftKey || !this._hasBaseline || this.draftChoice) return;
+      const fields = this._draftFields();
+      const entry = composeDraftEntry(readDraftEntry(this._draftKey), fields, {
+        atBaseline: this._formAtBaseline(fields),
+        now: Date.now(),
+      });
+      if (!entry) {
+        localStorage.removeItem(this._draftKey);
         return;
       }
-      const draft = {
-        title: this.title, abstract: this.abstract, body: this.body,
-        discipline: this.discipline, keywordsText: this.keywordsText,
-        coAuthors: this.coAuthors, citations: this.citations, authorName: this.authorName,
-        authorAffiliation: this.authorAffiliation, authorOrcid: this.authorOrcid,
-        savedAt: Date.now(),
-      };
-      localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
-      this.draftSavedAt = draft.savedAt;
+      localStorage.setItem(this._draftKey, JSON.stringify(entry));
+      if (draftHasText(entry)) this.draftSavedAt = entry.savedAt;
     },
 
+    // The "draft restored" card's Discard. Refused once landed, when the card
+    // is gone and the instance writes nothing. The form returns to the loaded
+    // one, and the baseline is taken again over it.
     discardDraft() {
-      localStorage.removeItem(DRAFT_KEY);
+      if (this._landed) return;
+      localStorage.removeItem(this._draftKey);
       this.title = '';
       this.abstract = '';
       this.body = '';
@@ -645,8 +837,10 @@ export function initPublishPage() {
       this.supplementaryFiles = [];
       this.draftRestored = false;
       this.draftSavedAt = null;
-      if (this._abstractEditor) this._abstractEditor.setContent('');
-      if (this._bodyEditor) this._bodyEditor.setContent('');
+      if (this._abstractEditor) { this._abstractEditor.setContent(''); this._abstractEditor.normalize(); }
+      if (this._bodyEditor) { this._bodyEditor.setContent(''); this._bodyEditor.normalize(); }
+      this._baselineFields = snapshotFields(this._plainFields());
+      this._baselineEditors = snapshotFields(this._editorFields());
     },
 
     draftTimeAgo() {
@@ -733,7 +927,12 @@ export function initPublishPage() {
       }
     },
 
+    // Merging takes the collection out of storage, so the citations it adds
+    // live only in the form from then on. Held back until the baseline exists
+    // and no choice card stands: the merged citations then count as user work
+    // and are drafted, and neither a restore nor the choice can replace them.
     _mergeCitationCollection() {
+      if (!this._hasBaseline || this.draftChoice) return;
       const key = 'pevo-citation-collection';
       const raw = localStorage.getItem(key);
       if (!raw) return;
@@ -917,6 +1116,9 @@ export function initPublishPage() {
       const username = this.username;
       if (!username || !this.isConnected || !this.authorName.trim()) return;
       if (!this.isAccredited) return;
+      // The landing removes the draft by this key. Captured with the account
+      // the submit runs for, ahead of the first await.
+      const draftKey = this._draftKey;
       if (!this.title.trim() || !this.abstract.trim() || !this.discipline.trim()) {
         Alpine.store('toast').show(this.$t('publish.missingRequiredFields'), 'error');
         return;
@@ -1138,7 +1340,7 @@ export function initPublishPage() {
         // Ahead of the `_mounted` guard, because the draft outlives the
         // component: a user who left during the broadcast would otherwise be
         // offered the draft of a paper that is on chain on the next visit.
-        this._markLanded();
+        this._markLanded(draftKey);
         if (!this._mounted) return;
 
         this.step = 'success';

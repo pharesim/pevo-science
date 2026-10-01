@@ -14,6 +14,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const mockCreateEditor = vi.fn(() => ({
   destroy: vi.fn(),
   setContent: vi.fn(),
+  normalize: vi.fn(),
+  setEditable: vi.fn(),
 }));
 
 vi.mock('../../src/editor.js', () => ({
@@ -71,7 +73,7 @@ vi.mock('../../src/config.js', () => ({
 }));
 
 const mockStores = {
-  router: { params: { author: 'alice', permlink: 'p1' }, navigate: vi.fn() },
+  router: { params: { author: 'alice', permlink: 'p1' }, navigate: vi.fn(), remount: vi.fn() },
   auth: { isConnected: true, isAccredited: true, username: 'alice' },
   toast: { show: vi.fn() },
   broadcastConfirm: { request: vi.fn(() => Promise.resolve(true)) },
@@ -91,6 +93,7 @@ import { broadcastOps } from '../../src/signer.js';
 import { fetchPaper, fetchPaperEnrichment, invalidatePaperCache } from '../../src/api.js';
 import { clearPasswordFactorMemo } from '../../src/lib/fresh-auth.js';
 import { initEditPage, editPageTemplate } from '../../src/pages/edit.js';
+import { snapshotFields } from '../../src/lib/composer-drafts.js';
 
 // Sentinel the DOM-bound field / toast must NOT contain.
 const LEAK_SENTINEL = 'deadbeef-leak-sentinel';
@@ -115,6 +118,17 @@ function createComponent() {
   // need live or stale refs assign their own after construction.
   comp.$refs = {};
   return comp;
+}
+
+// Stands in for the load and the editor mount, for fixtures that build
+// `paper` and the form by hand: captures the account and the paper the way a
+// landed load does, and takes the baseline over the form as it stands, which
+// in those fixtures is the paper as loaded. A field the test changes after
+// this is the user's work, which is what a draft write needs.
+function markLoaded(comp) {
+  comp._captureDraftTarget();
+  comp._baselineFields = snapshotFields(comp._plainFields());
+  comp._baselineEditors = snapshotFields(comp._editorFields());
 }
 
 describe('editPage handleSubmit sanitization', () => {
@@ -306,10 +320,14 @@ describe('editPage handleSubmit sanitization', () => {
       // Every field _writeDraft persists needs a watcher, or a change to it
       // never reaches the stored draft. The order mirrors that draft object so
       // a field added to one and not the other reads as a gap.
+      // The three after them replace the instance when it stops matching what
+      // it captured: another account, another paper, and a submit settling
+      // with a replacement pending.
       expect(comp.$watch.mock.calls.map(([expr]) => expr)).toEqual([
         'title', 'abstract', 'body', 'keywordsText', 'authorName',
         'authorAffiliation', 'authorOrcid', 'newCoAuthors', 'citations',
         'addressedReviews',
+        '$store.auth.username', '$store.router.params', 'step',
       ]);
       expect(storageListenersAfterInit).toBe(1);
 
@@ -823,75 +841,81 @@ describe('editPage handleSubmit sanitization', () => {
     expect(comp.errorMessage).toBe('');
   });
 
-  // The load path is the only production caller of _mountEditors: a
-  // successful loadPaperData schedules it through $nextTick, and it reads
-  // $refs.abstractEditor / $refs.bodyEditor to build one editor per ref. The
-  // _mountEditors teardown-during-init guard block invokes _mountEditors
-  // directly, so nothing there observes that a load schedules a mount at all.
-  //
-  // Two mechanics shape every load-driven case here. _mountEditors latches
-  // _editorsInitialized before it reads $refs and returns early once the flag
-  // is set, so a load that runs with empty refs latches it with zero editors
-  // and refs assigned afterwards are inert: refs go in before the load, never
-  // after. And loadPaperData discards the promise _mountEditors returns, so
-  // awaiting the load resolves before the mount's dynamic import does: wait
-  // on the mount's own effect, not on the load. Each wait here polls tighter
-  // than vi.waitFor's 50ms default, which would otherwise charge a fixed 50ms
-  // for a state that settles a few microtask ticks away. The timeout is left
-  // at its default, so what a wait costs when the state never arrives, and
-  // therefore how a broken mount surfaces, is unchanged.
-  describe('a successful load mounts the editors', () => {
+  // The editors' lifecycle is bound to the form's x-if, not to the load or
+  // the component: the form's root calls _mountEditors on every render, and a
+  // form that left the DOM (a sign-out hides it) and came back has new
+  // elements. The template half of that pairing is pinned here, and the
+  // mount's own behavior is driven through _mountEditors directly, the way the
+  // template's call reaches it. The real re-render (sign out, sign back in) is
+  // exercised with the real Alpine and editors in
+  // composer-drafts-real-editors.test.js.
+  describe('the form mounts the editors on every render', () => {
     beforeEach(() => {
       mockCreateEditor.mockClear();
     });
 
-    it('builds one editor per ref present when the load runs', async () => {
+    it("the form root inside the form's x-if calls _mountEditors", () => {
+      const formIf = 'x-if="!loadingPaper && !loadError && isAuthorized && paper">';
+      const at = editPageTemplate.indexOf(formIf);
+      expect(at).toBeGreaterThan(-1);
+      const root = editPageTemplate.slice(at + formIf.length).trimStart();
+      expect(root.startsWith('<div x-init="$nextTick(() => _mountEditors())">')).toBe(true);
+    });
+
+    it('a load mounts nothing by itself', async () => {
       fetchPaper.mockResolvedValue({ data: { author: 'alice', permlink: 'p1', body: '', json_metadata: '{}' } });
       fetchPaperEnrichment.mockResolvedValue({ data: {} });
 
       const comp = createComponent();
-      comp._mounted = true;
+      comp.$refs = { abstractEditor: {}, bodyEditor: {} };
+
+      await comp.loadPaperData();
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(mockCreateEditor).not.toHaveBeenCalled();
+      expect(comp.$nextTick).not.toHaveBeenCalled();
+    });
+
+    it('builds one editor per ref present when the mount runs', async () => {
+      const comp = createComponent();
       const abstractEl = {};
       const bodyEl = {};
       comp.$refs = { abstractEditor: abstractEl, bodyEditor: bodyEl };
 
-      await comp.loadPaperData();
-      await vi.waitFor(() => expect(mockCreateEditor).toHaveBeenCalledTimes(2), { interval: 1 });
+      await comp._mountEditors();
 
+      expect(mockCreateEditor).toHaveBeenCalledTimes(2);
       expect(mockCreateEditor.mock.calls[0][0]).toBe(abstractEl);
       expect(mockCreateEditor.mock.calls[1][0]).toBe(bodyEl);
-      expect(comp._editorsInitialized).toBe(true);
-      // The mount is routed through $nextTick, not called inline:
-      // loadPaperData holds edit.js's only $nextTick call site, so the
-      // exact count pins the load's single dispatch.
-      expect(comp.$nextTick).toHaveBeenCalledTimes(1);
     });
 
-    // What createComponent's empty $refs default produces, not just that it
-    // does not throw. A mount that creates nothing leaves no effect to wait
-    // on, so this case wraps _mountEditors to observe the scheduled mount
-    // settling; that also makes a load which schedules no mount fail here
-    // rather than pass vacuously.
-    it('builds no editor when the refs are the harness default', async () => {
-      fetchPaper.mockResolvedValue({ data: { author: 'alice', permlink: 'p1', body: '', json_metadata: '{}' } });
-      fetchPaperEnrichment.mockResolvedValue({ data: {} });
-
+    it('a later render destroys the pair left on the old elements and builds one on the new', async () => {
       const comp = createComponent();
-      comp._mounted = true;
-      const scheduledMount = comp._mountEditors.bind(comp);
-      let mountSettled = false;
-      comp._mountEditors = async () => { await scheduledMount(); mountSettled = true; };
+      comp.$refs = { abstractEditor: {}, bodyEditor: {} };
+      await comp._mountEditors();
+      const [firstAbstract, firstBody] = mockCreateEditor.mock.results.map((r) => r.value);
 
-      await comp.loadPaperData();
-      await vi.waitFor(() => expect(mountSettled).toBe(true), { interval: 1 });
+      const abstractEl = {};
+      const bodyEl = {};
+      comp.$refs = { abstractEditor: abstractEl, bodyEditor: bodyEl };
+      comp.abstract = 'kept abstract';
+      comp.body = 'kept body';
+      await comp._mountEditors();
 
-      expect(mockCreateEditor).not.toHaveBeenCalled();
-      expect(comp._abstractEditor).toBeNull();
-      expect(comp._bodyEditor).toBeNull();
+      expect(firstAbstract.destroy).toHaveBeenCalledTimes(1);
+      expect(firstBody.destroy).toHaveBeenCalledTimes(1);
+      expect(mockCreateEditor).toHaveBeenCalledTimes(4);
+      expect(mockCreateEditor.mock.calls[2][0]).toBe(abstractEl);
+      expect(mockCreateEditor.mock.calls[3][0]).toBe(bodyEl);
+      // Built from the text the form holds, not from what was loaded.
+      expect(mockCreateEditor.mock.calls[2][1].initialMarkdown).toBe('kept abstract');
+      expect(mockCreateEditor.mock.calls[3][1].initialMarkdown).toBe('kept body');
+      expect(comp._abstractEditor).toBe(mockCreateEditor.mock.results[2].value);
+      expect(comp._bodyEditor).toBe(mockCreateEditor.mock.results[3].value);
     });
 
     // Template side of the ref pairing. The `builds one editor per ref
-    // present when the load runs` case pins the code side (_mountEditors
+    // present when the mount runs` case pins the code side (_mountEditors
     // reads exactly the abstractEditor / bodyEditor $refs keys), so
     // asserting editPageTemplate carries both x-ref names makes a rename
     // on either side of the pairing fail one of the two.
@@ -901,12 +925,11 @@ describe('editPage handleSubmit sanitization', () => {
     });
   });
 
-  // _mountEditors awaits a dynamic import
-  // of editor.js. If the component is destroyed (Alpine teardown) between
-  // the $nextTick dispatch and the import resolving, $refs are stale and
-  // any editor instances created post-await leak (destroy() already nulled
-  // _abstractEditor / _bodyEditor, so it cannot tear down what we assign
-  // afterwards). The guard is a `if (!this._mounted) return;` immediately
+  // _mountEditors awaits a dynamic import of editor.js. If the component is
+  // destroyed (Alpine teardown) between the $nextTick dispatch and the import
+  // resolving, any editor instances created post-await leak (destroy()
+  // already nulled _abstractEditor / _bodyEditor, so it cannot tear down
+  // what we assign afterwards). The guard is the `_mounted` check right
   // after the dynamic import.
   describe('_mountEditors teardown-during-init guard', () => {
     beforeEach(() => {
@@ -915,84 +938,64 @@ describe('editPage handleSubmit sanitization', () => {
 
     it('is a no-op when the component was destroyed before the import resolved', async () => {
       const comp = createComponent();
-      // Simulate teardown that races with the in-flight dynamic import:
-      // destroy() flips _mounted to false. The guard inside _mountEditors
-      // must short-circuit before calling createEditor.
+      // Teardown racing the in-flight dynamic import: destroy() flips
+      // _mounted to false.
       comp.destroy();
       expect(comp._mounted).toBe(false);
 
-      // Stale $refs are what destroy() would have left behind. The guard
-      // must fire BEFORE these are touched.
-      comp.$refs = { abstractEditor: null, bodyEditor: null };
-      comp._abstractEditor = null;
-      comp._bodyEditor = null;
+      // Live refs, so the guard is the only thing standing between the
+      // resolved import and createEditor.
+      comp.$refs = { abstractEditor: {}, bodyEditor: {} };
 
       await comp._mountEditors();
 
       expect(mockCreateEditor).not.toHaveBeenCalled();
       expect(comp._abstractEditor).toBe(null);
       expect(comp._bodyEditor).toBe(null);
-      // Mutation-kill for `if (!this._mounted) { ...; return; }`: the reset of
-      // _editorsInitialized to false is reachable ONLY via the mounted-guard
-      // early-return branch (the synchronous prefix sets it to true; the
-      // null-ref guards in production return BEFORE any reset). If the
-      // mounted-guard block is removed, _editorsInitialized stays true and
-      // this assertion fails.
-      expect(comp._editorsInitialized).toBe(false);
     });
 
     it('still mounts editors when the component is alive at import resolution', async () => {
       const comp = createComponent();
-      // Simulate live refs after $nextTick.
-      const abstractEl = {};
-      const bodyEl = {};
-      comp.$refs = { abstractEditor: abstractEl, bodyEditor: bodyEl };
+      comp.$refs = { abstractEditor: {}, bodyEditor: {} };
 
       await comp._mountEditors();
 
-      // Guard does NOT fire — createEditor runs for both refs.
       expect(mockCreateEditor).toHaveBeenCalledTimes(2);
       expect(comp._abstractEditor).toBeTruthy();
       expect(comp._bodyEditor).toBeTruthy();
     });
 
-    // Mount-during-mount idempotency: loadPaperData's _loadInFlight mutex
-    // clears in `finally` before _mountEditors actually runs (deferred via
-    // $nextTick + async import). A Retry that lands in that window can
-    // schedule a second _mountEditors; the `_editorsInitialized` guard at the
-    // top short-circuits the second call synchronously, so createEditor runs
-    // exactly twice total (one abstract + one body), not four times.
-    it('is idempotent when invoked concurrently before the first import resolves', async () => {
-      const comp = createComponent();
-      const abstractEl = {};
-      const bodyEl = {};
-      comp.$refs = { abstractEditor: abstractEl, bodyEditor: bodyEl };
-
-      // Two concurrent calls. The second hits `if (this._editorsInitialized)
-      // return;` synchronously, before the first call's `await import(...)`
-      // resolves, so it never reaches createEditor.
-      const p1 = comp._mountEditors();
-      const p2 = comp._mountEditors();
-      await Promise.all([p1, p2]);
-
-      expect(mockCreateEditor).toHaveBeenCalledTimes(2);
-      // Both instances come from the FIRST _mountEditors invocation — no
-      // orphaned-and-replaced pair from a second mount.
-      expect(comp._abstractEditor).toBe(mockCreateEditor.mock.results[0].value);
-      expect(comp._bodyEditor).toBe(mockCreateEditor.mock.results[1].value);
-    });
-
-    // The idempotency flag must clear on destroy so a later legitimate remount
-    // (live-reload, navigation back to the page) can re-mount editors fresh.
-    it('releases the idempotency flag on destroy so a later remount can re-init', async () => {
+    // Two renders in quick succession can put two calls in flight before the
+    // first import resolves. Only the later one builds, so no pair is created
+    // only to be orphaned. The later call is stood in for by its first,
+    // synchronous step, the generation bump: in vitest, a second dynamic
+    // import of a mocked module started while the first is in flight can
+    // resolve to the real module, which a browser never does.
+    it('a mount superseded while its import is in flight builds nothing', async () => {
       const comp = createComponent();
       comp.$refs = { abstractEditor: {}, bodyEditor: {} };
 
+      const superseded = comp._mountEditors();
+      comp._editorMountGeneration += 1;
+      await superseded;
+
+      expect(mockCreateEditor).not.toHaveBeenCalled();
+      expect(comp._abstractEditor).toBe(null);
+      expect(comp._bodyEditor).toBe(null);
+    });
+
+    it('destroy() destroys the pair it holds', async () => {
+      const comp = createComponent();
+      comp.$refs = { abstractEditor: {}, bodyEditor: {} };
       await comp._mountEditors();
-      expect(comp._editorsInitialized).toBe(true);
+      const [abstractEditor, bodyEditor] = mockCreateEditor.mock.results.map((r) => r.value);
 
       comp.destroy();
-      expect(comp._editorsInitialized).toBe(false);
+
+      expect(abstractEditor.destroy).toHaveBeenCalledTimes(1);
+      expect(bodyEditor.destroy).toHaveBeenCalledTimes(1);
+      expect(comp._abstractEditor).toBe(null);
+      expect(comp._bodyEditor).toBe(null);
     });
   });
 });
@@ -2126,10 +2129,10 @@ describe('editPage re-auth window ordering', () => {
     }));
     // A draft left behind by an earlier case must not stand in for this
     // spec's own entry-gate flush.
-    localStorage.removeItem('pevo-draft-edit-alice-p1');
+    localStorage.removeItem('pevo-draft-edit:alice:alice:p1');
 
     const comp = unchangedLightComponent();
-    comp._initialLoadDone = true;
+    markLoaded(comp);
     comp.title = 'Retitled Before The Refusal';
     // Fixture-posture proof: this test exercises the same-author branch.
     expect(comp.isContinuation).toBe(false);
@@ -2137,12 +2140,12 @@ describe('editPage re-auth window ordering', () => {
     await comp.handleSubmit();
 
     expect(comp.step).toBe('idle');
-    expect(JSON.parse(localStorage.getItem('pevo-draft-edit-alice-p1')))
+    expect(JSON.parse(localStorage.getItem('pevo-draft-edit:alice:alice:p1')))
       .toMatchObject({ title: 'Retitled Before The Refusal' });
 
-    await expectStillDraftingAndSubmittable(comp, 'pevo-draft-edit-alice-p1');
+    await expectStillDraftingAndSubmittable(comp, 'pevo-draft-edit:alice:alice:p1');
     expect(broadcastOps).toHaveBeenCalledTimes(1);
-    localStorage.removeItem('pevo-draft-edit-alice-p1');
+    localStorage.removeItem('pevo-draft-edit:alice:alice:p1');
   });
 
   it('continuation posture: the redirect-pending broadcast keeps the flushed draft and the instance stays drafting and submittable', async () => {
@@ -2156,11 +2159,14 @@ describe('editPage re-auth window ordering', () => {
     broadcastOps.mockRejectedValueOnce(Object.assign(new Error('FRESH_AUTH_REQUIRED'), {
       status: 401, code: 'FRESH_AUTH_REQUIRED', details: { reason: 'expired' },
     }));
-    localStorage.removeItem('pevo-draft-edit-alice-p1');
+    localStorage.removeItem('pevo-draft-edit:bob:alice:p1');
 
     const comp = unchangedLightComponent();
     mockStores.auth.username = 'bob';
-    comp._initialLoadDone = true;
+    // An accepted claim is what lets bob edit the paper, and only an account
+    // that can edit it drafts on this page.
+    comp.paper.authorship_claims = [{ claimer: 'bob', status: 'accepted' }];
+    markLoaded(comp);
     comp.authorName = 'Bob';
     comp.title = 'Retitled Before The Refusal';
     // Fixture-posture proof: this test exercises the continuation branch.
@@ -2169,12 +2175,12 @@ describe('editPage re-auth window ordering', () => {
     await comp.handleSubmit();
 
     expect(comp.step).toBe('idle');
-    expect(JSON.parse(localStorage.getItem('pevo-draft-edit-alice-p1')))
+    expect(JSON.parse(localStorage.getItem('pevo-draft-edit:bob:alice:p1')))
       .toMatchObject({ title: 'Retitled Before The Refusal', authorName: 'Bob' });
 
-    await expectStillDraftingAndSubmittable(comp, 'pevo-draft-edit-alice-p1');
+    await expectStillDraftingAndSubmittable(comp, 'pevo-draft-edit:bob:alice:p1');
     expect(broadcastOps).toHaveBeenCalledTimes(1);
-    localStorage.removeItem('pevo-draft-edit-alice-p1');
+    localStorage.removeItem('pevo-draft-edit:bob:alice:p1');
   });
 
   it('same-author posture: redirect-pending on an unmounted component leaves step and draft untouched', async () => {
@@ -2185,10 +2191,10 @@ describe('editPage re-auth window ordering', () => {
       absoluteExpiresAt: new Date(Date.now() + 7_200_000).toISOString(),
       idlePeriodMs: 900_000,
     }));
-    localStorage.removeItem('pevo-draft-edit-alice-p1');
+    localStorage.removeItem('pevo-draft-edit:alice:alice:p1');
 
     const comp = unchangedLightComponent();
-    comp._initialLoadDone = true;
+    markLoaded(comp);
     comp.title = 'Retitled Before The Refusal';
     expect(comp.isContinuation).toBe(false);
 
@@ -2206,9 +2212,9 @@ describe('editPage re-auth window ordering', () => {
 
     expect(broadcastOps).toHaveBeenCalledTimes(1);
     expect(comp.step).toBe('broadcasting');
-    expect(JSON.parse(localStorage.getItem('pevo-draft-edit-alice-p1')))
+    expect(JSON.parse(localStorage.getItem('pevo-draft-edit:alice:alice:p1')))
       .toMatchObject({ title: 'Retitled Before The Refusal' });
-    localStorage.removeItem('pevo-draft-edit-alice-p1');
+    localStorage.removeItem('pevo-draft-edit:alice:alice:p1');
   });
 
   it('continuation posture: redirect-pending on an unmounted component leaves step and draft untouched', async () => {
@@ -2219,11 +2225,14 @@ describe('editPage re-auth window ordering', () => {
       absoluteExpiresAt: new Date(Date.now() + 7_200_000).toISOString(),
       idlePeriodMs: 900_000,
     }));
-    localStorage.removeItem('pevo-draft-edit-alice-p1');
+    localStorage.removeItem('pevo-draft-edit:bob:alice:p1');
 
     const comp = unchangedLightComponent();
     mockStores.auth.username = 'bob';
-    comp._initialLoadDone = true;
+    // An accepted claim is what lets bob edit the paper, and only an account
+    // that can edit it drafts on this page.
+    comp.paper.authorship_claims = [{ claimer: 'bob', status: 'accepted' }];
+    markLoaded(comp);
     comp.authorName = 'Bob';
     comp.title = 'Retitled Before The Refusal';
     expect(comp.isContinuation).toBe(true);
@@ -2239,9 +2248,9 @@ describe('editPage re-auth window ordering', () => {
 
     expect(broadcastOps).toHaveBeenCalledTimes(1);
     expect(comp.step).toBe('broadcasting');
-    expect(JSON.parse(localStorage.getItem('pevo-draft-edit-alice-p1')))
+    expect(JSON.parse(localStorage.getItem('pevo-draft-edit:bob:alice:p1')))
       .toMatchObject({ title: 'Retitled Before The Refusal', authorName: 'Bob' });
-    localStorage.removeItem('pevo-draft-edit-alice-p1');
+    localStorage.removeItem('pevo-draft-edit:bob:alice:p1');
   });
 
   // Whether the form holds a new file decides whether a gate may navigate:
@@ -2289,14 +2298,14 @@ describe('editPage re-auth window ordering', () => {
     mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
     let draftAtOrcid = null;
     mockStartOrcid.mockImplementation(async () => {
-      draftAtOrcid = localStorage.getItem('pevo-draft-edit-alice-p1');
+      draftAtOrcid = localStorage.getItem('pevo-draft-edit:alice:alice:p1');
       return { redirect_url: 'https://orcid.org/oauth/authorize?x=1' };
     });
     mockStores.broadcastConfirm.request.mockResolvedValueOnce(true);
     vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/edit/alice/p1' } });
     try {
       const comp = unchangedLightComponent();
-      comp._initialLoadDone = true;
+      markLoaded(comp);
       comp.supplementaryFiles = [newSupplementary()];
       comp.title = 'A New Title';
 
@@ -2321,13 +2330,13 @@ describe('editPage re-auth window ordering', () => {
     mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
     let draftAtOrcid = null;
     mockStartOrcid.mockImplementation(async () => {
-      draftAtOrcid = localStorage.getItem('pevo-draft-edit-alice-p1');
+      draftAtOrcid = localStorage.getItem('pevo-draft-edit:alice:alice:p1');
       return { redirect_url: 'https://orcid.org/oauth/authorize?x=1' };
     });
     vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/edit/alice/p1' } });
     try {
       const comp = unchangedLightComponent();
-      comp._initialLoadDone = true;
+      markLoaded(comp);
       comp.supplementaryFiles = [newSupplementary()];
       mockStores.broadcastConfirm.request.mockImplementationOnce(async () => {
         comp.title = 'Typed While Asked';
@@ -2340,7 +2349,7 @@ describe('editPage re-auth window ordering', () => {
       expect(JSON.parse(draftAtOrcid)).toMatchObject({ title: 'Typed While Asked' });
     } finally {
       vi.unstubAllGlobals();
-      localStorage.removeItem('pevo-draft-edit-alice-p1');
+      localStorage.removeItem('pevo-draft-edit:alice:alice:p1');
     }
   });
 
@@ -2522,8 +2531,112 @@ describe('editPage re-auth window ordering', () => {
 // dropped its ticks resubmits without `addresses_reviews`. Restore reconciles
 // against the reviews the paper actually carries, because a tick is meaningless
 // once its review is gone from the checklist.
+// ARCHITECTURE.md § 8, "The instance is bound to the account and the paper it
+// loaded for". The watchers on the store's username and the router params call
+// these handlers, and the one on `step` calls _remountWhenSettled; this harness
+// mocks $watch, so the cases call them where a watcher would.
+describe('editPage is replaced when the account or the paper changes under it', () => {
+  function loadedFixture() {
+    const comp = createComponent();
+    comp.paper = {
+      author: 'alice', permlink: 'p1', head_author: 'alice', head_permlink: 'p1',
+      canonical_author: 'alice', canonical_permlink: 'p1', title: 'T', body: '',
+      json_metadata: {}, authors: [{ name: 'Alice', hive: 'alice' }, { name: 'Bob', hive: 'bob' }],
+      versions: [{ version_number: 1, block_num: 100, author: 'alice', permlink: 'p1' }],
+    };
+    comp._routeAuthor = 'alice';
+    comp._routePermlink = 'p1';
+    markLoaded(comp);
+    return comp;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    mockStores.auth.username = 'alice';
+    mockStores.router.route = 'edit';
+  });
+
+  afterEach(() => {
+    mockStores.auth.username = 'alice';
+    mockStores.router.params = { author: 'alice', permlink: 'p1' };
+    delete mockStores.router.route;
+    localStorage.clear();
+  });
+
+  it('another account replaces the instance, after flushing the pending save under the captured key', () => {
+    vi.useFakeTimers();
+    try {
+      const comp = loadedFixture();
+      comp.title = 'Alice typed';
+      comp._scheduleDraftSave();
+
+      mockStores.auth.username = 'bob';
+      comp._onAccountChange('bob');
+
+      expect(mockStores.router.remount).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(localStorage.getItem('pevo-draft-edit:alice:alice:p1'))).toMatchObject({ title: 'Alice typed' });
+      expect(localStorage.getItem('pevo-draft-edit:bob:alice:p1')).toBe(null);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a sign-in under a load that captured no account replaces the instance too', () => {
+    mockStores.auth.username = null;
+    const comp = loadedFixture();
+    expect(comp._draftAccount).toBe(null);
+
+    comp._onAccountChange('alice');
+
+    expect(mockStores.router.remount).toHaveBeenCalledTimes(1);
+  });
+
+  it('nothing is replaced before the load has captured anything', () => {
+    const comp = createComponent();
+    comp._onAccountChange('bob');
+    expect(mockStores.router.remount).not.toHaveBeenCalled();
+  });
+
+  it('a change to no account, or back to the captured one, keeps the instance', () => {
+    const comp = loadedFixture();
+    comp._onAccountChange(null);
+    comp._onAccountChange('alice');
+    expect(mockStores.router.remount).not.toHaveBeenCalled();
+  });
+
+  it('route params naming another paper replace the instance; the same paper or another route does not', () => {
+    const comp = loadedFixture();
+
+    comp._onRouteParamsChange({ author: 'alice', permlink: 'p1' });
+    mockStores.router.route = 'paper-detail';
+    comp._onRouteParamsChange({ author: 'alice', permlink: 'p2' });
+    expect(mockStores.router.remount).not.toHaveBeenCalled();
+
+    mockStores.router.route = 'edit';
+    comp._onRouteParamsChange({ author: 'alice', permlink: 'p2' });
+    expect(mockStores.router.remount).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for a submit in flight to settle before replacing the instance', () => {
+    const comp = loadedFixture();
+    comp.step = 'broadcasting';
+
+    comp._onRouteParamsChange({ author: 'alice', permlink: 'p2' });
+    expect(mockStores.router.remount).not.toHaveBeenCalled();
+
+    comp.step = 'success';
+    comp._remountWhenSettled();
+    expect(mockStores.router.remount).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('editPage draft carries the addressed-review ticks', () => {
-  const DRAFT_KEY = 'pevo-draft-edit-alice-p1';
+  // The key of the account the test signed in: alice on the same-author
+  // arm, bob on the continuation arm. The paper is alice/p1 either way.
+  const draftKey = () => `pevo-draft-edit:${mockStores.auth.username}:alice:p1`;
+  // The head marker of the paper arrangeLoad serves.
+  const LOADED_MARKER = 'alice/p1/1/100';
 
   const REV_ONE = { author: 'carol', permlink: 'rev-1', body: 'first review' };
   const REV_TWO = { author: 'dave', permlink: 'rev-2', body: 'second review' };
@@ -2533,13 +2646,16 @@ describe('editPage draft carries the addressed-review ticks', () => {
   }
 
   // Only the fields _restoreDraft reads. `title` is the shape sentinel the
-  // restore gates on, so every fixture carries it as a string.
+  // restore gates on, so every fixture carries it as a string, and the head
+  // marker is the loaded paper's, so the restore is the silent one.
   function storedDraft(extra = {}) {
     return JSON.stringify({
       title: 'Drafted Title',
       abstract: 'drafted abstract',
       body: 'drafted body',
       keywordsText: 'quantum',
+      savedAt: 1,
+      head_marker: LOADED_MARKER,
       ...extra,
     });
   }
@@ -2548,6 +2664,13 @@ describe('editPage draft carries the addressed-review ticks', () => {
     const comp = createComponent();
     comp._mounted = true;
     return comp;
+  }
+
+  // The load, then the editor mount the rendered form's root runs: the mount
+  // takes the editor half of the baseline and restores.
+  async function loadForm(comp) {
+    await comp.loadPaperData();
+    await comp._mountEditors();
   }
 
   // `paperExtra` merges into the paper the detail endpoint returns, for the
@@ -2566,6 +2689,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
         title: 'Old Title',
         body: '## Abstract\n\nold abstract\n\n---\n\nold body',
         json_metadata: JSON.stringify({ pevotest: { version: 1 } }),
+        versions: [{ version_number: 1, block_num: 100, author: 'alice', permlink: 'p1' }],
         ...paperExtra,
       },
     });
@@ -2585,40 +2709,41 @@ describe('editPage draft carries the addressed-review ticks', () => {
     localStorage.clear();
   });
 
-  it('the debounced save writes the ticks into the stored draft', () => {
+  it('the debounced save writes the ticks into the stored draft', async () => {
+    arrangeLoad([REV_ONE, REV_TWO]);
+    const comp = loadedComponent();
+    await loadForm(comp);
     vi.useFakeTimers();
     try {
-      const comp = createComponent();
-      comp._initialLoadDone = true;
       comp.addressedReviews = [addressed(REV_TWO)];
 
       comp._scheduleDraftSave();
       vi.advanceTimersByTime(2000);
 
-      const saved = JSON.parse(localStorage.getItem(DRAFT_KEY));
+      const saved = JSON.parse(localStorage.getItem(draftKey()));
       expect(saved.addressedReviews).toEqual([addressed(REV_TWO)]);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('a tick change schedules that save', () => {
+  it('a tick change schedules that save', async () => {
+    arrangeLoad([REV_ONE, REV_TWO]);
+    const comp = loadedComponent();
+    comp._setupReactiveBindings();
+    await loadForm(comp);
     vi.useFakeTimers();
-    const comp = createComponent();
     try {
-      comp._setupReactiveBindings();
-
       // The registration is the assertion: without it a tick is the one
       // change on the form that never reaches the stored draft.
       const registration = comp.$watch.mock.calls.find(([expr]) => expr === 'addressedReviews');
       expect(registration).toBeDefined();
 
-      comp._initialLoadDone = true;
       comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
       registration[1]();
       vi.advanceTimersByTime(2000);
 
-      const saved = JSON.parse(localStorage.getItem(DRAFT_KEY));
+      const saved = JSON.parse(localStorage.getItem(draftKey()));
       expect(saved.addressedReviews).toEqual([addressed(REV_ONE)]);
     } finally {
       comp.destroy();
@@ -2628,10 +2753,10 @@ describe('editPage draft carries the addressed-review ticks', () => {
 
   it('restore reinstates a tick whose review is still on the paper', async () => {
     arrangeLoad([REV_ONE, REV_TWO]);
-    localStorage.setItem(DRAFT_KEY, storedDraft({ addressedReviews: [addressed(REV_TWO)] }));
+    localStorage.setItem(draftKey(), storedDraft({ addressedReviews: [addressed(REV_TWO)] }));
 
     const comp = loadedComponent();
-    await comp.loadPaperData();
+    await loadForm(comp);
 
     expect(comp.addressedReviews).toEqual([addressed(REV_TWO)]);
   });
@@ -2639,12 +2764,12 @@ describe('editPage draft carries the addressed-review ticks', () => {
   it('restore drops a saved tick whose review is no longer offered', async () => {
     // rev-2 is gone from the paper by the time the form comes back.
     arrangeLoad([REV_ONE]);
-    localStorage.setItem(DRAFT_KEY, storedDraft({
+    localStorage.setItem(draftKey(), storedDraft({
       addressedReviews: [addressed(REV_ONE), addressed(REV_TWO)],
     }));
 
     const comp = loadedComponent();
-    await comp.loadPaperData();
+    await loadForm(comp);
 
     expect(comp.addressedReviews).toEqual([addressed(REV_ONE)]);
   });
@@ -2656,10 +2781,10 @@ describe('editPage draft carries the addressed-review ticks', () => {
     const { invalidatePaperCache } = await import('../../src/api.js');
     invalidatePaperCache.mockResolvedValue({});
     arrangeLoad([REV_ONE, REV_TWO]);
-    localStorage.setItem(DRAFT_KEY, storedDraft({ addressedReviews: [addressed(REV_TWO)] }));
+    localStorage.setItem(draftKey(), storedDraft({ addressedReviews: [addressed(REV_TWO)] }));
 
     const comp = loadedComponent();
-    await comp.loadPaperData();
+    await loadForm(comp);
     comp.authorName = 'Alice';
 
     await comp.handleSubmit();
@@ -2680,21 +2805,21 @@ describe('editPage draft carries the addressed-review ticks', () => {
     const { invalidatePaperCache } = await import('../../src/api.js');
     invalidatePaperCache.mockResolvedValue({});
     arrangeLoad([REV_ONE, REV_TWO]);
-    localStorage.setItem(DRAFT_KEY, storedDraft({ addressedReviews: [addressed(REV_TWO)] }));
+    localStorage.setItem(draftKey(), storedDraft({ addressedReviews: [addressed(REV_TWO)] }));
 
     const comp = loadedComponent();
-    await comp.loadPaperData();
+    await loadForm(comp);
     // Non-vacuous: the draft has to have held a tick for the clear to have
     // anything to take.
     expect(comp.addressedReviews).toEqual([addressed(REV_TWO)]);
     comp.authorName = 'Alice';
     await comp.handleSubmit();
     expect(comp.step).toBe('success');
-    expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+    expect(localStorage.getItem(draftKey())).toBe(null);
     comp.destroy();
 
     const reopened = loadedComponent();
-    await reopened.loadPaperData();
+    await loadForm(reopened);
 
     expect(reopened.addressedReviews).toEqual([]);
   });
@@ -2702,7 +2827,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
   // A rejected enrichment used to fall through to the restore with `reviews`
   // still empty. The reconciliation then pruned every saved tick against a
   // list that only meant the reviews could not be fetched, and the restore
-  // left _initialLoadDone true so the next watched change rewrote the draft
+  // left the instance drafting, so the next watched change rewrote the draft
   // without them: a transient outage permanently lost what the user ticked,
   // and the checklist card (x-if on reviews.length) was not even rendered to
   // show it. Failing the load instead leaves the draft untouched and the Retry
@@ -2712,22 +2837,23 @@ describe('editPage draft carries the addressed-review ticks', () => {
     try {
       arrangeLoad([REV_ONE, REV_TWO]);
       fetchPaperEnrichment.mockRejectedValue(new Error('enrichment unavailable'));
-      localStorage.setItem(DRAFT_KEY, storedDraft({ addressedReviews: [addressed(REV_TWO)] }));
+      localStorage.setItem(draftKey(), storedDraft({ addressedReviews: [addressed(REV_TWO)] }));
 
       const comp = loadedComponent();
       await comp.loadPaperData();
 
       expect(comp.loadError).toBe('edit.loadError');
       expect(comp.addressedReviews).toEqual([]);
-      // The flag is the mechanism: the restore never ran, so nothing was
-      // pruned, and _writeDraft stays a no-op for the rest of the visit.
-      expect(comp._initialLoadDone).toBe(false);
+      // The missing baseline is the mechanism: the restore never ran, so
+      // nothing was pruned, and _writeDraft stays a no-op for the rest of the
+      // visit.
+      expect(comp._baselineFields).toBeNull();
 
       // What a watched change would leave armed on the returning form.
       comp._scheduleDraftSave();
       vi.advanceTimersByTime(2000);
 
-      const saved = JSON.parse(localStorage.getItem(DRAFT_KEY));
+      const saved = JSON.parse(localStorage.getItem(draftKey()));
       expect(saved.addressedReviews).toEqual([addressed(REV_TWO)]);
     } finally {
       vi.useRealTimers();
@@ -2749,19 +2875,20 @@ describe('editPage draft carries the addressed-review ticks', () => {
   // calling `_finishLanded`.
   //
   // `$watch` is mocked in this harness, so the scheduler stands in for the
-  // watcher a changed field would trigger. loadPaperData leaves
-  // `_initialLoadDone` true, and every "nothing was written" assertion
-  // depends on that: `_writeDraft` is a no-op before the load, so a spec
-  // built on an unloaded component would pass with no barrier at all.
+  // watcher a changed field would trigger. The load and the editor mount
+  // leave the baseline taken and the key captured, and every "nothing was
+  // written" assertion depends on that: `_writeDraft` is a no-op before them,
+  // so a spec built on an unloaded component would pass with no barrier at
+  // all.
   async function sameAuthorForm() {
     arrangeLoad([REV_ONE, REV_TWO]);
     const comp = loadedComponent();
-    await comp.loadPaperData();
+    await loadForm(comp);
     comp.authorName = 'Alice';
     comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
     // Fixture-posture proof: the same-author branch, on a loaded component.
     expect(comp.isContinuation).toBe(false);
-    expect(comp._initialLoadDone).toBe(true);
+    expect(comp._hasBaseline).toBe(true);
     return comp;
   }
 
@@ -2771,11 +2898,11 @@ describe('editPage draft carries the addressed-review ticks', () => {
     });
     const comp = loadedComponent();
     mockStores.auth.username = 'bob';
-    await comp.loadPaperData();
+    await loadForm(comp);
     comp.toggleAddressedReview(REV_ONE.author, REV_ONE.permlink, true);
     // Fixture-posture proof: the continuation branch, on a loaded component.
     expect(comp.isContinuation).toBe(true);
-    expect(comp._initialLoadDone).toBe(true);
+    expect(comp._hasBaseline).toBe(true);
     return comp;
   }
 
@@ -2817,7 +2944,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
       // Non-vacuous: the debounce really was armed when the broadcast resolved.
       expect(timerDuringBroadcast).not.toBe(null);
       expect(comp.step).toBe('success');
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      expect(localStorage.getItem(draftKey())).toBe(null);
 
       // Watch the writer from here on. The spy calls through, and the armed
       // save resolves `_writeDraft` on the component when it fires, so a save
@@ -2858,7 +2985,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
       expect(timerDuringBroadcast).not.toBe(null);
       expect(comp.step).toBe('success');
       expect(comp._draftTimer).toBe(null);
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      expect(localStorage.getItem(draftKey())).toBe(null);
 
       const writer = vi.spyOn(comp, '_writeDraft');
       vi.advanceTimersByTime(2000);
@@ -2882,18 +3009,18 @@ describe('editPage draft carries the addressed-review ticks', () => {
   //
   // By the time the broadcast resolves, the router params name the page the
   // user went to, which holds a draft of its own. The landing clear uses the
-  // key handleSubmit captured before its first await, not the draftKey
-  // getter, so that draft is left alone and the spent one is the one removed.
+  // key captured at load, which the params do not move, so that draft is left
+  // alone and the spent one is the one removed.
   it('an unmount during the broadcast still drops the draft the landed edit spent', async () => {
     vi.useFakeTimers();
-    const OTHER_KEY = 'pevo-draft-edit-bob-p9';
+    const OTHER_KEY = 'pevo-draft-edit:alice:bob:p9';
     try {
       invalidatePaperCache.mockResolvedValue({});
       const comp = await sameAuthorForm();
 
       let draftDuringBroadcast = null;
       broadcastOps.mockImplementation(async () => {
-        draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+        draftDuringBroadcast = localStorage.getItem(draftKey());
         comp.destroy();
         mockStores.router.params = { author: 'bob', permlink: 'p9' };
         localStorage.setItem(OTHER_KEY, storedDraft());
@@ -2904,10 +3031,12 @@ describe('editPage draft carries the addressed-review ticks', () => {
 
       expect(broadcastOps).toHaveBeenCalledTimes(1);
       // Non-vacuous: the gate's flush wrote the ticked draft, so the landing
-      // clear has something to drop, and the getter now names the other paper.
+      // clear has something to drop, and the params now name the other paper
+      // while the captured key still names this one.
       expect(JSON.parse(draftDuringBroadcast).addressedReviews).toEqual([addressed(REV_ONE)]);
-      expect(comp.draftKey).toBe(OTHER_KEY);
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      expect(mockStores.router.params).toEqual({ author: 'bob', permlink: 'p9' });
+      expect(comp._draftKey).toBe(draftKey());
+      expect(localStorage.getItem(draftKey())).toBe(null);
       expect(localStorage.getItem(OTHER_KEY)).toBe(storedDraft());
       expect(invalidatePaperCache).toHaveBeenCalledTimes(1);
       expect(invalidatePaperCache).toHaveBeenCalledWith('alice', 'p1');
@@ -2927,14 +3056,14 @@ describe('editPage draft carries the addressed-review ticks', () => {
   // proves nothing about this arm's entry into `_finishLanded`.
   it('an unmount during the continuation broadcast still drops the draft the landed post spent', async () => {
     vi.useFakeTimers();
-    const OTHER_KEY = 'pevo-draft-edit-bob-p9';
+    const OTHER_KEY = 'pevo-draft-edit:bob:bob:p9';
     try {
       invalidatePaperCache.mockResolvedValue({});
       const comp = await continuationForm();
 
       let draftDuringBroadcast = null;
       broadcastOps.mockImplementation(async () => {
-        draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+        draftDuringBroadcast = localStorage.getItem(draftKey());
         comp.destroy();
         mockStores.router.params = { author: 'bob', permlink: 'p9' };
         localStorage.setItem(OTHER_KEY, storedDraft());
@@ -2945,10 +3074,12 @@ describe('editPage draft carries the addressed-review ticks', () => {
 
       expect(broadcastOps).toHaveBeenCalledTimes(1);
       // Non-vacuous: the gate's flush wrote the ticked draft, so the landing
-      // clear has something to drop, and the getter now names the other paper.
+      // clear has something to drop, and the params now name the other paper
+      // while the captured key still names this one.
       expect(JSON.parse(draftDuringBroadcast).addressedReviews).toEqual([addressed(REV_ONE)]);
-      expect(comp.draftKey).toBe(OTHER_KEY);
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      expect(mockStores.router.params).toEqual({ author: 'bob', permlink: 'p9' });
+      expect(comp._draftKey).toBe(draftKey());
+      expect(localStorage.getItem(draftKey())).toBe(null);
       expect(localStorage.getItem(OTHER_KEY)).toBe(storedDraft());
       expect(invalidatePaperCache).toHaveBeenCalledTimes(1);
       expect(invalidatePaperCache).toHaveBeenCalledWith('alice', 'p1');
@@ -2986,7 +3117,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
       expect(comp.errorMessage).toBe('');
       expect(warnSpy).toHaveBeenCalledTimes(1);
       expect(warnSpy).toHaveBeenCalledWith('[edit invalidate]', rejection);
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      expect(localStorage.getItem(draftKey())).toBe(null);
 
       expect(mockStores.router.navigate).not.toHaveBeenCalled();
       vi.advanceTimersByTime(1500);
@@ -3030,12 +3161,12 @@ describe('editPage draft carries the addressed-review ticks', () => {
       expect(timerDuringInvalidation).not.toBe(null);
       expect(comp._draftTimer).toBe(timerDuringInvalidation);
       expect(comp.step).toBe('success');
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      expect(localStorage.getItem(draftKey())).toBe(null);
 
       vi.advanceTimersByTime(2000);
 
       expect(comp._draftTimer).toBe(timerDuringInvalidation);
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      expect(localStorage.getItem(draftKey())).toBe(null);
       comp.destroy();
     } finally {
       warnSpy.mockRestore();
@@ -3064,7 +3195,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
         comp._scheduleDraftSave();
         timerDuringInvalidation = comp._draftTimer;
         vi.advanceTimersByTime(2000);
-        draftAfterFire = localStorage.getItem(DRAFT_KEY);
+        draftAfterFire = localStorage.getItem(draftKey());
         comp.destroy();
         return {};
       });
@@ -3075,7 +3206,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
       // Non-vacuous: the scheduler did arm the save that then fired.
       expect(timerDuringInvalidation).not.toBe(null);
       expect(draftAfterFire).toBe(null);
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      expect(localStorage.getItem(draftKey())).toBe(null);
       expect(comp.step).toBe('broadcasting');
     } finally {
       vi.useRealTimers();
@@ -3094,7 +3225,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
     let draftAfterSelection = 'unset';
     invalidatePaperCache.mockImplementation(async () => {
       await comp.handleSupplementaryFiles(fileSelection());
-      draftAfterSelection = localStorage.getItem(DRAFT_KEY);
+      draftAfterSelection = localStorage.getItem(draftKey());
       return {};
     });
 
@@ -3104,7 +3235,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
     // attached the file.
     expect(comp.supplementaryFiles).toHaveLength(1);
     expect(draftAfterSelection).toBe(null);
-    expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+    expect(localStorage.getItem(draftKey())).toBe(null);
     expect(comp.step).toBe('success');
     comp.destroy();
   });
@@ -3123,7 +3254,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
       await comp.handleSubmit();
 
       expect(comp.step).toBe('success');
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      expect(localStorage.getItem(draftKey())).toBe(null);
 
       await comp.handleSupplementaryFiles(fileSelection());
 
@@ -3131,12 +3262,12 @@ describe('editPage draft carries the addressed-review ticks', () => {
       // the navigate timer has not fired yet.
       expect(comp.supplementaryFiles).toHaveLength(1);
       expect(mockStores.router.navigate).not.toHaveBeenCalled();
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      expect(localStorage.getItem(draftKey())).toBe(null);
 
       vi.advanceTimersByTime(1500);
 
       expect(mockStores.router.navigate).toHaveBeenCalledWith('/paper/alice/p1');
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+      expect(localStorage.getItem(draftKey())).toBe(null);
       comp.destroy();
     } finally {
       vi.useRealTimers();
@@ -3155,9 +3286,9 @@ describe('editPage draft carries the addressed-review ticks', () => {
     broadcastOps.mockResolvedValue({ tx_id: 'tx' });
     let draftAtInvalidation = 'unset';
     invalidatePaperCache.mockImplementation(async () => {
-      draftAtInvalidation = localStorage.getItem(DRAFT_KEY);
+      draftAtInvalidation = localStorage.getItem(draftKey());
       comp.destroy();
-      localStorage.setItem(DRAFT_KEY, laterVisitDraft);
+      localStorage.setItem(draftKey(), laterVisitDraft);
       return {};
     });
 
@@ -3167,7 +3298,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
     // Non-vacuous: the landing clear had already emptied the key, so what
     // sits under it now can only be the later visit's write.
     expect(draftAtInvalidation).toBe(null);
-    expect(localStorage.getItem(DRAFT_KEY)).toBe(laterVisitDraft);
+    expect(localStorage.getItem(draftKey())).toBe(laterVisitDraft);
   }
 
   it('a draft a later visit wrote during a resolving invalidation is still there when handleSubmit returns', async () => {
@@ -3194,9 +3325,9 @@ describe('editPage draft carries the addressed-review ticks', () => {
       broadcastOps.mockResolvedValue({ tx_id: 'tx' });
       let draftAtInvalidation = 'unset';
       invalidatePaperCache.mockImplementation(async () => {
-        draftAtInvalidation = localStorage.getItem(DRAFT_KEY);
+        draftAtInvalidation = localStorage.getItem(draftKey());
         comp.destroy();
-        localStorage.setItem(DRAFT_KEY, laterVisitDraft);
+        localStorage.setItem(draftKey(), laterVisitDraft);
         throw new Error('invalidate unavailable');
       });
 
@@ -3205,7 +3336,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
       expect(invalidatePaperCache).toHaveBeenCalledTimes(1);
       // Non-vacuous: the landing clear had already emptied the key.
       expect(draftAtInvalidation).toBe(null);
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(laterVisitDraft);
+      expect(localStorage.getItem(draftKey())).toBe(laterVisitDraft);
       // Unmounted, so neither the success state nor the failure state.
       expect(comp.step).toBe('broadcasting');
       expect(comp.errorMessage).toBe('');
@@ -3252,7 +3383,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
     expect(gate).not.toHaveBeenCalled();
     expect(comp.step).toBe('success');
     expect(comp.errorMessage).toBe('');
-    expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+    expect(localStorage.getItem(draftKey())).toBe(null);
     comp.destroy();
   });
 
@@ -3271,7 +3402,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
     // change that passes the no-changes check on its own.
     expect(comp._landed).toBe(true);
     expect(comp.step).toBe('success');
-    expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+    expect(localStorage.getItem(draftKey())).toBe(null);
     comp.title = 'Retitled after the landing';
     return comp;
   }
@@ -3314,7 +3445,27 @@ describe('editPage draft carries the addressed-review ticks', () => {
     await comp.handleSubmit();
 
     expect(writer).not.toHaveBeenCalled();
-    expect(localStorage.getItem(DRAFT_KEY)).toBe(null);
+    expect(localStorage.getItem(draftKey())).toBe(null);
+    comp.destroy();
+  });
+
+  // A landed instance touches nothing under its key, and the form shows what
+  // was saved until the navigation, so the restored card goes and its Discard
+  // is refused: it would re-run the prefill and remove whatever a later visit
+  // has written under the key since.
+  it("the restored card's Discard is refused once landed, and the card is gone", async () => {
+    expect(editPageTemplate).toContain('x-if="draftRestored && draftSavedAt && !_landed"');
+    const comp = await landedSameAuthorForm();
+    comp.draftRestored = true;
+    comp.draftSavedAt = 1;
+    localStorage.setItem(draftKey(), storedDraft({ title: 'A later visit' }));
+
+    comp.discardDraft();
+
+    expect(comp.title).toBe('Retitled after the landing');
+    expect(comp.addressedReviews).toEqual([addressed(REV_ONE)]);
+    expect(comp.draftRestored).toBe(true);
+    expect(JSON.parse(localStorage.getItem(draftKey()))).toMatchObject({ title: 'A later visit' });
     comp.destroy();
   });
 
@@ -3346,7 +3497,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
     expect(comp.step).toBe('error');
     expect(comp.errorMessage).toBe('common.editFailed');
     expect(comp._landed).toBe(false);
-    const saved = JSON.parse(localStorage.getItem(DRAFT_KEY));
+    const saved = JSON.parse(localStorage.getItem(draftKey()));
     expect(saved.title).toBe('Retitled before a failing broadcast');
     expect(saved.addressedReviews).toEqual([addressed(REV_ONE)]);
 
@@ -3356,7 +3507,7 @@ describe('editPage draft carries the addressed-review ticks', () => {
       comp.title = 'Retitled after the failed broadcast';
       comp._scheduleDraftSave();
       vi.advanceTimersByTime(2000);
-      expect(JSON.parse(localStorage.getItem(DRAFT_KEY)).title)
+      expect(JSON.parse(localStorage.getItem(draftKey())).title)
         .toBe('Retitled after the failed broadcast');
     } finally {
       vi.useRealTimers();

@@ -113,11 +113,15 @@ function buildPaperFixture({ author, permlink, coAuthorHive = null }) {
 async function clearDraft(page, author, permlink) {
   // A stale draft from an earlier run repopulates the form before our
   // assertions can read the fresh prefill. Clear before any page script runs.
+  // The key also names the account that wrote it, so every account's draft
+  // of this paper goes.
   await page.addInitScript(
-    ({ key }) => {
-      window.localStorage.removeItem(key);
+    ({ prefix, suffix }) => {
+      for (const key of Object.keys(window.localStorage)) {
+        if (key.startsWith(prefix) && key.endsWith(suffix)) window.localStorage.removeItem(key);
+      }
     },
-    { key: `pevo-draft-edit-${author}-${permlink}` },
+    { prefix: 'pevo-draft-edit:', suffix: `:${author}:${permlink}` },
   );
 }
 
@@ -150,13 +154,8 @@ async function waitForEditorsMounted(page) {
 
 // Set abstract+body via Alpine state (what edit.js reads on submit). We
 // gate this on waitForEditorsMounted so the editor instances exist.
-// Alpine state write is sufficient. Calling editor.setContent() after
-// the editor's own initialMarkdown application produces a tiptap
-// "Applying a mismatched transaction" RangeError (the in-progress
-// initial transaction conflicts with the imperative replace), so we
-// avoid the imperative path entirely. Verified the editor's onUpdate
-// does not fire on constructor content-init (tiptap dispatchTransaction
-// gates the callback to user transactions, not constructor init).
+// Alpine state write is sufficient: the submit reads the fields, not the
+// editors.
 async function setEditorContent(page, { abstract, body }) {
   await page.evaluate(
     ({ abstract, body }) => {

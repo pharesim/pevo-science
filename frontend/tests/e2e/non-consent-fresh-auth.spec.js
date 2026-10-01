@@ -395,9 +395,9 @@ test.describe('light account against the real backend', () => {
       custody: 'light',
     });
     // A stale draft would repopulate the form with the wrong values.
-    await page.addInitScript(() => {
-      window.localStorage.removeItem('pevo-draft-publish');
-    });
+    await page.addInitScript((key) => {
+      window.localStorage.removeItem(key);
+    }, `pevo-draft-publish:${researcher.username}`);
 
     await page.goto('/en/publish');
     await page.waitForSelector('[x-data="publishPage"]');

@@ -416,4 +416,20 @@ describe('router', () => {
       expect(store.route).toBe('papers');
     });
   });
+
+  // pageMount re-renders when the generation changes as it does on a route
+  // change, which is how a page asks for a fresh instance of itself.
+  describe('remount', () => {
+    it('moves the generation and leaves the route, params and history alone', () => {
+      const store = initAt('/en/edit/alice/p1');
+      const before = store.generation;
+
+      store.remount();
+
+      expect(store.generation).toBe(before + 1);
+      expect(store.route).toBe('edit');
+      expect(store.params).toEqual({ author: 'alice', permlink: 'p1' });
+      expect(pushStateSpy).not.toHaveBeenCalled();
+    });
+  });
 });

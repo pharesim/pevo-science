@@ -5,6 +5,7 @@ export function initPageMount() {
   Alpine.data('pageMount', () => ({
     _container: null,
     _currentRoute: null,
+    _currentGeneration: null,
 
     init() {
       // Create a dedicated container for dynamically-rendered pages.
@@ -14,13 +15,18 @@ export function initPageMount() {
       this.$el.prepend(this._container);
 
       Alpine.effect(() => {
-        const route = Alpine.store('router').route;
-        // Guard: skip if the route hasn't actually changed.
+        const router = Alpine.store('router');
+        const route = router.route;
+        // A page asks for a fresh instance of itself through the router's
+        // remount(), which changes the generation and not the route.
+        const generation = router.generation;
+        // Guard: skip if neither the route nor the generation has changed.
         // Alpine.initTree() inside renderPage can leak reactive reads
         // (e.g. $store.auth, x-model, x-if="loading") into this effect's
         // dependency set, causing spurious re-renders that reset page state.
-        if (route === this._currentRoute) return;
+        if (route === this._currentRoute && generation === this._currentGeneration) return;
         this._currentRoute = route;
+        this._currentGeneration = generation;
         this.renderPage(route);
       });
     },

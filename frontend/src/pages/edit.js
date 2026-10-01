@@ -9,6 +9,17 @@ import {
 import { sha256File, slugify } from '../crypto.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 import { loadAccreditedDirectory, lookupAccredited, applyHiveChangePrefill, applyAccreditedPrefill } from '../lib/accredited-directory.js';
+import {
+  editDraftKey,
+  removeLegacyDrafts,
+  readDraftEntry,
+  draftHasText,
+  composeDraftEntry,
+  snapshotFields,
+  fieldsMatchSnapshot,
+  headMarkerOf,
+} from '../lib/composer-drafts.js';
+import { relativeTime } from '../lib/relative-time.js';
 
 import { getAppTag, getAppId, getMaxUploadSize, getMaxUploadSizeMB } from '../config.js';
 import diff_match_patch from 'diff-match-patch';
@@ -88,15 +99,37 @@ const template = `
           </div>
         </template>
 
-        <!-- Edit form -->
+        <!-- Edit form. Its root mounts the editors on every render, so a form
+             that left the DOM and came back gets them again. -->
         <template x-if="!loadingPaper && !loadError && isAuthorized && paper">
-          <div>
+          <div x-init="$nextTick(() => _mountEditors())">
             <a :href="$lp('/paper/' + (paper.canonical_author || paper.author) + '/' + (paper.canonical_permlink || paper.permlink))"
                @click.prevent="navigate('/paper/' + (paper.canonical_author || paper.author) + '/' + (paper.canonical_permlink || paper.permlink))"
                class="text-sm text-pevo-teal hover:text-pevo-teal-dark no-underline">&larr; <span x-text="$t('common.backToPapers')"></span></a>
 
             <h1 class="text-3xl font-bold text-ink mt-4 mb-2" x-text="$t('edit.title')"></h1>
             <p class="text-ink-muted mb-8" x-text="$t('edit.description')"></p>
+
+            <!-- Draft restored banner -->
+            <template x-if="draftRestored && draftSavedAt && !_landed">
+              <div class="card bg-pevo-teal-light border-pevo-teal/30 mb-6" data-testid="draft-restored-card">
+                <div class="flex items-center justify-between">
+                  <p class="text-sm text-ink" x-text="$t('publish.draftRestored', { time: draftTimeAgo() })"></p>
+                  <button type="button" class="text-sm font-medium text-pevo-teal hover:text-pevo-teal-dark" @click="discardDraft()" x-text="$t('common.discard')"></button>
+                </div>
+              </div>
+            </template>
+
+            <!-- A draft written against another version, or one the page could not check: the form stays read-only until the user picks -->
+            <template x-if="draftChoice">
+              <div class="card bg-pevo-gold-light border-pevo-gold/30 mb-6" data-testid="draft-choice-card">
+                <p class="text-sm text-ink" x-text="draftChoiceMessage"></p>
+                <div class="flex items-center gap-4 mt-3">
+                  <button type="button" class="btn-primary text-xs" @click="restorePendingDraft()" x-text="$t('common.restore')"></button>
+                  <button type="button" class="text-sm font-medium text-pevo-teal hover:text-pevo-teal-dark" @click="discardPendingDraft()" x-text="$t('common.discard')"></button>
+                </div>
+              </div>
+            </template>
 
             <!-- Continuation banner -->
             <template x-if="isContinuation">
@@ -116,7 +149,8 @@ const template = `
               </div>
             </template>
 
-            <form @submit.prevent="handleSubmit()" class="space-y-6">
+            <form @submit.prevent="handleSubmit()">
+              <fieldset class="space-y-6 min-w-0" :disabled="!!draftChoice">
               <!-- Title -->
               <div class="card">
                 <label for="edit-title" class="block text-sm font-semibold text-ink mb-2" x-text="$t('publish.paperTitle')"></label>
@@ -345,6 +379,7 @@ const template = `
                 <button type="submit" class="btn-primary w-full sm:w-auto shrink-0" :disabled="isSubmitting || _landed"
                         x-text="isSubmitting ? $t('edit.saving') : (isContinuation ? $t('edit.publishRevision') : $t('edit.saveButton'))"></button>
               </div>
+              </fieldset>
             </form>
           </div>
         </template>
@@ -396,8 +431,43 @@ export function initEditPage() {
 
     _abstractEditor: null,
     _bodyEditor: null,
+    // Bumped by every _mountEditors call, so a mount whose import resolves
+    // after a later one started creates nothing.
+    _editorMountGeneration: 0,
     _draftTimer: null,
-    _initialLoadDone: false,
+
+    draftRestored: false,
+    draftSavedAt: null,
+    // 'newer' or 'unchecked' while the choice card stands: the stored draft was
+    // written against another head marker than the one this load returned, or
+    // one of the two markers is null. Null otherwise. The form is read-only
+    // and nothing is drafted until the user restores or discards the draft
+    // (_pendingDraft).
+    draftChoice: null,
+    _pendingDraft: null,
+    // What the instance drafts for, captured once when the load lands
+    // (ARCHITECTURE.md § 8, "Composer Drafts"): the account signed in then
+    // (null for a signed-out visitor), and the head marker of the paper the
+    // form was loaded from. The key also names the paper's canonical pair. It
+    // stays null for an account that cannot edit the paper, which drafts
+    // nothing.
+    _accountCaptured: false,
+    _draftAccount: null,
+    _draftKey: null,
+    _loadedHeadMarker: null,
+    // The route params the instance was mounted for. A history jump between
+    // two edit entries changes them without a route change.
+    _routeAuthor: null,
+    _routePermlink: null,
+    // The form as loaded, in two halves: the plain fields once the prefill is
+    // done, the editor fields once both editors have normalised their content.
+    // Nothing is drafted until both exist, and a form equal to them holds no
+    // user work.
+    _baselineFields: null,
+    _baselineEditors: null,
+    // Set when another account signed in or the route named another paper;
+    // the instance is replaced once no submit is in flight.
+    _remountRequested: false,
     // True from the moment a broadcast resolves with a result. Set only by
     // _markLanded and never reset: a landed instance is finished.
     _landed: false,
@@ -521,18 +591,35 @@ export function initEditPage() {
       return 'bg-pevo-teal-light border-pevo-teal/30';
     },
 
-    get draftKey() {
-      return `pevo-draft-edit-${this.author}-${this.permlink}`;
+    get draftChoiceMessage() {
+      if (!this._pendingDraft) return '';
+      const time = relativeTime(this._pendingDraft.savedAt, this.$t);
+      return this.draftChoice === 'newer'
+        ? this.$t('edit.draftNewerVersion', { time })
+        : this.$t('edit.draftVersionUnchecked', { time });
+    },
+
+    get _hasBaseline() {
+      return !!(this._baselineFields && this._baselineEditors);
+    },
+
+    // Whether both editors still hold the text they normalised the served
+    // body to.
+    get editorsAtBaseline() {
+      return !!this._baselineEditors && fieldsMatchSnapshot(this._editorFields(), this._baselineEditors);
     },
 
     init() {
+      this._routeAuthor = this.author;
+      this._routePermlink = this.permlink;
       // Reactive bindings register exactly once. loadPaperData() must stay
       // re-entrant: the Retry button re-invokes it, and registering $watch
       // / storage listeners inside that path duplicated handlers per retry
       // (Alpine's $watch returns an unsubscribe handle the previous code
       // discarded, and the storage listener was overwritten without
-      // removeEventListener). Draft auto-save guards on _initialLoadDone,
-      // so $watch firing before the first successful load is a no-op.
+      // removeEventListener). A draft write needs the baseline, which no
+      // load has taken yet, so a $watch firing before the first successful
+      // load writes nothing.
       this._setupReactiveBindings();
       this.loadPaperData();
       this._loadAccreditedDirectory();
@@ -556,6 +643,48 @@ export function initEditPage() {
       this.$watch('newCoAuthors', () => this._scheduleDraftSave());
       this.$watch('citations', () => this._scheduleDraftSave());
       this.$watch('addressedReviews', () => this._scheduleDraftSave());
+
+      this.$watch('$store.auth.username', (next) => this._onAccountChange(next));
+      this.$watch('$store.router.params', (params) => this._onRouteParamsChange(params));
+      this.$watch('step', () => this._remountWhenSettled());
+    },
+
+    // The account in the store changed (ARCHITECTURE.md § 8, "The instance
+    // is bound to the account and the paper it loaded for"). The form was
+    // loaded for the captured account (its author entry, its key), so any
+    // other account that signs in gets a fresh instance and a load of its
+    // own, including when the load captured no account because the visitor
+    // was signed out. A change to no account (a sign-out, a session teardown)
+    // changes nothing: the instance keeps drafting under the key it captured,
+    // and the same account signing back in finds it as it left it. A custody
+    // upgrade keeps the username and never reaches this. Before the load
+    // lands there is nothing to replace, since the load captures whoever is
+    // signed in when it lands.
+    _onAccountChange(next) {
+      if (!this._accountCaptured || !next || next === this._draftAccount) return;
+      this._remountRequested = true;
+      this._remountWhenSettled();
+    },
+
+    // The edit route started naming another paper while this instance stayed
+    // mounted, as a history jump between two edit entries does: pageMount
+    // re-renders on a route name change only.
+    _onRouteParamsChange(params) {
+      if (Alpine.store('router').route !== 'edit') return;
+      if (params.author === this._routeAuthor && params.permlink === this._routePermlink) return;
+      this._remountRequested = true;
+      this._remountWhenSettled();
+    },
+
+    // A submit in flight finishes before the instance is replaced: whether an
+    // account change between its legs may still send anything is the upload
+    // batch guard's decision, not this one's. The pending debounce is flushed
+    // first, under the key this instance captured.
+    _remountWhenSettled() {
+      if (!this._remountRequested || this.isSubmitting || !this._mounted) return;
+      this._remountRequested = false;
+      this._flushDraftSave();
+      Alpine.store('router').remount();
     },
 
     async loadPaperData() {
@@ -588,11 +717,10 @@ export function initEditPage() {
         // non-obvious one: its reviews are what _restoreDraft reconciles the
         // saved ticks against, and an empty list there means "could not be
         // fetched", not "the paper has none". Degrading instead would prune
-        // every saved tick, set _initialLoadDone so the next watched change
+        // every saved tick, take a baseline so the next watched change
         // rewrites the pruned set to storage, and render no checklist card to
         // show the loss. Failing to the Retry card costs the draft nothing:
-        // _initialLoadDone stays false, so nothing is pruned and nothing is
-        // written.
+        // no baseline is taken, so nothing is pruned and nothing is written.
         if (paperRes.status === 'rejected' || enrichmentRes.status === 'rejected') {
           this.loadError = this.$t('edit.loadError');
           return;
@@ -604,16 +732,12 @@ export function initEditPage() {
         this.reviews = enrichment.reviews || [];
         this.paper.authorship_claims = enrichment.authorship_claims || [];
 
+        if (!this._accountCaptured) this._captureDraftTarget();
         this._prefillForm();
-        this._restoreDraft();
-        this._initialLoadDone = true;
-
-        // Merge citation collection from localStorage
-        this._mergeCitationCollection();
-
-        this.$nextTick(() => {
-          this._mountEditors();
-        });
+        // The plain half of the baseline. The editors mount when the form
+        // renders (its root calls _mountEditors), and the draft is restored
+        // only once they have taken the editor half, so neither half sees it.
+        this._baselineFields = snapshotFields(this._plainFields());
       } catch (err) {
         if (!this._mounted) return;
         if (this.author !== author || this.permlink !== permlink) return;
@@ -722,28 +846,145 @@ export function initEditPage() {
       }));
     },
 
+    // Called once, when the first load lands. The legacy entries go on the
+    // first load that has an account, whether or not it can edit this paper.
+    _captureDraftTarget() {
+      const account = this.username || null;
+      this._accountCaptured = true;
+      this._draftAccount = account;
+      this._loadedHeadMarker = headMarkerOf(this.paper);
+      if (!account) return;
+      removeLegacyDrafts();
+      if (!this.isAuthorized) return;
+      this._draftKey = editDraftKey(
+        account,
+        this.paper.canonical_author || this.paper.author,
+        this.paper.canonical_permlink || this.paper.permlink,
+      );
+    },
+
+    _plainFields() {
+      return {
+        title: this.title, keywordsText: this.keywordsText, authorName: this.authorName,
+        authorAffiliation: this.authorAffiliation, authorOrcid: this.authorOrcid,
+        newCoAuthors: this.newCoAuthors, citations: this.citations,
+        addressedReviews: this.addressedReviews,
+      };
+    },
+
+    _editorFields() {
+      return { abstract: this.abstract, body: this.body };
+    },
+
+    // The text fields a draft stores.
+    _draftFields() {
+      return {
+        title: this.title, abstract: this.abstract, body: this.body,
+        keywordsText: this.keywordsText, authorName: this.authorName,
+        authorAffiliation: this.authorAffiliation, authorOrcid: this.authorOrcid,
+        newCoAuthors: this.newCoAuthors, citations: this.citations,
+        addressedReviews: this.addressedReviews,
+      };
+    },
+
+    _formAtBaseline(fields) {
+      return fieldsMatchSnapshot(fields, { ...this._baselineFields, ...this._baselineEditors });
+    },
+
+    // Restore the captured draft, bound to the head (ARCHITECTURE.md § 8,
+    // "Restore is bound to the account and, on the edit page, to the head").
+    // Silently, with the "draft restored" card, only when the draft was
+    // written against the head marker this load returned. Otherwise nothing
+    // is restored yet: the choice card says the paper has a newer version
+    // than the draft or, when either marker is null, that the page could not
+    // check, and the form stays read-only until the user picks.
     _restoreDraft() {
-      try {
-        const raw = localStorage.getItem(this.draftKey);
-        if (raw) {
-          const draft = JSON.parse(raw);
-          if (draft && typeof draft.title === 'string') {
-            this.title = draft.title;
-            this.abstract = draft.abstract;
-            this.body = draft.body;
-            this.keywordsText = draft.keywordsText;
-            if (draft.authorName) this.authorName = draft.authorName;
-            if (draft.authorAffiliation) this.authorAffiliation = draft.authorAffiliation;
-            if (draft.authorOrcid) this.authorOrcid = draft.authorOrcid;
-            this.newCoAuthors = draft.newCoAuthors || [];
-            if (draft.citations) this.citations = draft.citations;
-            this.addressedReviews = this._reconcileAddressedReviews(draft.addressedReviews);
-          }
-        }
-      } catch {
-        localStorage.removeItem(this.draftKey);
-        console.warn('Draft recovery failed');
+      if (!this._draftKey) return;
+      const draft = readDraftEntry(this._draftKey);
+      if (!draftHasText(draft)) return;
+      const draftMarker = draft.head_marker ?? null;
+      if (this._loadedHeadMarker !== null && draftMarker === this._loadedHeadMarker) {
+        this._applyDraft(draft);
+        return;
       }
+      this._pendingDraft = draft;
+      this.draftChoice = this._loadedHeadMarker === null || draftMarker === null ? 'unchecked' : 'newer';
+      this._syncEditorsEditable();
+    },
+
+    _applyDraft(draft) {
+      this.title = draft.title;
+      this.abstract = draft.abstract || '';
+      this.body = draft.body || '';
+      this.keywordsText = draft.keywordsText || '';
+      if (draft.authorName) this.authorName = draft.authorName;
+      if (draft.authorAffiliation) this.authorAffiliation = draft.authorAffiliation;
+      if (draft.authorOrcid) this.authorOrcid = draft.authorOrcid;
+      this.newCoAuthors = draft.newCoAuthors || [];
+      if (Array.isArray(draft.citations)) this.citations = draft.citations;
+      this.addressedReviews = this._reconcileAddressedReviews(draft.addressedReviews);
+      applyAccreditedPrefill(this.newCoAuthors, this.accreditedDirectory);
+      if (this._abstractEditor) this._abstractEditor.setContent(this.abstract);
+      if (this._bodyEditor) this._bodyEditor.setContent(this.body);
+      this.draftSavedAt = draft.savedAt ?? null;
+      this.draftRestored = true;
+    },
+
+    // The choice card's Restore: the draft replaces the version the form was
+    // loaded from, and the write that follows binds it to that version's
+    // marker, so the next load restores it silently.
+    restorePendingDraft() {
+      if (this._landed || !this._pendingDraft) return;
+      const draft = this._pendingDraft;
+      this._clearDraftChoice();
+      this._applyDraft(draft);
+      this._writeDraft();
+      this._mergeCitationCollection();
+    },
+
+    // The choice card's Discard: the draft goes, and the form keeps the
+    // version it was loaded from.
+    discardPendingDraft() {
+      if (this._landed || !this._pendingDraft) return;
+      this._clearDraftChoice();
+      localStorage.removeItem(this._draftKey);
+      this._mergeCitationCollection();
+    },
+
+    _clearDraftChoice() {
+      this.draftChoice = null;
+      this._pendingDraft = null;
+      this._syncEditorsEditable();
+    },
+
+    _syncEditorsEditable() {
+      const editable = !this.draftChoice;
+      if (this._abstractEditor) this._abstractEditor.setEditable(editable);
+      if (this._bodyEditor) this._bodyEditor.setEditable(editable);
+    },
+
+    // The "draft restored" card's Discard. Refused once landed, when the card
+    // is gone and the instance writes nothing. The form returns to the paper
+    // as loaded: the prefill runs again, the rows and ticks only a draft adds
+    // are emptied, the editors take the loaded text, and the baseline is taken
+    // again over it.
+    discardDraft() {
+      if (this._landed) return;
+      this._prefillForm();
+      this.newCoAuthors = [];
+      this.addressedReviews = [];
+      if (this._abstractEditor) { this._abstractEditor.setContent(this.abstract); this._abstractEditor.normalize(); }
+      if (this._bodyEditor) { this._bodyEditor.setContent(this.body); this._bodyEditor.normalize(); }
+      this._baselineFields = snapshotFields(this._plainFields());
+      this._baselineEditors = snapshotFields(this._editorFields());
+      localStorage.removeItem(this._draftKey);
+      this.draftRestored = false;
+      this.draftSavedAt = null;
+    },
+
+    draftTimeAgo() {
+      if (!this.draftSavedAt) return '';
+      return relativeTime(this.draftSavedAt, this.$t);
     },
 
     // A tick only means something while the checklist still offers its review,
@@ -762,27 +1003,23 @@ export function initEditPage() {
         .map(rev => ({ author: rev.author, permlink: rev.permlink }));
     },
 
+    // Bound to the form's x-if, not to the component: the form's root calls
+    // this on every render. A form that left the DOM and came back (a sign-out
+    // hides it, the same account signing back in shows it) has new elements,
+    // so the pair left on the old ones is destroyed and a new pair is built on
+    // the new ones, from the text the form holds.
     async _mountEditors() {
-      // Mount-during-mount idempotency guard. loadPaperData's _loadInFlight
-      // mutex clears in `finally` BEFORE _mountEditors actually runs (deferred
-      // via $nextTick + async import). A Retry that lands between the mutex
-      // clear and the import resolution can schedule a second _mountEditors;
-      // both invocations call createEditor on the same $refs and leak the
-      // first pair of instances. The flag short-circuits the second call
-      // synchronously (before the await), so only one createEditor pair lands.
-      if (this._editorsInitialized) return;
-      this._editorsInitialized = true;
+      // Only the latest call builds. Two calls whose imports are in flight at
+      // once would otherwise both call createEditor on the same $refs and leak
+      // the first pair.
+      const generation = ++this._editorMountGeneration;
       const { createEditor } = await import('../editor.js');
       // Teardown-during-init guard. If the component was destroyed while the
       // dynamic import was in flight, $refs are stale and any editor we
       // create now leaks (destroy() already nulled the previous instance
       // refs, so it won't tear down anything we assign here).
-      if (!this._mounted) {
-        // Release the idempotency flag so a legitimate later remount (e.g.
-        // live-reload, navigation back to the page) can re-mount editors.
-        this._editorsInitialized = false;
-        return;
-      }
+      if (!this._mounted || generation !== this._editorMountGeneration) return;
+      this._destroyEditors();
       const abstractEl = this.$refs.abstractEditor;
       const bodyEl = this.$refs.bodyEditor;
 
@@ -805,19 +1042,41 @@ export function initEditPage() {
           initialMarkdown: this.body,
         });
       }
+      this._onEditorsMounted();
+    },
+
+    // Both editors are up. Normalise them first: the editor half of the
+    // baseline is the text they hold after the rewrite their first transaction
+    // makes, not the served text. The first mount then takes that half and
+    // only then restores, since the baseline is the form without the draft and
+    // taken after a restore it would make a draft that only touched the
+    // editors look like no work at all. The citation collection merges last,
+    // so a restored draft cannot replace what it adds. A later render keeps
+    // the baseline and whatever was restored, and only re-applies the lock a
+    // standing choice card holds.
+    _onEditorsMounted() {
+      if (this._abstractEditor) this._abstractEditor.normalize();
+      if (this._bodyEditor) this._bodyEditor.normalize();
+      this._syncEditorsEditable();
+      if (this._baselineEditors) return;
+      this._baselineEditors = snapshotFields(this._editorFields());
+      this._restoreDraft();
+      this._mergeCitationCollection();
+    },
+
+    _destroyEditors() {
+      if (this._abstractEditor) { this._abstractEditor.destroy(); this._abstractEditor = null; }
+      if (this._bodyEditor) { this._bodyEditor.destroy(); this._bodyEditor = null; }
     },
 
     destroy() {
       this._teardownTimers();
       if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }
-      if (this._abstractEditor) { this._abstractEditor.destroy(); this._abstractEditor = null; }
-      if (this._bodyEditor) { this._bodyEditor.destroy(); this._bodyEditor = null; }
-      this._editorsInitialized = false;
+      this._destroyEditors();
       if (this._storageListener) { window.removeEventListener('storage', this._storageListener); this._storageListener = null; }
     },
 
     _scheduleDraftSave() {
-      if (!this._initialLoadDone) return;
       if (this._draftTimer) clearTimeout(this._draftTimer);
       this._draftTimer = setTimeout(() => this._writeDraft(), 2000);
     },
@@ -840,10 +1099,8 @@ export function initEditPage() {
     //   after the component is gone, where the entry under that key can be a
     //   draft a later visit to the same paper wrote.
     //
-    // The key is passed in rather than read from the draftKey getter, which
-    // derives from the router params: a landing can be reached after an
-    // unmount, and by then the params name whatever the user navigated to.
-    // handleSubmit captures the key before its first await.
+    // The key is passed in from handleSubmit, which reads the captured key
+    // before its first await.
     _markLanded(key) {
       this._landed = true;
       if (this._draftTimer) { clearTimeout(this._draftTimer); this._draftTimer = null; }
@@ -893,28 +1150,40 @@ export function initEditPage() {
       this._writeDraft();
     },
 
-    // The draft body, shared by the debounced save and the flush so the two
-    // cannot persist different shapes. The load guard belongs here rather than
-    // only at the scheduler: a flush can fire from a gate before the paper has
-    // loaded, and writing the empty form then would overwrite a real draft
-    // with nothing.
+    // The one function every draft write passes through: the debounced save
+    // and every gate's flush both end here, so each of its refusals holds for
+    // both. It writes only user work, under the captured key and bound to the
+    // head marker the form was loaded against (ARCHITECTURE.md § 8, "A draft
+    // holds user work only"):
     //
-    // The landed refusal belongs here for the same reason: the debounce and
-    // the flush both end in this function, so a refusal at the scheduler alone
-    // would leave every gate's flush writing the spent draft back. The
-    // scheduler is deliberately left alone, and a timer armed after the
-    // landing fires into this refusal.
+    // - nothing after the landing. A refusal at the scheduler alone would
+    //   leave every gate's flush writing the spent draft back, and the
+    //   scheduler is deliberately left alone: a timer armed after the landing
+    //   fires into this refusal;
+    // - nothing without a key, which a signed-out visitor and an account that
+    //   cannot edit the paper never get;
+    // - nothing before the baseline exists. A flush can fire from a gate
+    //   before the restore has run, and writing then would replace a real
+    //   draft with a form that does not hold it yet;
+    // - nothing while the choice card stands, so the loaded version cannot
+    //   overwrite the stored draft before the user has seen it.
+    //
+    // A form back at its baseline drops the stored text instead of storing it.
     _writeDraft() {
-      if (!this._initialLoadDone) return;
       if (this._landed) return;
-      const draft = {
-        title: this.title, abstract: this.abstract, body: this.body,
-        keywordsText: this.keywordsText, authorName: this.authorName,
-        authorAffiliation: this.authorAffiliation, authorOrcid: this.authorOrcid,
-        newCoAuthors: this.newCoAuthors, citations: this.citations,
-        addressedReviews: this.addressedReviews, savedAt: Date.now(),
-      };
-      localStorage.setItem(this.draftKey, JSON.stringify(draft));
+      if (!this._draftKey || !this._hasBaseline || this.draftChoice) return;
+      const fields = this._draftFields();
+      const entry = composeDraftEntry(readDraftEntry(this._draftKey), fields, {
+        atBaseline: this._formAtBaseline(fields),
+        now: Date.now(),
+        headMarker: this._loadedHeadMarker,
+      });
+      if (!entry) {
+        localStorage.removeItem(this._draftKey);
+        return;
+      }
+      localStorage.setItem(this._draftKey, JSON.stringify(entry));
+      if (draftHasText(entry)) this.draftSavedAt = entry.savedAt;
     },
 
     addCoAuthor() {
@@ -1002,11 +1271,10 @@ export function initEditPage() {
     // A yes is honoured only while the page is still mounted, the same rule
     // as the publish page's copy of this method: a yes arriving after the
     // user has left degrades to the silent refusal a decline produces, rather
-    // than sending a page that no longer exists to ORCID. The unmount check
-    // also precedes the second flush, since `draftKey` derives from the router
-    // params and names whatever the user moved on to. A yes that is honoured
-    // flushes again because the flush in `_windowReady` ran before the dialog
-    // opened, and the copy promised that the text survives the round-trip.
+    // than sending a page that no longer exists to ORCID. A yes that is
+    // honoured flushes again because the flush in `_windowReady` ran before
+    // the dialog opened, and the copy promised that the text survives the
+    // round-trip.
     async _confirmNavigationCost() {
       const confirmed = await Alpine.store('broadcastConfirm').request({
         title: this.$t('confirm.reauthNavigateTitle'),
@@ -1092,7 +1360,14 @@ export function initEditPage() {
       }
     },
 
+    // Merging takes the collection out of storage, so the citations it adds
+    // live only in the form from then on. Held back until the baseline exists
+    // and no choice card stands: the merged citations then count as user work
+    // and are drafted, neither a restore nor the choice can replace them, and
+    // a visitor who cannot edit the paper (no form, so no baseline) leaves the
+    // collection where it is.
     _mergeCitationCollection() {
+      if (!this._hasBaseline || this.draftChoice) return;
       const key = 'pevo-citation-collection';
       const raw = localStorage.getItem(key);
       if (!raw) return;
@@ -1179,11 +1454,9 @@ export function initEditPage() {
       // must take a flat paper snapshot up front to be fully safe.
       const isContinuation = this.isContinuation;
       const ownPost = this.userPostInChain;
-      // Capture the draft key for the same reason, one position later in the
-      // sequence: the landing that spends it runs past awaits an unmount can
-      // interleave with, and the draftKey getter reads the router params, which
-      // by then name whatever the user navigated to.
-      const draftKey = this.draftKey;
+      // The key the landing removes the draft by, read ahead of the first
+      // await like isContinuation and userPostInChain.
+      const draftKey = this._draftKey;
 
       // Leave 'idle' synchronously, before the first await. `isSubmitting`
       // derives from `step`, and it is what disables the submit button — across

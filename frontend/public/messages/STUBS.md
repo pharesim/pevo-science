@@ -4009,3 +4009,74 @@ pt: auth.sessionRevoked
 sv: auth.sessionRevoked
 tr: auth.sessionRevoked
 zh: auth.sessionRevoked
+
+### Added 2026-10-01 (ui-composer-drafts-bound-to-account-and-head)
+
+The cards that let the user choose what happens to a stored draft before
+anything replaces it. On the edit page: the draft was written against an
+older version of the paper, or the page could not check which version it
+was written against; Restore puts the draft over the version shown. On the
+publish page: an account signed in under a form that already held typed
+work, and that account has a saved draft; Restore puts the draft over what
+was typed. `common.restore` is the button on both.
+
+ar: common.restore
+cs: common.restore
+da: common.restore
+de: common.restore
+es: common.restore
+fa: common.restore
+fr: common.restore
+he: common.restore
+it: common.restore
+nl: common.restore
+pl: common.restore
+pt: common.restore
+sv: common.restore
+tr: common.restore
+zh: common.restore
+ar: publish.draftSavedChoice
+cs: publish.draftSavedChoice
+da: publish.draftSavedChoice
+de: publish.draftSavedChoice
+es: publish.draftSavedChoice
+fa: publish.draftSavedChoice
+fr: publish.draftSavedChoice
+he: publish.draftSavedChoice
+it: publish.draftSavedChoice
+nl: publish.draftSavedChoice
+pl: publish.draftSavedChoice
+pt: publish.draftSavedChoice
+sv: publish.draftSavedChoice
+tr: publish.draftSavedChoice
+zh: publish.draftSavedChoice
+ar: edit.draftNewerVersion
+cs: edit.draftNewerVersion
+da: edit.draftNewerVersion
+de: edit.draftNewerVersion
+es: edit.draftNewerVersion
+fa: edit.draftNewerVersion
+fr: edit.draftNewerVersion
+he: edit.draftNewerVersion
+it: edit.draftNewerVersion
+nl: edit.draftNewerVersion
+pl: edit.draftNewerVersion
+pt: edit.draftNewerVersion
+sv: edit.draftNewerVersion
+tr: edit.draftNewerVersion
+zh: edit.draftNewerVersion
+ar: edit.draftVersionUnchecked
+cs: edit.draftVersionUnchecked
+da: edit.draftVersionUnchecked
+de: edit.draftVersionUnchecked
+es: edit.draftVersionUnchecked
+fa: edit.draftVersionUnchecked
+fr: edit.draftVersionUnchecked
+he: edit.draftVersionUnchecked
+it: edit.draftVersionUnchecked
+nl: edit.draftVersionUnchecked
+pl: edit.draftVersionUnchecked
+pt: edit.draftVersionUnchecked
+sv: edit.draftVersionUnchecked
+tr: edit.draftVersionUnchecked
+zh: edit.draftVersionUnchecked

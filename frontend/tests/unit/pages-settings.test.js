@@ -208,6 +208,9 @@ describe('settingsPage', () => {
       getItem: vi.fn((key) => localStorageData[key] ?? null),
       setItem: vi.fn((key, val) => { localStorageData[key] = val; }),
       removeItem: vi.fn((key) => { delete localStorageData[key]; }),
+      // Enumeration, for the account deletion's sweep of the account's drafts.
+      get length() { return Object.keys(localStorageData).length; },
+      key: (i) => Object.keys(localStorageData)[i] ?? null,
     });
     vi.stubGlobal('sessionStorage', {
       getItem: vi.fn((key) => sessionStorageData[key] ?? null),
@@ -434,6 +437,42 @@ describe('settingsPage', () => {
       expect(mockNotificationsStore.stop).toHaveBeenCalled();
       expect(mockToastStore.show).toHaveBeenCalledWith('settings.accountDeleted', 'success');
       expect(mockRouterStore.navigate).toHaveBeenCalledWith('/');
+    });
+
+    // The account's composer drafts go with it (ARCHITECTURE.md § 8), and
+    // only that account's: an edit-key prefix without its trailing separator
+    // would also take `aliceb`'s drafts. Other storage is left alone.
+    it("removes exactly the deleted account's composer drafts", async () => {
+      mockDeleteEmail.mockResolvedValue({});
+      localStorageData['pevo-draft-publish:alice'] = '{}';
+      localStorageData['pevo-draft-edit:alice:carol:p1'] = '{}';
+      localStorageData['pevo-draft-edit:alice:alice:p2'] = '{}';
+      localStorageData['pevo-draft-publish:aliceb'] = '{}';
+      localStorageData['pevo-draft-edit:aliceb:carol:p1'] = '{}';
+      localStorageData['pevo-draft-edit:bob:alice:p2'] = '{}';
+      localStorageData['pevo-citation-collection'] = '[]';
+      const comp = createComponent();
+
+      await comp.handleEmailDelete();
+
+      expect(mockAuthStore.disconnect).toHaveBeenCalled();
+      expect(Object.keys(localStorageData).sort()).toEqual([
+        'pevo-citation-collection',
+        'pevo-draft-edit:aliceb:carol:p1',
+        'pevo-draft-edit:bob:alice:p2',
+        'pevo-draft-publish:aliceb',
+      ]);
+    });
+
+    it('keeps the drafts when the deletion does not go through', async () => {
+      mockDeleteEmail.mockRejectedValue(new Error('denied'));
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      localStorageData['pevo-draft-publish:alice'] = '{}';
+      const comp = createComponent();
+
+      await comp.handleEmailDelete();
+
+      expect(localStorageData['pevo-draft-publish:alice']).toBe('{}');
     });
 
     it('does nothing if already deleting', async () => {

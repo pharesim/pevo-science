@@ -9,6 +9,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const mockCreateEditor = vi.fn(() => ({
   destroy: vi.fn(),
   setContent: vi.fn(),
+  normalize: vi.fn(),
+  setEditable: vi.fn(),
 }));
 
 vi.mock('../../src/editor.js', () => ({
@@ -67,7 +69,7 @@ vi.mock('../../src/components/paper-card.js', () => ({
 }));
 
 const mockStores = {
-  router: { params: {}, navigate: vi.fn(), query: {} },
+  router: { params: {}, navigate: vi.fn(), query: {}, remount: vi.fn() },
   auth: { isConnected: true, isAccredited: true, username: 'alice', accreditation: { name: 'Alice', institution: 'MIT' } },
   toast: { show: vi.fn() },
   broadcastConfirm: { request: vi.fn(() => Promise.resolve(true)) },
@@ -85,6 +87,7 @@ vi.mock('alpinejs', () => ({
 import Alpine from 'alpinejs';
 import { broadcastOps } from '../../src/signer.js';
 import { initPublishPage, publishPageTemplate } from '../../src/pages/publish.js';
+import { snapshotFields } from '../../src/lib/composer-drafts.js';
 
 function createComponent(overrides = {}) {
   initPublishPage();
@@ -98,6 +101,17 @@ function createComponent(overrides = {}) {
   // Skip init side effects
   Object.assign(comp, overrides);
   return comp;
+}
+
+// Stands in for the page load, which this harness does not run: captures the
+// signed-in account and takes the baseline over the empty form a fresh visit
+// loads, as init() and the editor mount would. Whatever the test has already
+// put in the form then counts as typed work, which a draft write needs.
+function markLoaded(comp) {
+  const fresh = createComponent();
+  comp._captureAccount(mockStores.auth.username);
+  comp._baselineFields = snapshotFields(fresh._plainFields());
+  comp._baselineEditors = snapshotFields(fresh._editorFields());
 }
 
 describe('publishPage', () => {
@@ -303,19 +317,26 @@ describe('publishPage', () => {
   });
 
   describe('draft flush load guard', () => {
-    it('a flush before the restore has run leaves a real draft untouched', () => {
+    it('a flush before the restore has run leaves a real draft untouched', async () => {
       // The gates flush unconditionally, and a flush that lands ahead of the
-      // restore would read the still-empty form: the empty-form branch then
-      // removes the stored key outright, and the draft the restore was about
-      // to bring back is gone.
+      // restore would read the still-empty form: writing it would replace the
+      // stored draft with a form that does not hold it yet, and the draft the
+      // restore was about to bring back would be gone.
       const saved = JSON.stringify({ title: 'Saved Title', abstract: 'Saved abstract', body: 'Saved body', savedAt: 1 });
-      localStorage.setItem('pevo-draft-publish', saved);
+      localStorage.setItem('pevo-draft-publish:alice', saved);
       const comp = createComponent();
-      expect(comp._initialLoadDone).toBe(false);
+      // init() captures the account and schedules the editor mount, whose
+      // import has not resolved yet: no editor baseline, so no restore either.
+      comp.init();
+      expect(comp._baselineEditors).toBeNull();
 
       comp._flushDraftSave();
 
-      expect(localStorage.getItem('pevo-draft-publish')).toBe(saved);
+      expect(localStorage.getItem('pevo-draft-publish:alice')).toBe(saved);
+      // The restore the flush would have pre-empted still runs.
+      await vi.waitFor(() => expect(comp.draftRestored).toBe(true), { interval: 1 });
+      expect(comp.title).toBe('Saved Title');
+      comp.destroy();
     });
   });
 
@@ -947,14 +968,14 @@ describe('publishPage', () => {
       mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
       let draftAtOrcid = null;
       mockStartOrcid.mockImplementation(async () => {
-        draftAtOrcid = localStorage.getItem('pevo-draft-publish');
+        draftAtOrcid = localStorage.getItem(`pevo-draft-publish:${mockStores.auth.username}`);
         return { redirect_url: 'https://orcid.org/oauth/authorize?x=1' };
       });
       mockStores.broadcastConfirm.request.mockResolvedValueOnce(true);
       vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/publish' } });
       try {
         const comp = lightComponent();
-        comp._initialLoadDone = true;
+        markLoaded(comp);
         comp.pdfFile = { name: 'paper.pdf', size: 1024 };
 
         await comp.handleSubmit();
@@ -980,13 +1001,13 @@ describe('publishPage', () => {
       mockFetchEmailStatus.mockResolvedValue({ data: { hasPassword: false } });
       let draftAtOrcid = null;
       mockStartOrcid.mockImplementation(async () => {
-        draftAtOrcid = localStorage.getItem('pevo-draft-publish');
+        draftAtOrcid = localStorage.getItem(`pevo-draft-publish:${mockStores.auth.username}`);
         return { redirect_url: 'https://orcid.org/oauth/authorize?x=1' };
       });
       vi.stubGlobal('window', { ...globalThis.window, location: { href: '', pathname: '/publish' } });
       try {
         const comp = lightComponent();
-        comp._initialLoadDone = true;
+        markLoaded(comp);
         comp.pdfFile = { name: 'paper.pdf', size: 1024 };
         mockStores.broadcastConfirm.request.mockImplementationOnce(async () => {
           comp.title = 'Typed While Asked';
@@ -1193,16 +1214,17 @@ describe('publishPage', () => {
   // rejection and the sentinel are not landings: both keep the draft and leave
   // the instance drafting and submittable.
   //
-  // Fixture posture shared by every spec here: `draftingComponent` sets
-  // `_initialLoadDone`, which `init()` sets in the app and which `_writeDraft`
-  // returns early without. A "nothing was written" assertion on a component
+  // Fixture posture shared by every spec here: `draftingComponent` runs
+  // `markLoaded`, which captures the account and takes the baseline that the
+  // load takes in the app and that `_writeDraft` returns early without. A "nothing was written" assertion on a component
   // that never had it set would pass with no barrier at all, so each spec that
   // asserts nothing was written also captures the draft from inside the broadcast mock, where the entry gate's
   // flush has just written it, and asserts on the capture once `handleSubmit`
   // has returned. Asserting inside the mock would throw into `handleSubmit`'s
   // catch and be swallowed.
   describe('a landed broadcast ends the composer instance', () => {
-    const DRAFT_KEY = 'pevo-draft-publish';
+    // The key of the account the test signed in, which some specs randomise.
+    const draftKey = () => `pevo-draft-publish:${mockStores.auth.username}`;
     const WINDOW_KEY = 'pevo_fresh_auth_session_proof';
 
     function draftingComponent() {
@@ -1212,7 +1234,7 @@ describe('publishPage', () => {
       comp.body = 'Body text';
       comp.discipline = 'Physics';
       comp.authorName = 'Alice';
-      comp._initialLoadDone = true;
+      markLoaded(comp);
       return comp;
     }
 
@@ -1269,7 +1291,7 @@ describe('publishPage', () => {
       let draftDuringBroadcast = null;
       const comp = draftingComponent();
       broadcastOps.mockImplementationOnce(async () => {
-        draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+        draftDuringBroadcast = localStorage.getItem(draftKey());
         comp.destroy();
         return { tx_id: 'tx' };
       });
@@ -1279,7 +1301,7 @@ describe('publishPage', () => {
       // Non-vacuous: the draft was in storage when the broadcast started.
       expect(JSON.parse(draftDuringBroadcast)).toMatchObject({ title: 'My Paper' });
       expect(broadcastOps).toHaveBeenCalledTimes(1);
-      expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+      expect(localStorage.getItem(draftKey())).toBeNull();
       // Fixture-posture proof: the instance really was unmounted when the
       // broadcast resolved, so the component-owned writes did not happen.
       expect(comp.step).toBe('broadcasting');
@@ -1297,7 +1319,7 @@ describe('publishPage', () => {
         let timerDuringBroadcast = null;
         const comp = draftingComponent();
         broadcastOps.mockImplementationOnce(async () => {
-          draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+          draftDuringBroadcast = localStorage.getItem(draftKey());
           comp.title = 'Changed During Broadcast';
           comp._scheduleDraftSave();
           timerDuringBroadcast = comp._draftTimer;
@@ -1311,7 +1333,7 @@ describe('publishPage', () => {
         expect(timerDuringBroadcast).not.toBeNull();
         expect(comp.step).toBe('success');
         expect(comp._draftTimer).toBeNull();
-        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+        expect(localStorage.getItem(draftKey())).toBeNull();
 
         // With the timer cancelled nothing is left to fire, so `_writeDraft`
         // is not reached at all. The refusal itself is pinned by
@@ -1320,7 +1342,7 @@ describe('publishPage', () => {
         const writeSpy = vi.spyOn(comp, '_writeDraft');
         vi.advanceTimersByTime(2000);
         expect(writeSpy).not.toHaveBeenCalled();
-        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+        expect(localStorage.getItem(draftKey())).toBeNull();
       } finally {
         vi.useRealTimers();
       }
@@ -1338,16 +1360,16 @@ describe('publishPage', () => {
         await comp.handleSubmit();
         expect(comp.step).toBe('success');
 
-        localStorage.setItem(DRAFT_KEY, laterVisitDraft);
+        localStorage.setItem(draftKey(), laterVisitDraft);
         comp.title = '';
         comp.abstract = '';
         comp.body = '';
         comp._flushDraftSave();
 
-        expect(localStorage.getItem(DRAFT_KEY)).toBe(laterVisitDraft);
+        expect(localStorage.getItem(draftKey())).toBe(laterVisitDraft);
       } finally {
         comp.destroy();
-        localStorage.removeItem(DRAFT_KEY);
+        localStorage.removeItem(draftKey());
       }
     });
 
@@ -1361,14 +1383,14 @@ describe('publishPage', () => {
         let draftDuringBroadcast = null;
         const comp = draftingComponent();
         broadcastOps.mockImplementationOnce(async () => {
-          draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+          draftDuringBroadcast = localStorage.getItem(draftKey());
           return { tx_id: 'tx' };
         });
         await comp.handleSubmit();
         expect(comp.step).toBe('success');
         // Non-vacuous: the same writer wrote the draft before the landing.
         expect(JSON.parse(draftDuringBroadcast)).toMatchObject({ title: 'My Paper' });
-        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+        expect(localStorage.getItem(draftKey())).toBeNull();
         expect(comp._draftTimer).toBeNull();
 
         const writeSpy = vi.spyOn(comp, '_writeDraft');
@@ -1385,7 +1407,7 @@ describe('publishPage', () => {
         // that an unrefused write would have stored.
         expect(writeSpy).toHaveBeenCalledTimes(1);
         expect(comp.title.trim()).not.toBe('');
-        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+        expect(localStorage.getItem(draftKey())).toBeNull();
       } finally {
         vi.useRealTimers();
       }
@@ -1401,14 +1423,14 @@ describe('publishPage', () => {
         let draftDuringBroadcast = null;
         const comp = draftingComponent();
         broadcastOps.mockImplementationOnce(async () => {
-          draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+          draftDuringBroadcast = localStorage.getItem(draftKey());
           return { tx_id: 'tx' };
         });
         await comp.handleSubmit();
         expect(comp.step).toBe('success');
         // Non-vacuous: the same flush wrote the draft before the landing.
         expect(JSON.parse(draftDuringBroadcast)).toMatchObject({ title: 'My Paper' });
-        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+        expect(localStorage.getItem(draftKey())).toBeNull();
 
         const file = { name: 'paper.pdf', size: 1024 };
         await comp.handlePdfChange({ target: { files: [file] } });
@@ -1416,7 +1438,7 @@ describe('publishPage', () => {
         // Fixture-posture proof: the handler ran through its gate to the end.
         expect(comp.pdfFile).toBe(file);
         expect(mockStores.router.navigate).not.toHaveBeenCalled();
-        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+        expect(localStorage.getItem(draftKey())).toBeNull();
       } finally {
         vi.useRealTimers();
       }
@@ -1428,14 +1450,14 @@ describe('publishPage', () => {
         let draftDuringBroadcast = null;
         const comp = draftingComponent();
         broadcastOps.mockImplementationOnce(async () => {
-          draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+          draftDuringBroadcast = localStorage.getItem(draftKey());
           return { tx_id: 'tx' };
         });
         await comp.handleSubmit();
         expect(comp.step).toBe('success');
         // Non-vacuous: the same flush wrote the draft before the landing.
         expect(JSON.parse(draftDuringBroadcast)).toMatchObject({ title: 'My Paper' });
-        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+        expect(localStorage.getItem(draftKey())).toBeNull();
 
         const target = { files: [{ name: 'data.csv', size: 10 }], value: 'C:\\fakepath\\data.csv' };
         await comp.handleSupplementaryFiles({ target });
@@ -1443,7 +1465,7 @@ describe('publishPage', () => {
         // Fixture-posture proof: the handler ran through its gate to the end.
         expect(comp.supplementaryFiles).toHaveLength(1);
         expect(mockStores.router.navigate).not.toHaveBeenCalled();
-        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+        expect(localStorage.getItem(draftKey())).toBeNull();
       } finally {
         vi.useRealTimers();
       }
@@ -1458,7 +1480,7 @@ describe('publishPage', () => {
         let draftDuringBroadcast = null;
         const comp = draftingComponent();
         broadcastOps.mockImplementation(async () => {
-          draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+          draftDuringBroadcast = localStorage.getItem(draftKey());
           return { tx_id: 'tx' };
         });
         await comp.handleSubmit();
@@ -1480,7 +1502,31 @@ describe('publishPage', () => {
         expect(broadcastOps).toHaveBeenCalledTimes(1);
         expect(mockStores.broadcastConfirm.request).toHaveBeenCalledTimes(1);
         expect(comp.step).toBe('success');
-        expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+        expect(localStorage.getItem(draftKey())).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("the restored card's Discard is refused once landed, and the card is gone", async () => {
+      // A landed instance writes nothing and touches nothing under its key,
+      // and the form shows what was published until the navigation.
+      expect(publishPageTemplate).toContain('x-if="draftRestored && draftSavedAt && !_landed"');
+      vi.useFakeTimers();
+      try {
+        const comp = draftingComponent();
+        comp.draftRestored = true;
+        comp.draftSavedAt = 1;
+        broadcastOps.mockResolvedValueOnce({ tx_id: 'tx' });
+        await comp.handleSubmit();
+        expect(comp._landed).toBe(true);
+        localStorage.setItem(draftKey(), JSON.stringify({ title: 'Another tab', savedAt: 2 }));
+
+        comp.discardDraft();
+
+        expect(comp.title).toBe('My Paper');
+        expect(comp.draftRestored).toBe(true);
+        expect(JSON.parse(localStorage.getItem(draftKey()))).toMatchObject({ title: 'Another tab' });
       } finally {
         vi.useRealTimers();
       }
@@ -1528,7 +1574,7 @@ describe('publishPage', () => {
       let draftDuringBroadcast = null;
       const comp = draftingComponent();
       broadcastOps.mockImplementationOnce(async () => {
-        draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+        draftDuringBroadcast = localStorage.getItem(draftKey());
         comp.destroy();
         throw windowClosedError();
       });
@@ -1547,7 +1593,7 @@ describe('publishPage', () => {
       expect(comp.errorMessage).toBe('');
       expect(comp.step).toBe('broadcasting');
       expect(JSON.parse(draftDuringBroadcast)).toMatchObject({ title: 'My Paper' });
-      expect(localStorage.getItem(DRAFT_KEY)).toBe(draftDuringBroadcast);
+      expect(localStorage.getItem(draftKey())).toBe(draftDuringBroadcast);
     });
 
     it('a rejected broadcast keeps the flushed draft and leaves the instance drafting and submittable', async () => {
@@ -1561,7 +1607,7 @@ describe('publishPage', () => {
         let draftDuringBroadcast = null;
         const comp = draftingComponent();
         broadcastOps.mockImplementationOnce(async () => {
-          draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+          draftDuringBroadcast = localStorage.getItem(draftKey());
           throw new Error('broadcast boom');
         });
 
@@ -1569,13 +1615,13 @@ describe('publishPage', () => {
 
         expect(comp.step).toBe('error');
         expect(JSON.parse(draftDuringBroadcast)).toMatchObject({ title: 'My Paper' });
-        expect(localStorage.getItem(DRAFT_KEY)).toBe(draftDuringBroadcast);
+        expect(localStorage.getItem(draftKey())).toBe(draftDuringBroadcast);
 
         // A later change is saved by the debounce.
         comp.title = 'Later Title';
         comp._scheduleDraftSave();
         vi.advanceTimersByTime(2000);
-        expect(JSON.parse(localStorage.getItem(DRAFT_KEY))).toMatchObject({ title: 'Later Title' });
+        expect(JSON.parse(localStorage.getItem(draftKey()))).toMatchObject({ title: 'Later Title' });
 
         // A later submit reaches the broadcast again.
         broadcastOps.mockResolvedValueOnce({ tx_id: 'tx' });
@@ -1597,7 +1643,7 @@ describe('publishPage', () => {
         let draftDuringBroadcast = null;
         const comp = draftingComponent();
         broadcastOps.mockImplementationOnce(async () => {
-          draftDuringBroadcast = localStorage.getItem(DRAFT_KEY);
+          draftDuringBroadcast = localStorage.getItem(draftKey());
           throw windowClosedError();
         });
 
@@ -1610,13 +1656,13 @@ describe('publishPage', () => {
         expect(comp.step).toBe('idle');
         expect(comp.errorMessage).toBe('');
         expect(JSON.parse(draftDuringBroadcast)).toMatchObject({ title: 'My Paper' });
-        expect(localStorage.getItem(DRAFT_KEY)).toBe(draftDuringBroadcast);
+        expect(localStorage.getItem(draftKey())).toBe(draftDuringBroadcast);
 
         // A later change is saved by the debounce.
         comp.title = 'Later Title';
         comp._scheduleDraftSave();
         vi.advanceTimersByTime(2000);
-        expect(JSON.parse(localStorage.getItem(DRAFT_KEY))).toMatchObject({ title: 'Later Title' });
+        expect(JSON.parse(localStorage.getItem(draftKey()))).toMatchObject({ title: 'Later Title' });
 
         // A later submit is not refused: it reaches `_windowReady`. What the
         // gate then does depends on the staged account, so it is stubbed to
@@ -1632,9 +1678,69 @@ describe('publishPage', () => {
     });
   });
 
+  // ARCHITECTURE.md § 8, "The instance is bound to the account and the paper
+  // it loaded for". The watcher on the store's username calls
+  // _onAccountChange, and the one on `step` calls _remountWhenSettled; this
+  // harness mocks $watch, so the cases call them where a watcher would.
+  describe('an account change under a mounted instance', () => {
+    beforeEach(() => {
+      mockStores.auth.username = 'alice';
+    });
+
+    afterEach(() => {
+      mockStores.auth.username = 'alice';
+    });
+
+    it('another account replaces the instance, after flushing the pending save under the captured key', () => {
+      vi.useFakeTimers();
+      try {
+        const comp = createComponent();
+        markLoaded(comp);
+        comp.title = 'Alice typed';
+        comp._scheduleDraftSave();
+
+        mockStores.auth.username = 'bob';
+        comp._onAccountChange('bob');
+
+        expect(mockStores.router.remount).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(localStorage.getItem('pevo-draft-publish:alice'))).toMatchObject({ title: 'Alice typed' });
+        expect(localStorage.getItem('pevo-draft-publish:bob')).toBe(null);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('waits for a submit in flight to settle before replacing the instance', () => {
+      const comp = createComponent();
+      markLoaded(comp);
+      comp.step = 'broadcasting';
+
+      comp._onAccountChange('bob');
+      expect(mockStores.router.remount).not.toHaveBeenCalled();
+
+      comp.step = 'error';
+      comp._remountWhenSettled();
+      expect(mockStores.router.remount).toHaveBeenCalledTimes(1);
+    });
+
+    it('a change to no account, or back to the captured one, keeps the instance drafting under its key', () => {
+      const comp = createComponent();
+      markLoaded(comp);
+
+      comp._onAccountChange(null);
+      comp._onAccountChange('alice');
+
+      expect(mockStores.router.remount).not.toHaveBeenCalled();
+      comp.title = 'Still drafting';
+      comp._flushDraftSave();
+      expect(JSON.parse(localStorage.getItem('pevo-draft-publish:alice'))).toMatchObject({ title: 'Still drafting' });
+    });
+  });
+
   describe('_mergeCitationCollection', () => {
     it('merges citations from localStorage without duplicates', () => {
       const comp = createComponent();
+      markLoaded(comp);
       comp.citations = [{ author: 'a', permlink: 'p1', title: 'T1', reputation_relevant: true }];
       localStorage.setItem('pevo-citation-collection', JSON.stringify([
         { author: 'a', permlink: 'p1', title: 'T1' },

@@ -6,6 +6,7 @@ import { deriveHiveKeys, deriveHivePublicKeys, generateMnemonic, loadDhive, vali
 import { isPasswordValid } from '../password-policy.js';
 import { getAppTag } from '../config.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
+import { removeAccountDrafts } from '../lib/composer-drafts.js';
 import { createOrcidRedirectGuard } from '../lib/orcid-redirect-guard.js';
 import { ORCID_REDIRECT_HOSTS, subjectTeardownGuard } from '../lib/fresh-auth.js';
 
@@ -1132,6 +1133,8 @@ export function initSettingsPage() {
     async handleEmailDelete() {
       if (this.deleting) return;
       this.deleting = true;
+      // The account whose drafts go with it, read before the first await.
+      const account = Alpine.store('auth').username;
       try {
         // Account erasure is a critical action: the JWT path needs a
         // delete_account fresh-auth proof, minted via the orchestrator
@@ -1158,6 +1161,9 @@ export function initSettingsPage() {
         // emailStatus into a logged-in settings view bound to a dead account.
         // No pre-navigate state resets here: navigate('/') destroys this
         // component in the same tick, so any local-field writes are unobserved.
+        // The account's composer drafts go with it (ARCHITECTURE.md § 8); a
+        // sign-out keeps them, so disconnect() does not.
+        removeAccountDrafts(account);
         Alpine.store('auth').disconnect();
         Alpine.store('notifications').stop();
         Alpine.store('toast').show(this.$t('settings.accountDeleted'), 'success');

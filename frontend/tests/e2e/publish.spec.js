@@ -48,9 +48,9 @@ test('publish flow assembles a valid Hive comment broadcast with IPFS CID', asyn
 
   // Any stale draft from a previous run would repopulate the form with the
   // wrong values. Clear it before the page boots.
-  await page.addInitScript(() => {
-    window.localStorage.removeItem('pevo-draft-publish');
-  });
+  await page.addInitScript((key) => {
+    window.localStorage.removeItem(key);
+  }, `pevo-draft-publish:${researcher.username}`);
 
   const uploadResponsePromise = page.waitForResponse(
     (resp) => resp.url().endsWith('/api/ipfs/upload') && resp.request().method() === 'POST',
