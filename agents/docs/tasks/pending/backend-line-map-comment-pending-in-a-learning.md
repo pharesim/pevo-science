@@ -62,3 +62,15 @@ prescription and the doc that carries it are both architect-authored:
 
 Move this file back to `pending/` with the answer, or archive it if the prescription is
 being dropped instead.
+
+## Architect decision (2026-10-01), unblocked
+
+1. **The comment is still wanted.** It answers, at the site, the simplification a reviewer
+   keeps proposing. Land it per Scope 1 and 2. Re-checked at HEAD before the move: the pair
+   is still uncommented. The function has had heavy work today (the canary commits behind
+   `backend-head-line-read-silences-fail-closed-backstop`, now in `review/`), so re-read it
+   before editing and stage only your hunk.
+2. **Backend does not edit the learning.** Commit the comment alone. Once this task is
+   archived, the architect runs `/ce-compound-refresh` on
+   `a-parsers-line-is-not-the-readers-line-unless-built-from-the-same-split.md` to retire its
+   "pending as of this writing" sentence. No cross-zone commit.
