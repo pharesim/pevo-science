@@ -270,7 +270,31 @@ text alone. It is not text for a comment.
 - Nothing pins these comments to the Playwright version. Dismissed as
   theoretical.
 - The trace scan's literal coverage is unchanged and stays out of scope.
-- Two pre-existing anchor notes are awaiting a triage decision and are not
-  part of this hold: "the two tests below" in `login-email.spec.js`, and
-  "the opt-out pattern in actions #1" in the `scanTracesForSecrets` docblock.
-  Do not act on them from this block.
+- The two pre-existing anchor notes that were awaiting triage are now held
+  as items 4 and 5 in the addendum that follows this list.
+
+**Addendum (2026-10-01): two riders folded in at triage.** Both sentences
+predate 3c9f3b10 and sit outside the task's original scope. They are held here
+because they are in comments this task already has open. Both fixes are
+comment-only, and AC 4 and AC 5 apply to them.
+
+4. **"the two tests below" in `login-email.spec.js`.** It is in the comment
+   above `let RUN_SUFFIX`: "Declared with `let` so the two tests below see
+   whatever the most recent beforeAll computed". The pointer is purely
+   positional and carries a count, so it goes stale when a test is added,
+   removed, or moved. Root `CLAUDE.md` "Comment anchors" names purely
+   positional forms as a rot class. Fix: name what it points at (the tests in
+   the `'email+password login'` describe), or say what the `let` is for
+   without pointing. The loose "whatever the most recent beforeAll computed"
+   in the same sentence is listed under Not held; reword it in the same edit if
+   you want to, but it is not required.
+
+5. **"the opt-out pattern in actions #1" in the `scanTracesForSecrets`
+   docblock in `global-teardown.js`.** It closes the docblock's last
+   paragraph: "the opt-out pattern in actions #1 is the primary defense".
+   Nothing in `global-teardown.js` or `global-setup.js` is a numbered list of
+   actions, so "actions #1" points at coordination state a reader cannot
+   find. Fix: name the defense itself, which is the per-spec
+   `test.use({ trace: 'off', ... })` opt-out in the specs that type a known
+   password. Root `CLAUDE.md` "Comment anchors" keeps coordination context out
+   of test source.
