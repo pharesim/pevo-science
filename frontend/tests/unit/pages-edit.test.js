@@ -11,12 +11,18 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // the FACTORY is not invoked when the component is destroyed before the
 // dynamic import resolves — i.e. that the `if (!this._mounted) return;` is
 // reached before createEditor runs.
-const mockCreateEditor = vi.fn(() => ({
-  destroy: vi.fn(),
-  setContent: vi.fn(),
-  normalize: vi.fn(),
-  setEditable: vi.fn(),
-}));
+const mockCreateEditor = vi.fn((_el, options = {}) => {
+  // Holds what it was given, as an editor would, so a page reading the text
+  // back gets it.
+  let markdown = options.initialMarkdown || '';
+  return {
+    destroy: vi.fn(),
+    setContent: vi.fn((md) => { markdown = md; }),
+    getMarkdown: vi.fn(() => markdown),
+    normalize: vi.fn(),
+    setEditable: vi.fn(),
+  };
+});
 
 vi.mock('../../src/editor.js', () => ({
   createEditor: (...args) => mockCreateEditor(...args),
@@ -2634,6 +2640,12 @@ describe('editPage is replaced when the account or the paper changes under it', 
     comp._onAccountChange(null);
     comp._onAccountChange('alice');
     expect(mockStores.router.remount).not.toHaveBeenCalled();
+  });
+
+  it('route params naming another author, with the same permlink, replace the instance', () => {
+    const comp = loadedFixture();
+    comp._onRouteParamsChange({ author: 'bob', permlink: 'p1' });
+    expect(mockStores.router.remount).toHaveBeenCalledTimes(1);
   });
 
   it('route params naming another paper replace the instance; the same paper or another route does not', () => {

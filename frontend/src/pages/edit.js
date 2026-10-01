@@ -946,11 +946,29 @@ export function initEditPage() {
       if (Array.isArray(draft.citations)) this.citations = draft.citations;
       this.addressedReviews = this._reconcileAddressedReviews(draft.addressedReviews);
       applyAccreditedPrefill(this.newCoAuthors, this.accreditedDirectory);
-      if (this._abstractEditor) this._abstractEditor.setContent(this.abstract);
-      if (this._bodyEditor) this._bodyEditor.setContent(this.body);
+      this._loadEditorsFromFields();
       this.draftSavedAt = draft.savedAt ?? null;
       this.draftRestored = true;
       this._writeDraft(draft.savedAt);
+    },
+
+    // Load the editors from the editor fields, then take the fields back
+    // from what the editors hold. setContent reports nothing through
+    // onChange, and the editors rewrite some markdown they are given (a
+    // list's spacing), so a field set from the text passed in would not be
+    // the text in the editor, and a baseline taken over it would read the
+    // next keystroke's rewrite as work.
+    _loadEditorsFromFields() {
+      if (this._abstractEditor) {
+        this._abstractEditor.setContent(this.abstract);
+        this._abstractEditor.normalize();
+        this.abstract = this._abstractEditor.getMarkdown();
+      }
+      if (this._bodyEditor) {
+        this._bodyEditor.setContent(this.body);
+        this._bodyEditor.normalize();
+        this.body = this._bodyEditor.getMarkdown();
+      }
     },
 
     // The choice card's Restore: the draft replaces the version the form was
@@ -995,8 +1013,7 @@ export function initEditPage() {
       this._prefillForm();
       this.newCoAuthors = [];
       this.addressedReviews = [];
-      if (this._abstractEditor) { this._abstractEditor.setContent(this.abstract); this._abstractEditor.normalize(); }
-      if (this._bodyEditor) { this._bodyEditor.setContent(this.body); this._bodyEditor.normalize(); }
+      this._loadEditorsFromFields();
       this._baselineFields = snapshotFields(this._plainFields());
       this._baselineEditors = snapshotFields(this._editorFields());
       localStorage.removeItem(this._draftKey);

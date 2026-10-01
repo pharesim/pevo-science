@@ -17,6 +17,11 @@ import { resolve } from 'node:path';
 // records what it is asked to broadcast. Timers are faked so the two-second draft debounce costs nothing;
 // every wait advances them.
 
+// The first page load transforms the editor chunk, which under a loaded
+// machine takes longer than the default waits allow.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 60_000 });
+const WAIT = { interval: 5, timeout: 15_000 };
+
 const ROOT = resolve(__dirname, '../..');
 const INDEX_HTML = readFileSync(resolve(ROOT, 'index.html'), 'utf8');
 const BODY_HTML = INDEX_HTML
@@ -124,7 +129,7 @@ async function replaced(name, oldEl) {
   await vi.waitFor(() => {
     expect(pageEl(name)).not.toBeNull();
     expect(pageEl(name)).not.toBe(oldEl);
-  }, { interval: 5 });
+  }, WAIT);
 }
 
 // Every stored composer draft, by key.
@@ -154,7 +159,7 @@ async function visit(path, name) {
   router.navigate('/about');
   await settle();
   router.navigate(path);
-  await vi.waitFor(() => expect(page(name)).not.toBeNull(), { interval: 5 });
+  await vi.waitFor(() => expect(page(name)).not.toBeNull(), WAIT);
   return page(name);
 }
 
@@ -165,7 +170,7 @@ async function editorsReady(name) {
     const comp = page(name);
     expect(comp?._baselineEditors).not.toBeNull();
     expect(document.querySelectorAll(`[x-data="${name}"] .ProseMirror`)).toHaveLength(2);
-  }, { interval: 5 });
+  }, WAIT);
   return page(name);
 }
 
@@ -193,10 +198,10 @@ describe('composer drafts in the real app', () => {
     await import('../../src/main.js');
     ({ handleSessionInconsistency } = await import('../../src/lib/fresh-auth.js'));
     Alpine = window.Alpine;
-    await vi.waitFor(() => expect(Alpine.store('router')).toBeTruthy(), { interval: 5 });
+    await vi.waitFor(() => expect(Alpine.store('router')).toBeTruthy(), WAIT);
     router = Alpine.store('router');
     auth = Alpine.store('auth');
-    await vi.waitFor(() => expect(document.querySelector('[x-data="aboutPage"], [x-data="pageMount"] > div > *')).toBeTruthy(), { interval: 5 });
+    await vi.waitFor(() => expect(document.querySelector('[x-data="aboutPage"], [x-data="pageMount"] > div > *')).toBeTruthy(), WAIT);
   });
 
   beforeEach(async () => {
@@ -303,7 +308,7 @@ describe('composer drafts in the real app', () => {
     it('an account that cannot edit the paper drafts nothing on the edit page', async () => {
       signIn('carol');
       const comp = await visit('/edit/alice/p1', 'editPage');
-      await vi.waitFor(() => expect(comp.loadingPaper).toBe(false), { interval: 5 });
+      await vi.waitFor(() => expect(comp.loadingPaper).toBe(false), WAIT);
       expect(comp.isAuthorized).toBe(false);
       expect(comp._draftKey).toBe(null);
       comp._flushDraftSave();
@@ -348,7 +353,7 @@ describe('composer drafts in the real app', () => {
       type('#edit-title', 'Retitled by bob');
       await settle();
       document.querySelector('[x-data="editPage"] form button[type="submit"]').click();
-      await vi.waitFor(() => expect(broadcasts).toHaveLength(1), { interval: 5 });
+      await vi.waitFor(() => expect(broadcasts).toHaveLength(1), WAIT);
       const [, op] = broadcasts[0].operations[0];
       expect(broadcasts[0].username).toBe('bob');
       expect(JSON.parse(op.json_metadata).pevotest.authors).toEqual([
@@ -425,6 +430,7 @@ describe('composer drafts in the real app', () => {
       expect(card.querySelector('p').textContent).toBe('You have a saved draft from 1 minute ago. Restore replaces what you typed here.');
       expect(card.querySelector('.btn-primary').textContent).toBe('Restore');
       expect(document.querySelector('[x-data="publishPage"] fieldset').disabled).toBe(true);
+      expect(comp._abstractEditor.editor.isEditable).toBe(false);
       expect(comp._bodyEditor.editor.isEditable).toBe(false);
       expect(comp.title).toBe('Signed-out work');
       // Nothing overwrites the stored draft while the card stands.
@@ -497,7 +503,7 @@ describe('composer drafts in the real app', () => {
         token: 'token-eve', expires_at: new Date(Date.now() + 3_600_000).toISOString(),
         username: 'eve', custody: 'light', is_accredited: false, accreditation: null,
       });
-      await vi.waitFor(() => expect(auth.accreditation).not.toBeNull(), { interval: 5 });
+      await vi.waitFor(() => expect(auth.accreditation).not.toBeNull(), WAIT);
       await settle();
       expect(comp.authorName).toBe('Eve E');
       expect(comp.authorAffiliation).toBe('Uni E');
@@ -538,6 +544,23 @@ describe('composer drafts in the real app', () => {
       expect(comp.title).toBe('Stored earlier');
       expect(comp.authorName).toBe('Eve E');
       expect(comp.authorAffiliation).toBe('Draft Uni');
+    });
+
+    it("the publish page's restored card Discard removes the draft at once and empties the form", async () => {
+      signIn('eve');
+      localStorage.setItem('pevo-draft-publish:eve', JSON.stringify({ title: 'Stored earlier', abstract: 'A', body: 'B', savedAt: Date.now() - 60_000 }));
+      await visit('/publish', 'publishPage');
+      const comp = await editorsReady('publishPage');
+      expect(comp.title).toBe('Stored earlier');
+
+      document.querySelector('[data-testid="draft-restored-card"] button').click();
+      expect(drafts()).toEqual({});
+      await settle();
+      expect(comp.title).toBe('');
+      expect(comp._bodyEditor.getMarkdown()).toBe('');
+      expect(comp.authorName).toBe('Eve E');
+      await pastDebounce();
+      expect(drafts()).toEqual({});
     });
 
     it('text typed after a session teardown is drafted under the key the instance captured', async () => {
@@ -600,7 +623,7 @@ describe('composer drafts in the real app', () => {
 
     it("the edit page's sign-in call to action brings up the form with the editors and the account's author fields", async () => {
       const comp = await visit('/edit/alice/p1', 'editPage');
-      await vi.waitFor(() => expect(comp.loadingPaper).toBe(false), { interval: 5 });
+      await vi.waitFor(() => expect(comp.loadingPaper).toBe(false), WAIT);
       const el = pageEl('editPage');
       signIn('alice');
       await replaced('editPage', el);
@@ -651,12 +674,12 @@ describe('composer drafts in the real app', () => {
       await visit('/edit/alice/p1', 'editPage');
       await editorsReady('editPage');
       router.navigate('/edit/alice/p2');
-      await vi.waitFor(() => expect(page('editPage')._routePermlink).toBe('p2'), { interval: 5 });
+      await vi.waitFor(() => expect(page('editPage')._routePermlink).toBe('p2'), WAIT);
       await editorsReady('editPage');
       type('#edit-title', 'Typed on p2');
 
       window.history.back();
-      await vi.waitFor(() => expect(page('editPage')._routePermlink).toBe('p1'), { interval: 5 });
+      await vi.waitFor(() => expect(page('editPage')._routePermlink).toBe('p1'), WAIT);
       const p1Page = await editorsReady('editPage');
       expect(p1Page.title).toBe('Paper p1');
       await pastDebounce();
@@ -687,14 +710,36 @@ describe('composer drafts in the real app', () => {
       await pastDebounce();
       expect(drafts()['pevo-draft-edit:alice:alice:p1'].savedAt).toBe(savedAt);
 
-      // Discard returns the form to the paper as loaded.
+      // Discard returns the form to the paper as loaded, and removes the
+      // draft at once, not at the next save.
       document.querySelector('[data-testid="draft-restored-card"] button').click();
+      expect(drafts()).toEqual({});
       await settle();
       expect(comp.title).toBe('Paper p1');
+      // The body field is the text the editor holds, as after the first
+      // mount, not the served text it was handed.
       expect(comp._bodyEditor.getMarkdown()).toContain('one');
+      expect(comp.body).toBe(comp._bodyEditor.getMarkdown());
+      expect(comp.body).not.toBe('Intro.\n\n* one\n* two\n');
       expect(comp.editorsAtBaseline).toBe(true);
       await pastDebounce();
       expect(drafts()).toEqual({});
+    });
+
+    it('a draft that changed only the body is restored and kept: the baseline is the loaded form, not the restored one', async () => {
+      signIn('alice');
+      localStorage.setItem('pevo-draft-edit:alice:alice:p1', JSON.stringify({
+        title: 'Paper p1', abstract: 'The abstract.', body: 'Only the body changed', keywordsText: '',
+        authorName: 'Alice A', authorAffiliation: 'Uni A', authorOrcid: '0000-0001-0000-0001',
+        newCoAuthors: [], citations: [], addressedReviews: [], savedAt: Date.now() - 60_000,
+        head_marker: 'alice/p1/1/100',
+      }));
+      await visit('/edit/alice/p1', 'editPage');
+      const comp = await editorsReady('editPage');
+      expect(comp.body).toBe('Only the body changed');
+      expect(comp.editorsAtBaseline).toBe(false);
+      await pastDebounce();
+      expect(drafts()['pevo-draft-edit:alice:alice:p1']).toMatchObject({ body: 'Only the body changed' });
     });
 
     it('a draft written against another head waits on the newer-version card, read-only, and Restore binds it to this head', async () => {
@@ -878,7 +923,7 @@ describe('composer drafts in the real app', () => {
       auth.disconnect();
       await settle();
       signIn('alice');
-      await vi.waitFor(() => expect(document.querySelectorAll('[x-data="editPage"] .ProseMirror')).toHaveLength(2), { interval: 5 });
+      await vi.waitFor(() => expect(document.querySelectorAll('[x-data="editPage"] .ProseMirror')).toHaveLength(2), WAIT);
       await settle();
       const comp = page('editPage');
       expect(pageEl('editPage')).toBe(el);
@@ -940,7 +985,7 @@ describe('composer drafts in the real app', () => {
       await settle();
       const reject = holdBroadcast();
       document.querySelector('[x-data="publishPage"] form button[type="submit"]').click();
-      await vi.waitFor(() => expect(broadcasts).toHaveLength(1), { interval: 5 });
+      await vi.waitFor(() => expect(broadcasts).toHaveLength(1), WAIT);
       expect(comp.step).toBe('broadcasting');
 
       signIn('bob');
@@ -964,7 +1009,7 @@ describe('composer drafts in the real app', () => {
       await settle();
       const reject = holdBroadcast();
       document.querySelector('[x-data="editPage"] form button[type="submit"]').click();
-      await vi.waitFor(() => expect(broadcasts).toHaveLength(1), { interval: 5 });
+      await vi.waitFor(() => expect(broadcasts).toHaveLength(1), WAIT);
       expect(comp.step).toBe('broadcasting');
 
       signIn('bob');

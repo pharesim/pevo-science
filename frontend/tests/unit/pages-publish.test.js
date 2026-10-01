@@ -6,12 +6,18 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // dynamic import resolves — i.e. that the `if (!this._mounted) return;` is
 // reached before createEditor runs. The mock is hoisted by vi.mock and
 // applied to both static and dynamic imports.
-const mockCreateEditor = vi.fn(() => ({
-  destroy: vi.fn(),
-  setContent: vi.fn(),
-  normalize: vi.fn(),
-  setEditable: vi.fn(),
-}));
+const mockCreateEditor = vi.fn((_el, options = {}) => {
+  // Holds what it was given, as an editor would, so a page reading the text
+  // back gets it.
+  let markdown = options.initialMarkdown || '';
+  return {
+    destroy: vi.fn(),
+    setContent: vi.fn((md) => { markdown = md; }),
+    getMarkdown: vi.fn(() => markdown),
+    normalize: vi.fn(),
+    setEditable: vi.fn(),
+  };
+});
 
 vi.mock('../../src/editor.js', () => ({
   createEditor: (...args) => mockCreateEditor(...args),
@@ -1726,6 +1732,29 @@ describe('publishPage', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    // A sign-in can land before the editors have mounted, when the instance
+    // has no baseline to compare the form against yet. The adoption then
+    // leaves the restore to the mount, which runs it under the key captured
+    // here, over a form it can compare.
+    it('a sign-in before the editors have mounted leaves the restore to the mount', async () => {
+      mockStores.auth.username = null;
+      localStorage.setItem('pevo-draft-publish:eve', JSON.stringify({ title: 'Stored earlier', abstract: '', body: '', savedAt: 1 }));
+      const comp = createComponent();
+      comp.init();
+      expect(comp._baselineEditors).toBeNull();
+
+      mockStores.auth.username = 'eve';
+      comp._onAccountChange('eve');
+      expect(comp._draftAccount).toBe('eve');
+      expect(comp.draftChoice).toBe(null);
+
+      await vi.waitFor(() => expect(comp._baselineEditors).not.toBeNull(), { interval: 1 });
+      expect(comp.draftChoice).toBe(null);
+      expect(comp.draftRestored).toBe(true);
+      expect(comp.title).toBe('Stored earlier');
+      comp.destroy();
     });
 
     it('waits for a submit in flight to settle before replacing the instance', () => {
