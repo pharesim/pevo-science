@@ -1,3 +1,100 @@
+## Two authorship e2e specs mint session JWTs with Playwright tracing still on (archived 2026-10-01) — one review round; archived clean at d52ba575
+
+### Architect archive note (2026-10-01)
+
+Reviewed d52ba575 against its parent with /ce-code-review (correctness, security, testing,
+project-standards on root CLAUDE.md): zero findings, zero malformed returns. Verified by the
+architect: d52ba575 is an ancestor of main and touches only the two specs; AC 2 holds at
+d52ba575 for all ten `seedAccreditedSession` specs and for all sixteen specs that mint a
+session through any helper (`mintSessionJwt`, `seed*Session`). Neither changed file has a
+nested `test.use` that turns tracing back on. Not running the specs is accepted: `test.use`
+only changes which artifacts are kept.
+
+Residual risk recorded, not filed: the opt-out stays a per-spec convention with no
+mechanical pin, and `scanTracesForSecrets` skips on the dev host while `unzip` is absent.
+
+**Owner:** ui
+**Created:** 2026-10-01
+
+Routed out of the architect re-review of `ui-e2e-retry-model-comment-sweep` (archived
+2026-10-01), where the implementer listed it for triage.
+
+## Why
+
+`frontend/tests/e2e/authorship-consent-actions.spec.js` and
+`frontend/tests/e2e/authorship-pending-discovery.spec.js` both seed a session through
+`seedAccreditedSession` in `fixtures/auth.js`. That helper mints a live backend-valid
+session JWT with `mintSessionJwt` and writes it to `localStorage` through
+`page.addInitScript`. Neither spec sets `test.use({ trace: 'off', ... })`, so the global
+`trace: 'retain-on-failure'` in `frontend/playwright.config.js` applies. A failing test in
+either spec leaves a `trace.zip` that holds the token under `frontend/test-results/`.
+
+The other eight specs under `frontend/tests/e2e/` that call `seedAccreditedSession` all opt
+out, with a one-line reason (for example `review-submit.spec.js`: "This spec mints a live
+backend-valid bearer JWT via seedAccreditedSession. Disable trace/video/screenshot to keep
+that token out of trace.zip artifacts ...").
+
+`scanTracesForSecrets` in `global-teardown.js` is the backstop, and its JWT arm would catch
+the token. But it reads traces with `unzip -p`, and it skips with a warning when that binary
+is missing. `unzip` is not installed on the dev host (checked 2026-10-01). On that host the
+scan never runs, and the per-spec opt-out is the only defense. The scan's own docblock names
+the opt-out as the primary defense.
+
+## Scope
+
+1. In each of the two specs, add `test.use({ trace: 'off', video: 'off', screenshot: 'off' });`
+   at module scope, after the imports. Add a short comment that gives the reason in the
+   same terms as the sibling specs: the spec mints a live session JWT through
+   `seedAccreditedSession`, and the global `retain-on-failure` default would otherwise
+   persist it.
+
+## Out of scope
+
+- Any change to `scanTracesForSecrets`, to the global trace default, or to how the scan
+  behaves without `unzip`.
+- Installing `unzip` on any host.
+- Any assertion, fixture, or mock change, and any other spec.
+
+## Acceptance criteria
+
+1. Both specs set trace, video, and screenshot off for every test in the file.
+2. Every `frontend/tests/e2e/*.spec.js` that calls `seedAccreditedSession` sets
+   `trace: 'off'`.
+3. No assertion, fixture, or mock changes.
+4. New comment text follows root `CLAUDE.md` "Comment anchors": no task slug, round or hold
+   ordinal, line number, commit SHA, or bare positional reference.
+
+## Notes
+
+Running the two specs is optional: `test.use` changes which artifacts are kept, not what the
+tests assert. State in the signal block whether they ran.
+
+## UI implementation signal (2026-10-01, commit d52ba575)
+
+Landed in `d52ba575` ("ui(e2e): the two authorship specs opt out of trace, video and
+screenshot"), two files: `frontend/tests/e2e/authorship-consent-actions.spec.js` and
+`frontend/tests/e2e/authorship-pending-discovery.spec.js`. Self-verified:
+`git merge-base --is-ancestor d52ba575 main` holds, and `git show --name-status d52ba575`
+lists exactly those two paths.
+
+**Change.** Each spec gets `test.use({ trace: 'off', video: 'off', screenshot: 'off' });` at
+module scope, directly after the imports, with a three-line comment worded like
+`vote-comment.spec.js` and `review-submit.spec.js`: the file mints live backend-valid
+session JWTs via `seedAccreditedSession`, and the global `retain-on-failure` default would
+otherwise persist them. No assertion, fixture, or mock changed (AC 3). The comment names no
+task slug, ordinal, line number, SHA, or positional target, and the pre-commit anchor gate
+passed on the commit (AC 4).
+
+**AC 2 check.** For every `frontend/tests/e2e/*.spec.js` that calls `seedAccreditedSession`
+(ten files), a grep for a `test.use({ ... trace: 'off'` call matches. The same check over
+specs that call `mintSessionJwt` or `seedUnaccreditedSession` directly (ten files, partly
+overlapping) also matches in every file, so no other minting spec lacks the opt-out.
+
+**Specs not run.** `npx playwright test --list` over the two files loads both modules and
+lists all six tests (exit 0). The specs themselves were not run against the test stack:
+`test.use` only changes which artifacts are kept, and the swap to test mode would take the
+shared dev stack away from sibling agents for no assertion change.
+
 ## Two fresh-auth docblock counts disagree with the file they sit in (archived 2026-10-01) — four review rounds, three holds; archived clean at 8594733d; out-of-scope reports routed to three new ui tasks
 
 ### Architect archive note (2026-10-01, third re-review)
@@ -151,100 +248,3 @@ name their members`), verified an ancestor of main before this move.
   (standalone run and at commit time). AC 4: `npx vitest run` green, 86
   files / 1938 tests (count unchanged across pre- and post-edit runs);
   `npm run build` clean.
-
-Out-of-population count claims the sweep surfaced, left untouched for
-architect triage (they count populations outside this task's scope):
-
-1. `REMINTABLE_REASONS` docblock says "the three retry gates" but a fourth
-   gate consumes it: the upload surface's retry in `lib/ipfs-upload.js`.
-2. `handleSessionInconsistency` docblock says "all three fresh-auth
-   orchestrators", but the upload surface's torn-down handler in
-   `lib/ipfs-upload.js` is a fourth caller, with a thrown upload code as a
-   third sentinel shape its parenthetical omits.
-3. `acquisitionAborted` docblock says "the eight broadcast call sites"; the
-   tree has nine call expressions (both `vote-buttons.js` branches, two in
-   `vouch-section.js`, two in `edit.js`, plus publish/review/comment).
-4. `cacheSessionProof`'s "matching every other corrupt-entry case in this
-   module: drop the slot" has a defensible counterexample: the consent-op
-   reader's parse-catch swallows an unparseable entry without removing it.
-
-## Architect re-review (2026-09-30) — HELD PENDING FIXES:
-
-Reviewed commit a9150a6f against a9150a6f and against main (the added
-sentences are unchanged on main). Comment-only claim, AC 2 and AC 3 hold; the
-consumer enumerations (scope item 2 and the `showWindowOutcomeToast` callers)
-are complete. One item holds AC 1.
-
-1. **"the module's one gated clear" is a module-wide count that the module
-   does not support.** The phrase now stands three times in
-   `frontend/src/lib/fresh-auth.js`: in `getCachedConsentOpProof`'s docblock,
-   in `evictUnnamedAcquisition`'s docblock (both written by a9150a6f), and in
-   the fail-closed guard comment inside `ensureSessionWindow` (older, and the
-   sentence this task's "Why" quoted as the true count, so the prescription
-   carried the overreach; that is on the task text, not the implementation).
-   The count is true only of `clearCachedSessionProof()` calls, that is, of
-   the session-window slot. Module-wide there is a second teardown-gated
-   removal: `unwindFlowKeys` in `beginOrcidFreshAuthRedirect` returns early on
-   the stale predicate (the same `guard.tornDown` signal) before removing
-   `ORCID_MODE_KEY` and calling `clearReturnPath()`, for the same
-   protect-the-successor reason. The file does not reserve "clear" for the
-   window slot either: the `getCachedConsentOpProof` sentence says "the slot
-   it clears" of the consent-op slot in the same paragraph, so a reader there
-   has nothing that scopes the count.
-
-   Fix, comment-only: scope all three sentences to what they count, the
-   session-window slot (for example "the one gated clear of the session-window
-   slot, the 401 eviction in `broadcastWithFreshAuth`"). Keep the count scoped
-   to this module's calls in whatever wording lands: `uploadFile` in
-   `lib/ipfs-upload.js` holds its own `if (!guard.tornDown())
-   clearCachedSessionProof()`, so a slot-wide claim with no module qualifier
-   would be false against that site. Then re-run scope item 3's semantic sweep
-   for any other sentence counting gated or ungated removals.
-
-Already resolved elsewhere, no action here: the four out-of-population count
-claims listed at the end of the implementation signal were repaired on main by
-the adjacent-tallies task (archived 2026-09-30).
-
-## UI re-review signal (2026-09-30, commit 590d211a)
-
-Landed in 590d211a (`ui(fresh-auth): the gated-clear sentences name the clear
-instead of counting it`), verified an ancestor of main before this move.
-Comment-only; `npx vitest run` exit 0 at 87 files / 1980 tests before and
-after; `npm run build` clean; the pre-commit anchor gate passed at commit time.
-
-- Hold item 1: all three sentences (`getCachedConsentOpProof`'s docblock,
-  `evictUnnamedAcquisition`'s docblock, the fail-closed guard comment in
-  `ensureSessionWindow`) are scoped to the session-window slot and to
-  `broadcastWithFreshAuth`. **Deviation from the example wording, for
-  architect judgement:** they carry no count at all. The sweep's cold read
-  and its refuter both found the slot-scoped "one" contestable on the same
-  reading that sank the module-wide one: `cacheSessionProof`'s fail-closed
-  `dropWindow()` is reached in this module only past the mint callback's
-  `guard.tornDown()` early return, and the guarded `slideSessionWindow()` in
-  `attemptOnce` can drop an expired window through `readSessionWindow`. So
-  each sentence names the member ("the teardown-gated dead-window clear of
-  the session-window slot in `broadcastWithFreshAuth`") and says nothing
-  about how many there are, which also stays true against `uploadFile`'s
-  own gated clear.
-- The same sentences dropped "401 eviction": that clear runs under every
-  `FRESH_AUTH_REQUIRED`, ahead of the `status === 401` test, so it also runs
-  on the 403 binding violations. "Dead-window clear" is the name the
-  `attemptOnce` comment and `lib/ipfs-upload.js` already use.
-- Sweep re-run (13-agent read-only workflow: code-only removal inventory,
-  three chunk sweeps, a cold read of the new sentences, one refuter per
-  finding). Two further removal totals confirmed and fixed in the same
-  commit: `getCachedConsentOpProof`'s "nothing else would drop the entry
-  inside its TTL" (the subject scrub does) and the `unwindFlowKeys` comment's
-  "every other exit removes them" (the navigating exit keeps the keys).
-- Refuted by the sweep, left as written: "Only a rejection of the password
-  retires it" in the password-mint comment (scoped by its own second
-  clause), "both writers of that slot" in `evictUnnamedAcquisition`'s
-  docblock (`persistWindow` has exactly two callers), and "both now inherit
-  the one eviction" in the `ensureSessionWindow` guard comment (the guard's
-  own clear is called a restatement in the same block).
-
-## Architect re-review (2026-09-30, second pass) — HELD PENDING FIXES:
-
-Reviewed commit 590d211a against its parent. Comment-only confirmed (the
-comment-stripped file is byte-identical across the commit), the anchor gate
-has no hit on the added lines, the build is clean, and the suite count matches
