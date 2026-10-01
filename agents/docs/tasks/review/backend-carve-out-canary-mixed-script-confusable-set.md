@@ -82,3 +82,69 @@ it per the backend probe recipe (`git archive HEAD backend`, symlinked
 append an `it()` to the copied canary that writes `mixedScriptWords(...)`
 output to a file with the already-imported `writeFileSync`. Console output is
 silenced in this suite.
+
+## Backend implementation signal (2026-10-01, commit 930820cc)
+
+Decision: a hybrid of the two candidate directions. Two designs were
+measured on isolated copies, and the two judges split:
+- A confusable set for every script loses recall against today's rule.
+  Lisu and Coptic carry exact Latin capitals (`U+A4E3` reads as R,
+  `U+2CA2` as P).
+- An allowlist of notation shapes needs a slash rule and line-wrap token
+  logic, and it still refuses `µs/op`.
+
+The hybrid narrows only Greek, the one script where honest notation lives.
+Every other script keeps the whole-script rule.
+
+Trigger set (`mixedScriptWords`): a word holding a Latin letter plus either
+(a) any letter outside Latin and Greek, or (b) a Greek letter whose base
+letter, accents stripped, is in `GREEK_LOOKALIKES`.
+- `GREEK_LOOKALIKES` holds the 30 Greek letters whose UTS #39 prototype is
+  one ASCII letter, keyed by NFKC image. An independent derivation from
+  `confusables.txt` matched it exactly.
+- Capital sigma is included because the lunate capital sigma, which renders
+  as C, folds to it. So `Σi` glued to Latin is refused, a recorded cost.
+- Widening to non-ASCII Latin prototypes was measured and declined. It
+  would refuse delta, epsilon, phi, beta and capital lambda, and their
+  Latin twins (small-capital T, open e) already pass at HEAD.
+
+Adversarial verify (three lenses: neuters, escape hunt, docblock truth),
+with findings fixed:
+- Accented Greek (tonos, breathing) escaped by passing as a non-member.
+  Closed by the base-letter lookup. With `baseOf` neutered to identity the
+  accent probe goes red.
+- The residual sentence was wrong. It now names four residuals: a
+  single-script word; Latin-script look-alikes NFKC does not fold; Greek
+  letters with a non-ASCII Latin confusable (pinned as passing beside their
+  Latin twins); and non-letter symbols, which split the word.
+- Reworded the `auditSources` docblock and the failure message, the
+  "basic (ASCII) Latin letter" wording, and "every Greek letter" instead of
+  "every Greek entry".
+
+AC 1: `250µs`, `250μs`, `Δt`, `10 kΩ` and `πr` pass, by direct probe and
+end to end in the synthetic `auditSources` source (`mixed` stays 1).
+
+AC 2: the Cyrillic probes, `Müller` and `Петров` are unchanged. Greek
+omicron in `companion`, alpha in `Real` and upsilon in a filename are
+refused.
+
+AC 3: each run below was alone on an isolated copy.
+
+| Mutant | Result |
+|---|---|
+| alpha removed from the table | red |
+| final sigma removed from the table | red |
+| capital Sigma removed from the table | red |
+| Greek exemption removed | red, 2 failed, incl. the synthetic `mixed` count |
+| other-script arm removed | red, 2 failed |
+| Latin test removed | red, 2 failed |
+| member added to the table | red via the set-equality pin |
+| `baseOf` neutered to identity | red |
+
+AC 4: the header normalisation paragraph, `normalizeCommentText`,
+`GREEK_LOOKALIKES` and `mixedScriptWords` docblocks were checked against
+measured behaviour.
+
+AC 5: canary green (12/12, exit 0) and `typecheck:tests` clean.
+`LANDING_*`, the deferred maps and `LANDING_DIGEST` are untouched. The
+non-self census is identical to HEAD.
