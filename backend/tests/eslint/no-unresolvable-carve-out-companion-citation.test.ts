@@ -275,11 +275,22 @@
  *
  * Every block is Unicode-normalised (compatibility form, format characters and
  * combining marks dropped, every dash to `-`, every space separator to a
- * space), and a word that mixes the Latin script with another is a violation
- * in any comment, labelled or not. A look-alike character is therefore either
- * folded to what it renders as or refused outright; the residual is a
- * confusable that is a single-script word of its own, which no comment in
- * this corpus has a reason to contain.
+ * space), and a word that spells a Latin letter beside a letter that could
+ * pass for one is a violation in any comment, labelled or not
+ * (`mixedScriptWords`). For every script but Greek that means any letter of
+ * the script. For Greek it means only the letters the Unicode confusables
+ * data maps to a single basic (ASCII) Latin letter (`GREEK_LOOKALIKES`), read
+ * on the letter with its accents stripped, so unit and math notation
+ * (microseconds spelt with the micro sign, a Delta, an Omega, a pi) passes. A
+ * look-alike is therefore folded to what it renders as or refused outright,
+ * with four residuals, none of which a comment in this corpus has a reason to
+ * contain: a confusable that is a single-script word of its own; a
+ * Latin-script look-alike NFKC does not fold (a dotless `i`, a Latin alpha, a
+ * small-capital `T`); a Greek letter whose confusable is such a non-ASCII
+ * Latin letter (tau for that small-capital `T`, epsilon for an open `e`),
+ * which hides nothing its Latin twin does not already hide; and a look-alike
+ * that is a symbol rather than a letter (an APL rho, the Greek musical
+ * symbols), which splits the word it sits in instead of mixing it.
  *
  * SCOPE: VALIDATION IS WHOLE-TREE. Any structured citation, in any comment,
  * anywhere under `backend/tests`, is resolved and checked, in every file,
@@ -741,8 +752,9 @@ const DEFERRED_FILELESS: Readonly<Record<string, number>> = {
  * joiners, variation selectors) dropped, every dash mapped to `-`, every space
  * separator mapped to a space. Applied to every collected block before any
  * pattern looks at it, so a look-alike character cannot make the label or a
- * path read one way and match another. Look-alike LETTERS are not folded; the
- * mixed-script check below refuses them instead.
+ * path read one way and match another. Look-alike LETTERS from another script
+ * are not folded; `mixedScriptWords` refuses them beside a Latin letter, and
+ * the header's normalisation paragraph lists the residual it does not.
  */
 function normalizeCommentText(text: string): string {
   return text
@@ -753,23 +765,57 @@ function normalizeCommentText(text: string): string {
     .replace(/\p{Zs}/gu, ' ');
 }
 
-/** Words that spell letters from the Latin script together with letters from
- *  any other script. A Cyrillic `а` inside `Real-path` is how a label hides
- *  from a regex while rendering identically.
+/** Greek letters that render as a basic Latin letter, keyed by that letter.
+ *  The source is the Unicode confusables data (UTS #39, `confusables.txt`):
+ *  every Greek letter whose prototype is one ASCII letter, listed by what NFKC
+ *  leaves of it, since the check reads folded text. An accented form (a tonos,
+ *  a breathing) is not listed: NFKC keeps it composed, so `mixedScriptWords`
+ *  strips its accents before the lookup and reads its base letter. Most
+ *  entries NFKC leaves
+ *  as they are. Of the ones it folds, the rho and upsilon symbols fold to
+ *  letters already listed, the lunate small sigma folds to the final sigma
+ *  (listed under `c`), and the lunate capital sigma folds to capital sigma
+ *  (listed under `C`). That last is why capital sigma is refused beside a
+ *  Latin letter although the summation sign is honest notation: unlisted, a
+ *  shouted label spelt with a lunate capital sigma for its `C` would reach
+ *  the patterns with a sigma there, and the label would hide. The
+ *  mathematical Greek alphanumerics fold to plain Greek letters and are
+ *  covered the same way. Escapes rather than literal glyphs, because the
+ *  literal glyph is exactly what a reviewer cannot tell from its Latin twin. */
+const GREEK_LOOKALIKES: Readonly<Record<string, string>> = {
+  a: '\u03B1', A: '\u0391', B: '\u0392', c: '\u03C2', C: '\u03A3', E: '\u0395',
+  F: '\u03DC', H: '\u0397', i: '\u03B9', j: '\u03F3', J: '\u037F', K: '\u039A',
+  l: '\u0399', M: '\u039C\u03FA', N: '\u039D', o: '\u03BF\u03C3', O: '\u039F',
+  p: '\u03C1\u03F8', P: '\u03A1', r: '\u1D26', T: '\u03A4', u: '\u03C5',
+  v: '\u03BD', X: '\u03A7', y: '\u03B3', Y: '\u03A5', Z: '\u0396',
+};
+const GREEK_LOOKALIKE_LETTERS: ReadonlySet<string> = new Set(Object.values(GREEK_LOOKALIKES).join(''));
+
+/** Words that spell a Latin letter beside a letter that could pass for one: a
+ *  letter of any script other than Latin and Greek, or a Greek letter whose
+ *  base, accents stripped, is a member of `GREEK_LOOKALIKES`. A Cyrillic
+ *  look-alike `a` inside `Real-path` is how a label hides from a regex while
+ *  rendering identically.
  *
- *  This is a blunt instrument and it over-reaches: NFKC folds the micro sign
- *  U+00B5 to Greek mu, so the SI spelling of microseconds (`250µs`) is a
- *  mixed-script word here, as is `Δt`. Neither is a look-alike for anything
- *  Latin, and the ASCII spelling is the only remedy: the scan runs before the
- *  ratchet's exempt test, so the ALLOW_MARKER does not cover this verdict, and
- *  no backlog does either. Left as it is rather than narrowed on the way past,
- *  because which scripts are confusable is a decision worth taking
- *  deliberately; a symbol-carrying comment in a timing-sensitive suite is the
- *  shape that will hit it. */
+ *  Greek is the one script narrowed to its look-alikes, because it is where
+ *  honest notation lives: NFKC folds the micro sign to Greek mu, so the SI
+ *  spelling of microseconds reaches this check as Latin beside Greek, and a
+ *  Delta, an Omega or a pi glued to a Latin letter is the same. None of those
+ *  letters passes for a Latin one. Every other script keeps the whole-script
+ *  rule. Lisu and Coptic, among others, carry exact Latin capitals, and
+ *  listing every look-alike of every script would trade a rule that cannot be
+ *  incomplete for a table that can. What the narrowing still costs: a Greek
+ *  look-alike glued to Latin as notation (rho before `gh`, sigma before `x`,
+ *  capital sigma before `i`) is refused. The remedy is a space or the ASCII
+ *  spelling, because the scan runs before the ratchet's exempt test, so the
+ *  ALLOW_MARKER does not cover this verdict, and no backlog does either. */
 function mixedScriptWords(text: string): string[] {
+  const baseOf = (letter: string): string => letter.normalize('NFD').replace(/\p{M}/gu, '');
   const out: string[] = [];
   for (const word of text.match(/\p{L}+/gu) ?? []) {
-    if (/\p{Script=Latin}/u.test(word) && /(?!\p{Script=Latin})\p{L}/u.test(word)) out.push(word);
+    if (!/\p{Script=Latin}/u.test(word)) continue;
+    const foreign = /(?![\p{Script=Latin}\p{Script=Greek}])\p{L}/u.test(word);
+    if (foreign || [...word].some((letter) => GREEK_LOOKALIKE_LETTERS.has(baseOf(letter)))) out.push(word);
   }
   return out;
 }
@@ -1499,9 +1545,9 @@ interface BlockAudit {
 
 const repoPathOf = (rel: string): string => `backend/tests/${rel}`;
 
-/** Every labelled block in the given sources, classified, plus every
- *  mixed-script word in any comment. The whole-tree scan and the synthetic
- *  probes go through this one function. */
+/** Every labelled block in the given sources, classified, plus every word
+ *  `mixedScriptWords` refuses in any comment. The whole-tree scan and the
+ *  synthetic probes go through this one function. */
 function auditSources(from: readonly ScannedSource[]): { audits: BlockAudit[]; mixed: string[] } {
   const audits: BlockAudit[] = [];
   const mixed: string[] = [];
@@ -1693,7 +1739,8 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     ).toEqual([]);
     expect(
       scanned.mixed,
-      'a comment spells a word in mixed scripts. A look-alike letter renders as the ' +
+      'a comment spells a Latin word with a letter of another script in it (any letter ' +
+        'outside Latin and Greek, or a Greek look-alike). A look-alike letter renders as the ' +
         `plain label or filename and hides it from every pattern:\n${scanned.mixed.join('\n')}`,
     ).toEqual([]);
   });
@@ -1860,6 +1907,39 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     // words; plain Latin and a whole-word non-Latin name are not.
     expect(mixedScriptWords('Re\u0430l-path companion: settings.t\u0435st.ts')).toEqual(['Re\u0430l', 't\u0435st']);
     expect(mixedScriptWords('Real-path companion: settings.test.ts, per M\u00FCller and \u041F\u0435\u0442\u0440\u043E\u0432')).toEqual([]);
+    // Greek is narrowed to its look-alikes, so honest notation passes: the
+    // micro sign (NFKC folds it to Greek mu), mu itself, Delta, the ohm sign
+    // (folded to Omega) and pi, each glued to a Latin letter.
+    expect(mixedScriptWords(normalizeCommentText('waits 250\u00B5s, then \u0394t elapses; 250\u03BCs too; 10 k\u2126; \u03C0r'))).toEqual([]);
+    // A Greek look-alike is still refused, in the label and in a filename.
+    expect(mixedScriptWords('c\u03BFmpanion Re\u03B1l-path \u03C5ser.test.ts')).toEqual(['c\u03BFmpanion', 'Re\u03B1l', '\u03C5ser']);
+    // Every member, from an independent copy of `GREEK_LOOKALIKES`, is refused
+    // beside a Latin letter, so dropping any one member is red; and the table
+    // equals the copy, so adding one without a probe is red too.
+    const greekLookalikes =
+      '\u03B1\u0391\u0392\u03C2\u03A3\u0395\u03DC\u0397\u03B9\u03F3\u037F\u039A\u0399\u039C\u03FA' +
+      '\u039D\u03BF\u03C3\u039F\u03C1\u03F8\u03A1\u1D26\u03A4\u03C5\u03BD\u03A7\u03B3\u03A5\u0396';
+    for (const letter of greekLookalikes) {
+      const hex = `U+${letter.codePointAt(0)?.toString(16).toUpperCase()}`;
+      expect(mixedScriptWords(`x${letter}x`), hex).toEqual([`x${letter}x`]);
+    }
+    expect(new Set(Object.values(GREEK_LOOKALIKES).join(''))).toEqual(new Set(greekLookalikes));
+    // A look-alike NFKC folds is refused in its folded form: the lunate small
+    // and capital sigmas, the rho symbol and a mathematical bold rho.
+    expect(mixedScriptWords(normalizeCommentText('\u03F2ompanion \u03F9OMPANION \u03F1ath \u{1D6D2}ath')))
+      .toEqual(['\u03C2ompanion', '\u03A3OMPANION', '\u03C1ath', '\u03C1ath']);
+    // An accented look-alike is read by its base letter: NFKC keeps a tonos
+    // or a breathing composed, and unread it hid the label at no cost.
+    expect(mixedScriptWords(normalizeCommentText('Re\u03ACl c\u03CCmpanion compan\u1F30on')))
+      .toEqual(['Re\u03ACl', 'c\u03CCmpanion', 'compan\u1F30on']);
+    // A residual the header records, pinned so closing it is a visible edit:
+    // a Greek letter whose confusable is a Latin letter outside ASCII passes,
+    // as its Latin twin always has (tau beside a small-capital T, epsilon
+    // beside an open e).
+    expect(mixedScriptWords(normalizeCommentText('settings.\u03C4est.ts settings.t\u03B5st.ts settings.\u1D1Best.ts settings.t\u025Bst.ts'))).toEqual([]);
+    // Every other script keeps the whole-script rule: a Lisu letter that
+    // renders as `R` and a Coptic one that renders as `P`.
+    expect(mixedScriptWords('\uA4E3eal-\u2CA2ath')).toEqual(['\uA4E3eal', '\u2CA2ath']);
   });
 
   it('the parser and validators fire on planted-bad citations and spare legitimate ones', () => {
@@ -2648,6 +2728,7 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
         '// Real-path (see x.test.ts) companion: `backend/tests/routes/present.test.ts` [ALPHA]',
         'const e = 5;',
         '// a Re\u0430l-path note with a look-alike letter, no label',
+        '// waits 250\u00B5s, then \u0394t elapses: honest notation, not a look-alike',
       ],
     }];
     const { audits: audited, mixed } = auditSources(syn);
