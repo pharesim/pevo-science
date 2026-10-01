@@ -104,3 +104,63 @@ untouched.
 Side finding, not acted on (for triage): the `unparsed` failure message asks
 for the structured form and never mentions ALLOW_MARKER, so prose accused this
 way is pointed at a fix it cannot take.
+
+## Architect re-review (2026-10-01) — HELD PENDING FIXES:
+
+Reviewed `615d77ce` via `/ce-code-review` (focused: orchestrator correctness
+and standards read plus one independent adversarial read). Verified on an
+isolated copy of `615d77ce`: canary green, 11/11, exit 0. A narrowing that
+spares the example sentence fails only the `accusedProse` assertion, so the
+probe can go red. AC 1 and AC 3 are met. Three prose and message items remain,
+all in `backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`.
+
+1. **The `accusedProse` comment states a bar that every declined narrowing
+   meets.** The comment says a narrowing that spares the example "must then
+   keep every `unparsedClaims` near-miss pin in this spec at its count". Your
+   signal table records each of the three declined narrowings as green against
+   every existing pin, so that bar does not stop any of them. Reproduced in
+   review: with "refuse whitespace + lower-case word after the noun" added to
+   `LOOSE_CLAIM_SRC` and the first `accusedProse` sentence re-pinned at 0 as the
+   comment directs, the canary is 11/11 green, while
+   `' (c) Real-path (also routes/foo.test.ts) companion here: covered'` yields
+   labels 0 and unparsed 0, so it is dropped unaudited. The spellings each
+   narrowing drops are named only in header prose; no probe pins them.
+   Fix: beside `accusedProse`, pin each near-miss from your table's "Near-miss
+   dropped" column, as the exact string you measured, at `unparsedClaims`
+   length 1 and `labelCount` 0. Show that each declined narrowing, applied on
+   its own with `accusedProse` re-pinned to 0, turns the canary red (one
+   mutant per narrowing), and state the result in the signal. Then reword the
+   `accusedProse` comment so its bar names these pins, not only the existing
+   near-miss pins.
+
+2. **The header's precision-cost entry lists a narrowing that was not
+   measured and would not spare the example.** The clause "refusing a filler
+   whose first word is a stop word drops the pinned shouted `(also ...)` set"
+   comes from this task file's Scope item 2. That wording was mine, not yours.
+   It is not one of the narrowings your signal records as measured. `STOP_WORDS`
+   in this file has no `with`, so refusing a span whose filler starts with a
+   `STOP_WORDS` member spares neither `accusedProse` sentence (the adversarial
+   probe kept both at 1). It therefore is not a narrowing "measured for that".
+   It also drops every `(also ...)` near-miss pin, not only the shouted set.
+   Meanwhile the entry leaves out a narrowing you did measure: refusing an
+   article-led noun phrase before the noun (the lookbehind). Fix: make the
+   entry's list exactly the narrowings you measured, each with the prose it
+   spares and the near-miss it drops, matching the pins from item 1. Drop the
+   stop-word clause, or keep it only with a statement that it was not measured
+   as a sparing narrowing, what it actually does under `STOP_WORDS`, and that
+   it drops every `(also ...)` pin.
+
+3. **The `unparsed` failure message never names the remedy the new docblock
+   gives.** In the spec "every citation-shaped line parses as the label, and
+   no comment word mixes scripts", the `unparsed` assertion message tells the
+   author to write `STRUCTURED_FORM` and does not mention `ALLOW_MARKER`, which
+   the `LOOSE_CLAIM_SRC` docblock now names as the author's remedy for accused
+   prose. The `DEFERRED_FILELESS` disagreement message already names the
+   marker. Fix: add a sentence to the `unparsed` message saying that a line
+   which is prose and not a claim is reworded or its block is marked with
+   `${ALLOW_MARKER}`. This is message text only, so guard behaviour and the
+   census are unchanged.
+
+Keep AC 3 as it stands: `LANDING_FREE_PROSE`, `LANDING_FILELESS`, both
+deferred maps and `LANDING_DIGEST` untouched, and canary green by exit code.
+Anchor any new comment on stable symbols only, as the task Notes say.
