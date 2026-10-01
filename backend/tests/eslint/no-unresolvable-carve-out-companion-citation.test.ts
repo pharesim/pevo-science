@@ -195,15 +195,25 @@
  *     red. That docblock gives the worked example. The author's way through
  *     is to reword the sentence or to carry the ALLOW_MARKER in the block.
  *     Sparing that prose means telling it from a near-miss claim by the words
- *     around `companion`, and each narrowing measured for that dropped some
- *     claim-shaped spelling unaudited: refusing a lower-case word after the
- *     noun drops a near-miss that ends `companion here:`; refusing an article
- *     (optionally after a preposition such as `with`) before the noun drops
- *     `Real-path with a Postgres companion:`; refusing a filler whose first
- *     word is a stop word drops the pinned shouted `(also ...)` set. A false
- *     accusation with a marker as its remedy is the cheaper error, so the
- *     shape is recorded, not closed, and the `accusedProse` probe pins it at
- *     one unparsed span.
+ *     around `companion`. Three narrowings were measured for that, and each
+ *     drops a claim-shaped spelling unaudited (labels=0, unparsed=0):
+ *       * refusing a whitespace followed by a lower-case letter in the room
+ *         after the noun spares only the `accusedProse` sentence that has
+ *         ` here` before its colon, and drops the near-miss ending
+ *         `companion here: covered`;
+ *       * refusing a filler that opens on an article, optionally after
+ *         `with`, `against`, `through`, `via` or `using`, unless the word
+ *         after the article is `real`, spares both `accusedProse` sentences
+ *         and drops `Real-path with a Postgres companion:` whether a prose
+ *         word or a backticked path and a bracketed token follows it;
+ *       * refusing a `companion` led by an article and at most one word (a
+ *         lookbehind on the noun) spares both, and drops both of those
+ *         spellings and the shouted `THE COMPANION:` as well.
+ *     The `droppedNearMiss` probe pins each of those exact spellings at one
+ *     unparsed span, so each narrowing on its own turns the canary red. A
+ *     false accusation with a marker as its remedy is the cheaper error, so
+ *     the shape is recorded, not closed, and the `accusedProse` probe pins it
+ *     at one unparsed span.
  *
  * WHY COMMENTS, MOCK BODIES AND TITLES DO NOT COUNT (arm 4). Risk-class tokens
  * appear constantly in prose, including prose that pins the OPPOSITE of the
@@ -1618,7 +1628,8 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       unparsed,
       'a line reads as a companion citation (real-path ... companion:) but does not ' +
         'parse as one: a filename, a path or a sentence sits in the qualifier slot. ' +
-        `Write it as: ${STRUCTURED_FORM}\n${unparsed.join('\n')}`,
+        `Write it as: ${STRUCTURED_FORM}. A line that is prose and not a claim is ` +
+        `reworded, or its block is marked ${ALLOW_MARKER}:\n${unparsed.join('\n')}`,
     ).toEqual([]);
     expect(
       scanned.mixed,
@@ -2014,7 +2025,8 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     // colon inside the room after the noun, IS accused, and the ALLOW_MARKER
     // is its way through. `LOOSE_CLAIM_SRC`'s docblock says so of the first
     // sentence here. A narrowing that spares it turns the count to 0, and must
-    // then keep every `unparsedClaims` near-miss pin in this spec at its count.
+    // then keep every `unparsedClaims` near-miss pin in this spec at its count,
+    // the `droppedNearMiss` pins included.
     for (const accusedProse of [
       'running on the real path with a mocked companion here: the pool is stubbed',
       'This drives the real path with a mocked companion: getAppPool is stubbed.',
@@ -2024,6 +2036,19 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       expect(labelCount(normalised), accusedProse).toBe(0);
       expect(classOfText(normalised), accusedProse).toBe('unparsed');
       expect(classOfText(`${normalised} (${ALLOW_MARKER}: prose, not a claim)`), accusedProse).toBe('exempt');
+    }
+    // Why that cost stays open: each narrowing measured for sparing the
+    // `accusedProse` sentences drops one of these near-miss claims to labels=0
+    // and unparsed=0, so its block would go unaudited. The header's list of
+    // gaps left open on purpose names which narrowing drops which spelling.
+    for (const droppedNearMiss of [
+      ' (c) Real-path (also routes/foo.test.ts) companion here: covered',
+      ' (c) Real-path with a Postgres companion: covered',
+      ' (c) Real-path with a Postgres companion: `backend/tests/a.test.ts` [A]',
+      ' (c) Real-path (also routes/foo.test.ts) THE COMPANION: covered',
+    ]) {
+      expect(unparsedClaims(droppedNearMiss), droppedNearMiss).toHaveLength(1);
+      expect(labelCount(droppedNearMiss), droppedNearMiss).toBe(0);
     }
 
     // `labelAt`'s `^`: a citation-shaped near-miss is still reported when a
