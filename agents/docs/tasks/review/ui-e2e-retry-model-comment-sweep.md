@@ -298,3 +298,78 @@ comment-only, and AC 4 and AC 5 apply to them.
    `test.use({ trace: 'off', ... })` opt-out in the specs that type a known
    password. Root `CLAUDE.md` "Comment anchors" keeps coordination context out
    of test source.
+
+UI re-review signal (2026-10-01, commit `795f6df0`):
+
+Self-verified: `795f6df0` is an ancestor of `main`. Its `--name-status` lists exactly
+`global-teardown.js`, `login-email.spec.js`, `password-recovery.spec.js`,
+`settings-orcid-factor.spec.js` and `settings.spec.js`.
+
+- **Item 1.** Rewrote the in-hook comment in both `login-email` and `settings`. It now
+  says four things. A retry starts a fresh worker and the hook runs again there. The
+  `testInfo.retry` the hook reads is the retry index of the test whose start triggered it.
+  That index can repeat from one worker to the next, a test's failed attempt and its own
+  retry included. The retry index plus the fresh timestamp keep the seeded rows distinct.
+  "Guarantees" is gone.
+- **Item 2.** The `seedActiveUser` comment describes the `DELETE` as defensive cleanup and
+  makes no claim about a retry. It keeps the global-setup reset clause and adds that the
+  test body builds both identifiers per attempt. The `DELETE` itself is unchanged.
+- **Item 3.** The header above `let RUN_SUFFIX` in `settings-orcid-factor` now scopes
+  "runs again" to the happy-path describe's beforeAll. That hook runs again only in a
+  worker that runs one of the happy-path describe's tests. A worker that runs only the
+  mismatch describe's test leaves the four variables undefined, and that test reads its
+  own `NEG_*` values. The wording is "runs only", not "retries only", because there are
+  two such workers:
+  - the mismatch test's own retry;
+  - its first attempt in a fresh worker after a happy-path test's final failure.
+- **Item 4.** The `let` comment in `login-email` names the `'email+password login'`
+  describe instead of "the two tests below". I also took the optional reword: "whatever
+  the most recent beforeAll computed" now reads "the values it computed in their worker",
+  and the same reword went into `settings.spec.js`'s `let` comment.
+- **Item 5.** The docblock now reads "the per-spec `test.use({ trace: 'off', ... })`
+  opt-out is the primary defense". I did not add the hold's qualifier "in the specs that
+  type a known password", for two reasons:
+  - The scan also covers WIFs, JWTs and mnemonics, and specs opt out for those too.
+  - A class of specs named in the comment is the kind of list that went stale before.
+
+  The first paragraph of the docblock already says the scan is a safety net for specs
+  that forget to opt out.
+- **Further sentences fixed (three-question read).**
+  - In the ORCID iD comment in `settings-orcid-factor`'s happy-path hook, "every run/retry
+    inserts a fresh row ... a second run collides" became "every run of this hook inserts
+    a fresh row ... a later run in the same test DB collides". This answers q3: a worker
+    that runs only the mismatch test does not run this hook.
+  - The mismatch hook's "per-run-unique" became "unique per run of this hook too", to
+    match. Elsewhere in these files "run" means a Playwright run, and global-setup
+    resets the DB between those.
+- **Verification.**
+  - The diff is comment-only: no changed line under `frontend/tests/e2e` is anything but a
+    `//` or ` *` line.
+  - The anchor gate, run standalone over the added lines with `ALLOW_MARKER` set, has no
+    hit. Its control line fires.
+  - `global-teardown.test.js` passes unchanged: 15 tests, exit 0.
+  - The sweep grep finds no line that says a retry skips module scope or shares a
+    worker.
+  - Each Playwright claim was checked against installed 1.59.1 (`workerMain.js`
+    `runTestGroup` / `_runTest` / `_runBeforeAllHooksForSuite`,
+    `suiteUtils.filterTestsRemoveEmptySuites`, `dispatcher.js` `JobDispatcher._onDone`).
+  - Each claim was also reproduced with throwaway pure-node Playwright probes, as
+    tabulated below.
+  - The e2e suite was NOT run, per the task's Notes.
+
+  | Probe | What happened | What the hook read |
+  |---|---|---|
+  | Two-test describe, both tests fail at retry 0 | three worker processes | 0, then 1, then 1 |
+  | Test that fails twice | three worker processes | 0, then 1, then 0 |
+  | Two-describe mirror of `settings-orcid-factor`: last test fails | the retry worker runs no happy-path hook and the happy-path variables are undefined | |
+  | Same mirror: a happy-path test fails | the retry worker runs the happy-path hook again | |
+- **For triage, not acted on (outside this task).**
+  - `settings-orcid-factor.spec.js` has a false pointer in the second happy-path test,
+    above `let capturedSetPassword`: "that real verification is the test.fixme below".
+    The file has no `test.fixme`; the real verification is the plain test
+    'ORCID-factor set_password succeeds end-to-end with a real backend-minted proof'. It
+    is also a positional anchor. This is not a retry sentence, so I left it.
+  - `authorship-consent-actions.spec.js` and `authorship-pending-discovery.spec.js` mint
+    live session JWTs through `seedAccreditedSession` and do not set `trace: 'off'`. For
+    those two specs the scan's JWT arm is the only defense, and they have none when
+    `unzip` is missing.
