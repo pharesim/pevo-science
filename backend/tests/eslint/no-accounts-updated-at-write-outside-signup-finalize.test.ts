@@ -160,10 +160,10 @@
  *      the common placement. The label follows the NEAREST head at or above
  *      the assignment and what that head's read found, and what reaching
  *      asks of a read is defined in the dynamic-SQL entry under KNOWN
- *      LIMITS. A read ends at its statement's `;` or at the close of the
- *      string enclosing its head, whichever comes first, a template opened
- *      on an earlier line included, so a preceding query lends its table
- *      only to a write inside its own statement's text, which the
+ *      LIMITS. A read ends at the string enclosing its head, a template
+ *      opened on an earlier line included, or at its `;` where no string
+ *      does, so a preceding query lends its table only to a write sharing
+ *      that string or that statement's text with it, which the
  *      quoted-identifier entry under KNOWN LIMITS names; the other entries
  *      there name the reads that end elsewhere. Without this, a shape the
  *      upward walk cannot read passes as "not accounts", which is the silent
@@ -293,9 +293,8 @@
  *     The assignment it carries reds under the fail-closed arm instead, and
  *     that backstop is what the limit rests on — but only because a statement
  *     read that gives up resolves no table ({@link SqlStatement.stopped}), and
- *     one that does not ends at its statement's `;` or at the close of the
- *     string enclosing its head, whichever comes first, rather than at some
- *     later statement's end. A read
+ *     one that does not ends at the string enclosing its head or at its `;`
+ *     where no string does, rather than at some later statement's end. A read
  *     that runs out of cap or of file has not given up, and does resolve one.
  *     "No readable head reaches it" is not a property of the shape, it is a
  *     property of the read: the `EXECUTE format` spelling puts the nearest head
@@ -390,9 +389,9 @@
  *     head-dynamic or schema-dynamic spelling reaches no arm that answers to
  *     an `accounts` head or to an assignment, while the same statement with a
  *     literal `accounts` in its head reds the ALTER arm.
- *     The assembled-write scan recognises two, in
- *     `src` only: a `${...}` interpolation in the statement's text or around
- *     its head, and a `+` beside its quote. The `+` before the quote is read only where
+ *     The assembled-write scan recognises two, in `src` only: a `${...}`
+ *     interpolation in the statement's text or around its head, and a `+`
+ *     beside its quote. The `+` before the quote is read only where
  *     {@link enclosingQuote} finds the quote on the head's line. It does for
  *     a literal opening there, and that includes a literal opening after a
  *     template from above closes on the same line: the line is read from the
@@ -402,11 +401,10 @@
  *     `const sql =` line, the head starting the next) has its opening quote
  *     on that earlier line, so a `+` before it is silent, while the read
  *     still ends at the template's closing backtick and the `+` after that is
- *     read. Any statement ending in its own `;` is read to that `;`, and the
- *     join is looked for past it, so a `+` after the closing quote is read only
- *     where the statement leaves its `;` off; a fragment joined past the `;`
- *     is another statement and cannot carry this one's SET list, so that
- *     silence costs nothing. An interpolation is read in every one of these
+ *     read. A head inside a dollar-quoted body its line entered finds no quote
+ *     at all and is read to its `;` inside the body, and the join is looked
+ *     for past that `;`, so a `+` against the template holding the body is
+ *     silent on both sides. An interpolation is read in every one of these
  *     layouts, since that test reads the statement's text and not its quote.
  *     The other half of the bound is where the read STOPS, and it governs the
  *     `+` AFTER the quote alone: that one is looked for past the stop, wherever
@@ -443,25 +441,19 @@
  *     the ALTER arm never reads it. The SET-list form of the shape reds by
  *     resolution instead, wherever the nearest head's read does not reach the
  *     assignment, in the sense the dynamic-SQL entry under KNOWN LIMITS
- *     defines. A read ends at its statement's `;` or at the close of the
- *     string enclosing its head, whichever comes first, a template opened on
- *     an earlier line included, so a readable head can reach the assignment
- *     only from earlier in the same statement, as in a CTE ahead of the
- *     quoted target, and where one does, the assignment is bucketed under
- *     that head's table, silently.
- *     Two heads are read from the wrong quote state, and neither layout is
- *     one this tree writes. A head inside a SQL string literal, the text an
- *     `EXECUTE '...'` or a `dblink_exec('...')` runs, begins its read inside
- *     that literal, so a doubled `''` in a value there reads as a close and
- *     an open, and a `;` in the value ends the read: a column list or an
- *     ALTER clause past it is read by no arm. And a head inside a `'` or `"`
- *     string continued from an earlier line by a trailing backslash finds no
- *     quote, since {@link enclosingQuote} carries a template from an earlier
- *     line and nothing else, so the string's closing quote opens a value and
- *     the read runs on to a later `;`, lending the head's table to a write in
- *     the next statement whose own head is unreadable. Those, the `E'...'`
- *     escape and the read cap are the reads header scan 2 defers to this
- *     list for.
+ *     defines. A read
+ *     ends at the string enclosing its head, a template opened on an earlier
+ *     line included, or at its `;` where no string does, so a readable head
+ *     can reach the assignment only from earlier in the same quoted text, or
+ *     from earlier in the same statement where no string encloses it, and
+ *     where one does, the assignment is bucketed under that head's table,
+ *     silently. One head is read from the wrong quote state, in a layout this
+ *     tree does not write: a head inside a `'` or `"` string continued from
+ *     an earlier line by a trailing backslash finds no quote, since
+ *     {@link enclosingQuote} carries a template from an earlier line and
+ *     nothing else, so the string's closing quote opens a value and the read
+ *     runs on to a later `;`, lending the head's table to a write in the next
+ *     statement whose own head is unreadable.
  *     The reverse error is the tolerable one and is not chased:
  *     a line inside a block comment that carries no leading `*`, or an odd
  *     quote in a line of prose, is read as live SQL and can only cost a red
@@ -500,13 +492,7 @@
  *     template. Each blanks a span that was live, so each is a silent miss
  *     rather than a red bar, which is why the reader errs toward reading
  *     wherever it can: an unclosed comment opener is text, a value keeps its
- *     markers, and a decrement is an operator. The `E'...'` escape costs the
- *     statement read too, in a template only: there the backslash is itself
- *     spelled escaped (`E'\\''`), the read takes the pair for one escaped
- *     backslash, and the quote after it closes the value, so a `;` later in
- *     the same value ends the read short of the statement, and a column list
- *     or an ALTER clause past it is read by no arm. A migration has no
- *     escapes to cook, and there the backslash and the quote stay one pair.
+ *     markers, and a decrement is an operator.
  *   - A regex literal is told from a division by the code before its slash
  *     ({@link regexLiteralEnd}): after an OPERAND the slash divides, and after
  *     a keyword ({@link PATTERN_KEYWORD_RE}) or anything else it opens a
@@ -545,7 +531,9 @@
  *     (`SET note = 'stored exactly as'` ends in its own quote and matches
  *     nothing), but a value left OPEN at the end of a line can
  *     (`SET note = 'stored exactly as`), and a span on the next line then reads
- *     as a body with its own markers blanked.
+ *     as a body with its own markers blanked. (The two readers also differ at
+ *     an interpolation, which the statement read takes flat, and not on
+ *     purpose; the interpolation limit records that.)
  *   - The body-or-value judgement at a dollar-quote opener has residuals of its
  *     own. It is made from the keyword before the opener, and every line it
  *     consults is a BLANKED one — the opener's own line up to that point, and
@@ -599,10 +587,8 @@
  *     comment's own extent is found with every interpolation in it stepped over
  *     ({@link lineCommentEnd}, {@link maskedTemplateText}), so a `*\/`, a
  *     backtick or a `$$` inside one ends nothing, and a comment that meets
- *     one whose close is on a later line records it. The statement read
- *     and {@link enclosingQuote} step over one to the same close, so neither
- *     reads its text as SQL either. Two residuals come with it, and one shape
- *     that is refused rather than read.
+ *     one whose close is on a later line records it. Two residuals come
+ *     with it, and one shape that is refused rather than read.
  *     One whose close is on a later line is RECORDED, and the
  *     every-interpolation-closes arm reports it by line (see
  *     {@link BlankedCode.unclosed}). The reader itself still reads that line
@@ -610,6 +596,14 @@
  *     outer template's close and then declines its closing one, which leaves
  *     the flag wrong; that arm and the TypeScript-agreement arm are what see
  *     it, and neither tree wraps an interpolation.
+ *     The statement read still reads an interpolation AFTER its head flat
+ *     while the blanking copies it whole, so a nested template there ends the
+ *     read at its opening backtick, short of the statement's end. That
+ *     consequence is loud: an assignment past that point is left unresolved,
+ *     and an `accounts` statement read that far holds the `${`, which the
+ *     assembled-write arm refuses. {@link enclosingQuote} does not read one
+ *     flat: it steps over an interpolation ahead of the head to the close
+ *     TypeScript gives it.
  *     A write spelled INSIDE an interpolation is copied together with the
  *     interpolation's comments, so a comment in one of its token gaps is not
  *     blanked: `` `${light ? `UPDATE accounts SET updated_at /* stamp *\/ =
@@ -619,10 +613,9 @@
  *     head's own literal does not hold, so an `accounts` head there is an
  *     assembled statement ({@link SqlStatement.interpolated}) and the
  *     assembled-write arm reds it, comment or no comment. A head spelled in
- *     the interpolation's own code, in no literal there, is answered by the
- *     template the interpolation sits in, so its read ends no later than
- *     that template does. None of the twenty nested templates in `src` (on
- *     fourteen lines) holds a statement head.
+ *     the interpolation's own code, in no literal there, is TypeScript, and
+ *     its read gives up at once. None of the twenty nested templates in `src`
+ *     (on fourteen lines) holds a statement head.
  *   - SQL block comments NEST, as PostgreSQL's do ({@link BlankState.nested}),
  *     so on valid SQL a comment ends where PostgreSQL ends it. What nesting
  *     changes is the documented misreads: a phantom `/*` read out of a value
@@ -703,8 +696,8 @@
  * silently, since a join that stops short reports a statement that writes
  * nothing. A bound that happens to fit is not a bound that holds, and the reach
  * here is delimited by
- * what an SQL statement actually ends at instead, its semicolon, or its own
- * string's closing quote in TypeScript where that comes first, with dollar-quoted spans carried
+ * what an SQL statement actually ends at instead, its own string quote in
+ * TypeScript and its semicolon in a migration, with dollar-quoted spans carried
  * across lines so a semicolon inside one ends nothing. The comment handling is
  * the half that could not be shared at any bound. The
  * comment handling is local for a related reason: the shared shape-only
@@ -1117,16 +1110,16 @@ const BOUND_TO_ACCOUNTS_RE = /\b(?:ON|TO)\s+(?:public\.)?accounts\b/i;
  *  quote on the head's line, and is measured from whichever one it found,
  *  which is the head literal's own opening quote only where nothing ahead of
  *  the head on that line left another open. A string continued from an
- *  earlier line that is not template text (a `'` string carried on by a trailing
- *  backslash) puts its closing quote in that place, since the line is read
- *  from no quote outside a template; a value inside template text does not,
- *  since a `'` is a character of the template to that reader. Then a `+`
- *  glued to the literal's own quote goes unread, while one ending the text
- *  ahead of that other quote is read as a join, which for SQL text is a `+`
- *  joining nothing. A template carried from an earlier line has no opening
- *  quote on the head's line, so this half is not read for a head inside one.
- *  The second answers to the stop, wherever it landed, and a statement read
- *  to its own `;` stops there. The dynamic-SQL entry under KNOWN LIMITS
+ *  earlier line that is not template text (a `'` string carried on by a
+ *  trailing backslash) puts its closing quote in that place, since the line
+ *  is read from no quote outside a template; a value inside template text
+ *  does not, since a `'` is a character of the template to that reader.
+ *  Then a `+` glued to the literal's own quote goes unread, while one ending
+ *  the text ahead of that other quote is read as a join, which for SQL text
+ *  is a `+` joining nothing.
+ *  A template carried from an earlier line has no opening quote on the head's
+ *  line, so this half is not read for a head inside one. The second answers to
+ *  the stop, wherever it landed. The dynamic-SQL entry under KNOWN LIMITS
  *  records the joins that leaves silent. */
 const SQL_INTERPOLATION_RE = /\$\{/;
 const JOINED_BEFORE_RE = /\+\s*$/;
@@ -2250,46 +2243,55 @@ function readable(files: ScannedSource[]): Readable[] {
  *  closing backtick to the next `;`, and a write between the two whose own
  *  head is unreadable was lent that head's table: the silent direction the
  *  fail-closed arm exists to refuse, in a layout this tree already writes.
- *  Only the same character closes a string, so a
+ *  The carried template encloses a position only at dollar-quote depth zero.
+ *  A head inside a span is bounded by that span and by its own `;`, so it
+ *  answers null there, as it did before the template was carried; a head
+ *  whose template opens on its own line ahead of the span's opener is
+ *  answered by that backtick, as before, since the backtick sits at depth
+ *  zero. Only the same character closes a string, so a
  *  `'light'` inside a backticked template does not end it, and a literal that
  *  opens and closes AHEAD of the position is not mistaken for the one that
  *  encloses it.
- *
- *  IT STEPS OVER AN INTERPOLATION in template text, to the close TypeScript
- *  gives it on the line ({@link TypeScriptView.closes}), rather than reading it
- *  flat. Read flat, a nested template's opening backtick closes the template
- *  it sits in, and an apostrophe inside it (``${label(`it's`)}``) then opens a
- *  `'` that the head is taken to sit in. An interpolation AROUND the position
- *  is code rather than template text, so the scan starts over inside it with
- *  no quote open and only a literal opened there can enclose the position,
- *  which is how a head in a nested template is enclosed by that template.
- *  Where none does, the head sits in the interpolation's own code, a comment
- *  it carries among the places, and the template the interpolation sits in
- *  answers for it, so its read is bounded by that template's backtick rather
- *  than by a `;` alone. Either way the answer says `interpolated`, which is
- *  what {@link SqlStatement.interpolated} carries to the assembled-write arm.
- *  One whose close is on a later line is treated as around the position; the
- *  every-interpolation-closes arm reds it by line regardless.
  *
  *  IT SKIPS DOLLAR-QUOTED SPANS, for the reason every reader here ends up
  *  needing: a character's meaning depends on where it sits, and a quote
  *  character inside a dollar-quoted value is data. Read flat, the apostrophe in
  *  `$$don't reuse this$$` and the backtick in ``$$don`t reuse this$$`` each
  *  open a string that never closes before the head, so the head's statement is
- *  delimited by a quote that is not its own and ends at the next one it meets,
- *  which in a SET list is a value's, short of a write the statement holds.
- *  Both spellings are ordinary migration prose.
+ *  delimited by a quote instead of by its semicolon, runs on past its own end,
+ *  and lends its table to the write below it — the same silent direction
+ *  {@link statementAt} closes one layer up, reached through the delimiter
+ *  rather than through the span. Both spellings are ordinary migration prose.
  *
  *  The spans it skips are the blanking reader's own, replayed from
  *  {@link SpanEvent} rather than re-derived, so this reader cannot disagree with
  *  the other two about where a dollar-quoted value begins. That also removes
  *  the need for a dialect flag here: a backtick is only ever a delimiter where
- *  the blanking reader already treated it as one. */
+ *  the blanking reader already treated it as one.
+ *
+ *  IT STEPS OVER AN INTERPOLATION in template text, to the close TypeScript
+ *  gives it on the line ({@link TypeScriptView.closes}), as the blanking
+ *  copies one whole, rather than reading it flat. Read flat, a nested
+ *  template's opening backtick closes the template it sits in, and an
+ *  apostrophe inside it (``${label(`it's`)}``) then opens a `'` that the
+ *  head is taken to sit in. The step comes ahead of the span skip, since
+ *  TypeScript interpolates in template text whatever span the SQL around it
+ *  has open. An interpolation AROUND the position is code rather than
+ *  template text, so the scan starts over inside it with no quote and no
+ *  span open, and only a literal opened there can enclose the position,
+ *  which is how a head in a nested template is enclosed by that template.
+ *  Where none does, the head sits in the interpolation's own code, a
+ *  comment it carries among the places, and the answer says `inCode`, which
+ *  {@link statementAt} gives up on. Either way the answer says
+ *  `interpolated`, which {@link SqlStatement.interpolated} carries to the
+ *  assembled-write arm. One whose close is on a later line is treated as
+ *  around the position; the every-interpolation-closes arm reds it by line
+ *  regardless. */
 function enclosingQuote(
   code: BlankedCode,
   lineIndex: number,
   index: number,
-): { char: string; at: number; interpolated?: true } | null {
+): { char: string; at: number; interpolated?: true; inCode?: true } | null {
   const line = code[lineIndex];
   const events = code.spans?.[lineIndex] ?? [];
   let depth = (code.entry?.[lineIndex] ?? []).length;
@@ -2304,9 +2306,9 @@ function enclosingQuote(
     while (seen < events.length && events[seen].col === i) {
       depth += events[seen++].open ? 1 : -1;
     }
-    if (depth > 0) continue;
-    const char = line[i];
-    const close = quote === '`' && char === '$' ? closes?.get(i) : undefined;
+    // Ahead of the depth skip, since TypeScript interpolates in template
+    // text whatever dollar-quoted span the SQL around it has open.
+    const close = quote === '`' && line[i] === '$' ? closes?.get(i) : undefined;
     if (close !== undefined) {
       if (close !== -1 && close <= index) {
         // Ahead of the position, so none of it encloses the position.
@@ -2318,10 +2320,13 @@ function enclosingQuote(
         around.push({ char: '`', at });
         quote = null;
         at = -1;
+        depth = 0;
         i++;
       }
       continue;
     }
+    if (depth > 0) continue;
+    const char = line[i];
     if (quote !== null) {
       if (char === '\\') i++;
       else if (char === quote) quote = null;
@@ -2332,8 +2337,14 @@ function enclosingQuote(
       at = i;
     }
   }
-  if (around.length === 0) return quote === null ? null : { char: quote, at };
-  return quote === null ? { ...around[around.length - 1], interpolated: true } : { char: quote, at, interpolated: true };
+  if (around.length > 0) {
+    return quote === null
+      ? { ...around[around.length - 1], interpolated: true, inCode: true }
+      : { char: quote, at, interpolated: true };
+  }
+  // A quote still open at column -1 is the carried template.
+  if (quote === null || (at === -1 && depth > 0)) return null;
+  return { char: quote, at };
 }
 
 interface StatementHead {
@@ -2408,24 +2419,25 @@ function bareTable(name: string): string {
  *  found on the head line, which is the one the read took for its delimiter.
  *  That is -1 wherever it found none, and also where the delimiter is a
  *  template carried from an earlier line, whose opening backtick sits on no
- *  column of the head's line. It finds none for a head with no string open
- *  ahead of it, which is every `accounts` head the migration scans read
- *  today (a migration head sitting after an unclosed `'` on its line is read
- *  to that quote or to its `;`, whichever comes first), and for a migration
- *  head inside a dollar-quoted span its line ENTERED, since that function
- *  seeds its depth at line entry and skips every column inside a span. A
- *  `src` head in a `DO` body held in a template is answered by the template's
- *  backtick wherever the template opened, on the head's line or above it, and
- *  is read to its own `;` inside the body all the same, since the `;` comes
- *  first. Where it found a quote that is not the head literal's, the closing
- *  quote of a string continued from an earlier line among them, this holds
- *  that quote's column rather than the literal's. */
+ *  column of the head's line. It finds none for a head with no quote open
+ *  ahead of it at dollar-quote depth zero, which is every `accounts` head the
+ *  migration scans read today (a migration head sitting after an unclosed `'`
+ *  on its line is read to that quote instead of to its `;`), and for a head
+ *  inside a dollar-quoted span its line ENTERED, since that function seeds
+ *  its depth at line entry and skips every column inside a span. A `src` head
+ *  in a `DO` body held in a template opened above it is one of those, and is
+ *  read to its `;` inside the body. A `src` head sharing its line with the
+ *  `$$` that opens the body is not, where the template holding the body opens
+ *  on that same line: the backtick ahead of the opener is at depth zero, so it
+ *  is returned. Where it found a quote that is not the head literal's, a
+ *  value's quote where the head's line begins inside a value among them, this
+ *  holds that quote's column rather than the literal's. */
 interface SqlStatement {
   text: string;
   /** Whether the head sits inside an interpolation, so the statement it opens
-   *  is spliced into the template around it: what the head's own literal
-   *  holds is a piece of the statement, and the rest of it is the outer
-   *  template's text, which this read does not reach. */
+   *  is spliced into the template around it: the head's own literal holds a
+   *  piece of the statement, and the rest is the outer template's text,
+   *  which a read bounded by that literal does not reach. */
   interpolated: boolean;
   lastLine: number;
   closedAt: number;
@@ -2446,24 +2458,20 @@ interface SqlStatement {
  * The SQL statement that starts at `matchIndex` on `lineIndex` of an
  * already-blanked file, read to its terminator.
  *
- * The read ends at the first of two terminators: a `;` outside every value
- * and quoted identifier the read has open, which ends a SQL statement
- * wherever it is written, and the closing quote of the string
- * ENCLOSING the keyword, so a backtick template and a single-quoted one-liner
- * are each read no further than their own quote. A literal that opens and
- * closes ahead of the keyword cannot hand the read a delimiter that
- * truncates it short of the assignment. A template opened on an earlier line
- * encloses the keyword as much as one opened on its own, so its closing
- * backtick ends the read wherever it sits. A keyword enclosed by no string,
- * a migration statement, is read to its `;` alone. Where
- * {@link enclosingQuote} finds a quote that is not the keyword's, that one
- * delimits the read instead, which can end it early but never past its
- * `;`. Where the read's own idea of which values are open is wrong, the
- * reads the quoted-identifier entry under KNOWN LIMITS names, the `;` it
- * stops at is wrong with it. It is capped so an unterminated literal
- * cannot swallow the rest of the file. A read that hits the cap reports no terminator, which is itself
- * asserted on: a statement too long to read whole is a statement this file
- * cannot clear.
+ * The delimiter is the quote of the string ENCLOSING the keyword, so a
+ * backtick template and a single-quoted one-liner are each read to their own
+ * quote, and a literal that opens and closes ahead of the keyword cannot hand
+ * the read a delimiter that truncates it short of the assignment. A template
+ * opened on an earlier line encloses the keyword as much as one opened on its
+ * own, so its closing backtick ends the read wherever it sits. A keyword
+ * enclosed by no string is a migration statement, read to its semicolon, and
+ * so is any keyword {@link enclosingQuote} finds no quote for, such as one
+ * inside a dollar-quoted body its line entered. Where it finds a quote that
+ * is not the keyword's, that one delimits the read instead, which ends it
+ * early or not at all rather than at the statement's own end. It is capped so
+ * an unterminated literal cannot swallow the rest of the file. A read that
+ * hits the cap reports no terminator, which is itself asserted on: a
+ * statement too long to read whole is a statement this file cannot clear.
  *
  * A READ THAT GIVES UP MUST NOT RESOLVE A TABLE ({@link SqlStatement.stopped}).
  * That is the whole of what the span and value handling below is for, and it
@@ -2473,9 +2481,13 @@ interface SqlStatement {
  * {@link UNRESOLVED_TABLE}. Refusing to resolve is a red bar naming a line;
  * resolving to the wrong table is silence. A read that runs out of cap or of
  * file has not given up and does resolve one, out as far as the last line it
- * read, all of it inside the statement's own text, since no `;` came. What
- * keeps every other read from lending its table past its own statement is
- * the two terminators above.
+ * read. What keeps every other read from lending its table past its own
+ * statement is the delimiter choice above: it ends at the string enclosing
+ * it, or at its `;` where no string does. That is the statement's own end
+ * except where two statements share one string, which the quoted-identifier
+ * entry under KNOWN LIMITS names, and where the quote found is not the
+ * head's own, which the {@link SqlStatement} docblock records and the same
+ * entry names for a string continued by a trailing backslash.
  *
  * SPANS ARE REPLAYED, NOT RE-JUDGED. The head can sit anywhere, including
  * inside a dollar-quoted literal a `DO` body EXECUTEs, so the read starts from
@@ -2511,10 +2523,9 @@ interface SqlStatement {
  * This is the ONE place the two readers deliberately answer differently, and
  * the difference is a refusal rather than a divergence: the blanking reads on,
  * because blanking a whole file is not optional, while the statement read gives
- * up on a statement it cannot bound. An interpolation is not a second one:
- * both copy it whole to the close TypeScript gives it, and only one whose
- * close is on a later line is read flat, which the every-interpolation-closes
- * arm reds by line. Dollar-quoted spans are not affected —
+ * up on a statement it cannot bound. (They also differ at an interpolation,
+ * which this read takes flat while the blanking copies it whole. That one is
+ * not deliberate, and the interpolation limit in KNOWN LIMITS records it.) Dollar-quoted spans are not affected —
  * they DO span lines, because those are the blanking reader's own decisions,
  * replayed rather than re-derived.
  */
@@ -2522,8 +2533,12 @@ function statementAt(code: BlankedCode, lineIndex: number, matchIndex: number): 
   const opener = enclosingQuote(code, lineIndex, matchIndex);
   const quote = opener?.char ?? null;
   const interpolated = opener?.interpolated === true;
-  // Escapes are TypeScript's, so only a `.ts` file's text has them to cook.
-  const cooked = code.typescript !== undefined;
+  // A head spelled in an interpolation's own code, in no literal there, is
+  // TypeScript rather than SQL: its extent is no statement's, so the read
+  // gives up at once rather than read code as SQL until something ends it.
+  if (opener?.inCode === true) {
+    return { text: '', interpolated, lastLine: lineIndex, closedAt: -1, quoteAt: -1, stopped: true };
+  }
   let text = '';
   let dollar = spanStackAt(code, lineIndex, matchIndex);
   const enclosing = dollar.length;
@@ -2534,22 +2549,9 @@ function statementAt(code: BlankedCode, lineIndex: number, matchIndex: number): 
     let col = i === lineIndex ? matchIndex : 0;
     let closedAt = -1;
     let opaque: string | null = null;
-    // Whether that value opened on an escaped quote, the way a SQL value is
-    // spelled inside a TypeScript string delimited by the same quote.
-    let opaqueEscaped = false;
     let escaped = false;
     while (col < line.length) {
       const char = line[col];
-      // An interpolation is copied whole to the close TypeScript gives it, as
-      // the blanking copies it, so nothing inside it is a quote, a value or a
-      // terminator to this read. One closing on a later line is read flat, and
-      // the every-interpolation-closes arm reds it by line.
-      const close = code.typescript?.closes[i]?.get(col);
-      if (close !== undefined && close !== -1) {
-        out += line.slice(col, close);
-        col = close;
-        continue;
-      }
       const events = spanEventsAt(code, i, col);
       if (events.length > 0 && opaque === null) {
         for (const event of events) dollar = event.open ? [...dollar, event.tag] : dollar.slice(0, -1);
@@ -2583,18 +2585,9 @@ function statementAt(code: BlankedCode, lineIndex: number, matchIndex: number): 
       }
       if (opaque !== null) {
         if (char === '\\' && col + 1 < line.length) {
-          // An escaped quote of the value's own kind is that quote once the
-          // string is cooked, so it closes the value as a bare one does.
-          if (cooked && line[col + 1] === opaque) opaque = null;
           out += line.slice(col, col + 2);
           col += 2;
           continue;
-        }
-        // The string's own unescaped quote, met inside a value that opened on
-        // an escaped one, is where the string ends, value or no value.
-        if (opaqueEscaped && char === quote) {
-          closedAt = col;
-          break;
         }
         out += char;
         if (char === opaque) opaque = null;
@@ -2602,23 +2595,16 @@ function statementAt(code: BlankedCode, lineIndex: number, matchIndex: number): 
         continue;
       }
       if (char === '\\' && col + 1 < line.length) {
-        // An escaped `'` or `"` opens a value as a bare one does: cooked, it
-        // is that quote, and a `;` inside the value ends nothing.
-        if (cooked && (line[col + 1] === "'" || line[col + 1] === '"')) {
-          opaque = line[col + 1];
-          opaqueEscaped = true;
-        }
         out += line.slice(col, col + 2);
         col += 2;
         continue;
       }
-      if (char === ';' || char === quote) {
+      if (quote === null ? char === ';' : char === quote) {
         closedAt = col;
         break;
       }
       if (char === "'" || char === '"') {
         opaque = char;
-        opaqueEscaped = false;
         out += char;
         col++;
         continue;
@@ -3692,11 +3678,10 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // after it. The depth test cannot see this: the head sits at the template's
     // top level, so the stack returns to exactly the depth it started at.
     for (const tag of ['$tag$', '$$']) {
-      // No `;` sits between the backtick and the write, since a `;` would end
-      // a read that ran past the backtick before it reached the write.
       const forceClosed = [
-        `await run([\`UPDATE sessions SET note = ${tag}x\`,`,
-        "  'UPDATE \"accounts\" SET updated_at = NOW()'])",
+        `const a = \`UPDATE sessions SET note = ${tag}x\`;`,
+        'const b = 1;',
+        "await run('UPDATE \"accounts\" SET updated_at = NOW()');",
         `const t = \`${tag}\`;`,
       ];
       const read = statementAt(asCode(forceClosed), 0, forceClosed[0].indexOf('UPDATE'));
@@ -3708,10 +3693,9 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // backtick force-closes had its text end with that span, so it reached no
     // terminator of its own and must still give up there. Taking the backtick
     // as its terminator instead lends the head's table to a sibling statement
-    // the same body spells after it. No `;` sits between the two, since a `;`
-    // inside the body would end the read before either answer is reached.
+    // the same body spells after it.
     const bodyForceClosed = [
-      'const body = `DO $$ BEGIN UPDATE sessions SET seen = NOW() UPDATE "accounts" SET updated_at = NOW()`;',
+      'const body = `DO $$ BEGIN UPDATE sessions SET seen = NOW(); UPDATE "accounts" SET updated_at = NOW();`;',
       'const end = `$$`;',
     ];
     const inBody = statementAt(asCode(bodyForceClosed), 0, bodyForceClosed[0].indexOf('UPDATE sessions'));
@@ -3720,14 +3704,13 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // The terminator is honoured wherever the force-closing backtick sits, not
     // only on the head's own line. A template that spans lines puts it below,
     // and a read that tests the delimiter only on the line it started from runs
-    // out of that template exactly as before, again with no `;` to stop it
-    // short of the write.
+    // out of that template exactly as before.
     expect(
       unresolvedIn([
         'async function touch(id: number) {',
-        '  await run([`UPDATE sessions SET note = $tag$x',
-        '     and more`,',
-        '    \'UPDATE "accounts" SET updated_at = NOW()\']);',
+        '  const a = `UPDATE sessions SET note = $tag$x',
+        '     and more`;',
+        '  await run(\'UPDATE "accounts" SET updated_at = NOW()\');',
         '  const t = `$tag$`;',
         '}',
       ]),
@@ -3789,13 +3772,24 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     const leaseRead = statementAt(lease, 3, lease[3].indexOf('UPDATE'));
     expect(enclosingQuote(lease, 3, lease[3].indexOf('UPDATE'))).toEqual({ char: '`', at: -1 });
     expect(leaseRead).toMatchObject({ lastLine: 3, closedAt: lease[3].lastIndexOf('`'), quoteAt: -1, stopped: false });
-    // A `;` INSIDE THE TEMPLATE ends the read as well, whichever line the
-    // template opened on, since PostgreSQL ends the statement there. Carried
-    // to the template's backtick instead, the read of a template holding two
-    // statements lends the first head's table to the second write when that
-    // write's head is unreadable. Read to the next `;` with no quote found, the
-    // opened-above spelling stopped there by accident; the same-line spelling
-    // never did.
+    // THE ALTER ARM, the one arm that sees a clause carrying no assignment. A
+    // bare `;` in the same template ended the read before the clause past it.
+    const alterAbove = [
+      'async function migrate() {',
+      '  await pool.query(`',
+      '    ALTER TABLE accounts ADD COLUMN note TEXT;',
+      '    ALTER COLUMN updated_at TYPE TIMESTAMPTZ USING NOW()`);',
+      '}',
+    ];
+    expect(accountsColumnAlterations(readable([{ rel: 'x.ts', lines: alterAbove }]))).toHaveLength(1);
+    expect(unreadableIn(alterAbove)).toEqual([]);
+    // A `;` INSIDE THE TEMPLATE ends nothing, on whichever line the template
+    // opened: the template's backtick is what ends the read. So a template
+    // holding two statements lends the first head's table to the second
+    // write when that write's head is unreadable, opened above or on the
+    // head's own line alike. The quoted-identifier entry under KNOWN LIMITS
+    // names that bound; read to the next `;` with no quote found, the
+    // opened-above spelling stopped short of the write by accident.
     const twoStatements = (opensAbove: boolean): string[] => [
       'async function touch(id: number) {',
       ...(opensAbove
@@ -3804,8 +3798,8 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
       '    UPDATE "accounts" SET updated_at = NOW() WHERE id = $1`, [id]);',
       '}',
     ];
-    expect(unresolvedIn(twoStatements(true))).toHaveLength(1);
-    expect(unresolvedIn(twoStatements(false))).toHaveLength(1);
+    expect(unresolvedIn(twoStatements(true))).toEqual([]);
+    expect(unresolvedIn(twoStatements(false))).toEqual([]);
     // AN INTERPOLATION AHEAD OF THE HEAD is stepped over to the close
     // TypeScript gives it, not read flat. Read flat from the carried template,
     // a nested template's opening backtick closed the carried one, and an
@@ -3821,108 +3815,43 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     // carried one, the head found no quote, and its read ran to the `;` past
     // the write below.
     const nested = ['const q = [`', "  ${a ? `UPDATE sessions SET x = 1` : ''}", '  `,', "  'UPDATE \"accounts\" SET updated_at = now()'];"];
-    const nestedCode = asCode(nested);
-    expect(enclosingQuote(nestedCode, 1, nested[1].indexOf('UPDATE'))).toEqual({ char: '`', at: nested[1].indexOf('`'), interpolated: true });
+    expect(enclosingQuote(asCode(nested), 1, nested[1].indexOf('UPDATE'))).toEqual({ char: '`', at: nested[1].indexOf('`'), interpolated: true });
     expect(unresolvedIn(nested)).toHaveLength(1);
     // Such a head's literal holds only a piece of its statement: the rest is
     // the outer template's text past the interpolation, which a read bounded
     // by the head's own backtick never reaches. So the statement is assembled
     // by interpolation, and an `accounts` one is refused as one, which is the
     // only arm left to see a column list or an ALTER clause spelled after the
-    // `}`. Read flat, the head took the outer template for its delimiter and
-    // the read reached that text by accident.
+    // `}`, inside a dollar-quoted body or out of one.
     const ternary = (target: string): string[] => [`  await pool.query(\`\${light ? \`${target}\` : \`INSERT INTO staging\`} (email, updated_at) VALUES ($1, NOW())\`, [email]);`];
     expect(how(ternary('INSERT INTO accounts'))).toEqual(['interpolation']);
     expect(scansOf(ternary('INSERT INTO accounts')).tableFirst).toEqual([]);
+    const inBody = [
+      'async function f(light: boolean) {',
+      '  await pool.query(`DO $$ BEGIN',
+      '    ${light ? `ALTER TABLE accounts` : `ALTER TABLE staging`} DROP COLUMN updated_at; END $$`);',
+      '}',
+    ];
+    expect(how(inBody)).toEqual(['interpolation']);
+    // Inside the interpolation no dollar-quoted span is open, whatever the SQL
+    // around it holds, so the nested template is found and the head is read
+    // to its backtick rather than given up as code.
+    expect(enclosingQuote(asCode(inBody), 2, inBody[2].indexOf('ALTER'))).toEqual({ char: '`', at: inBody[2].indexOf('`'), interpolated: true });
     // The same refusal holds a write spelled whole inside an interpolation,
     // whose comments are copied rather than blanked, so a comment in one of
     // its token gaps hides the assignment from both writer walks.
     const stamped = ['async function touch(id: number, light: boolean) {', '  await pool.query(`${light ? `UPDATE accounts SET updated_at /* stamp */ = NOW()` : other} WHERE id = $1`, [id]);', '}'];
     expect(how(stamped)).toEqual(['interpolation']);
     // A head in the interpolation's own code, in no literal there, such as one
-    // named in a comment the interpolation carries, is answered by the
-    // template the interpolation sits in. Answered by nothing, it was read as
-    // a migration statement to the next `;`, past that template's backtick and
-    // over the write on the next line.
-    const inCode = [
-      'const rows = await Promise.all([',
-      '  db.query(`SELECT ${/* kept in step with update sessions */ cols} FROM t`),',
-      '  db.query(`UPDATE ${table} SET updated_at = NOW()`),',
-      ']);',
-    ];
-    const inCodeHead = inCode[1].indexOf('update sessions');
-    expect(enclosingQuote(asCode(inCode), 1, inCodeHead)).toEqual({ char: '`', at: inCode[1].indexOf('`'), interpolated: true });
+    // named in a comment the interpolation carries, is TypeScript rather than
+    // SQL, so its read gives up at once and lends its table to nothing. Read
+    // as SQL, the apostrophe in the comment opened a value that carried the
+    // read past the template's backtick and over the next query's write.
+    const inCode = ["const q = `${t /* UPDATE foo, don't */} WHERE id = $1`; const r = `UPDATE ${tbl} SET updated_at = now()`; f(`'`);"];
+    const inCodeHead = inCode[0].indexOf('UPDATE foo');
+    expect(enclosingQuote(asCode(inCode), 0, inCodeHead)).toEqual({ char: '`', at: inCode[0].indexOf('`'), interpolated: true, inCode: true });
+    expect(statementAt(asCode(inCode), 0, inCodeHead).stopped).toBe(true);
     expect(unresolvedIn(inCode)).toHaveLength(1);
-    // AN ESCAPED QUOTE IS A SQL QUOTE once the string is cooked, so a value
-    // spelled with escaped quotes inside a string delimited by the same kind
-    // is a value, and a `;` inside it ends nothing. Read as an escape pair and
-    // nothing more, the value never opened and its `;` ended the read short
-    // of an ALTER clause, a MERGE insert list, or the `+` past the string.
-    // Each control is the same text with the `;` dropped from the value.
-    for (const [value, dropped] of [["\\'a;b\\'", "\\'ab\\'"], ['\\"a;b\\"', '\\"ab\\"']]) {
-      const delimiter = value.includes('"') ? '"' : "'";
-      const alter = (v: string): string[] => [
-        'async function f() {',
-        `  await pool.query(${delimiter}ALTER TABLE accounts RENAME COLUMN ${v} TO touched, DROP COLUMN updated_at${delimiter});`,
-        '}',
-      ];
-      expect(accountsColumnAlterations(readable([{ rel: 'x.ts', lines: alter(value) }])), value).toHaveLength(1);
-      expect(accountsColumnAlterations(readable([{ rel: 'x.ts', lines: alter(dropped) }])), dropped).toHaveLength(1);
-    }
-    const escapedMerge = [
-      'async function f() {',
-      "  await pool.query('MERGE INTO accounts a USING (SELECT \\'x;y\\' AS k) s ON a.k = s.k WHEN NOT MATCHED THEN INSERT (k, updated_at) VALUES (s.k, now())');",
-      '}',
-    ];
-    expect(scansOf(escapedMerge).tableFirst).toEqual(['x.ts#f']);
-    const escapedJoin = ["  await pool.query('UPDATE accounts SET note = \\'a;b\\'' + extra + ' WHERE id = $1', [id]);"];
-    expect(how(escapedJoin)).toEqual(['concatenation']);
-    // The escaped quote that closes the value closes it, too: left open, the
-    // value carries the `;` after it, and a second statement in the same
-    // string is read as part of the first and lent its table.
-    expect(unresolvedIn(["  await pool.query('UPDATE sessions SET note = \\'a\\'; UPDATE \"accounts\" SET updated_at = NOW()');"])).toHaveLength(1);
-    // And the string's own quote, met inside a value that opened on an
-    // escaped one, ends the string there: past it is code, not the value.
-    const unbalanced = asCode(["  pool.query('UPDATE sessions SET note = \\'open', [id]),", "  pool.query('UPDATE \"accounts\" SET updated_at = NOW()'),"]);
-    expect(statementAt(unbalanced, 0, unbalanced[0].indexOf('UPDATE')).closedAt).toBe(unbalanced[0].indexOf("', [id]"));
-    // The cooking is TypeScript's, so an escaped quote INSIDE an interpolation
-    // is no SQL quote at all: the statement read copies the interpolation
-    // whole, as the blanking does. Read flat, the escaped `"` in `${"\""}`
-    // opened a value that carried the read past its template's backtick and
-    // over the next query's write.
-    expect(
-      unresolvedIn([
-        'async function touch(id: number, t: string) {',
-        '  await Promise.all([pool.query(`UPDATE sessions SET a = ${"\\""} WHERE id = $1`, [id]), pool.query(`UPDATE ${t} SET updated_at = NOW(), b = ${"\\""} WHERE id = $1`, [id])]);',
-        '}',
-      ]),
-    ).toHaveLength(1);
-    // And a migration has no escapes to cook, so a backslash and the quote
-    // after it stay one pair inside an `E'...'` value, which is what
-    // PostgreSQL makes of them there: that quote closes nothing, and the
-    // value's own close does not open another value that swallows the `;`.
-    // Cooked there, the two escaped quotes below closed the value at once and
-    // reopened it after its `;`, which ended the read short of the insert list.
-    expect(
-      scansOf(["MERGE INTO accounts a USING (SELECT E'\\'a;b\\'' AS k) s ON a.k = s.k WHEN NOT MATCHED THEN INSERT (k, updated_at) VALUES (s.k, NOW());"], '018_probe.sql')
-        .tableFirst,
-    ).toEqual(['018_probe.sql#<module>']);
-    // THE ALTER ARM reads the head's statement to the same end, so text past
-    // the template's backtick is no longer part of it. A column passed as an
-    // argument after the backtick was caught only by the read running on to
-    // the `;`, and the same text with the template opening on its head's line
-    // was silent; the dynamic-SQL entry under KNOWN LIMITS names a column
-    // clause assembled outside the literal.
-    const formatted = (opensAbove: boolean): string[] => [
-      'async function drop() {',
-      ...(opensAbove
-        ? ['  await pool.query(format(`', "    ALTER TABLE accounts DROP COLUMN %I`, 'updated_at'));"]
-        : ["  await pool.query(format(`ALTER TABLE accounts DROP COLUMN %I`, 'updated_at'));"]),
-      '}',
-    ];
-    for (const opensAbove of [true, false]) {
-      expect(accountsColumnAlterations(readable([{ rel: 'x.ts', lines: formatted(opensAbove) }])), String(opensAbove)).toEqual([]);
-    }
     // THE JOIN TEST, which looks for the `+` after the quote past where the
     // read stopped: past the template's backtick now, not past a `;` beyond
     // it. The `+` before the quote stays silent, since the template's opening
@@ -4073,13 +4002,10 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     expect(scansOf(auditThenMerge, '018_probe.sql').tableFirst).toEqual([migration]);
     // THE DOLLAR-SPAN SKIP in the same reader. A quote character inside a
     // dollar-quoted VALUE is data, and read flat it opens a string that never
-    // closes before the head, so the head is delimited by that quote and its
-    // read ends at the next one the statement holds, short of its end. Both
-    // spellings are ordinary migration prose, and the apostrophe one is the
-    // likelier by far. The `enclosingQuote` pin is what answers for the skip.
-    // The unresolved count does not: the read stops at its `;` with or without
-    // the skip, so the write below is out of its reach either way, and the
-    // count records that the `;` holds.
+    // closes before the head — so the head is delimited by that quote instead
+    // of by its semicolon, runs past its own end, and lends its table to the
+    // write below. Both spellings are ordinary migration prose, and the
+    // apostrophe one is the likelier by far.
     for (const note of ["$$don't reuse this$$", '$$don`t reuse this$$']) {
       const spanned = [
         `WITH stale AS (SELECT id FROM ops_notes WHERE body = ${note}) UPDATE audit_log SET seen = NOW() WHERE id IN (SELECT id FROM stale);`,
@@ -5395,23 +5321,21 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     const afterPlaceholder = asCode(['  const p = `$${idx}`;', '  `UPDATE accounts SET a = 1 /* and the marker */ , updated_at = NOW()`,']);
     expect(afterPlaceholder[1]).toContain('              ');
     expect(assignmentIndex(afterPlaceholder[1])).toBeGreaterThan(-1);
-    // A bare `;` inside a template ends the read, as one in a migration does:
-    // the read stops at the first of the quote enclosing its head and a `;`.
-    // It reaches either only inside the cap, and only while no line ends
-    // mid-value and the span carrying the head stays open. Those last two are
-    // the set {@link SqlStatement.stopped} enumerates; running out of cap or
-    // out of file is the other answer, and such a read still lends its table,
-    // out as far as the last line it read. Past the cap it reaches nothing, so
-    // a write there answers to whatever head does reach it: its own, where it
+    // A bare `;` inside a template ends nothing where {@link enclosingQuote}
+    // finds the template enclosing the head, as it does here and as it does
+    // for a template opened on an earlier line: that quote delimits the read.
+    // Where it finds none the read looks for the `;` instead, and reaches one
+    // only inside the cap, and only while no line ends mid-value and the span
+    // carrying the head stays open. Those last two are the set
+    // {@link SqlStatement.stopped} enumerates; running out of cap or out of
+    // file is the other answer, and such a read still lends its table, out as
+    // far as the last line it read. Past the cap it reaches nothing, so a
+    // write there answers to whatever head does reach it: its own, where it
     // spells one, and no head at all otherwise, which reds the fail-closed arm
-    // as a stopped read's would. Here the assignment past the `;` is no
-    // part of the accounts statement, and the walk from its own token finds
-    // that head's read ending short of it, so it is a red bar by line.
+    // as a stopped read's would. The {@link SqlStatement} docblock names the
+    // heads it finds no quote for.
     const twoInOne = asCode(['  await q(`UPDATE accounts SET custody = $1; SET updated_at = NOW()`);']);
-    const firstOfTwo = statementAt(twoInOne, 0, twoInOne[0].indexOf('UPDATE'));
-    expect(firstOfTwo.closedAt).toBe(twoInOne[0].indexOf(';'));
-    expect(writesColumn(firstOfTwo.text)).toBe(false);
-    expect(targetTable(twoInOne, 0)).toBe(UNRESOLVED_TABLE);
+    expect(writesColumn(statementAt(twoInOne, 0, twoInOne[0].indexOf('UPDATE')).text)).toBe(true);
     // A COPY loads the named columns with no assignment and no INSERT keyword.
     expect(scansOf(['COPY accounts (email, updated_at) FROM STDIN;'], '018_probe.sql').tableFirst).toEqual([migration]);
     expect(scansOf(['COPY accounts (email, verify_token) FROM STDIN;'], '018_probe.sql').tableFirst).toEqual([]);
@@ -5739,14 +5663,19 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     ).toBe(UNRESOLVED_TABLE);
     // The interpolation exclusion: the placeholder-builder idiom, with a real
     // `$$` further down so the recurrence condition is satisfied and cannot be
-    // the one answering.
+    // the one answering. The statements sit in a body the template holds, on
+    // lines entered inside it, because that is where a template's statement
+    // is read to its `;`: at the template's own depth its backtick delimits
+    // the read, and a `;` ends nothing whether or not a phantom span is open.
+    // Opened at the `$${n}`, the phantom closes at the literal's first `$$`, so
+    // the `;` after the accounts write ends the sessions read past it.
     expect(
       targetTable(
         asCode([
-          '  await q(`',
+          '  await q(`DO $body$ BEGIN',
           '    UPDATE sessions SET note = $${n} WHERE id = 1;',
-          '    UPDATE "accounts" SET updated_at = NOW() WHERE id = 2`);',
-          '  const sigil = `$$`;',
+          '    UPDATE "accounts" SET updated_at = NOW(), note = $$x$$ WHERE id = 2;',
+          '  END $body$`);',
         ]),
         2,
       ),
