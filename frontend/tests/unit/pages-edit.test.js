@@ -2649,6 +2649,26 @@ describe('editPage is replaced when the account or the paper changes under it', 
     expect(mockStores.router.remount).toHaveBeenCalledTimes(1);
   });
 
+  // A dragged row is not a form control, so the fieldset's lock does not
+  // reach it: the handler refuses while the form is locked.
+  it('a citation drag is refused while the form is locked', () => {
+    const comp = createComponent();
+    comp.citations = [{ author: 'a' }, { author: 'b' }];
+    comp.dragIndex = 0;
+    comp.dragCitationDrop(1);
+    expect(comp.citations.map((c) => c.author)).toEqual(['a', 'b']);
+
+    const loaded = loadedFixture();
+    loaded.citations = [{ author: 'a' }, { author: 'b' }];
+    loaded.dragIndex = 0;
+    loaded.dragCitationDrop(1);
+    expect(loaded.citations.map((c) => c.author)).toEqual(['b', 'a']);
+    loaded.draftChoice = 'newer';
+    loaded.dragIndex = 0;
+    loaded.dragCitationDrop(1);
+    expect(loaded.citations.map((c) => c.author)).toEqual(['b', 'a']);
+  });
+
   it('waits for a submit in flight to settle before replacing the instance', () => {
     const comp = loadedFixture();
     comp.step = 'broadcasting';

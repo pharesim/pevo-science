@@ -305,6 +305,7 @@ describe('composer drafts in the real app', () => {
       const comp = await visit('/edit/alice/p1', 'editPage');
       await vi.waitFor(() => expect(comp.loadingPaper).toBe(false), { interval: 5 });
       expect(comp.isAuthorized).toBe(false);
+      expect(comp._draftKey).toBe(null);
       comp._flushDraftSave();
       await pastDebounce();
       expect(drafts()).toEqual({});
@@ -397,6 +398,17 @@ describe('composer drafts in the real app', () => {
           title: 'Signed-out work', authorName: 'Dr. Eve Example', authorAffiliation: 'Uni E',
         }),
       });
+    });
+
+    it('a sign-in under a signed-out form that holds nothing drafts nothing: the prefill it brings is not work', async () => {
+      const comp = await visit('/publish', 'publishPage');
+      await editorsReady('publishPage');
+      signIn('eve');
+      await settle();
+      expect(comp._draftAccount).toBe('eve');
+      expect(comp.authorName).toBe('Eve E');
+      await pastDebounce();
+      expect(drafts()).toEqual({});
     });
 
     it('a sign-in under a signed-out form that holds work, for an account with a stored draft, asks before either replaces the other', async () => {
