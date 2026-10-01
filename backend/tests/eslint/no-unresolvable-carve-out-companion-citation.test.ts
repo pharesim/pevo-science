@@ -188,6 +188,23 @@
  *     one semicolon member, so that widening it later is a visible probe edit
  *     rather than a silent change of recall.
  *
+ *   - The opposite direction, a PRECISION cost: a sentence that mentions a
+ *     real code path and then, with no sentence break, some unrelated
+ *     companion thing followed by a colon within the room after the noun is
+ *     accused by `LOOSE_CLAIM_SRC` as an unparsed claim, and its block goes
+ *     red. That docblock gives the worked example. The author's way through
+ *     is to reword the sentence or to carry the ALLOW_MARKER in the block.
+ *     Sparing that prose means telling it from a near-miss claim by the words
+ *     around `companion`, and each narrowing measured for that dropped some
+ *     claim-shaped spelling unaudited: refusing a lower-case word after the
+ *     noun drops a near-miss that ends `companion here:`; refusing an article
+ *     (optionally after a preposition such as `with`) before the noun drops
+ *     `Real-path with a Postgres companion:`; refusing a filler whose first
+ *     word is a stop word drops the pinned shouted `(also ...)` set. A false
+ *     accusation with a marker as its remedy is the cheaper error, so the
+ *     shape is recorded, not closed, and the `accusedProse` probe pins it at
+ *     one unparsed span.
+ *
  * WHY COMMENTS, MOCK BODIES AND TITLES DO NOT COUNT (arm 4). Risk-class tokens
  * appear constantly in prose, including prose that pins the OPPOSITE of the
  * citation — a header sentence explaining that this file deliberately does not
@@ -981,13 +998,23 @@ const anyCase = (word: string): string =>
   [...word].map((letter) => `[${letter.toUpperCase()}${letter}]`).join('');
 
 /** What a reader takes for a citation even when the label does not parse: the
- *  words `real`/`path` and `companion` with a colon straight after. Every such
- *  span must also be a label, or the block is a violation of its own. Matched
- *  on the rejoined block, because a qualifier odd enough to stop the label
- *  parsing is exactly the one the docblock wraps. The room after the noun stays
- *  tight: prose about a real code path and some unrelated companion thing
- *  ("running on the real path with a mocked companion here:") is common, and
- *  every extra character of slack there accuses more of it.
+ *  words `real`/`path` and `companion`, then a colon at most eight characters
+ *  past the noun and any plural ending, with no sentence break between. Every
+ *  such span must also be a label, or the block is a violation of its own.
+ *  Matched on the rejoined block, because a qualifier odd enough to stop the
+ *  label parsing is exactly the one the docblock wraps.
+ *
+ *  Ordinary prose of that shape is NOT spared. "running on the real path with
+ *  a mocked companion here: the pool is stubbed" is accused, because ` here`
+ *  is five characters and sits inside the room after the noun, and so is the
+ *  same sentence with the colon straight after `companion`. Its block is
+ *  classed `unparsed`, which is red. The author's remedy is to reword the
+ *  sentence or to mark the block with the ALLOW_MARKER, which `blockShape`
+ *  reads anywhere in the block, wrapped at one of its own hyphens or not. The
+ *  room after the noun is kept tight because every extra character of slack
+ *  accuses more of this prose, not because the tight room spares it. The
+ *  header's list of gaps left open on purpose records the shape as a known
+ *  precision cost, and the `accusedProse` probe pins it.
  *
  *  The literal words are spelt a class per LETTER by `anyCase`, not
  *  `real`/`path`/`companion` under an `i` flag, because the sentence-break
@@ -1982,6 +2009,22 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       ` (c) Real-path (also routes/foo.test.ts) companion${afterNoun}: covered`;
     expect(unparsedClaims(nearMissGap('x'.repeat(8))), '8-char gap').toHaveLength(1);
     expect(unparsedClaims(nearMissGap('x'.repeat(9))), '9-char gap').toHaveLength(0);
+    // The precision cost in the other direction, recorded rather than closed:
+    // prose about a real code path and an unrelated companion thing, with a
+    // colon inside the room after the noun, IS accused, and the ALLOW_MARKER
+    // is its way through. `LOOSE_CLAIM_SRC`'s docblock says so of the first
+    // sentence here. A narrowing that spares it turns the count to 0, and must
+    // then keep every `unparsedClaims` near-miss pin in this spec at its count.
+    for (const accusedProse of [
+      'running on the real path with a mocked companion here: the pool is stubbed',
+      'This drives the real path with a mocked companion: getAppPool is stubbed.',
+    ]) {
+      const normalised = normalizeCommentText(accusedProse);
+      expect(unparsedClaims(normalised), accusedProse).toHaveLength(1);
+      expect(labelCount(normalised), accusedProse).toBe(0);
+      expect(classOfText(normalised), accusedProse).toBe('unparsed');
+      expect(classOfText(`${normalised} (${ALLOW_MARKER}: prose, not a claim)`), accusedProse).toBe('exempt');
+    }
 
     // `labelAt`'s `^`: a citation-shaped near-miss is still reported when a
     // later, UNSTRUCTURED label (no citation, so `proseRemainder` keeps it)
