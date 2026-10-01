@@ -10,36 +10,37 @@
  * the `/orcid/callback` page handling `session_auth` mode by caching the
  * issued window and bouncing back to the page that started the broadcast.
  *
- * Where the vote's real-backend broadcast stops, and why that is the
- * assertion: the seeded light accounts carry no encrypted posting key, so
+ * Where each real-backend broadcast stops, and why that is the assertion:
+ * the seeded light accounts carry no encrypted posting key, so
  * `/api/custody/broadcast` consumes the proof, reads the account row, and
  * refuses at the posting-key availability guard that fronts the decrypt
  * (`expectPostGateStop`, fixtures/light-account.js); the decrypt itself
- * never runs. The vote is the only broadcast in this file that reaches
- * the gate at all. The comment and publish bundles are refused earlier,
- * at the op allowlist, for the reason the known-defect pin records.
- * Nothing is signed and nothing reaches a Hive node, the same line every
- * other write spec holds. A control request through the same route with a
- * tampered proof is refused AT the gate with FRESH_AUTH_REQUIRED, which
- * is what separates "passed the gate" from "refused before it". The
- * upload leg has no such stop: the pre-flight consumes the window and
- * mints an upload token, and the transfer pins the bytes for real.
+ * never runs. Nothing is signed and nothing reaches a Hive node, the same
+ * line every other write spec holds. A control request through the same
+ * route with a tampered proof is refused AT the gate with
+ * FRESH_AUTH_REQUIRED, which shows the route checks the proof rather than
+ * never checking it. A bundle the handler refuses before the gate answers
+ * 400 or 403, so the posting-key stop's 500 is what places a request past
+ * the gate.
  *
- * One defect this coverage surfaced, pinned here so the suite reddens the
- * day it is fixed: the custody broadcast allowlist admits `comment`, `vote`,
- * and `custom_json`, while every NEW post the SPA builds (the comment
- * composer, the publish page, the review page, and the edit page's
- * continuation post) bundles a `comment_options` op alongside the `comment`
- * for the rewards policy; only the edit page's same-author native edit, a
- * lone `comment` op, is admitted. The handler refuses the bundle BEFORE the
- * fresh-auth gate with a 403 FORBIDDEN naming the op, so a light account's
- * comment, review, or publish never reaches the gate today. The vote is a
- * single allowed op and is what carries the session window through the
- * gate. The comment test asserts the request it builds unmasked and pins
- * today's refusal as a positive assertion marked as a known defect; once
- * the allowlist admits the op that pin reddens and is replaced by the
- * post-gate stop. The publish test asserts the broadcast REQUEST it builds
- * (proof and CID) without pinning the refused response.
+ * How far each test's real-backend leg runs. The ORCID test has none: its
+ * callback response is stubbed (clause (a)). The vote test's broadcast, a
+ * lone `vote` op, passes the gate and stops at the posting-key guard, and
+ * it carries the broadcast controls: the tampered proof refused at the
+ * gate, and the same window accepted again on a replay that stops at the
+ * same guard. The comment test's broadcast bundles the `comment` with the
+ * `comment_options` op the SPA adds to every new post for the rewards
+ * policy. Before the gate, the handler binds that op to the bundled comment
+ * and pins its policy fields, refusing a mismatch with a 403 FORBIDDEN; the
+ * composer's bundle passes those bindings and the gate and stops at the
+ * posting-key guard. The publish test runs three legs. The upload pre-flight
+ * consumes the window and mints an upload token, with its own
+ * tampered-proof control refused at the gate, and the transfer pins the
+ * bytes for real; neither upload leg has a posting-key stop. Its broadcast,
+ * the paper's `comment` and `comment_options` bundle carrying the pinned
+ * CID, passes the bindings and the gate and stops at the posting-key guard,
+ * because the row the handler reads is the keyless one the test seeds under
+ * the borrowed username.
  *
  * Carve-out clause (a): the ORCID test stubs `/api/orcid/callback` at the
  * network layer rather than driving the in-network ORCID stub, so the
@@ -324,16 +325,6 @@ test.describe('light account against the real backend', () => {
   });
 
   test('a comment broadcast carries the session window minted at the real session-auth route', async ({ page }) => {
-    // Known defect, pinned positively at the end of this test: the custody
-    // broadcast allowlist refuses the `comment_options` op the composer
-    // bundles with every comment (see the file docblock). The request the
-    // composer builds is asserted unmasked; only the response is today's
-    // pre-gate refusal rather than the post-gate stop the vote test pins.
-    test.info().annotations.push({
-      type: 'known-defect',
-      description: 'custody broadcast allowlist refuses the comment_options op every new light-account post carries',
-    });
-
     const { paper } = await mountPaperDetail(page, {
       permlink: `e2e-fa-comment-${RUN_SUFFIX}`,
       title: 'Light Account Comment Test',
@@ -372,15 +363,12 @@ test.describe('light account against the real backend', () => {
     expect(optionsOp, 'the bundle carries the comment_options op').toBeTruthy();
     expect(optionsOp[1]).toMatchObject({ author: SEEDED_USERNAME, permlink: commentOp[1].permlink, percent_hbd: 0 });
 
-    // Today's outcome, pinned so the fix is visible: the handler refuses the
-    // bundle at its op allowlist, before the fresh-auth gate, naming the op.
-    // When the allowlist admits comment_options this assertion reddens;
-    // replace it with `expectPostGateStop(resp)`, the stop the vote test pins.
-    const resp = await broadcastResponsePromise;
-    const refusal = await resp.json();
-    expect(resp.status(), JSON.stringify(refusal)).toBe(403);
-    expect(refusal.error?.code).toBe('FORBIDDEN');
-    expect(refusal.error?.message).toMatch(/comment_options/);
+    // ...and the backend accepted the bundle: the `comment_options` op passed
+    // the handler's bindings, the window passed the fresh-auth gate, and the
+    // request stopped at the seeded account's posting-key availability guard.
+    // A binding refusal is a 403 FORBIDDEN answered before the gate, so this
+    // stop is also what pins the composer's op to the backend's bindings.
+    await expectPostGateStop(await broadcastResponsePromise);
   });
 
   test('a publish with a PDF carries the session window through the real upload pre-flight, the transfer, and the broadcast', async ({ page, request }) => {
@@ -454,6 +442,7 @@ test.describe('light account against the real backend', () => {
     const tokenResponsePromise = page.waitForResponse(postTo('/api/ipfs/upload-token').response);
     const uploadResponsePromise = page.waitForResponse(postTo('/api/ipfs/upload').response);
     const broadcastRequestPromise = page.waitForRequest(postTo('/api/custody/broadcast').request);
+    const broadcastResponsePromise = page.waitForResponse(postTo('/api/custody/broadcast').response);
 
     // Scoped to the publish form: the always-mounted reauth modal has a
     // submit button of its own.
@@ -494,12 +483,7 @@ test.describe('light account against the real backend', () => {
     expect(cid, 'IPFS upload should return a CID').toBeTruthy();
 
     // Broadcast: the same window (one re-auth act covers the upload and the
-    // post) rides on the paper op that carries the CID just pinned. The
-    // response is not pinned here: this bundle carries the `comment_options`
-    // op the allowlist refuses before the gate (see the file docblock), and
-    // the comment test pins that refusal. The gate's acceptance of this same
-    // window is pinned by the pre-flight's 200 and its tampered-proof control
-    // above.
+    // post) rides on the paper op that carries the CID just pinned.
     const broadcastReq = await broadcastRequestPromise;
     const body = broadcastReq.postDataJSON();
     expect(body.fresh_auth_proof).toBe(issued.fresh_auth_proof);
@@ -512,10 +496,15 @@ test.describe('light account against the real backend', () => {
     expect(optionsOp, 'the bundle carries the comment_options op').toBeTruthy();
     expect(optionsOp[1]).toMatchObject({ author: researcher.username, permlink: commentOp[1].permlink, percent_hbd: 0 });
 
+    // ...and the backend accepted it: the bundle passed the `comment_options`
+    // bindings and the fresh-auth gate, and stopped at the posting-key
+    // availability guard. The account is a real researcher's, but the row the
+    // handler reads is the keyless light row this test seeded under that
+    // username, which is what keeps the stop short of the decrypt.
+    await expectPostGateStop(await broadcastResponsePromise);
+
     // The page reports the failed publish and keeps the form (no navigation,
-    // no draft cleared): the end state for a refused broadcast, whether it is
-    // refused before the gate as today or stopped at the posting-key
-    // availability guard once the allowlist admits the bundle.
+    // no draft cleared): the end state for the post-gate stop.
     await expect
       .poll(() => page.evaluate(() => window.Alpine.$data(document.querySelector('[x-data="publishPage"]')).step))
       .toBe('error');

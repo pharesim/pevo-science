@@ -108,8 +108,9 @@ export async function confirmBroadcastDialog(page) {
  * fresh-auth gate and was refused at the posting-key availability guard that
  * fronts the decrypt. Both the status and the message are pinned because the
  * handler has two 500 envelopes: the guard's posting-key-unavailable one is
- * what this asserts, and the outer catch's generic one would mean a step past
- * the guard threw.
+ * what this asserts. The outer catch's generic one would mean something
+ * inside the handler's `try` threw, either the account-row read ahead of the
+ * guard or a step past it.
  */
 export async function expectPostGateStop(response) {
   const body = await response.json();
