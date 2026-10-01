@@ -60,3 +60,46 @@ voucher is accredited. Light accounts meet the accreditation criteria from signu
 3. An unknown `custom_json` action is still 403.
 4. Each assertion is probed by reverting its own site; list probe and spec in the signal block.
 5. New comments follow root `CLAUDE.md` "Comment anchors".
+
+## Backend implementation signal (2026-10-01, commit 519e6597)
+
+Landed in `519e6597` (verified: `git merge-base --is-ancestor 519e6597 main`).
+
+- `backend/src/routes/custody.ts`, `custom_json` arm: `vouch` and `retract_vouch` added to
+  `allowedActions` (the refusal message is built from the list, so it names both). For both
+  actions, before the fresh-auth gate: `voucher !== username` is 403 `FORBIDDEN`
+  (`<action> voucher must be '<user>'`), and a `vouchee` that is not a string, is empty, or
+  equals the voucher is 400 `VALIDATION_ERROR` (`<action> vouchee must be a Hive username
+  other than the voucher`). Not added to the consent or credit gated sets, and no fresh-auth
+  target, so they take the session-kind consume like a vote.
+- `backend/tests/routes/custody-vouch-ops.test.ts` (new, 19 specs, run per action): admit with a
+  session proof (200, ops unchanged), second op in the same window (proof not spent), no proof
+  (401 `FRESH_AUTH_REQUIRED`, reason `missing`), six pre-gate refusals (each sends no proof and
+  asserts no broadcast), and an unknown action (`accredit`) still 403.
+- Red before the route change: 19/19 failed. After: green, plus the six sibling custody test
+  files (117 tests across 7 files). `npm run typecheck` and eslint clean.
+- Wider regression: every test file that references the custody broadcast, `routes/custody`
+  or `routes/wot` (33 files ran): 493 passed, 12 failed in 3 files (`idempotency-real-haf`,
+  `accreditation-idempotency`, `accreditation`), exit 1. The same 3 files on a copy of
+  `519e6597^` (before this change) fail 17 specs, which covers 11 of the 12. The twelfth
+  (`findCustodyBroadcastByIdempotencyKey`, another-username scoping) is in the known-failing
+  real-HAF file and tests the HAF SQL helper, not the route. None of the three reaches the
+  `custom_json` arm.
+
+Mutation probes (AC 4), each run on a scratchpad copy built from `519e6597`, against
+`custody-vouch-ops.test.ts`; baseline 19/19 green:
+
+| Probe (site reverted) | Killed by |
+|---|---|
+| drop `'vouch'` from `allowedActions` | all 9 `vouch` specs + the unknown-action message spec |
+| drop `'retract_vouch'` from `allowedActions` | all 9 `retract_vouch` specs + the unknown-action message spec |
+| voucher binding off | `a voucher other than the signer is 403`, `a missing voucher is 403` (both actions) |
+| drop the `typeof vouchee` check | `a missing vouchee is 400`, `a non-string vouchee is 400` (both actions) |
+| drop the empty-vouchee check | `an empty vouchee is 400` (both actions) |
+| drop the self-vouchee check | `a self vouchee is 400` (both actions) |
+| bind `vouch` only, not `retract_vouch` | all six `retract_vouch` refusal specs |
+| route vouch ops through the per-op gate instead of the session window | `with a session-kind proof broadcasts the op unchanged`, `the session-kind proof is not spent...` (both actions) |
+
+[TODO Architect] `agents/docs/api-contracts/custody.md` permitted-action list: add `vouch` and
+`retract_vouch` (session-kind proof), and the two new refusals (403 voucher binding, 400 vouchee
+shape), per this task's "Out of scope" note.
