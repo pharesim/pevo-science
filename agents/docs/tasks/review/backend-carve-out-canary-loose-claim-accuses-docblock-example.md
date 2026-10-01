@@ -71,3 +71,36 @@ shared checkout. Apply `normalizeCommentText` before calling `unparsedClaims`,
 `labelCount` or `blockShape`, as `auditSources` does. Console output is
 silenced in this suite, so write results to a file with the already-imported
 `writeFileSync`.
+
+## Backend implementation signal (2026-10-01, commit 615d77ce)
+
+Decision: keep the behaviour, fix the docblock (scope item 2's fallback).
+Three narrowings were measured on isolated copies of `d90204fa`, each green
+against every existing pin and the non-self census, and each dropped a
+plausible claim-shaped near-miss unaudited (labels=0, unparsed=0):
+
+| Narrowing | Prose spared | Near-miss dropped |
+|---|---|---|
+| refuse whitespace + lower-case word after the noun | P1 only (not the colon-straight-after variant) | `(also routes/foo.test.ts) companion here:` |
+| refuse (preposition +) article before the noun, `real` excepted | both examples | `Real-path with a Postgres companion:` |
+| refuse an article-led noun phrase (lookbehind) | both examples | `Real-path with a Postgres companion: <backticked path> [A]`, `THE COMPANION:` family |
+
+Three independent judges (recall, precision/scope, docblock truth) all chose
+keep-behaviour. Landed:
+
+- `LOOSE_CLAIM_SRC` docblock: the room is stated as measured (colon at most
+  eight characters past the noun and any plural ending, no sentence break),
+  the example is named as accused, and ALLOW_MARKER is named as the remedy.
+- Header "Gaps left open on purpose": new precision-cost entry naming the
+  three measured narrowings and what each drops.
+- `accusedProse` probe beside `nearMissGap`: both task sentences, after
+  `normalizeCommentText`, pin at unparsed 1, labels 0, class `unparsed`, and
+  `exempt` with the marker (AC 1, "names it as accused" branch).
+
+AC 2 not applicable (no narrowing). AC 3: canary green (11/11, exit 0),
+`typecheck:tests` clean; `LANDING_*`, deferred maps and `LANDING_DIGEST`
+untouched.
+
+Side finding, not acted on (for triage): the `unparsed` failure message asks
+for the structured form and never mentions ALLOW_MARKER, so prose accused this
+way is pointed at a fix it cannot take.
