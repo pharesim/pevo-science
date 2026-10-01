@@ -200,3 +200,92 @@ third is stated there too.
    green. The mirror mutation on `mintPayload` is red.
 7. The tree test's tally assertions are sequential hard expects, so a mutation
    that breaks two buckets names only the first.
+
+## Architect re-review (2026-10-01) — HELD PENDING FIXES:
+
+Reviewed `6522283e..87b21065` (the three commits above, one file) with
+`/ce-code-review` (correctness, adversarial, testing, maintainability,
+project-standards, learnings) plus an independent validator, which confirmed
+items 1 and 2. The review read the `87b21065` snapshot. HEAD has moved since:
+`cca00888` and `146ce7de` (other tasks) edited this file and
+`tests/support/enclosing-symbol.ts`. Make the fixes on current HEAD. The
+sentences quoted below are unchanged there.
+
+Verified and NOT held:
+- Scope items 1 to 4 and the scope-boundary sentence all landed. At
+  `87b21065` the file runs 8 tests, exit 0, and `tests/eslint/` runs 9 files
+  and 141 tests, exit 0. The testing lens reproduced the cap, partition,
+  start-line, column-path, symbol and label mutants, all eight allow-list
+  add/remove/duplicate mutants and nine tree-side second-mint and claim-flip
+  mutants. All of them went red. Both cap-boundary pairs are untouched.
+- The `ROW_READING_MINT_SITES` deviation is accepted. The helper-caller half of
+  AC4 needs it, and a non-caller entry in it reds as stale.
+- The 8 `jwt.sign(` sites under `backend/src` at `87b21065` are 3 literal,
+  1 carry and 4 row-reading, which matches the three lists.
+
+AC1 is read as the four scope items, and it is met for them. Your
+"survivors outside the four items" list is dismissed and no task is filed:
+- 1 to 3 are stated as residuals in the scan-3 docblock.
+- 2 is also caught by a behavioural test: `custody-upgrade.test.ts` verifies
+  the reissued token and asserts `reissuedPayload.custody` is `'self'`.
+- 4 to 6 are on patterns this diff did not change. A loosened pattern is
+  visible in review, so a canary probe for it is not justified.
+- 7 is failure-message ergonomics.
+- The `STATEMENT_JOIN_CAP` item is pinned on main by `cca00888`.
+
+Also dismissed:
+- `JWT_MINT_RE`'s own flags are inert, because `mintColumns` rebuilds the
+  pattern with `'g'`. The "flags included" sentence is true as written: the
+  probes and the scan share one regex.
+- The helper-caller bucket probes read real handler keys. A rename fails them
+  loudly.
+- A mint inside a block comment on a line with no leading star still counts
+  toward its licence.
+- `ROW_READING_MINT_SITES` repeats four keys of `ALLOWED_HELPER_CALL_SITES`.
+- The mint self-test block mixes three concerns.
+
+All three items are prose. No new probe is wanted. Anchor every comment you
+write on stable symbols. Never use line numbers, task slugs, or round numbers.
+
+1. **The scan-2 residual summary leaves out two green cases.** In the module
+   docblock, scan 2's "What it still does not see" paragraph ends: "The
+   residual is therefore a reader that mints nothing, and a licensed symbol
+   that derives through one of these shapes beside its helper call." The
+   sentence before it is correct: inside a row-reading mint or the token
+   refresh, the one variable claim is licensed whatever it was bound from. The
+   summary drops two cases:
+   - The token refresh calls no helper. A `POST /session` that derives its
+     claim through an `upgraded_at` local and a ternary stays green: exit 0,
+     8/8. The correctness lens, the adversarial lens and the validator each
+     ran it.
+   - A symbol that mints can derive a value that never reaches its claim. A
+     `POST /upgrade` that derives custody through a local and sends it in
+     `sendOk` while the mint keeps its literal stays green: exit 0, 8/8,
+     correctness lens.
+
+   Restate the residual so it covers both:
+   - every derivation whose value never reaches a mint's claim, whether or
+     not its symbol mints;
+   - any of these shapes feeding the variable claim at the four row-reading
+     mints and at the token refresh.
+
+   Check the result against the preceding sentence and the scan-3 paragraphs
+   so the three agree.
+2. **The unclassified-mint failure message reads inverted.** The message in
+   the tree test says a mint "writes it in a shape the classifier does not
+   read (a bare binding or a quoted literal)". Those two are exactly the
+   shapes the classifier does read: `VARIABLE_CLAIM_RE` matches a bare
+   `custody` ahead of a comma or closing brace, and `LITERAL_CLAIM_RE` matches
+   a `custody:` key followed by a quoted `self` or `light`. This message is
+   the only guidance at that red bar. Reword it so it names what the
+   classifier reads, in those terms.
+3. **The mint-scan probe comment overclaims the comment skip.** The comment
+   at the top of the "finds mints, tallies them per symbol, and walks only the
+   call" test says prose that quotes the call shape matches and "is spared by
+   the comment skip instead". `sessionMints` skips only a whole comment line.
+   Text quoting `jwt.sign(` that trails live code on the same line, in a
+   comment or a string, is counted as one more mint at that symbol. The
+   adversarial lens ran it: a live mint line ending in `// was jwt.sign(old)`
+   gives two entries. The failure is loud, a false red on that symbol's tally
+   and never a silent pass. Narrow the sentence to whole comment lines and say
+   what happens to trailing text.
