@@ -59,8 +59,12 @@ const ACCREDITATIONS = {
   carol: { name: 'Carol C', institution: 'Uni C' },
   eve: { name: 'Eve E', institution: 'Uni E' },
 };
-// What Keychain was asked to broadcast.
+// What the enrichment endpoint serves, by `<author>/<permlink>`. Reset per test.
+let enrichments = {};
+// What Keychain was asked to broadcast, and how it answers: at once, with
+// success, unless a test holds the answer to settle it later.
 let broadcasts = [];
+let answerBroadcast = null;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
@@ -71,7 +75,7 @@ async function fakeFetch(input) {
   const path = url.split('?')[0];
   if (path.startsWith('/messages/')) return new Response(EN_MESSAGES, { status: 200 });
   let m = path.match(/^\/api\/papers\/([^/]+)\/([^/]+)\/enrichment$/);
-  if (m) return json({ data: { reviews: [], authorship_claims: [] } });
+  if (m) return json({ data: enrichments[`${m[1]}/${m[2]}`] || { reviews: [], authorship_claims: [] } });
   m = path.match(/^\/api\/papers\/([^/]+)\/([^/]+)\/invalidate$/);
   if (m) return json({ data: {} });
   m = path.match(/^\/api\/papers\/([^/]+)\/([^/]+)$/);
@@ -179,7 +183,8 @@ describe('composer drafts in the real app', () => {
     window.hive_keychain = {
       requestBroadcast(username, operations, keyType, callback) {
         broadcasts.push({ username, operations });
-        callback({ success: true, result: { id: `tx-${broadcasts.length}` } });
+        if (answerBroadcast) answerBroadcast(callback);
+        else callback({ success: true, result: { id: `tx-${broadcasts.length}` } });
       },
     };
     window.scrollTo = () => {};
@@ -199,12 +204,15 @@ describe('composer drafts in the real app', () => {
       'alice/p1': paperFixture('p1'),
       'alice/p2': paperFixture('p2'),
     };
+    enrichments = {};
     broadcasts = [];
+    answerBroadcast = null;
     router.navigate('/about');
     await settle();
     if (auth.isConnected) auth.disconnect();
     await settle();
     for (const key of Object.keys(drafts())) localStorage.removeItem(key);
+    localStorage.removeItem('pevo-citation-collection');
   });
 
   afterAll(() => {
@@ -266,17 +274,30 @@ describe('composer drafts in the real app', () => {
     });
 
     it('a signed-out visitor drafts nothing on either page', async () => {
-      await visit('/publish', 'publishPage');
-      await editorsReady('publishPage');
-      type('#paper-title', 'Typed while signed out');
-      await pastDebounce();
-      expect(drafts()).toEqual({});
+      // Every storage write, not only the ones under a draft key: a write with
+      // no key captured would land under "null".
+      const setItem = vi.spyOn(Storage.prototype, 'setItem');
+      const draftWrites = () => setItem.mock.calls
+        .map(([key]) => String(key))
+        .filter((key) => key.startsWith('pevo-draft') || key === 'null' || key === 'undefined');
+      try {
+        await visit('/publish', 'publishPage');
+        await editorsReady('publishPage');
+        type('#paper-title', 'Typed while signed out');
+        await pastDebounce();
+        page('publishPage')._flushDraftSave();
+        expect(draftWrites()).toEqual([]);
 
-      await visit('/edit/alice/p1', 'editPage');
-      await settle(100);
-      expect(page('editPage').paper).not.toBeNull();
-      await pastDebounce();
-      expect(drafts()).toEqual({});
+        await visit('/edit/alice/p1', 'editPage');
+        await settle(100);
+        expect(page('editPage').paper).not.toBeNull();
+        page('editPage')._flushDraftSave();
+        await pastDebounce();
+        expect(draftWrites()).toEqual([]);
+        expect(drafts()).toEqual({});
+      } finally {
+        setItem.mockRestore();
+      }
     });
 
     it('an account that cannot edit the paper drafts nothing on the edit page', async () => {
@@ -359,6 +380,7 @@ describe('composer drafts in the real app', () => {
       await editorsReady('publishPage');
       const el = pageEl('publishPage');
       type('#paper-title', 'Signed-out work');
+      type('#author-name', 'Dr. Eve Example');
       await settle();
       signIn('eve');
       await settle();
@@ -368,9 +390,12 @@ describe('composer drafts in the real app', () => {
       expect(comp._draftAccount).toBe('eve');
       expect(comp.title).toBe('Signed-out work');
       // The prefill filled only the author fields the user left empty.
-      expect(comp.authorName).toBe('Eve E');
+      expect(comp.authorName).toBe('Dr. Eve Example');
+      expect(comp.authorAffiliation).toBe('Uni E');
       expect(drafts()).toEqual({
-        'pevo-draft-publish:eve': expect.objectContaining({ title: 'Signed-out work', authorName: 'Eve E' }),
+        'pevo-draft-publish:eve': expect.objectContaining({
+          title: 'Signed-out work', authorName: 'Dr. Eve Example', authorAffiliation: 'Uni E',
+        }),
       });
     });
 
@@ -384,7 +409,9 @@ describe('composer drafts in the real app', () => {
       await settle();
 
       expect(comp.draftChoice).toBe('saved');
-      expect(document.querySelector('[data-testid="draft-choice-card"]')).not.toBeNull();
+      const card = document.querySelector('[data-testid="draft-choice-card"]');
+      expect(card.querySelector('p').textContent).toBe('You have a saved draft from 1 minute ago. Restore replaces what you typed here.');
+      expect(card.querySelector('.btn-primary').textContent).toBe('Restore');
       expect(document.querySelector('[x-data="publishPage"] fieldset').disabled).toBe(true);
       expect(comp._bodyEditor.editor.isEditable).toBe(false);
       expect(comp.title).toBe('Signed-out work');
@@ -429,6 +456,78 @@ describe('composer drafts in the real app', () => {
       expect(comp.draftRestored).toBe(true);
     });
 
+    it('a signed-out form leaves the citation collection alone, and the sign-in restores the draft and then merges it', async () => {
+      localStorage.setItem('pevo-draft-publish:eve', JSON.stringify({ title: 'Stored earlier', abstract: '', body: '', citations: [], savedAt: Date.now() - 60_000 }));
+      localStorage.setItem('pevo-citation-collection', JSON.stringify([{ author: 'zed', permlink: 'cited', title: 'Cited' }]));
+      const comp = await visit('/publish', 'publishPage');
+      await editorsReady('publishPage');
+      expect(comp.citations).toEqual([]);
+      expect(localStorage.getItem('pevo-citation-collection')).not.toBeNull();
+
+      signIn('eve');
+      await settle();
+      expect(comp.draftChoice).toBe(null);
+      expect(comp.title).toBe('Stored earlier');
+      expect(comp.citations.map((c) => c.permlink)).toEqual(['cited']);
+      expect(localStorage.getItem('pevo-citation-collection')).toBeNull();
+      await pastDebounce();
+      expect(drafts()['pevo-draft-publish:eve'].citations.map((c) => c.permlink)).toEqual(['cited']);
+    });
+
+    it('an email sign-in, whose accreditation arrives after the username, still gets the prefill on empty author fields', async () => {
+      const comp = await visit('/publish', 'publishPage');
+      await editorsReady('publishPage');
+      type('#paper-title', 'Signed-out work');
+      await settle();
+      // The modal's email path: no accreditation with the session; the
+      // store's polling fetches it.
+      auth.loginFromResponse({
+        token: 'token-eve', expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        username: 'eve', custody: 'light', is_accredited: false, accreditation: null,
+      });
+      await vi.waitFor(() => expect(auth.accreditation).not.toBeNull(), { interval: 5 });
+      await settle();
+      expect(comp.authorName).toBe('Eve E');
+      expect(comp.authorAffiliation).toBe('Uni E');
+      // A prefill is not typing: only the title is the user's work.
+      await pastDebounce();
+      expect(drafts()['pevo-draft-publish:eve']).toMatchObject({ title: 'Signed-out work', authorName: 'Eve E' });
+    });
+
+    it('a restore whose empty author fields take the prefill does not date the draft as new', async () => {
+      signIn('eve');
+      const savedAt = Date.now() - 3 * 86_400_000;
+      localStorage.setItem('pevo-draft-publish:eve', JSON.stringify({
+        title: 'Drafted before accreditation', abstract: '', body: '', discipline: '', keywordsText: '',
+        coAuthors: [], citations: [], authorName: '', authorAffiliation: '', authorOrcid: '', savedAt,
+      }));
+      await visit('/publish', 'publishPage');
+      const comp = await editorsReady('publishPage');
+      expect(comp.title).toBe('Drafted before accreditation');
+      expect(comp.authorName).toBe('Eve E');
+      await pastDebounce();
+      expect(drafts()['pevo-draft-publish:eve'].savedAt).toBe(savedAt);
+    });
+
+    it("the choice card's Restore replaces typed author fields with the draft's, or with the prefill where the draft holds none", async () => {
+      localStorage.setItem('pevo-draft-publish:eve', JSON.stringify({
+        title: 'Stored earlier', abstract: '', body: '', authorName: '', authorAffiliation: 'Draft Uni', savedAt: Date.now() - 60_000,
+      }));
+      const comp = await visit('/publish', 'publishPage');
+      await editorsReady('publishPage');
+      type('#author-name', 'Typed Name');
+      type('#author-affiliation', 'Typed Uni');
+      await settle();
+      signIn('eve');
+      await settle();
+      expect(comp.draftChoice).toBe('saved');
+
+      comp.restorePendingDraft();
+      expect(comp.title).toBe('Stored earlier');
+      expect(comp.authorName).toBe('Eve E');
+      expect(comp.authorAffiliation).toBe('Draft Uni');
+    });
+
     it('text typed after a session teardown is drafted under the key the instance captured', async () => {
       signIn('alice');
       await visit('/publish', 'publishPage');
@@ -462,6 +561,11 @@ describe('composer drafts in the real app', () => {
       expect(pageEl('editPage')).toBe(el);
       expect(comp.title).toBe('Before the sign-out');
       expect(comp._bodyEditor.getMarkdown()).toContain('one');
+      // The baseline is still the paper as loaded, not the form the new
+      // editors came back to: what was typed is still the user's work.
+      expect(comp.editorsAtBaseline).toBe(true);
+      comp._flushDraftSave();
+      expect(drafts()['pevo-draft-edit:alice:alice:p1']).toMatchObject({ title: 'Before the sign-out' });
     });
 
     it("the edit page's sign-in call to action brings up the form with the editors and the account's author fields", async () => {
@@ -484,7 +588,20 @@ describe('composer drafts in the real app', () => {
       expect(page('publishPage').title).toBe('');
       expect(Object.keys(drafts()).sort()).toEqual(['pevo-draft-edit-alice-p1', 'pevo-draft-publish']);
 
+      // The sign-in under the mounted form adopts it, and the adoption is a
+      // load with an account.
       signIn('alice');
+      await settle();
+      expect(drafts()).toEqual({});
+      // So is a signed-in publish load, and a signed-in edit load.
+      localStorage.setItem('pevo-draft-publish', JSON.stringify({ title: 'Legacy publish', savedAt: 1 }));
+      localStorage.setItem('pevo-draft-edit-alice-p1', JSON.stringify({ title: 'Legacy edit', savedAt: 1 }));
+      await visit('/publish', 'publishPage');
+      await editorsReady('publishPage');
+      expect(page('publishPage').title).toBe('');
+      expect(drafts()).toEqual({});
+
+      localStorage.setItem('pevo-draft-edit-alice-p1', JSON.stringify({ title: 'Legacy edit', savedAt: 1 }));
       await visit('/edit/alice/p1', 'editPage');
       const comp = await editorsReady('editPage');
       expect(comp.title).toBe('Paper p1');
@@ -564,6 +681,7 @@ describe('composer drafts in the real app', () => {
       expect(comp.draftChoice).toBe('newer');
       expect(comp.title).toBe('Paper p1');
       expect(document.querySelector('[data-testid="draft-choice-card"] p').textContent).toContain('newer version');
+      expect(document.querySelector('[data-testid="draft-choice-card"] .btn-primary').textContent).toBe('Restore');
       expect(document.querySelector('[x-data="editPage"] fieldset').disabled).toBe(true);
       expect(comp._abstractEditor.editor.isEditable).toBe(false);
       expect(comp._bodyEditor.editor.isEditable).toBe(false);
@@ -611,6 +729,148 @@ describe('composer drafts in the real app', () => {
       expect(document.querySelector('[data-testid="draft-choice-card"] p').textContent).toContain('could not check');
     });
 
+    it('a draft written with no head marker waits on the could-not-check card, whether or not the paper now has one', async () => {
+      signIn('alice');
+      const stored = {
+        title: 'Drafted title', abstract: '', body: '', savedAt: Date.now() - 60_000, head_marker: null,
+      };
+      localStorage.setItem('pevo-draft-edit:alice:alice:p1', JSON.stringify(stored));
+      await visit('/edit/alice/p1', 'editPage');
+      let comp = await editorsReady('editPage');
+      expect(comp.draftChoice).toBe('unchecked');
+      expect(comp.title).toBe('Paper p1');
+      expect(document.querySelector('[data-testid="draft-choice-card"] p').textContent).toContain('could not check');
+
+      // Both null: the stub again. Equal, but nothing was checked.
+      papers['alice/p1'] = paperFixture('p1', { versions: [{ version_number: 1, block_num: 0 }] });
+      await visit('/edit/alice/p1', 'editPage');
+      comp = await editorsReady('editPage');
+      expect(comp.draftChoice).toBe('unchecked');
+      expect(comp.title).toBe('Paper p1');
+    });
+
+    it('Restore puts back author fields the draft had cleared, and stores them cleared', async () => {
+      signIn('alice');
+      localStorage.setItem('pevo-draft-edit:alice:alice:p1', JSON.stringify({
+        title: 'Drafted title', abstract: 'The abstract.', body: 'Drafted body', keywordsText: '',
+        authorName: 'Alice A', authorAffiliation: '', authorOrcid: '',
+        newCoAuthors: [], citations: [], addressedReviews: [], savedAt: Date.now() - 60_000,
+        head_marker: 'alice/p1/1/90',
+      }));
+      await visit('/edit/alice/p1', 'editPage');
+      const comp = await editorsReady('editPage');
+      expect(comp.authorOrcid).toBe('0000-0001-0000-0001');
+
+      comp.restorePendingDraft();
+      await pastDebounce();
+      expect(comp.authorAffiliation).toBe('');
+      expect(comp.authorOrcid).toBe('');
+      expect(drafts()['pevo-draft-edit:alice:alice:p1']).toMatchObject({ authorAffiliation: '', authorOrcid: '' });
+    });
+
+    it("the restored card's Discard empties the rows and ticks only the draft added", async () => {
+      enrichments['alice/p1'] = {
+        reviews: [{ author: 'carol', permlink: 'rev-1', body: 'A review' }],
+        authorship_claims: [],
+      };
+      signIn('alice');
+      localStorage.setItem('pevo-draft-edit:alice:alice:p1', JSON.stringify({
+        title: 'Drafted title', abstract: 'The abstract.', body: 'Drafted body', keywordsText: '',
+        authorName: 'Alice A', authorAffiliation: 'Uni A', authorOrcid: '0000-0001-0000-0001',
+        newCoAuthors: [{ name: 'Dan D', hive: '', orcid: '', affiliation: '' }], citations: [],
+        addressedReviews: [{ author: 'carol', permlink: 'rev-1' }], savedAt: Date.now() - 60_000,
+        head_marker: 'alice/p1/1/100',
+      }));
+      await visit('/edit/alice/p1', 'editPage');
+      const comp = await editorsReady('editPage');
+      expect(comp.newCoAuthors).toHaveLength(1);
+      expect(comp.addressedReviews).toEqual([{ author: 'carol', permlink: 'rev-1' }]);
+
+      comp.discardDraft();
+      await pastDebounce();
+      expect(comp.newCoAuthors).toEqual([]);
+      expect(comp.addressedReviews).toEqual([]);
+      expect(drafts()).toEqual({});
+    });
+
+    it("the restored card's Discard empties the author fields of an accepted claimer the paper does not list", async () => {
+      enrichments['alice/p1'] = { reviews: [], authorship_claims: [{ claimer: 'carol', status: 'accepted' }] };
+      signIn('carol');
+      localStorage.setItem('pevo-draft-edit:carol:alice:p1', JSON.stringify({
+        title: 'Drafted title', abstract: 'The abstract.', body: 'Drafted body', keywordsText: '',
+        authorName: 'Carol Draft', authorAffiliation: 'Draft Uni', authorOrcid: '0000-0009-0000-0009',
+        newCoAuthors: [], citations: [], addressedReviews: [], savedAt: Date.now() - 60_000,
+        head_marker: 'alice/p1/1/100',
+      }));
+      await visit('/edit/alice/p1', 'editPage');
+      const comp = await editorsReady('editPage');
+      expect(comp.authorName).toBe('Carol Draft');
+
+      comp.discardDraft();
+      expect(comp.authorName).toBe('');
+      expect(comp.authorAffiliation).toBe('');
+      expect(comp.authorOrcid).toBe('');
+    });
+
+    it('a restore that reorders the ticks does not date the draft as new', async () => {
+      enrichments['alice/p1'] = {
+        reviews: [
+          { author: 'carol', permlink: 'rev-1', body: 'First' },
+          { author: 'dave', permlink: 'rev-2', body: 'Second' },
+        ],
+        authorship_claims: [],
+      };
+      signIn('alice');
+      const savedAt = Date.now() - 3 * 86_400_000;
+      localStorage.setItem('pevo-draft-edit:alice:alice:p1', JSON.stringify({
+        title: 'Drafted title', abstract: 'The abstract.', body: 'Drafted body', keywordsText: '',
+        authorName: 'Alice A', authorAffiliation: 'Uni A', authorOrcid: '0000-0001-0000-0001',
+        newCoAuthors: [], citations: [],
+        addressedReviews: [{ author: 'dave', permlink: 'rev-2' }, { author: 'carol', permlink: 'rev-1' }],
+        savedAt, head_marker: 'alice/p1/1/100',
+      }));
+      await visit('/edit/alice/p1', 'editPage');
+      const comp = await editorsReady('editPage');
+      expect(comp.addressedReviews.map((r) => r.permlink)).toEqual(['rev-1', 'rev-2']);
+      await pastDebounce();
+      expect(drafts()['pevo-draft-edit:alice:alice:p1'].savedAt).toBe(savedAt);
+      expect(document.querySelector('[data-testid="draft-restored-card"] p').textContent).toContain('3 days ago');
+    });
+
+    it('a re-rendered form keeps the lock the choice card holds', async () => {
+      signIn('alice');
+      localStorage.setItem('pevo-draft-edit:alice:alice:p1', JSON.stringify({
+        title: 'Drafted title', abstract: '', body: '', savedAt: Date.now() - 60_000, head_marker: 'alice/p1/1/90',
+      }));
+      await visit('/edit/alice/p1', 'editPage');
+      await editorsReady('editPage');
+      const el = pageEl('editPage');
+      auth.disconnect();
+      await settle();
+      signIn('alice');
+      await vi.waitFor(() => expect(document.querySelectorAll('[x-data="editPage"] .ProseMirror')).toHaveLength(2), { interval: 5 });
+      await settle();
+      const comp = page('editPage');
+      expect(pageEl('editPage')).toBe(el);
+      expect(comp.draftChoice).toBe('newer');
+      expect(comp._abstractEditor.editor.isEditable).toBe(false);
+      expect(comp._bodyEditor.editor.isEditable).toBe(false);
+    });
+
+    it('an edit page opened under a pair other than the canonical one drafts under the canonical key', async () => {
+      papers['bob/cont'] = paperFixture('cont', {
+        author: 'bob', head_author: 'bob', canonical_author: 'alice', canonical_permlink: 'p1',
+        versions: [{ version_number: 1, block_num: 100, author: 'alice', permlink: 'p1' }, { version_number: 2, block_num: 120, author: 'bob', permlink: 'cont' }],
+      });
+      signIn('alice');
+      await visit('/edit/bob/cont', 'editPage');
+      const comp = await editorsReady('editPage');
+      expect(comp._draftKey).toBe('pevo-draft-edit:alice:alice:p1');
+      type('#edit-title', 'Typed on the continuation');
+      await pastDebounce();
+      expect(Object.keys(drafts())).toEqual(['pevo-draft-edit:alice:alice:p1']);
+    });
+
     it("a passwordless account's draft comes back on the return from the ORCID round-trip", async () => {
       // The round-trip reloads the page for the same account and the same
       // head; a new instance stands in for the reload.
@@ -626,6 +886,66 @@ describe('composer drafts in the real app', () => {
       expect(pageEl('editPage')).not.toBe(el);
       expect(returned.draftChoice).toBe(null);
       expect(returned.title).toBe('Typed before the round-trip');
+    });
+  });
+
+  describe('an account change during a submit replaces the instance once the submit settles', () => {
+    // Keychain holds its answer, so the submit sits in 'broadcasting' while
+    // the other account signs in; the answer is a rejection, so the submit
+    // settles without landing.
+    function holdBroadcast() {
+      let answer;
+      answerBroadcast = (callback) => { answer = callback; };
+      return () => answer({ success: false, message: 'rejected' });
+    }
+
+    it('on the publish page', async () => {
+      signIn('alice');
+      await visit('/publish', 'publishPage');
+      const comp = await editorsReady('publishPage');
+      const el = pageEl('publishPage');
+      type('#paper-title', 'Alice publishes');
+      type('#discipline', 'Physics');
+      comp._abstractEditor.editor.commands.insertContent('An abstract');
+      await settle();
+      const reject = holdBroadcast();
+      document.querySelector('[x-data="publishPage"] form button[type="submit"]').click();
+      await vi.waitFor(() => expect(broadcasts).toHaveLength(1), { interval: 5 });
+      expect(comp.step).toBe('broadcasting');
+
+      signIn('bob');
+      await settle(100);
+      expect(pageEl('publishPage')).toBe(el);
+
+      reject();
+      await replaced('publishPage', el);
+      const fresh = await editorsReady('publishPage');
+      expect(fresh._draftAccount).toBe('bob');
+      expect(fresh.authorName).toBe('Bob B');
+      expect(drafts()['pevo-draft-publish:alice']).toMatchObject({ title: 'Alice publishes' });
+    });
+
+    it('on the edit page', async () => {
+      signIn('alice');
+      await visit('/edit/alice/p1', 'editPage');
+      const comp = await editorsReady('editPage');
+      const el = pageEl('editPage');
+      type('#edit-title', 'Alice retitles');
+      await settle();
+      const reject = holdBroadcast();
+      document.querySelector('[x-data="editPage"] form button[type="submit"]').click();
+      await vi.waitFor(() => expect(broadcasts).toHaveLength(1), { interval: 5 });
+      expect(comp.step).toBe('broadcasting');
+
+      signIn('bob');
+      await settle(100);
+      expect(pageEl('editPage')).toBe(el);
+
+      reject();
+      await replaced('editPage', el);
+      const fresh = await editorsReady('editPage');
+      expect(fresh._draftAccount).toBe('bob');
+      expect(fresh.authorName).toBe('Bob B');
     });
   });
 });

@@ -101,7 +101,7 @@ const template = `
         </template>
 
         <form @submit.prevent="isAccredited ? handleSubmit() : null">
-          <fieldset class="space-y-6 min-w-0" :disabled="!!draftChoice">
+          <fieldset class="space-y-6 min-w-0" :disabled="formLocked">
           <!-- Title -->
           <div class="card">
             <label for="paper-title" class="block text-sm font-semibold text-ink mb-2" x-text="$t('publish.paperTitle')"></label>
@@ -478,6 +478,13 @@ export function initPublishPage() {
       return !!(this._baselineFields && this._baselineEditors);
     },
 
+    // The form takes no input until the baseline exists, so nothing typed
+    // while the editors load can be taken for the loaded form or be replaced
+    // by the restore that follows, and none while the choice card stands.
+    get formLocked() {
+      return !!this.draftChoice || !this._hasBaseline;
+    },
+
     // Whether both editors still hold the text they normalised the loaded
     // form to.
     get editorsAtBaseline() {
@@ -522,6 +529,7 @@ export function initPublishPage() {
       this.$watch('authorOrcid', () => this._scheduleDraftSave());
 
       this.$watch('$store.auth.username', (next) => this._onAccountChange(next));
+      this.$watch('$store.auth.accreditation', () => this._onAccreditationChange());
       this.$watch('step', () => this._remountWhenSettled());
     },
 
@@ -581,14 +589,32 @@ export function initPublishPage() {
     // holds is drafted under the new key.
     _adoptAccount(account) {
       this._captureAccount(account);
-      for (const field of this._applyAccreditationPrefill()) {
-        this._baselineFields[field] = JSON.stringify(this[field]);
-      }
+      this._prefillEmptyAuthorFields();
       // Editors still mounting: _onEditorsMounted restores under the key
       // captured here.
       if (!this._baselineEditors) return;
       this._restoreDraft();
+      this._mergeCitationCollection();
       this._writeDraft();
+    },
+
+    // The accreditation prefill as it applies to a form that is already
+    // loaded: the author fields the user left empty take it, and the baseline
+    // moves with them, since a prefill is not the user's work.
+    _prefillEmptyAuthorFields() {
+      for (const field of this._applyAccreditationPrefill()) {
+        this._baselineFields[field] = JSON.stringify(this[field]);
+      }
+    },
+
+    // The accreditation can arrive after the username: an email sign-in
+    // passes none, and the store's polling fills it in later. The prefill the
+    // sign-in could not apply is applied then, for the account this instance
+    // drafts for, and not under a standing choice card, which holds the form
+    // as it is.
+    _onAccreditationChange() {
+      if (!this._draftAccount || this._draftAccount !== this.username || this.draftChoice) return;
+      this._prefillEmptyAuthorFields();
     },
 
     _plainFields() {
@@ -642,7 +668,13 @@ export function initPublishPage() {
       this._syncEditorsEditable();
     },
 
+    // The draft replaces the form. An author field the draft holds empty
+    // takes the accreditation prefill, as a load does, never what the form
+    // held before. The form as restored is stored at once under the draft's
+    // own time: what the restore itself fills in (the prefill, an accredited
+    // co-author's ORCID) is not new work, and must not make old text look new.
     _applyDraft(draft) {
+      const acc = this.accreditation;
       this.title = draft.title;
       this.abstract = draft.abstract || '';
       this.body = draft.body || '';
@@ -650,14 +682,15 @@ export function initPublishPage() {
       this.keywordsText = draft.keywordsText || '';
       this.coAuthors = draft.coAuthors || [];
       this.citations = draft.citations || [];
-      if (draft.authorName) this.authorName = draft.authorName;
-      if (draft.authorAffiliation) this.authorAffiliation = draft.authorAffiliation;
-      if (draft.authorOrcid) this.authorOrcid = draft.authorOrcid;
+      this.authorName = draft.authorName || acc?.name || '';
+      this.authorAffiliation = draft.authorAffiliation || acc?.institution || '';
+      this.authorOrcid = draft.authorOrcid || '';
       applyAccreditedPrefill(this.coAuthors, this.accreditedDirectory);
       if (this._abstractEditor) this._abstractEditor.setContent(this.abstract);
       if (this._bodyEditor) this._bodyEditor.setContent(this.body);
       this.draftSavedAt = draft.savedAt ?? null;
       this.draftRestored = true;
+      this._writeDraft(draft.savedAt);
     },
 
     // The choice card's Restore: the stored draft replaces what the form held.
@@ -802,13 +835,15 @@ export function initPublishPage() {
     //   overwrite the stored draft before the user has seen it.
     //
     // A form back at its baseline drops the stored text instead of storing it.
-    _writeDraft() {
+    // `now` is the time a text change is stored under: the present, except
+    // for the write that stores a restore.
+    _writeDraft(now = Date.now()) {
       if (this._landed) return;
       if (!this._draftKey || !this._hasBaseline || this.draftChoice) return;
       const fields = this._draftFields();
       const entry = composeDraftEntry(readDraftEntry(this._draftKey), fields, {
         atBaseline: this._formAtBaseline(fields),
-        now: Date.now(),
+        now,
       });
       if (!entry) {
         localStorage.removeItem(this._draftKey);
@@ -928,11 +963,13 @@ export function initPublishPage() {
     },
 
     // Merging takes the collection out of storage, so the citations it adds
-    // live only in the form from then on. Held back until the baseline exists
-    // and no choice card stands: the merged citations then count as user work
-    // and are drafted, and neither a restore nor the choice can replace them.
+    // live only in the form from then on. Held back until the instance has an
+    // account and a baseline, and while no choice card stands: the merged
+    // citations then count as user work and are drafted, neither a restore nor
+    // the choice can replace them, and a signed-out visitor, whose form is not
+    // drafted, leaves the collection where it is.
     _mergeCitationCollection() {
-      if (!this._hasBaseline || this.draftChoice) return;
+      if (!this._draftKey || !this._hasBaseline || this.draftChoice) return;
       const key = 'pevo-citation-collection';
       const raw = localStorage.getItem(key);
       if (!raw) return;
@@ -956,7 +993,9 @@ export function initPublishPage() {
     },
 
     dragCitationDrop(index) {
-      if (this.dragIndex === null || this.dragIndex === index) { this.dragIndex = null; return; }
+      // A dragged row is not a form control, so the locked fieldset does not
+      // stop it.
+      if (this.formLocked || this.dragIndex === null || this.dragIndex === index) { this.dragIndex = null; return; }
       const item = this.citations.splice(this.dragIndex, 1)[0];
       this.citations.splice(index, 0, item);
       this.dragIndex = null;

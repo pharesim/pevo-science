@@ -150,7 +150,7 @@ const template = `
             </template>
 
             <form @submit.prevent="handleSubmit()">
-              <fieldset class="space-y-6 min-w-0" :disabled="!!draftChoice">
+              <fieldset class="space-y-6 min-w-0" :disabled="formLocked">
               <!-- Title -->
               <div class="card">
                 <label for="edit-title" class="block text-sm font-semibold text-ink mb-2" x-text="$t('publish.paperTitle')"></label>
@@ -603,6 +603,13 @@ export function initEditPage() {
       return !!(this._baselineFields && this._baselineEditors);
     },
 
+    // The form takes no input until the baseline exists, so nothing typed
+    // while the editors load can be taken for the loaded form or be replaced
+    // by the restore that follows, and none while the choice card stands.
+    get formLocked() {
+      return !!this.draftChoice || !this._hasBaseline;
+    },
+
     // Whether both editors still hold the text they normalised the served
     // body to.
     get editorsAtBaseline() {
@@ -820,6 +827,12 @@ export function initEditPage() {
         this.authorName = primary.name || '';
         this.authorAffiliation = primary.affiliation || '';
         this.authorOrcid = primary.orcid || '';
+      } else {
+        // Empty, as a fresh load leaves them, so a prefill run again over a
+        // restored draft (its Discard) does not keep the draft's entry.
+        this.authorName = '';
+        this.authorAffiliation = '';
+        this.authorOrcid = '';
       }
       const rest = selfIdx !== -1
         ? authors.filter((_, i) => i !== selfIdx)
@@ -912,14 +925,23 @@ export function initEditPage() {
       this._syncEditorsEditable();
     },
 
+    // The draft replaces the form. An author field the draft holds as an
+    // empty string is the user's own value (the draft belongs to this account
+    // and was written over this paper's entry for it), so it replaces the
+    // loaded one too. The form as restored is stored at once under the
+    // draft's own time and the loaded head marker: what the restore itself
+    // does to the text (ticks put in checklist order, an accredited
+    // co-author's ORCID filled in) is not new work, and on the choice card's
+    // Restore this write is what binds the draft to the version the form was
+    // loaded from.
     _applyDraft(draft) {
       this.title = draft.title;
       this.abstract = draft.abstract || '';
       this.body = draft.body || '';
       this.keywordsText = draft.keywordsText || '';
-      if (draft.authorName) this.authorName = draft.authorName;
-      if (draft.authorAffiliation) this.authorAffiliation = draft.authorAffiliation;
-      if (draft.authorOrcid) this.authorOrcid = draft.authorOrcid;
+      if (typeof draft.authorName === 'string') this.authorName = draft.authorName;
+      if (typeof draft.authorAffiliation === 'string') this.authorAffiliation = draft.authorAffiliation;
+      if (typeof draft.authorOrcid === 'string') this.authorOrcid = draft.authorOrcid;
       this.newCoAuthors = draft.newCoAuthors || [];
       if (Array.isArray(draft.citations)) this.citations = draft.citations;
       this.addressedReviews = this._reconcileAddressedReviews(draft.addressedReviews);
@@ -928,17 +950,17 @@ export function initEditPage() {
       if (this._bodyEditor) this._bodyEditor.setContent(this.body);
       this.draftSavedAt = draft.savedAt ?? null;
       this.draftRestored = true;
+      this._writeDraft(draft.savedAt);
     },
 
     // The choice card's Restore: the draft replaces the version the form was
-    // loaded from, and the write that follows binds it to that version's
-    // marker, so the next load restores it silently.
+    // loaded from, and is bound to that version's marker, so the next load
+    // restores it silently.
     restorePendingDraft() {
       if (this._landed || !this._pendingDraft) return;
       const draft = this._pendingDraft;
       this._clearDraftChoice();
       this._applyDraft(draft);
-      this._writeDraft();
       this._mergeCitationCollection();
     },
 
@@ -1022,26 +1044,26 @@ export function initEditPage() {
       this._destroyEditors();
       const abstractEl = this.$refs.abstractEditor;
       const bodyEl = this.$refs.bodyEditor;
+      // The form left the DOM while the import was in flight (a sign-out
+      // hides it), taking the elements with it. No pair is built, and the
+      // baseline and the restore wait for a render that mounts one: taken
+      // now, the baseline would hold text the editors have not normalised.
+      if (!abstractEl || !bodyEl) return;
 
-      if (abstractEl) {
-        this._abstractEditor = createEditor(abstractEl, {
-          variant: 'abstract',
-          maxLength: ABSTRACT_MAX_CHARS,
-          placeholder: this.$t('publish.abstractPlaceholder'),
-          onChange: (md) => { this.abstract = md; },
-          initialMarkdown: this.abstract,
-        });
-      }
-
-      if (bodyEl) {
-        this._bodyEditor = createEditor(bodyEl, {
-          variant: 'full',
-          placeholder: this.$t('editor.placeholderBody'),
-          onChange: (md) => { this.body = md; },
-          username: this.username,
-          initialMarkdown: this.body,
-        });
-      }
+      this._abstractEditor = createEditor(abstractEl, {
+        variant: 'abstract',
+        maxLength: ABSTRACT_MAX_CHARS,
+        placeholder: this.$t('publish.abstractPlaceholder'),
+        onChange: (md) => { this.abstract = md; },
+        initialMarkdown: this.abstract,
+      });
+      this._bodyEditor = createEditor(bodyEl, {
+        variant: 'full',
+        placeholder: this.$t('editor.placeholderBody'),
+        onChange: (md) => { this.body = md; },
+        username: this.username,
+        initialMarkdown: this.body,
+      });
       this._onEditorsMounted();
     },
 
@@ -1055,8 +1077,8 @@ export function initEditPage() {
     // the baseline and whatever was restored, and only re-applies the lock a
     // standing choice card holds.
     _onEditorsMounted() {
-      if (this._abstractEditor) this._abstractEditor.normalize();
-      if (this._bodyEditor) this._bodyEditor.normalize();
+      this._abstractEditor.normalize();
+      this._bodyEditor.normalize();
       this._syncEditorsEditable();
       if (this._baselineEditors) return;
       this._baselineEditors = snapshotFields(this._editorFields());
@@ -1169,13 +1191,15 @@ export function initEditPage() {
     //   overwrite the stored draft before the user has seen it.
     //
     // A form back at its baseline drops the stored text instead of storing it.
-    _writeDraft() {
+    // `now` is the time a text change is stored under: the present, except
+    // for the write that stores a restore.
+    _writeDraft(now = Date.now()) {
       if (this._landed) return;
       if (!this._draftKey || !this._hasBaseline || this.draftChoice) return;
       const fields = this._draftFields();
       const entry = composeDraftEntry(readDraftEntry(this._draftKey), fields, {
         atBaseline: this._formAtBaseline(fields),
-        now: Date.now(),
+        now,
         headMarker: this._loadedHeadMarker,
       });
       if (!entry) {
@@ -1391,7 +1415,9 @@ export function initEditPage() {
     },
 
     dragCitationDrop(index) {
-      if (this.dragIndex === null || this.dragIndex === index) { this.dragIndex = null; return; }
+      // A dragged row is not a form control, so the locked fieldset does not
+      // stop it.
+      if (this.formLocked || this.dragIndex === null || this.dragIndex === index) { this.dragIndex = null; return; }
       const item = this.citations.splice(this.dragIndex, 1)[0];
       this.citations.splice(index, 0, item);
       this.dragIndex = null;

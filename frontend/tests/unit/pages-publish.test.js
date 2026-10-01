@@ -256,6 +256,7 @@ describe('publishPage', () => {
   describe('dragCitationDrop', () => {
     it('reorders citations by drag', () => {
       const comp = createComponent();
+      markLoaded(comp);
       comp.citations = [
         { author: 'a', permlink: 'p1' },
         { author: 'b', permlink: 'p2' },
@@ -264,6 +265,23 @@ describe('publishPage', () => {
       comp.dragIndex = 0;
       comp.dragCitationDrop(2);
       expect(comp.citations.map(c => c.author)).toEqual(['b', 'c', 'a']);
+      expect(comp.dragIndex).toBe(null);
+    });
+
+    // A dragged row is not a form control, so the fieldset's lock does not
+    // reach it: the handler refuses while the form is locked.
+    it('refuses while the form is locked: before the baseline, and while the choice card stands', () => {
+      const comp = createComponent();
+      comp.citations = [{ author: 'a' }, { author: 'b' }];
+      comp.dragIndex = 0;
+      comp.dragCitationDrop(1);
+      expect(comp.citations.map(c => c.author)).toEqual(['a', 'b']);
+
+      markLoaded(comp);
+      comp.draftChoice = 'saved';
+      comp.dragIndex = 0;
+      comp.dragCitationDrop(1);
+      expect(comp.citations.map(c => c.author)).toEqual(['a', 'b']);
       expect(comp.dragIndex).toBe(null);
     });
 
@@ -1735,6 +1753,18 @@ describe('publishPage', () => {
       comp._flushDraftSave();
       expect(JSON.parse(localStorage.getItem('pevo-draft-publish:alice'))).toMatchObject({ title: 'Still drafting' });
     });
+  });
+
+  // Anything typed while the editors load would otherwise be taken for the
+  // loaded form, or be replaced by the restore that follows.
+  it('the form is locked until the baseline exists and while a choice stands', () => {
+    expect(publishPageTemplate).toContain('<fieldset class="space-y-6 min-w-0" :disabled="formLocked">');
+    const comp = createComponent();
+    expect(comp.formLocked).toBe(true);
+    markLoaded(comp);
+    expect(comp.formLocked).toBe(false);
+    comp.draftChoice = 'saved';
+    expect(comp.formLocked).toBe(true);
   });
 
   describe('_mergeCitationCollection', () => {

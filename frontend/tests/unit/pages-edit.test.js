@@ -914,6 +914,37 @@ describe('editPage handleSubmit sanitization', () => {
       expect(comp._bodyEditor).toBe(mockCreateEditor.mock.results[3].value);
     });
 
+    // A sign-out while the editor import is in flight hides the form and
+    // takes its elements. Nothing is built then, and nothing is taken as the
+    // baseline either: the served text has not been through the editors, and
+    // a baseline of it would read the next render's normalising as typing.
+    it('a mount that finds the elements gone builds nothing and takes no baseline', async () => {
+      const comp = createComponent();
+      comp.$refs = {};
+
+      await comp._mountEditors();
+
+      expect(mockCreateEditor).not.toHaveBeenCalled();
+      expect(comp._baselineEditors).toBe(null);
+    });
+
+    // The form takes no input until the baseline exists (anything typed
+    // while the editors load would otherwise be taken for the loaded form, or
+    // be replaced by the restore that follows), nor while a choice stands.
+    it('the form is locked until the baseline exists and while a choice stands', async () => {
+      expect(editPageTemplate).toContain('<fieldset class="space-y-6 min-w-0" :disabled="formLocked">');
+      const comp = createComponent();
+      comp.paper = { author: 'alice', permlink: 'p1', canonical_author: 'alice', canonical_permlink: 'p1', authors: [{ hive: 'alice' }] };
+      expect(comp.formLocked).toBe(true);
+      comp._baselineFields = snapshotFields(comp._plainFields());
+      expect(comp.formLocked).toBe(true);
+      comp.$refs = { abstractEditor: {}, bodyEditor: {} };
+      await comp._mountEditors();
+      expect(comp.formLocked).toBe(false);
+      comp.draftChoice = 'newer';
+      expect(comp.formLocked).toBe(true);
+    });
+
     // Template side of the ref pairing. The `builds one editor per ref
     // present when the mount runs` case pins the code side (_mountEditors
     // reads exactly the abstractEditor / bodyEditor $refs keys), so
@@ -2663,6 +2694,9 @@ describe('editPage draft carries the addressed-review ticks', () => {
   function loadedComponent() {
     const comp = createComponent();
     comp._mounted = true;
+    // The rendered form's editor elements: the mount builds the pair on them
+    // and only then takes the editor half of the baseline.
+    comp.$refs = { abstractEditor: {}, bodyEditor: {} };
     return comp;
   }
 
