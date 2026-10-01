@@ -1,250 +1,250 @@
-## Composer follow-ups: a native edit against a stale diff base, and what a draft is bound to (archived 2026-10-01) — decided: fix both; retries made safe, drafts bound to account and head; no implementer rounds
+## Two fresh-auth docblock counts disagree with the file they sit in (archived 2026-10-01) — four review rounds, three holds; archived clean at 8594733d; out-of-scope reports routed to two new ui tasks, the expired-JWT mint answer left open
 
-### Architect decision (2026-10-01)
+### Architect archive note (2026-10-01, third re-review)
 
-Both questions decided as **fix**, approved by the user as recommended, with two open choices
-answered: light-account RC is handled by a delegation at creation plus a pre-flight check, and
-drafts stay in `localStorage`, keyed by account. Recorded in `ARCHITECTURE.md` § 8 (rewritten),
-§ 2 "Body, edits and versions" (new) and § 1 "Light-Account Resource Credits" (new). Evidence came
-from a nine-question traced sweep with a skeptic per question, then a six-lens adversarial review
-of the draft and a completeness critic. § 8 and the tasks then went through `/ce-doc-review`
-(coherence, feasibility, design-lens, security-lens, scope-guardian, adversarial): 1 fix applied,
-4 proposed fixes and 10 decisions approved as recommended, 17 FYI observations (eight folded in
-as wording or scope). The review's main changes: a confirmed existing post under a kept permlink
-counts as a landing; a sign-in under a signed-out publish form adopts it instead of remounting;
-an unreadable head is "could not confirm", never "newer version"; the newer-version card makes
-the form read-only until a choice; legacy drafts are deleted, not adopted; a repeat is compared
-on the replayed body; a lasting degraded walk keeps a head marker; the retry ui task is split so
-the landing wait and the served diff base wait on the backend only.
+Reviewed 8594733d against its parent with /ce-code-review (correctness, adversarial
+in-process, project-standards, learnings): zero findings. Verified by the architect: the
+comment-stripped file is byte-identical across the commit; the pre-commit anchor gate has
+no hit on the added lines (control line fires); the full unit suite at 8594733d runs 88
+files / 2016 tests, exit 0, and the build is clean, both in an isolated copy.
 
-What the evidence changed:
+Both items of the second-pass hold are met. Deviations (a) to (d) from the hold's
+suggested wording are accepted, each on a reason that holds in the code: the
+accreditation-metadata edit and the seven admin routes run `validate` (proof declared
+`z.string().min(1).max(512)`) before the consume, while change_email, delete_account,
+set_password and the custody broadcast coerce a non-string to `missing` and answer
+FRESH_AUTH_REQUIRED; `verifyHiveSignature` runs before `validate` on both families; the
+only memo clear in `mintViaPasswordFactor` is the retry leg's UNAUTHORIZED test.
 
-- The dominant stale-base route was not a retry. `hafsql.comments.body` never takes an edit
-  (HafSQL swaps its arguments in `updateEditedComment`), and the detail route reads it for every
-  single-post paper, so every edit after the first patched against the creation body and the
-  paper page never showed an edit. The user reports the defect upstream.
-- The composer's own landing re-cached the pre-edit paper for 30 minutes in most custody edits:
-  the broadcast resolves on node acceptance, before the block, and the navigate's first read
-  came before HAF had the op.
-- Metadata-, files- and ticks-only native edits sent `body: ""`, which Hive rejects.
-- Every edit-page load wrote a draft with nothing typed, the edit page restored it silently over
-  a newer head, and a mounted composer broadcast one account's author entry under another.
-- A new-permlink publish retry within 300 s is refused by consensus; a same-permlink resend is an
-  edit, and an identical `comment_options` is accepted until payout.
+Residual risks recorded, not held: the module header's consent-op burn sentence has two
+backend exits before the burn (a stored entry failing shape validation, a lost consume
+race or Redis read failure), which "whatever that consume then decides" scopes out; on
+the admin routes `requireAdminLevel` answers 403 before `validate` for a lapsed tier,
+which leaves the conclusion unchanged.
 
-Per question:
+Implementer's out-of-population reports, checked against the code and triaged (user
+approved as recommended):
+- Comment items 1 to 7, plus the "every teardown boundary resolves FRESH_AUTH_CANCELLED"
+  sentence the second-pass hold left open: filed as
+  `ui-fresh-auth-and-upload-comments-that-overclaim`. Dismissed inside it: "A repeat
+  detection does not disconnect again" (accurate) and "Taking those would strand it"
+  (holds for the authenticated-mode flows it describes).
+- (a) same-subject window race: dismissed, worst case one extra password prompt.
+- (b) an expired JWT answers the mint with 401 UNAUTHORIZED, read as a wrong password,
+  so the user is told re-authentication failed and never to sign in again: OPEN
+  architect decision, not filed. Options: a distinct backend code for an expired JWT
+  (recommended) handled in api.js like SESSION_INVALIDATED, or a client-side
+  `expiresAt` check before authenticated requests.
+- (c) an upload's username_mismatch after a cross-tab sign-in signs the new account
+  out: filed as `ui-upload-mismatch-teardown-after-subject-change`.
+- (d) a failed consent-op cache write loses the ORCID proof: dismissed, reachable only
+  on quota exhaustion between start and callback; the misleading comment is item 3 of
+  the new comment task.
 
-1. **Stale diff base: fix.** Backend: the detail serves the replayed body (as hivemind does), a
-   failed or aborted walk is never stable-cached, a new uncached head endpoint (existence, index
-   state, head marker) evicts a stale detail, and an exact repeat op no longer outdates reviews.
-   ui: a no-op patch for an unchanged body; a head check before the first gate and before the
-   broadcast; the landing waits for the index; the diff base is the served body, recomposed
-   losslessly; full body for non-BMP text or an uncomputable patch; retries made safe (a kept
-   permlink checked for existence before reuse, a native-edit attempt marker that sends the full
-   body inside the earlier attempt's landing window). Dismissed: classifying rejections
-   (`BROADCAST_TIMEOUT`), the SPA `idempotency_key`, a reconstruction that refuses fuzzy patches,
-   always sending the full body (footprint and RC).
-2. **Draft binding: fix.** A draft holds user work only (baseline after editor normalisation),
-   is keyed by account and canonical paper captured at load, is restored silently only over the
-   head it was written against (otherwise a read-only newer-version card with Restore and
-   Discard), and the composer remounts when a different account signs in or the edit route names
-   another paper. Pre-binding drafts are deleted, not adopted.
+No /ce-compound: the learnings this task exercised are already in the store.
 
-Filed: `backend-paper-body-from-replay-and-head-endpoint`, `ui-native-edit-empty-diff-and-own-continues`
-(also fixes a non-head native edit copying the head's `continues` onto the root),
-`ui-composer-drafts-bound-to-account-and-head`, `backend-light-account-rc-delegation-and-preflight`
-(pending); `ui-composer-landing-wait-and-served-diff-base`, `ui-composer-retry-safety`,
-`ui-custody-insufficient-rc-message`, `backend-display-reads-frozen-hafsql-body` (blocked). Not filed, recorded as a § 8 limit: the
-review page and comment composer mint a permlink per submit. Dismissed: `/invalidate` has no
-ownership check. Deferred to the custody allowlist archive: `api-contracts/custody.md` corrections
-(noted on that task).
-
-
-**Owner:** architect
-**Created:** 2026-09-30
-
-## Why
-
-The draft lifecycle decision (`agents/docs/ARCHITECTURE.md` § 8, implemented by
-`ui-composer-landing-is-terminal`) settles what happens once a broadcast is known to have
-landed. Working it out, and reviewing it with `/ce-doc-review`, surfaced two questions it
-does not settle. Neither is triaged. The evidence is written down here because the task it
-came out of is archived and the archive trims.
-
-Question 1 should be decided first. Until it is, a native edit can corrupt a paper body by
-three routes the § 8 barrier does not reach.
-
-## 1. A native edit sent against a stale diff base corrupts the body
-
-The mechanism, measured on 2026-09-30. A same-author native edit sends
-`computeDiff(_originalBody, newPostBody)`, a `diff-match-patch` patch against the body the
-edit page loaded. `applyHivePatch` in `backend/src/lib/chain-walkers.ts` applies it to the
-post's current body and takes `patch_apply`'s text without reading its per-hunk success
-flags. When the current body is no longer `_originalBody`, the patch is applied fuzzily.
-With the installed `diff-match-patch`, the same patch applied twice to a four-paragraph
-body:
-
-| Edit | Second application |
-|---|---|
-| insert a sentence mid-body | the sentence is inserted twice |
-| append a paragraph | the paragraph is appended twice |
-| delete a sentence opening | a second, similar passage is deleted as well |
-| replace a word | a second, similar word is replaced as well |
-
-In that fixture every hunk reported success. A reviewer's fixture saw one hunk report
-failure with the text changed anyway. Either way the flags are discarded, and the corrupt
-body becomes a version in the paper's history.
-
-§ 8 closes one route to this: a second submit from an instance that knows it landed. Three
-routes stay open.
-
-- **A retry after a broadcast that rejected but landed.** § 8, Limits: the client learns
-  of a landing only when the call resolves, so a rejection keeps the draft and leaves the
-  instance submittable, with the pre-edit body still its diff base. On the custody path a
-  rejection with a landed transaction is a lost response or `504 BROADCAST_TIMEOUT`
-  (`details.outcome: 'uncertain'`, `verify_before_retry: true` per
-  `api-contracts/custody.md`). Neither composer page branches on that code; both show the
-  generic failure string and leave the form live. On the Keychain path it is a node error
-  reported after the transaction was accepted.
-- **A fresh edit page loaded from a stale cache.** The paper-detail entry is a 30 minute
-  stable cache entry, and the `/invalidate` request the composer sends after landing is
-  what evicts it. If that request fails (the route is authenticated and rate limited), the
-  paper page serves the pre-edit body under a success message, the user sees the edit
-  missing, opens the edit page again, and the new instance loads the pre-edit body as
-  `_originalBody`. Not traced: whether a detail read that lands after a successful
-  invalidation but before HAF has indexed the edit re-caches the pre-edit body for the
-  same 30 minutes. Nothing in the read path was seen to guard against it.
-- **Another instance that loaded before the landing.** A second tab on the same paper, or
-  a visit opened in the same tab while the first instance's broadcast was still pending.
-
-The continuation arm and the publish page have the sibling problem without the patch: both
-mint the permlink inside `handleSubmit` from `slugify(title)` plus `Date.now()`, so a
-retry after a rejected-but-landed broadcast is a second post. On the publish page that is
-a duplicate paper. On the continuation arm it is a second post continuing the same head.
-How the chain walk treats two continuations of one head was not traced here.
-
-What already exists: `POST /api/custody/broadcast` accepts an optional `idempotency_key`
-and short-circuits a retry whose key is already on chain (`backend/src/lib/idempotency.ts`).
-The SPA does not send it. The lookup reads HAF, so it cannot see a transaction HAF has not
-indexed yet, and the Keychain path does not pass through the backend at all. The class is
-documented for the backend in
-`agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md`.
-
-Shapes to weigh, not yet compared:
-
-- **Make the write idempotent on chain, client side, both custody paths.** A native edit
-  whose base the instance cannot vouch for sends the full body instead of a patch (a full
-  body replaces, so applying it twice gives the same body). That covers a retry. It does
-  not by itself cover a fresh instance on a stale cache, which does not know its base is
-  stale. A publish or continuation instance mints its permlink once, so a retry addresses
-  the same post. Open points: a second `comment_options` on an existing post, and the
-  extra version entry a repeated op adds to the history.
-- **Check the base before a native edit.** Read the target post's current body from a Hive
-  API node (the real-time source per ARCHITECTURE "Data Source Policy") and send a patch
-  only when it equals the diff base. Covers all three routes. Costs one read per edit.
-- **Make the reconstruction refuse a patch that does not apply cleanly.** `applyHivePatch`
-  could read the success flags. It would not catch the fixtures above where every hunk
-  reports success, and what a refused version should render as is its own question.
-- **Send `idempotency_key` from the SPA.** Covers the custody path once HAF has indexed
-  the first attempt. Does not cover a quick retry or the Keychain path.
-- **Branch on `BROADCAST_TIMEOUT` in the composers.** Tell the user the outcome is unknown
-  and to check the paper before retrying, as `orcid-callback.js` and `signup-verify.js`
-  already do for their own broadcasts.
-
-## 2. A draft is bound to a storage key and to nothing else
-
-§ 8, Limits. Three consequences, none of them new, all seen while reading the two pages:
-
-- **Not bound to the chain head it was written against.** `_restoreDraft` on the edit
-  page applies any stored draft over whatever the paper is now. A draft written before a
-  co-author's continuation restores the older text over the newer head, and submitting it
-  publishes a version without the co-author's changes, with neither author told. The same
-  holds for the draft acceptance criterion 4 of the ui task deliberately preserves: it was
-  written over a pre-edit load.
-- **The edit page restores silently.** The publish page shows a "draft restored" card with
-  the save time and a discard button. The edit page has no card and no discard, so the
-  user cannot tell a restored form from a freshly loaded one and cannot drop a stale
-  draft except by submitting it.
-- **Not bound to the signed-in account.** Drafts live in `localStorage` and are not in
-  `SUBJECT_BOUND_STORAGE_KEYS`, so they survive `auth.disconnect()` and a subject change.
-  The publish draft carries `authorName`, `authorAffiliation` and `authorOrcid`, and
-  restores them into the next account's form in the same browser.
-
-A head binding cannot replace § 8's barrier: right after a landing, a fresh load can still
-be served the pre-edit head, so a spent draft would pass the check. It is a separate guard
-against a draft that has outlived its head, and it needs user-facing copy for the refusal,
-in every locale.
-
-## Output
-
-For each of the two questions: a decision (fix, accept as a limit and say so in § 8, or
-dismiss), and a ui or backend task if it changes code. They are independent and can be
-decided separately. When question 1 is decided, revisit § 8's Limits: the entries on the
-unknown landing, the per-instance barrier and the detail cache all describe routes it
-closes or leaves open.
-
-## Correct the Playwright retry-model comments in six e2e specs, and the trace scan's spec list (archived 2026-10-01), two rounds, archived clean
-
-### Architect archive note (2026-10-01)
-
-Re-reviewed `795f6df0` with `/ce-code-review` (correctness, project-standards, in-process
-adversarial): no findings. All 5 held items are FIXED (items 1-3 held 2026-09-30, items 4-5
-added 2026-10-01). The diff is comment-only: the token streams match and the non-comment
-changed-line filter is empty. The anchor gate has no hit on the added lines, and its control
-line fires. Each Playwright claim was checked against installed 1.59.1 and by throwaway
-probes. The signal's reason for leaving out the item-5 qualifier is accepted.
-
-Triage at archive (user-approved as recommended):
-- The false "the test.fixme below" pointer, and the pointers that locate a test by position
-  or count in `settings-orcid-factor.spec.js`, are filed as
-  `ui-settings-orcid-factor-test-pointers`.
-- The missing trace opt-out in `authorship-consent-actions.spec.js` and
-  `authorship-pending-discovery.spec.js` is filed as `ui-authorship-specs-trace-opt-out`.
-  `unzip` is absent on the dev host, so the trace scan never runs there.
-- Dismissed as loose but true: the `login-email` docblock's "the seeded row starts fresh
-  each time", and the hook comments' UNIQUE(email) framing (both seeds upsert
-  ON CONFLICT (email)).
-- Extending the trace scan to the other typed password literals stays out of scope, as
-  before.
 
 **Owner:** ui
-**Created:** 2026-09-30
+**Created:** 2026-09-22
 
-Routed out of the architect round-3 review of `ui-light-account-fresh-auth-e2e-coverage`
-(archived 2026-09-30). That task corrected one false comment about how Playwright
-retries run, in the two fresh-auth specs it owned. The same false model is still written
-in six sibling specs, so the e2e directory now states two incompatible retry models. One
-adjacent false sentence in the trace scan's docblock rides along. Comment-only work: no
-assertion, fixture, or harness behavior changes.
+Routed out of the round-5 archive of the fresh-auth dispatch task. Neither
+site was touched by that task's diff, so neither held it; both are the class
+`agents/docs/solutions/conventions/sibling-docblock-tallies-must-each-state-precisely-what-they-count-2026-09-09.md`
+documents, and that entry names the second one as its own still-open repair.
 
 ## Why
 
-**The retry model.** Installed Playwright (1.59.1, `frontend/node_modules/playwright`)
-stops the worker process whenever a test in it fails, and runs the retry in a newly
-started worker. Verified at review in `lib/runner/dispatcher.js`: the job-finished path
-stops the worker when the result reports a failure, and the requeued job gets a worker
-from `_createWorker`. `frontend/playwright.config.js` sets `workers: 1, retries: 1`. So on
-a retry:
+Two count claims in `frontend/src/lib/fresh-auth.js` are false or misleading
+read alone, and each has a neighbour in the same file that states the true
+count, so a reader landing on either gets a different answer depending on
+which paragraph they read first.
 
-- the spec module is loaded again, which means module scope IS evaluated again;
-- `beforeAll` runs again in the new worker;
-- nothing runs "in the same worker" as the failed attempt.
+1. **"the sibling clears in `broadcastWithFreshAuth`" (plural), twice.** One
+   site is the docblock above `clearCachedSessionProof`'s tokenless/TTL
+   companions ("the successor-pays-a-re-auth harm that gates the sibling
+   clears in `broadcastWithFreshAuth`"); the other is
+   `evictUnnamedAcquisition`'s docblock ("Ungated, unlike the sibling clears
+   in `broadcastWithFreshAuth`. Those hold a real round-trip..."). That
+   function holds exactly one `clearCachedSessionProof()`, the remintable-401
+   eviction behind `if (!guard.tornDown())`, and `ensureSessionWindow`'s guard
+   docblock in the same file already says so: "the module's one GATED clear,
+   the 401 eviction in `broadcastWithFreshAuth`". Three sentences, two counts.
 
-The seven comment sites below say otherwise, in two shapes.
+2. **"three independently owned sites consume the result" at
+   `WINDOW_OUTCOME_BY_SENTINEL`.** The sentence names `freshAuthWindowReady`,
+   `acquisitionAborted` and `windowProof` as consumers of what
+   `acquireSessionProof` resolves. Only `acquisitionAborted` reads the raw
+   result; the other two read the outcome object `ensureSessionWindow` derives
+   from it. `evictUnnamedAcquisition`'s docblock currently reconciles this from
+   a distance ("The THREE-site tally at `WINDOW_OUTCOME_BY_SENTINEL` is a
+   different and equally correct count: it tallies who acts on an outcome...
+   not who reads the raw result"), which the sibling-tallies learning ruled is
+   an explanation of the discrepancy rather than its removal.
 
-Shape 1, "retries re-run X but do NOT re-evaluate module scope" (false: module scope is
-re-evaluated):
+## Scope
 
-- `login-email.spec.js`, the comment above `TEST_PASSWORD` ("Identity strings derived
-  from RUN_SUFFIX are computed in beforeAll ...").
-- `password-recovery.spec.js`, the comment above `RUN_SUFFIX` inside the
-  "user requests password reset ..." test body.
-- `settings.spec.js`, the comment above `NEW_LOCALE` ("Stable constants stay at module
-  scope ...").
-- `settings-orcid-factor.spec.js`, the comment above `let RUN_SUFFIX` ("Populated in
-  beforeAll from (Date.now, testInfo.retry) ...").
+Comment-only. No executable line changes, no test changes, suite count
+byte-identical before and after.
 
-Shape 2, "retries in the same worker re-evaluate it" (false: a retry is never in the same
-worker):
+1. Replace both "sibling clears" sentences with wording that names the one
+   gated clear (the remintable-401 eviction in `broadcastWithFreshAuth`) and
+   states, in each sentence's own words, why the clear it is describing does
+   not share that gate's reason. Prefer naming the member over restating a
+   number, per the learning's "A, B and C do X cannot drift the way three
+   sites do X can".
+2. Edit the `WINDOW_OUTCOME_BY_SENTINEL` sentence directly so it is correct
+   read alone: `acquireSessionProof` resolves to a proof string or a sentinel;
+   `acquisitionAborted` reads that raw result; `freshAuthWindowReady` and
+   `windowProof` act on the outcome object `ensureSessionWindow` derives from
+   it. Then shrink or drop the reconciling clause in `evictUnnamedAcquisition`'s
+   docblock, since a precise target sentence leaves nothing to reconcile.
+3. Before landing, sweep the file for any OTHER sentence that counts the same
+   populations (clears in this module; consumers of the acquisition result or
+   the outcome object) and check each one semantically, not by phrase: the
+   learning records that a phrase-matched sweep missed the sentence in item 2
+   the first time.
 
-- `email-signup.spec.js`, the comment above `RUN_SUFFIX` inside the "fresh visitor signs
+## Acceptance criteria
+
+1. Every sentence in `fresh-auth.js` that counts clears, or counts consumers
+   of the acquisition result, agrees with the code and with every other such
+   sentence in the file, read in isolation.
+2. No reconciling clause remains that explains a discrepancy instead of
+   removing it.
+3. The replacement text carries no line numbers, SHAs, task slugs, round
+   ordinals, or bare positional anchors; `.githooks/pre-commit` passes on the
+   staged diff.
+4. Full frontend unit suite green with an unchanged count; `npm run build`
+   clean.
+
+## Notes
+
+Dismissed at the same triage, do not reopen: the spec title `the refusal
+evicts the entry that caused it` in `lib-fresh-auth-session-window.test.js`
+credits the refusal with an eviction that either clear satisfies; it is
+defensible as written because the refusal path does end with the entry gone.
+
+## UI implementation signal (2026-09-28, commit a9150a6f)
+
+All work landed in commit a9150a6f (`ui(fresh-auth): docblock count tallies
+name their members`), verified an ancestor of main before this move.
+
+- Scope item 1: both "sibling clears" sentences (at `getCachedConsentOpProof`
+  and `evictUnnamedAcquisition`) now name the module's one gated clear, the
+  401 eviction in `broadcastWithFreshAuth`, and each states in its own words
+  why the clear it describes carries no gate (adjacent synchronous
+  statements vs. a real broadcast round-trip inside the gated one).
+- Scope item 2: the `WINDOW_OUTCOME_BY_SENTINEL` header now states the split
+  directly (`acquisitionAborted` reads the raw result; `freshAuthWindowReady`
+  and `windowProof` act on the derived outcome object), and the THREE-site
+  reconciling clause in `evictUnnamedAcquisition`'s docblock is dropped.
+- Scope item 3 (semantic sweep): ran as a 6-agent adversarial workflow (two
+  population sweeps, one reconcile-hunt, three cold-read refuters) plus a
+  follow-up refuter on revised text. It surfaced two more in-population
+  sentences, both fixed in the same commit: the header's resolution-set
+  totality overclaim (unnamed values now named, matching
+  `acquireSessionProof`'s own docblock) and `showWindowOutcomeToast`'s
+  "every site that consumes an acquisition outcome" universal (callers now
+  enumerated: `freshAuthWindowReady`, `acquisitionAborted`, `promptBusy`;
+  `windowProof`'s separate upload-error-code channel stated).
+- AC 3: `.githooks/pre-commit` anchor gate passed on the staged diff
+  (standalone run and at commit time). AC 4: `npx vitest run` green, 86
+  files / 1938 tests (count unchanged across pre- and post-edit runs);
+  `npm run build` clean.
+
+Out-of-population count claims the sweep surfaced, left untouched for
+architect triage (they count populations outside this task's scope):
+
+1. `REMINTABLE_REASONS` docblock says "the three retry gates" but a fourth
+   gate consumes it: the upload surface's retry in `lib/ipfs-upload.js`.
+2. `handleSessionInconsistency` docblock says "all three fresh-auth
+   orchestrators", but the upload surface's torn-down handler in
+   `lib/ipfs-upload.js` is a fourth caller, with a thrown upload code as a
+   third sentinel shape its parenthetical omits.
+3. `acquisitionAborted` docblock says "the eight broadcast call sites"; the
+   tree has nine call expressions (both `vote-buttons.js` branches, two in
+   `vouch-section.js`, two in `edit.js`, plus publish/review/comment).
+4. `cacheSessionProof`'s "matching every other corrupt-entry case in this
+   module: drop the slot" has a defensible counterexample: the consent-op
+   reader's parse-catch swallows an unparseable entry without removing it.
+
+## Architect re-review (2026-09-30) — HELD PENDING FIXES:
+
+Reviewed commit a9150a6f against a9150a6f and against main (the added
+sentences are unchanged on main). Comment-only claim, AC 2 and AC 3 hold; the
+consumer enumerations (scope item 2 and the `showWindowOutcomeToast` callers)
+are complete. One item holds AC 1.
+
+1. **"the module's one gated clear" is a module-wide count that the module
+   does not support.** The phrase now stands three times in
+   `frontend/src/lib/fresh-auth.js`: in `getCachedConsentOpProof`'s docblock,
+   in `evictUnnamedAcquisition`'s docblock (both written by a9150a6f), and in
+   the fail-closed guard comment inside `ensureSessionWindow` (older, and the
+   sentence this task's "Why" quoted as the true count, so the prescription
+   carried the overreach; that is on the task text, not the implementation).
+   The count is true only of `clearCachedSessionProof()` calls, that is, of
+   the session-window slot. Module-wide there is a second teardown-gated
+   removal: `unwindFlowKeys` in `beginOrcidFreshAuthRedirect` returns early on
+   the stale predicate (the same `guard.tornDown` signal) before removing
+   `ORCID_MODE_KEY` and calling `clearReturnPath()`, for the same
+   protect-the-successor reason. The file does not reserve "clear" for the
+   window slot either: the `getCachedConsentOpProof` sentence says "the slot
+   it clears" of the consent-op slot in the same paragraph, so a reader there
+   has nothing that scopes the count.
+
+   Fix, comment-only: scope all three sentences to what they count, the
+   session-window slot (for example "the one gated clear of the session-window
+   slot, the 401 eviction in `broadcastWithFreshAuth`"). Keep the count scoped
+   to this module's calls in whatever wording lands: `uploadFile` in
+   `lib/ipfs-upload.js` holds its own `if (!guard.tornDown())
+   clearCachedSessionProof()`, so a slot-wide claim with no module qualifier
+   would be false against that site. Then re-run scope item 3's semantic sweep
+   for any other sentence counting gated or ungated removals.
+
+Already resolved elsewhere, no action here: the four out-of-population count
+claims listed at the end of the implementation signal were repaired on main by
+the adjacent-tallies task (archived 2026-09-30).
+
+## UI re-review signal (2026-09-30, commit 590d211a)
+
+Landed in 590d211a (`ui(fresh-auth): the gated-clear sentences name the clear
+instead of counting it`), verified an ancestor of main before this move.
+Comment-only; `npx vitest run` exit 0 at 87 files / 1980 tests before and
+after; `npm run build` clean; the pre-commit anchor gate passed at commit time.
+
+- Hold item 1: all three sentences (`getCachedConsentOpProof`'s docblock,
+  `evictUnnamedAcquisition`'s docblock, the fail-closed guard comment in
+  `ensureSessionWindow`) are scoped to the session-window slot and to
+  `broadcastWithFreshAuth`. **Deviation from the example wording, for
+  architect judgement:** they carry no count at all. The sweep's cold read
+  and its refuter both found the slot-scoped "one" contestable on the same
+  reading that sank the module-wide one: `cacheSessionProof`'s fail-closed
+  `dropWindow()` is reached in this module only past the mint callback's
+  `guard.tornDown()` early return, and the guarded `slideSessionWindow()` in
+  `attemptOnce` can drop an expired window through `readSessionWindow`. So
+  each sentence names the member ("the teardown-gated dead-window clear of
+  the session-window slot in `broadcastWithFreshAuth`") and says nothing
+  about how many there are, which also stays true against `uploadFile`'s
+  own gated clear.
+- The same sentences dropped "401 eviction": that clear runs under every
+  `FRESH_AUTH_REQUIRED`, ahead of the `status === 401` test, so it also runs
+  on the 403 binding violations. "Dead-window clear" is the name the
+  `attemptOnce` comment and `lib/ipfs-upload.js` already use.
+- Sweep re-run (13-agent read-only workflow: code-only removal inventory,
+  three chunk sweeps, a cold read of the new sentences, one refuter per
+  finding). Two further removal totals confirmed and fixed in the same
+  commit: `getCachedConsentOpProof`'s "nothing else would drop the entry
+  inside its TTL" (the subject scrub does) and the `unwindFlowKeys` comment's
+  "every other exit removes them" (the navigating exit keeps the keys).
+- Refuted by the sweep, left as written: "Only a rejection of the password
+  retires it" in the password-mint comment (scoped by its own second
+  clause), "both writers of that slot" in `evictUnnamedAcquisition`'s
+  docblock (`persistWindow` has exactly two callers), and "both now inherit
+  the one eviction" in the `ensureSessionWindow` guard comment (the guard's
+  own clear is called a restatement in the same block).
+
+## Architect re-review (2026-09-30, second pass) — HELD PENDING FIXES:
+
+Reviewed commit 590d211a against its parent. Comment-only confirmed (the
+comment-stripped file is byte-identical across the commit), the anchor gate
+has no hit on the added lines, the build is clean, and the suite count matches
