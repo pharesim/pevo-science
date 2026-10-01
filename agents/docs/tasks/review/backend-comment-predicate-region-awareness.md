@@ -335,3 +335,83 @@ numbers, task slugs, or round numbers.
   but do not claim more than that.
 - The cross-model adversarial pass did not run, because this host has no
   different-family CLI. The adversarial lens ran in-process.
+
+---
+
+Backend re-review signal (2026-10-01, commits 146ce7de + c954c798 + 71217d5f on
+top of 4ea7faca, all on main):
+
+- Item 1: the `epochs` and `fields` scans take `isCommentedOut`; `epochRef` is
+  set only from a key line `isCommentedOut` reads as live, AND the wrapped-value
+  lookup in `valueTextAfterKey` now reads by shape too (found by my own
+  adversarial pass: the lookup was still region-aware, a regression from
+  bb997f2f; a parity-inverted wrapped-value plant passed). The interior param is
+  gone. Docblocks scoped: `skipCommentLine` (now exported) no longer claims
+  satisfying scans, `blockCommentInterior`'s "loud" sentence is scoped to
+  forbidden-shape and demand-side scans. Planted probes: mid-line-opened prose
+  and stray-backtick parity inversion through `epochlessConsumes`, the same
+  through `fieldlessSurfaces`, a shorthand write behind a close and a wrapped
+  value behind refused-docblock prose through `literalEpochSurfaces`.
+- Item 2: a `}` leading the code after a read close ends the declaration at any
+  indentation. Pins: ` */ }`, `   */ }`, top-level `  */ });` resolve to module
+  scope; the inner-block outward cost is pinned too (`registerRoutes` case).
+- Item 3: outside a tracked region, a line whose trimmed text begins with `*/`
+  is read like an in-region close. Pinned with a mid-line-opened comment whose
+  close shares the closing-brace line.
+- Item 4: walk comment and module docblock both say the phantom-region inward
+  path came with the region tracking and the frontend walk shares it.
+- Item 5: module docblock rewritten around one stated brace rule ("WHICH BRACE
+  THE WALK SEES"), with OUTWARD/INWARD derived from it; the INWARD list is
+  phrased as examples and includes the one-line `{}` and the phantom region.
+  SET-EQUALITY is conditional on the allowlist and names the mint canary's
+  keyspace-literal `lib/fresh-auth.ts#<module>` licence. Added from my
+  adversarial pass: the FABRICATED-name path (a declaration-shaped phrase in a
+  comment or string read as a declaration) is named as a silent-pass source;
+  the hand-ported-sibling paragraph says the brace test is shared only up to
+  the comment close (this copy is ahead).
+- Item 6: exported `SkipLine`, `skipCommentLine`, `skipCommentOr(re)`; the three
+  local copies and all nine inline closures are gone. Probes on both exports in
+  the machinery suite. `occurrencesOf`'s docblock scopes the rule to scans whose
+  only extra skip is a definition line (composite skips `skipMintLine`,
+  `skipNonSessionEntryLine` thread the region themselves; not touched).
+- Item 7: both pins with the exact fixtures and expected values.
+- Item 8: `isCommentedOut`'s first test is the pure shape regex; both
+  `isCommentLine` sentences corrected; pins for `/* call */ code` and
+  ` * prose call */ code`.
+- Item 9: accounts canary paragraph re-derived (drops the editor-tag example
+  and "shape-only"; names whole-line answers, no SQL `--`, no quoting).
+- Item 10: the four comments name their fixture consts.
+
+Verification:
+- Per-line classification over all 102 `backend/src` files (enclosingSymbol,
+  region, isCommentLine with and without region, isCommentedOut): 0 changes
+  between 4ea7faca and 146ce7de; 71217d5f changes no module code.
+- Mutation matrix on an isolated copy of 71217d5f, each mutant inside the
+  changed function: 28 of 30 killed. The two hold-named mutants
+  (`aCommentCloseFollows` from `openIndex`, `interior[i + 1]`) kill, as do the
+  reversions of items 1 (all four satisfying reads, incl. the region-aware
+  wrapped lookup), 2, 3, 8 and both exported skips. Survivors: a hand-written
+  closure on the mint canary's direct `jwt.sign` scan (item 6 says per-scan
+  probes are not required once closures are gone) and a no-region wrapped
+  lookup, which is equivalent on outcome (star prose skipped either way; the
+  one differing shape still lands an offender via the literal).
+- The six importer files: 80 tests, exit 0; the session-proof-invalidation
+  route file: 16 tests, exit 0 on the real environment; typecheck and lint clean.
+
+Found by my adversarial pass, NOT fixed (outside the hold, for triage):
+1. The upward declaration scan reads comment and string lines, so
+   `// same derivation as router.get('/email', ...)` inside an unlicensed
+   function makes a planted helper call resolve to `routes/settings.ts#GET
+   /email`; the custody canary stays green (reproduced). Now named in the
+   docblock; a code fix (skip commented-out lines in the upward scan) changes
+   resolution semantics for every canary.
+2. The mint canary's "entry keyspace literal exists once" assertion compares
+   de-duplicated keys, so a second module-scope literal in `lib/fresh-auth.ts`
+   passes (reproduced). Pre-existing.
+3. Satisfying-side matches read through trailing comments in the epoch canary
+   (`sessionsInvalidatedAtMs: undefined, // hiveSessionsInvalidatedAt` is not
+   an offender). Pre-existing since bb997f2f.
+4. The frontend copy lacks the read-close brace rule (items 2 and 3); porting
+   is ui-zone.
+5. An unprefixed continuation line inside a comment opened after code reads as
+   live on both skips; documented as a residual at `skipCommentLine`.
