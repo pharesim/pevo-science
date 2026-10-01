@@ -444,6 +444,24 @@ describe('every session-window consume carries the account revocation epoch', ()
     };
     expect(epochlessConsumes([liveEpoch]).offenders).toEqual([]);
 
+    // The surface pairing's field scan is satisfying-side too: a field named
+    // only in prose behind a mid-line-opened comment does not stand in for
+    // the field the surface literal must carry.
+    const fieldInProse: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'async function consumeSurfaceBesideProse(token: string) {',
+        '  const started = Date.now(); /* the field note',
+        '   * sessionsInvalidatedAtMs is set by the caller',
+        '   */',
+        '  return consumeFreshAuthTokenForSurface(token, surface);',
+        '}',
+      ],
+    };
+    expect(fieldlessSurfaces([fieldInProse]).offenders).toEqual([
+      'lib/synthetic.ts#consumeSurfaceBesideProse',
+    ]);
+
     // The value seam's epoch fact is satisfying-side as well: a shorthand
     // write behind a comment close does not vouch for an accepting surface.
     const epochBehindClose: ScannedSource = {
