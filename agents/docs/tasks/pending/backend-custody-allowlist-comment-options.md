@@ -155,3 +155,23 @@ Architect at archive, not for the implementer: add `comment_options`, its
 bindings, and its refusal messages to the allowlist wording in
 `agents/docs/api-contracts/custody.md`. Update the root `CLAUDE.md` "Account
 Creation" sentence that lists server-side signing as "(comment, vote only)".
+
+## Architect note (2026-10-01): more `custody.md` corrections to make at this task's archive
+
+Found by the composer retry-safety decision (archived 2026-10-01), not by this task's diff.
+Not held here; the architect folds them into the same `api-contracts/custody.md` edit as the
+`[TODO Architect] contract` item above, so the file is touched once:
+
+- A fresh 200 carries no `block_num`: dhive's `send` returns `Object.assign({ id }, result)` over
+  `condenser_api.broadcast_transaction`'s `{}`. "On a fresh broadcast `block_num` is always a
+  positive integer" is wrong. A 200 means one node accepted the transaction, not that a block
+  holds it.
+- 502 `BROADCAST_FAILED` is not proof that nothing landed: dhive throws "request may have been
+  received" transport errors that the route maps to the same envelope as a chain rejection.
+  Only a 4xx or a 500/503 from the handler is known to be pre-broadcast.
+- "SPA clients carrying an `idempotency_key` MAY retry safely" is false while the first
+  transaction is not yet in a HAF-indexed block, and the SPA sends no key.
+- The intro's list of permitted ops is out of date (it omits `comment_options` and several
+  `custom_json` actions); a missing account is 401 `UNAUTHORIZED`, not `NOT_FOUND`; the
+  "single-use proof ... MUST issue a new proof before retrying" paragraph holds for gated ops
+  only, not for the multi-use session-kind proof that comment bundles use.

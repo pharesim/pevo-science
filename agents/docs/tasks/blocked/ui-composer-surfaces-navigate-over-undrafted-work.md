@@ -253,3 +253,13 @@ Relevance at pickup: a stash bound to surface, target and subject (the Scope's
 params, so the same same-instance param change can mis-bind it. Capture the target
 when the composing begins or when the gate is entered, not at the write, or say in
 the signal why the write-time read is safe on the surfaces in scope.
+
+### Architect note (2026-10-01): the composer draft-key residual moves to a filed task
+
+The residual recorded in the 2026-09-30 note (a history jump between two `/edit/...` entries
+keeps the same `editPage` instance while the `draftKey` getter starts naming the other paper) is
+now in scope of `tasks/pending/ui-composer-drafts-bound-to-account-and-head.md`: draft keys are
+captured at load (account plus canonical pair), and the page remounts when the edit route names
+another paper or another account signs in. This task no longer carries it. Its own stash stays a
+separate mechanism (a `sessionStorage` slot in `SUBJECT_BOUND_STORAGE_KEYS`), and the "capture the
+target when the composing begins" advice in that note still applies to the stash.
