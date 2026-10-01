@@ -1829,3 +1829,74 @@ Unchanged and still deferred to archive: the solutions entry
 still ends its canary section with "Do not describe this canary as existing.
 It is a proposal," and the 2026-09-14 hold's note about folding the
 shortest-length sizing refinement into the sibling backtracking entry stands.
+
+## Architect re-review (2026-10-01) — HELD PENDING FIXES:
+
+Both items and all four fold-ins held on 2026-09-14 are FIXED, verified
+independently by execution on isolated copies of `e76af395` rather than from
+the signal block:
+- Item 1: the tail-separator revert goes red at the 400 pass in about 2 s, and
+  with the 400 length removed it hangs, so the shortest pass is load-bearing.
+- Item 2: the emphasis-group revert goes red.
+- Fold-ins: the `s?` revert goes red at the new `COMPANIONS` probe; dropping
+  `;` from the refusal goes red at the new semicolon probe; the semicolon in
+  that probe is load-bearing; the trigger-set wording, the `CLAIM_SPAN`
+  parenthetical and the fall-one-short arithmetic match measured behaviour.
+- The tag-name bound reverts green, as its docblock says it does by design.
+- The frozen maps, backlog constants and `LANDING_DIGEST` are untouched.
+- Project standards are clean.
+
+One item remains, and it is this file's recurring defect class: a sentence
+asserting what the code does not do. Anchor any comment you write on stable
+symbols, never on line numbers.
+
+1. The separator-run timing spec's comment says the two prefixed shapes,
+   `real-path_` before a dash run and `real-path*` before a space run, "are
+   the ones that put a whole run in that slot, and they are what pin that
+   bound" (the `[\s-]{0,4}` inside `LABEL_SRC`'s emphasis group). The
+   `['*', ' ']` pair pins nothing. A space is outside `QUALIFIER`'s `[\w-]`
+   word class, so a space run cannot be split between the emphasis group's
+   run and a qualifier word, and the match stays linear. The independent
+   validator ran three variants with the emphasis-group bound reverted to
+   `[\s-]*`, and correctness, adversarial and testing reviewers each raised
+   the same point:
+
+   | Shapes kept | Result |
+   |---|---|
+   | All shapes | red, on the `_`-prefixed dash run |
+   | `['*', ' ']` only (`['_', '-']` deleted) | 11 of 11 green, exit 0 |
+   | `['*', '-']` swapped in (`['_', '-']` deleted) | red, `labelCount` 2358 ms at 6400 |
+
+   Fix: replace `['*', ' ']` with `['*', '-']` and reword the sentence to say
+   both prefixed shapes put a DASH run in that slot. Then each named pin is
+   genuinely a pin. Verify by reverting the bound with each prefixed pair
+   present alone; both must go red. If you prefer to keep a space-run shape
+   as a linear control, keep it, but the sentence must then name only the
+   dash-run shapes as pins and state what the space shape is for.
+
+### Not held, recorded so it is not re-litigated
+
+- Unloaded, the emphasis-group revert costs about 130 to 250 ms at 400, just
+  under the 250 ms threshold. It is caught at 6400 in about 2.4 s, not at
+  400. The signal's 312 ms at 400 was measured under load, which the signal
+  disclosed. No committed comment claims the 400 pass catches this revert,
+  so nothing needs rewording.
+- A multi-site revert (the qualifier word and tail both unbounded) was not
+  probed. It is outside the single-revert contract the comments state.
+- The `[\s-]{0,4}` between `real` and `path`, the trailing emphasis run and
+  the trailing wrapper bound are linear and already on the earlier not-held
+  lists.
+- Standalone timings include a cold-regex tier-up of 6 to 15x. In the full
+  file the patterns are warm and the slowest timed call was 5.2 ms, so
+  "single-digit milliseconds" holds.
+- The cross-model adversarial pass did not run, because there is no
+  different-provider CLI on this host. Corroboration is between three
+  separate in-process reviewers and a separate validator that reproduced the
+  item by execution.
+
+**[TODO Architect]** unchanged and still deferred to archive. At that time
+also update the 2026-09-14 backtracking entry through `/ce-compound-refresh`:
+- Its "two lengths" guidance and its example loop predate the 400 pass.
+- Its "pattern, after" snippet still shows `<[a-z]+>`.
+- Add the space-run lesson: a timing shape pins a bound only when its run
+  characters overlap the class of a neighbouring quantifier.
