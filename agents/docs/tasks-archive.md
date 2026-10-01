@@ -1,3 +1,79 @@
+## The ORCID-factor e2e cache assertion compares five keys against a seven-key entry (archived 2026-10-01) — archived clean at 660f2703 on the first pass
+
+### Architect archive note (2026-10-01)
+
+Reviewed 660f2703 against its parent with /ce-code-review (correctness, testing,
+project-standards on root CLAUDE.md, learnings; adversarial skipped, the diff is an ordinary
+per-feature assertion): zero findings in the diff, zero malformed returns. Reviewers read the
+reviewed commit, since 3c9f3b10 and 795f6df0 later edited the same spec. Verified: the writer
+stores seven keys with authorIndex and claimer normalized to null, the stub echoes no credit
+fields, and the backend /orcid/callback spreads author_index and claimer only when the target
+binds them, so the new comment is true on the real path too. Scope 2 (three CONSENT_OP_KEY
+read-backs, all in this file) was confirmed by three reviewers. AC 3 rests on the implementer's
+run; e2e was not re-run.
+
+One pre-existing P3 surfaced: the stubbed case's comment still points real verification at "the
+test.fixme below", which has not existed since 66a46ec1. It is already Scope item 1 of the
+pending ui-settings-orcid-factor-test-pointers task, so nothing new was filed.
+
+**Owner:** ui
+**Created:** 2026-09-14
+
+Surfaced by the implementer of the consent-op eviction parity task as a residual,
+deliberately not fixed there, and verified at architect review. Pre-existing and
+independent of that change; this is not a hold on it.
+
+## Why
+
+In `tests/e2e/settings-orcid-factor.spec.js`, the stubbed-callback case reads the
+consent-op slot back and asserts it with `toEqual` against a five-key object:
+`token`, `expiresAt`, `action`, `rootAuthor`, `rootPermlink`. `cacheConsentOpProof`
+has written seven keys since the credit-op extension, normalizing the two optional
+fields to `authorIndex: null, claimer: null`. `toEqual` treats a missing key as equal
+to `undefined` but not to `null`, so the assertion cannot pass. It fails on any e2e
+run of that file and will be read as fallout from whatever landed last.
+
+## Scope
+
+1. Make the assertion match the writer's real shape. Preferred: add
+   `authorIndex: null, claimer: null` to the expected object, so the spec keeps
+   pinning the exact entry shape. Do not loosen to `toMatchObject`; that would stop
+   catching an extra key.
+2. Check the other e2e specs that read this slot back for the same five-key shape
+   and fix any that share it.
+3. A ui session has an untracked `tests/e2e/consent-op-fresh-auth.spec.js` in
+   flight. If that work lands first and touches the same assertion, fold this fix
+   into it and say so here; otherwise fix in place.
+
+## Acceptance criteria
+
+1. The stubbed-callback case in `settings-orcid-factor.spec.js` passes against the
+   real writer.
+2. No e2e spec asserts the consent-op entry with the five-key shape.
+3. That e2e file is green under the E2E recipe in `agents/ui/CLAUDE.md`; any
+   pre-existing failures elsewhere in the run are noted, not chased.
+
+## UI implementation signal (2026-09-30, commit 660f2703)
+
+- **Scope 1.** `660f2703` adds `authorIndex: null, claimer: null` to the expected
+  object in the stubbed-callback case of `tests/e2e/settings-orcid-factor.spec.js`.
+  The assertion stays `toEqual`, so an extra key still fails it.
+- **Scope 2.** Re-enumerated from the code: `CONSENT_OP_KEY` is read back at three
+  sites, all in that one file. The stubbed-callback case was the only five-key
+  `toEqual`. The real-backend case uses `toMatchObject` on the triple plus a token
+  type check (the token and deadline are backend-minted, so an exact match is not
+  available there), and the mismatch case asserts `toBeNull`. No other e2e spec
+  reads the slot.
+- **Scope 3.** `tests/e2e/consent-op-fresh-auth.spec.js` has landed and does not
+  read the slot, so there was nothing to fold into; fixed in place.
+- **Verification.** Under the E2E recipe (restart, test-db-up, test-up):
+  `npx playwright test tests/e2e/settings-orcid-factor.spec.js` ran 4 passed,
+  exit 0. Only that file was run, so there are no elsewhere-failures to note. The
+  pre-fix red was not re-observed in this session; it follows from `toEqual`
+  not equating a missing key with `null`. Dev routing restored with
+  `./deploy.sh up`.
+- SHA self-verified: `git merge-base --is-ancestor 660f2703 main` exits 0.
+
 ## Make clause-(c) companion citations resolvable and check them (archived 2026-10-01) — eight review rounds, seven holds; archived clean at 486caedb
 
 ### Architect archive note (2026-10-01)
@@ -172,79 +248,3 @@ failure message named the rejoined path (AC 4). `npm run typecheck` passes.
 `npm run lint` not run: it lints `src/` only and no `src/` file changed.
 
 **[TODO Architect]** `agents/docs/solutions/conventions/carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02.md`
-ends its canary section with "Do not describe this canary as existing. It is a
-proposal." That is now false, and the entry's sketch of the citation shape
-should be reconciled with the form settled here. The file is architect-owned, so
-backend has not touched it.
-
-## Architect re-review (2026-09-03) — HELD PENDING FIXES:
-
-All six acceptance criteria are met and independently verified: the wrapped-path
-parse rejoins correctly (8/8 corpus citations), all eight cited companions do
-assert their token in code, the suite is green, and the compound violation in the
-fail-closed header is genuinely resolved. The validation half of the canary is
-sound and is not what this hold is about.
-
-The ratchet half does not hold the property the header docblock and the commit
-message assert. Five independent escapes were reproduced on isolated copies, each
-landing a new free-prose citation with the suite green. Two of the canary's own
-arms are invisible to mutation of themselves. The completion note's scoping claim
-("the in-tree list is the stronger mechanism anyway ... no env var turns it off")
-is true of the whole-tree validation arm and false of the ratchet.
-
-Fix all eight. Items 1 to 5 are one mechanism and should be settled together
-rather than patched one at a time.
-
-1. `DEFERRED_FREE_PROSE` exempts a FILE, not the blocks that were on it at
-   landing, so any of the 102 listed files can gain brand-new free-prose
-   citations forever. Reproduced: a fresh free-prose clause-(c) block naming a
-   nonexistent file, appended to the deferred-listed `routes/settings.test.ts`,
-   leaves the suite green. 102 of 253 test files are listed, so roughly 40
-   percent of the corpus is permanently outside the ratchet rather than being a
-   backlog. Make the constant a path-to-count map pinning each file's
-   unstructured file-naming block count at landing, and fail when a listed file
-   EXCEEDS its pin. The audit loop already computes that number.
-
-2. The ceiling arm is `toBeLessThanOrEqual`, so a removal frees a permanent slot.
-   Reproduced in both halves: de-filing `lib/cache.test.ts`'s citation outright
-   (not converting it) and dropping its entry gives 101 green; parking a new
-   free-prose file in the freed slot returns to 102 green with the ceiling
-   untouched. This falsifies the header's "a file that leaves the list by any
-   route other than conversion goes red rather than draining the ratchet
-   quietly" and the commit message's "deleting a citation is not an exit from
-   the ratchet".
-
-3. The ceiling is a length check, so a same-length membership swap passes:
-   converting one entry, removing it, and adding a different brand-new
-   free-prose file in the same edit keeps the length at 102, green. Fix items 2
-   and 3 together with a frozen, never-edited snapshot of the landing filenames
-   plus a subset assertion, deriving the ceiling from that snapshot's length.
-   That subsumes a bare `toBe` and closes de-filing, the freed slot and the swap
-   in one mechanism. Do NOT land `toBe` alone; it leaves item 3 open.
-   The `DEFERRED_CEILING` docblock also asserts "The exact-membership check below
-   already goes red when an entry is added". No such check exists. Correct that
-   sentence in the same change: a comment claiming a guarantee the code does not
-   provide is the defect class this whole task exists to remove.
-
-4. A block that satisfies its label count short-circuits before `namesAFile` is
-   consulted, so one valid structured citation immunizes any amount of unchecked
-   prose beside it. Reproduced: unlabeled prose naming two real test files added
-   next to the structured citations in
-   `verifyHiveSignature-session-invalidation-failclosed.test.ts` stays green.
-   This re-admits the half-true compound, which the convention entry and this
-   canary's own header both name as the shape that survives review. Strip the
-   text matched by the citation pattern from the block, then fail when the
-   remainder still matches the names-a-test-file pattern, for non-deferred and
-   non-exempt blocks only.
-
-5. A companion claim naming no file is never ratcheted, so a new file whose only
-   clause-(c) line is "Real-path companion: the settings password-reset suites
-   cover the live happy path" passes. That is verbatim the shape AC 6 removed.
-   The header declines this class because such citations are "unresolvable by any
-   parser" and would need "an unbounded phrase list that rots". That reasoning
-   supports not VALIDATING a file-less claim; it does not support not REJECTING
-   one, which is dropping a single guard. Drop the names-a-file guard so a label
-   with fewer structured citations than labels fails regardless, and seed a
-   second deferred list for the existing file-less blocks. Measured cost: of 126
-   labelled blocks in the corpus, 110 name a test file and 16 name none, across
-   14 files. A 16-entry list, not the hundred-plus the header's framing implies.
