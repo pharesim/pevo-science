@@ -1934,3 +1934,94 @@ removed). No space-run control shape was kept.
 Unchanged and still deferred to archive, including the 2026-10-01 note to
 `/ce-compound-refresh` the backtracking entry (the 400 pass, `<[a-z]{1,16}>`,
 and the space-run lesson).
+
+## Architect re-review (2026-10-01, second pass) — HELD PENDING FIXES:
+
+The item held on the first 2026-10-01 pass is FIXED in substance, verified by
+execution rather than from the signal block. Three independent runs on isolated
+copies of `b03ae831`, each with the `[\s-]{0,4}` inside `LABEL_SRC`'s emphasis
+group reverted to `[\s-]*`, gave the same results:
+
+| Pairs present | Result |
+|---|---|
+| `['_', '-']` alone | red |
+| `['*', '-']` alone | red |
+| both prefixed pairs | red |
+| neither prefixed pair | green, exit 0 |
+| old `['*', ' ']` alone | green, exit 0 |
+| unmutated | 11 of 11 green, exit 0 |
+
+So each named pin is a real pin, and the two prefixed pairs are the only pins
+on that bound. The swap loses no coverage: seven other single-bound reverts give
+the same verdict with the old and new pair sets. The slowest committed timed
+call is 6.9 ms. The pre-commit anchor gate finds zero hits on the 8 added lines.
+Subject prefix, trailer, staging and zone are all correct.
+
+One item remains. It is a sentence asserting the wrong mechanism, and the wrong
+mechanism came from this architect's own 2026-10-01 hold prose ("the match
+stays linear"), which the commit copied faithfully. The correction below is
+measured, not reasoned. Anchor any comment you write on stable symbols, never on
+line numbers.
+
+1. The separator-run timing spec's comment ends: "A space is outside the word
+   class, so a space run behind an emphasis character cannot split that way and
+   stays linear with the bound removed, which pins nothing." That sentence
+   offers linearity as the reason the space run pins nothing, which implies the
+   pinning dash run is not linear. It is linear. With the emphasis-group bound
+   reverted, measured in plain node with the committed `QUALIFIER` and
+   `LABEL_SRC` sources pasted verbatim:
+
+   | Shape | 400 | 800 | 1600 | 3200 | 6400 |
+   |---|---|---|---|---|---|
+   | `real-path*` + dashes | 160 ms | 364 ms | 740 ms | 1496 ms | 2801 ms |
+   | `real-path_` + dashes | 132 ms | 293 ms | 632 ms | 1289 ms | 3113 ms |
+   | `real-path*` + spaces | 0.0 ms | 0.0 ms | 0.0 ms | 0.0 ms | 0.1 ms |
+
+   The dash cost doubles when the run doubles, so its growth is linear. What
+   separates the two shapes is the work per character, not the growth order.
+   Each dash is a point where the unbounded run can stop and hand the remaining
+   dashes to the two qualifier slots, which re-split them in a bounded but large
+   number of ways. Each space is a point where the qualifier fails at once. The
+   correctness and adversarial reviewers found this independently.
+
+   Fix: restate the sentence so the mechanism is per-character work, not growth
+   order. The invariant is that every clause must be true of both runs as
+   measured. A sentence that meets it, offered as a default rather than a
+   construct you must copy: "A space is outside the word class, so a space run
+   behind an emphasis character cannot split that way. With the bound removed
+   both runs cost time linear in their length; what separates them is the work
+   per character. Each dash is a point where the run can stop and hand the
+   dashes after it to the two qualifier slots to re-split, while each space is
+   a point where the qualifier fails at once, so the space run stays far under
+   the threshold and pins nothing." Do not add timing numbers to the comment
+   unless you measure them in-file. Grep the file for any other sentence that
+   attributes a pin or a non-pin to linear versus super-linear growth. At this
+   commit the one at `stays linear` is the only hit for `linear`.
+
+### Not held, recorded so it is not re-litigated
+
+- The pin's signal scales with `QUALIFIER`'s word and separator bounds. With
+  the word bound tightened to `{1,16}` and the emphasis-group bound reverted,
+  that revert costs about 210 ms at 6400 (green) and about 3.3 s at 100,000, so
+  the long pass would catch it instead of the middle one. This is theoretical
+  and coupled to an edit nobody is making. Not held.
+- At the 400 pass, each single-pair revert clears the 250 ms threshold by only
+  5 to 27 ms. That is the load-dependent margin already settled on the first
+  2026-10-01 pass. No committed comment claims which length catches this
+  revert.
+- The emphasis group's leading `{1,4}` run reverted to `+` is caught only at
+  the 100,000 pass. The trailing emphasis run reverted to `+` is green at every
+  length. Both are pre-existing, settled, and untouched by this diff.
+- No space-run shape remains in the loop. That was one of the two options the
+  hold offered, and is not a gap.
+- Project standards, testing and learnings came back clean. The cross-model
+  pass did not run, because there is no different-provider CLI on this host.
+  The corroboration is between two in-process reviewers plus the orchestrator's
+  own reproduction by execution.
+
+**[TODO Architect]** unchanged and still deferred to archive. One correction to
+the note it carries: the space-run lesson for the 2026-09-14 backtracking entry
+must say that a run pins a bound only when its characters are also in a
+neighbouring quantifier's class, because that overlap multiplies the work per
+character. It must NOT say the pinning shape grows super-linearly. Under a
+single-bound revert with every other run bounded, both shapes are linear.
