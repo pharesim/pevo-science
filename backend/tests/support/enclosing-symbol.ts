@@ -18,53 +18,69 @@
  * is why {@link enclosingSymbol} is exercised by planted positives and
  * negatives in the canaries that consume it. The rule is: scan upward for the
  * nearest declaration, and reject it if its block demonstrably closed before
- * the target line (a `}` at or left of the declaration's own indentation).
+ * the target line (a `}` at or left of the declaration's own indentation, or
+ * one leading the code after a comment close; WHICH BRACE THE WALK SEES states
+ * the whole rule).
  *
  * Known limitations, and where they are safe. A declaration whose block opens
  * and closes on its own line (`const noop = () => {};`) has no closing brace
  * on a LATER line, so a match below it can resolve to that declaration instead
- * of the real enclosing scope; a declaration shape the patterns do not
- * recognize at all (an object-method shorthand, a class member) resolves to
+ * of the real enclosing scope (one of the INWARD shapes listed under WHICH
+ * BRACE THE WALK SEES); a declaration shape the patterns do not recognize at
+ * all (an object-method shorthand, a class member) resolves to
  * {@link MODULE_SCOPE}.
  *
- * Two comment boundaries are deliberately left open, both because closing them
- * needs a mid-line opener test, and telling a real opener from the same two
- * characters inside a string literal, a regex, or a SQL fragment in a template
- * literal is a lexer's job. A lexer is the dependency this module exists to
- * avoid, so both are named here instead:
+ * WHICH BRACE THE WALK SEES. Every wrong answer this docblock names follows
+ * from one rule, so it is stated once. Walking down from a declaration to the target line,
+ * the walk takes a `}` as the end of that declaration's block when the `}`
+ * leads its trimmed line at or left of the declaration's indentation, or
+ * leads the code after a comment close the walk reads, at any indentation. It
+ * reads a close in two places: the close of a block comment it is tracking
+ * (one opened at line start, outside a template literal, whose close it can
+ * see by the target line), and a close that begins its trimmed line. A brace
+ * on a line inside a tracked region is prose.
  *
- *  - A block comment OPENED mid-line is not tracked, so a brace inside it
- *    reads as live and can close the declaration early. This one resolves
- *    OUTWARD, toward an enclosing function or module scope. Module scope is
- *    never a licensed key in the canaries built on this module, so the wrong
- *    answer is a new member and the consuming set-equality assertion still
- *    fails closed.
- *  - A line carrying more than one comment boundary is read only to its first
- *    close, so a brace sitting after a LATER boundary on that same line is
- *    missed and the declaration reads as still open. This one resolves INWARD,
- *    which is the direction a licensed key can absorb, and is therefore the
- *    weaker of the two. What keeps it small is that the shape has to put a
- *    whole comment and a block-closing brace on one physical line, which is
- *    conspicuous enough on its own that no reviewer reads past it.
+ * Comment boundaries are read no further than that, because telling a real
+ * mid-line opener from the same two characters inside a string literal, a
+ * regex, or a SQL fragment in a template literal is a lexer's job, and a
+ * lexer is the dependency this module exists to avoid. A brace the rule
+ * reads too EARLY resolves OUTWARD; a brace it misses resolves INWARD.
  *
- * The ordinary single-boundary form of that second shape, a close sharing its
- * line with the real closing brace, IS handled: the walk reads the code after
- * the close, so the brace ends the block it closes. The template-parity
- * inversions named at {@link blockCommentInterior} bend the walk's opener
- * guard the same two ways and are pinned as residuals in the machinery's own
- * suite beside this file.
+ *  - OUTWARD: a block comment OPENED mid-line is not tracked, so a brace
+ *    leading one of its lines reads as live and can close the declaration
+ *    early. So can a `}` leading a line of template content. And a `}` after
+ *    a read close ends the declaration even where it really closes an inner
+ *    block. The answer is the enclosing function, or module scope.
+ *  - INWARD: the brace that really ends the block is missed, so the
+ *    declaration reads as still open and a match after it resolves to it.
+ *    The shapes that do this include a block that opens and closes on its
+ *    declaration's own line (`const noop = () => {};`), a `}` that follows
+ *    other code or a self-contained comment on its line (`foo(); }`,
+ *    `/* note *\/ }`), a `}` after a SECOND comment boundary on a line the
+ *    walk reads only to its first close, the close of a comment opened
+ *    mid-line when that close does not begin its line (` * note *\/ }`), a
+ *    `}` indented right of its own declaration, and a brace swallowed by a
+ *    phantom region: an opener in template content that an inverted
+ *    template-parity count (named at {@link blockCommentInterior}) lets
+ *    through, which this walk's region tracking introduced and the frontend
+ *    copy's walk shares. The inversions are pinned as residuals in the
+ *    machinery's own suite beside this file.
  *
  * The consequence in every case is a WRONG symbol — and how that fails
  * depends on the assertion consuming it:
  *
  *  - SET-EQUALITY assertions (the occurrence keys compared to an exact allowed
- *    set) fail closed: a wrong symbol is a new member and therefore a red bar,
- *    never a silent pass. A silent pass would require a violating occurrence
- *    to resolve to one of the already-allowed keys from OUTSIDE that allowed
- *    function's block, which takes one of the residual shapes above — the
- *    multi-boundary line, or an inward parity inversion — rather than an
- *    ordinary comment close sharing a line with the block's closing brace,
- *    which the walk reads.
+ *    set) fail closed only when the wrong symbol is a key the allowed set does
+ *    not hold. An INWARD answer names a declaration that really sits above
+ *    the match, and if that declaration is an allowed key the violation is
+ *    absorbed: that is the silent pass, and every INWARD shape above can
+ *    produce it. An OUTWARD answer names an enclosing scope, which fails
+ *    closed exactly when that scope is not licensed itself. Two cases are:
+ *    an allowed function enclosing a nested declaration, and module scope
+ *    where an assertion licenses it. The keyspace-literal assertion in
+ *    `no-session-proof-mint-outside-reauth-routes.test.ts` licenses
+ *    `lib/fresh-auth.ts` at {@link MODULE_SCOPE}, so an outward answer that
+ *    lands at that file's module scope is absorbed there.
  *
  *  - PAIRING assertions (every occurrence of X must have a Y in the same
  *    symbol) do NOT inherit that property. When both sides of a pair resolve to
@@ -235,10 +251,14 @@ function aCommentCloseFollows(lines: string[], openIndex: number, lineIndex: num
  *  as OUTSIDE any template.
  *
  *  Each inversion has a direction. Where a real docblock opener falls in an
- *  inverted window it is refused and its star lines count as live, which is
- *  loud (a false red bar, not a miss); where a template with a line-start
- *  opener in its content falls in one, the opener is accepted and the
- *  star-leading reads below it are skipped, which is silent. Neither is closed
+ *  inverted window it is refused and its star lines count as live, which on a
+ *  forbidden-shape or demand-side scan is loud (a false red bar, not a miss).
+ *  On a scan whose match SATISFIES a demand the same live reading is a
+ *  satisfied pair read out of prose, which is silent, and is why those scans
+ *  take {@link isCommentedOut} rather than this region. Where a template with
+ *  a line-start opener in its content falls in an inverted window, the opener
+ *  is accepted and the star-leading reads below it are skipped, which is
+ *  silent on a forbidden-shape scan. Neither is closed
  *  here: counting only code-shaped backticks, or tracking interpolation depth,
  *  is the lexer this module declines. Both are pinned as residuals in the
  *  machinery's own suite beside this file. */
@@ -299,11 +319,20 @@ export function enclosingSymbol(lines: string[], lineIndex: number): string {
     // absorbs the addition, rather than a new member that fails closed.
     //
     // Leaving the region, the code after the first close on that line is live
-    // and gets the same brace test as any other line, at the line's own
-    // indentation, and the same opener test: a close followed by a second
-    // unterminated opener re-enters. Only the FIRST close on a line is read;
-    // the file docblock's comment-boundary paragraphs name what that leaves
-    // open.
+    // and gets the same opener test as any other line: a close followed by a
+    // second unterminated opener re-enters. A line whose trimmed text BEGINS
+    // with a close is read the same way when no region is tracked, because
+    // the walk does not see a comment opened mid-line, and its close line is
+    // the one place that comment becomes visible. Only the FIRST close on a
+    // line is read; the file docblock's comment-boundary paragraphs name what
+    // that leaves open.
+    //
+    // A `}` leading the code after a close ends the declaration WHATEVER the
+    // line's indentation. The natural docblock close is indented (` */`), so
+    // an indentation test there would miss ` */ }` closing the declaration
+    // and resolve inward. Where that brace really closes an inner block, the
+    // answer is outward instead, which a set-equality consumer reads as a new
+    // member.
     //
     // "Can SEE close" is bounded by the target line, inclusive, not by the
     // end of the file (the region pass, which has no target, reads to the
@@ -317,6 +346,16 @@ export function enclosingSymbol(lines: string[], lineIndex: number): string {
     // already inside. It is a plain count of backticks per line from there,
     // inverted by the same two shapes the region pass names; both are pinned
     // as residuals in the machinery's own suite.
+    //
+    // Tracking a region at all opens an INWARD path of its own. An inverted
+    // count lets a line-start opener in template content through the guard,
+    // and the phantom region it opens swallows the brace that ends the
+    // declaration. A walk that never entered a region could not swallow a
+    // brace, so this path arrived with the region tracking rather than being
+    // carried over from the shape test it replaced. It is kept, and the
+    // frontend copy's walk has the same path, because it needs two rare
+    // shapes at once: a stray backtick and a line-start opener inside a
+    // template.
     let closedBefore = false;
     let inBlockComment = false;
     let ticks = countOf(lines[i], /`/g);
@@ -325,11 +364,16 @@ export function enclosingSymbol(lines: string[], lineIndex: number): string {
       const inTemplate = ticks % 2 === 1;
       ticks += countOf(line, /`/g);
       let code = line;
+      let afterClose = false;
       if (inBlockComment) {
         const close = line.indexOf('*/');
         if (close === -1) continue;
         inBlockComment = false;
         code = line.slice(close + 2);
+        afterClose = true;
+      } else if (line.trim().startsWith('*/')) {
+        code = line.slice(line.indexOf('*/') + 2);
+        afterClose = true;
       }
       const trimmed = code.trim();
       if (
@@ -340,7 +384,7 @@ export function enclosingSymbol(lines: string[], lineIndex: number): string {
         inBlockComment = true;
         continue;
       }
-      if (trimmed.startsWith('}') && indentOf(line) <= declIndent) {
+      if (trimmed.startsWith('}') && (afterClose || indentOf(line) <= declIndent)) {
         closedBefore = true;
         break;
       }
@@ -440,10 +484,16 @@ export function sourcesUnder(root: string): ScannedSource[] {
  *     it is inspected for a close like the other two prefixes, because the
  *     region is what decides what the two slashes are.
  *
- *  Passing nothing leaves the shape-only reading, which suits a caller with
- *  no file in hand (a single-line planted pin, an import-clause walk); a SCAN
- *  must pass the region, because reading live code as prose there is the
- *  violation going unreported.
+ *  Passing nothing is NOT the pure shape test (a line is comment when its
+ *  trimmed text begins with `*`, `//` or `/*`). It presumes a star line
+ *  continues a comment and then answers every prefixed line but a `//` line
+ *  by its close search, as an open region does, so code behind a close is
+ *  live: `/* call *\/ code` and ` * prose *\/ code` both read as live. That
+ *  suits a caller with no file in hand (a single-line planted pin, an
+ *  import-clause walk); a SCAN must pass the region, because reading live
+ *  code as prose there is the violation going unreported. A caller that
+ *  wants the pure shape test is a satisfying-side scan, and
+ *  {@link isCommentedOut} keeps it.
  *
  *  Two residuals, neither closed here:
  *
@@ -497,8 +547,9 @@ export function isCommentLine(line: string, insideRegion?: boolean): boolean {
     // Nothing closes on this line, and every prefix reaching here is prose
     // on that evidence: an opener with nothing after it, a `//` inside a
     // region, and a leading star with a region open or none known — the star
-    // is the one that needed the region. `undefined` keeps the older
-    // shape-only reading for callers with no file context.
+    // is the one that needed the region. With none known (`undefined`), a
+    // star line is presumed to continue a comment, which is why it reaches
+    // the close search at all.
     return true;
   }
   const rest = trimmed.slice(close + 2).trim();
@@ -516,6 +567,17 @@ export function isCommentLine(line: string, insideRegion?: boolean): boolean {
  * and {@link isCommentLine} reads it as live code. That is the same accident
  * as a line-comment toggle and it must not be the one that gets through.
  *
+ * The first test is the pure SHAPE test, not {@link isCommentLine}: a line
+ * whose trimmed text begins with `*`, `//` or `/*` is commented out, whatever
+ * follows a close on it. This predicate serves scans whose match SATISFIES a
+ * demand, where over-matching is the silent failure, so a call riding behind a
+ * comment close (`/* note *\/ sweep()`) is not trusted to vouch for anything;
+ * a real call written that way reads as missing, which is a red bar naming the
+ * line. The same goes for a star line: one that is live code reads as missing,
+ * loudly, and one that is prose behind a region the region pass under-reports
+ * (a block comment opened mid-line, an opener refused by inverted template
+ * parity) stays prose.
+ *
  * The walk is upward from the match rather than a stateful pass over the file
  * because `occurrencesOf` calls this only on lines that already matched the
  * pattern, which is a handful per scan. It recognizes an opener only when it
@@ -523,7 +585,7 @@ export function isCommentLine(line: string, insideRegion?: boolean): boolean {
  * a phantom block.
  */
 export function isCommentedOut(line: string, lineIndex: number, lines: string[]): boolean {
-  if (isCommentLine(line)) return true;
+  if (/^\s*(?:\*|\/\/|\/\*)/.test(line)) return true;
   for (let i = lineIndex - 1; i >= 0; i--) {
     const trimmed = lines[i].trim();
     // A close before an open means the nearest block already ended.
@@ -531,6 +593,35 @@ export function isCommentedOut(line: string, lineIndex: number, lines: string[])
     if (trimmed.startsWith('/*')) return true;
   }
   return false;
+}
+
+/** The skip predicate {@link occurrencesOf} hands each matched line: the line,
+ *  its index, the whole file, and whether a block-comment region is open when
+ *  the line begins. */
+export type SkipLine = (
+  line: string,
+  lineIndex: number,
+  lines: string[],
+  insideRegion: boolean,
+) => boolean;
+
+/** The prose-only skip for a scan whose match is a violation or a demand:
+ *  {@link isCommentLine} with the region {@link occurrencesOf} computes once
+ *  per file, so a star-leading line of live code (a wrapped multiplication in
+ *  a SQL literal) is scanned rather than read as a docblock continuation.
+ *
+ *  Not for a scan whose match SATISFIES a demand. Prose behind a region the
+ *  region pass under-reports reads as live here, which on that side is a
+ *  satisfied pair nobody wrote; those scans take {@link isCommentedOut}. */
+export const skipCommentLine: SkipLine = (line, _lineIndex, _lines, insideRegion) =>
+  isCommentLine(line, insideRegion);
+
+/** {@link skipCommentLine}, plus any line `definition` matches: the shape a
+ *  scan uses to skip the definition of the call it counts, so the defining
+ *  module is still scanned for calls to it. */
+export function skipCommentOr(definition: RegExp): SkipLine {
+  return (line, lineIndex, lines, insideRegion) =>
+    definition.test(line) || skipCommentLine(line, lineIndex, lines, insideRegion);
 }
 
 /**
@@ -544,11 +635,16 @@ export function isCommentedOut(line: string, lineIndex: number, lines: string[])
  * fourth argument saying whether the line begins inside an open block-comment
  * region, computed once per file by {@link blockCommentInterior} because a
  * leading star cannot be read from one line alone.
+ *
+ * A forbidden-shape or demand-side scan passes {@link skipCommentLine}, or
+ * {@link skipCommentOr} when it also skips a definition line, rather than a
+ * closure of its own: a closure that drops the region argument still
+ * compiles and quietly falls back to the no-region reading.
  */
 export function occurrencesOf(
   files: ScannedSource[],
   pattern: RegExp,
-  skipLine?: (line: string, lineIndex: number, lines: string[], insideRegion: boolean) => boolean,
+  skipLine?: SkipLine,
 ): { keys: string[]; sites: string[] } {
   const keys = new Set<string>();
   const sites: string[] = [];

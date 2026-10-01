@@ -715,13 +715,16 @@
  * TypeScript and its semicolon in a migration, with dollar-quoted spans carried
  * across lines so a semicolon inside one ends nothing. The comment handling is
  * the half that could not be shared at any bound. The
- * comment handling is local for a related reason: the shared shape-only
- * predicate answers about a whole LINE, which both skips a head tagged for an
- * editor (`/* sql *\/ \`UPDATE accounts`) and, more seriously, would skip a
- * live statement because something earlier on its line looked like a comment
- * marker. Dropping a whole line because something on it looked like a comment
- * marker is what made that possible; blanking the comment SPAN and leaving the
- * rest of the line to be read is what closes it.
+ * comment handling is local for a related reason: the shared predicate,
+ * `isCommentLine`, answers about a whole LINE. It reads code behind a leading
+ * comment's close as live, but it cannot say which PART of a line is comment,
+ * so a line it reads as prose is dropped whole, and it knows neither SQL's
+ * `--` comment nor quoting, so it cannot tell a comment marker from the same
+ * characters inside a string or a template literal's SQL. A live statement on
+ * a line that merely begins with something shaped like a comment marker is
+ * therefore one it can skip. Blanking the comment SPAN, in the dialect the
+ * text is written in, and leaving the rest of the line to be read is what
+ * closes that.
  *
  * Planted positives and negatives in the pattern specs keep every pattern
  * honest, and each is planted where the feature it cites is the only thing

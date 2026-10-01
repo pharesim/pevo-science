@@ -35,7 +35,10 @@ import {
   blockCommentInterior,
   enclosingSymbol,
   isCommentLine,
+  isCommentedOut,
   occurrencesOf,
+  skipCommentLine,
+  skipCommentOr,
 } from './enclosing-symbol.js';
 
 /** A stand-in for a canary's forbidden-shape pattern: the discounted-citation
@@ -43,15 +46,6 @@ import {
  *  Any token would do for the machinery; this one keeps the fixtures readable
  *  as the corpus shape the region argument was added for. */
 const FACTOR_READ_RE = /\bself_citation_discount\b/;
-
-/** The skip a forbidden-shape scan hands to `occurrencesOf`: prose by shape
- *  plus the block-comment region `occurrencesOf` computes once per file. */
-const skipCommentLine = (
-  line: string,
-  _lineIndex: number,
-  _lines: string[],
-  insideRegion: boolean,
-): boolean => isCommentLine(line, insideRegion);
 
 describe('enclosing-symbol: the comment predicate, the brace walk and the region pass', () => {
   it('the comment predicate skips whole-line prose only, never live code behind an inline block comment', () => {
@@ -149,6 +143,79 @@ describe('enclosing-symbol: the comment predicate, the brace walk and the region
     // comment on its shape: nothing was open for the close to end.
     expect(isCommentLine('  // legacy note */ return custodyClaimFor(account);', false)).toBe(true);
     expect(isCommentLine('  // legacy note */ return custodyClaimFor(account);')).toBe(true);
+
+    // The no-region reading is not the pure shape test: code behind a close
+    // is live to it. The satisfying-side predicate keeps the shape test, so a
+    // call riding behind a close never vouches for a demand.
+    expect(isCommentLine('/* call */ invalidateSessionFreshAuthTokens(u);')).toBe(false);
+    expect(isCommentLine(' * prose call */ invalidateSessionFreshAuthTokens(u);')).toBe(false);
+    expect(isCommentedOut('/* call */ invalidateSessionFreshAuthTokens(u);', 0, [])).toBe(true);
+    expect(
+      isCommentedOut(' * prose call */ invalidateSessionFreshAuthTokens(u);', 0, []),
+    ).toBe(true);
+    expect(isCommentedOut('// invalidateSessionFreshAuthTokens(u);', 0, [])).toBe(true);
+    expect(isCommentedOut('  invalidateSessionFreshAuthTokens(u);', 0, [])).toBe(false);
+  });
+
+  it('the exported skips read the region, and the combinator adds a definition line', () => {
+    // The one region-aware skip every forbidden-shape and demand-side scan
+    // takes. A star-leading live line is counted; a docblock continuation
+    // quoting the same token is spared.
+    const starLeadingLive = [
+      'function weightedClaim(account: AccountRow) {',
+      '  return Number(account.active)',
+      '    * custodyClaimFor(account).length;',
+      '}',
+    ];
+    const proseContinuation = [
+      '/**',
+      ' * custodyClaimFor(account) is the one licensed derivation.',
+      ' */',
+    ];
+    const CALL_RE = /\bcustodyClaimFor\s*\(/;
+    expect(
+      occurrencesOf([{ rel: 'lib/synthetic.ts', lines: starLeadingLive }], CALL_RE, skipCommentLine)
+        .keys,
+    ).toEqual(['lib/synthetic.ts#weightedClaim']);
+    expect(
+      occurrencesOf([{ rel: 'lib/synthetic.ts', lines: proseContinuation }], CALL_RE, skipCommentLine)
+        .keys,
+    ).toEqual([]);
+
+    // The combinator: the same two readings, plus the definition line.
+    const skipDefinition = skipCommentOr(/function\s+custodyClaimFor\s*\(/);
+    expect(
+      occurrencesOf([{ rel: 'lib/synthetic.ts', lines: starLeadingLive }], CALL_RE, skipDefinition)
+        .keys,
+    ).toEqual(['lib/synthetic.ts#weightedClaim']);
+    expect(
+      occurrencesOf([{ rel: 'lib/synthetic.ts', lines: proseContinuation }], CALL_RE, skipDefinition)
+        .keys,
+    ).toEqual([]);
+    const definitionOnly = ['export function custodyClaimFor(account: AccountRow) {', '  return 1;', '}'];
+    expect(
+      occurrencesOf([{ rel: 'lib/synthetic.ts', lines: definitionOnly }], CALL_RE, skipDefinition)
+        .keys,
+    ).toEqual([]);
+    expect(
+      occurrencesOf([{ rel: 'lib/synthetic.ts', lines: definitionOnly }], CALL_RE, skipCommentLine)
+        .keys,
+    ).toEqual(['lib/synthetic.ts#custodyClaimFor']);
+
+    // The region a skip receives is the region of the line it is asked
+    // about. A docblock whose LAST line carries text and the close is prose
+    // only because the region is open when that line begins; handed the
+    // next line's region instead, it reads as a live star line.
+    const textOnClosingLine = [
+      '/**',
+      ' * the licensed call custodyClaimFor(x)',
+      ' * described here custodyClaimFor(y) */',
+      'const a = 1;',
+    ];
+    expect(
+      occurrencesOf([{ rel: 'lib/synthetic.ts', lines: textOnClosingLine }], CALL_RE, skipCommentLine)
+        .keys,
+    ).toEqual([]);
   });
 
   it('the brace walk enters a comment region only where one demonstrably exists, and reads the code after its close', () => {
@@ -171,6 +238,74 @@ describe('enclosing-symbol: the comment predicate, the brace walk and the region
       'const stray = jwt.sign(payload, secret);',
     ];
     expect(enclosingSymbol(closingBraceAfterCommentClose, 5)).toBe(MODULE_SCOPE);
+    // EXIT, at any indentation: a docblock's natural close is indented, so a
+    // brace after a close ends the declaration whatever the line's own
+    // indentation. An indentation test there misses ` */ }` and resolves
+    // INWARD, into the function the brace closes.
+    for (const closeLine of [' */ }', '   */ }']) {
+      const indentedClose = closingBraceAfterCommentClose.map((line) =>
+        line === '*/ }' ? closeLine : line,
+      );
+      expect(enclosingSymbol(indentedClose, 5), closeLine).toBe(MODULE_SCOPE);
+    }
+    const indentedCloseEndsRoute = [
+      "router.post('/session-auth', async (req, res) => {",
+      '  /*',
+      '  the licensed call sits in here',
+      '  */ });',
+      '',
+      'const stray = jwt.sign(payload, secret);',
+    ];
+    expect(enclosingSymbol(indentedCloseEndsRoute, 5)).toBe(MODULE_SCOPE);
+    // The cost, pinned so it is a choice rather than an accident: where the
+    // brace after a close ends an INNER block, every declaration the walk
+    // tests reads it as its own end, so the answer moves OUTWARD past the
+    // function that really encloses the match. A set-equality consumer reads
+    // that as a new member unless the outer scope is itself licensed.
+    const closeEndsInnerRoute = [
+      'export function registerRoutes(router: Router) {',
+      "  router.post('/session-auth', async (req, res) => {",
+      '    /*',
+      '    the licensed call sits in here',
+      '    */ });',
+      '',
+      '  const stray = jwt.sign(payload, secret);',
+      '}',
+    ];
+    expect(enclosingSymbol(closeEndsInnerRoute, 6)).toBe(MODULE_SCOPE);
+
+    // EXIT, after a comment opened MID-LINE: the walk does not track that
+    // comment, so its close line is the one place it becomes visible. A
+    // close beginning its line is read like a tracked region's close, so the
+    // brace behind it ends the declaration rather than being missed.
+    const midLineOpenedCommentClosesWithBrace = [
+      'export async function allowedMint(username: string) {',
+      '  const token = jwt.sign(payload, secret); /* the licensed call,',
+      '  described at length',
+      '  */ }',
+      '',
+      'const stray = jwt.sign(payload, secret);',
+    ];
+    expect(enclosingSymbol(midLineOpenedCommentClosesWithBrace, 5)).toBe(MODULE_SCOPE);
+    expect(enclosingSymbol(midLineOpenedCommentClosesWithBrace, 1)).toBe('allowedMint');
+
+    // RE-ENTRY BOUND, exclusive of the opener's own line: whether a close
+    // follows is asked of the lines AFTER the opener. A search starting on
+    // the opener's line finds the close that precedes it there, re-enters a
+    // region nothing closes, and swallows the declaration's brace.
+    const reopenedNeverClosed = [
+      'function f() {',
+      '  /*',
+      '  note',
+      '*/ /* second, never closed',
+      '}',
+      '',
+      'const stray = custodyClaimFor(account);',
+    ];
+    expect(enclosingSymbol(reopenedNeverClosed, 6)).toBe(MODULE_SCOPE);
+    expect(blockCommentInterior(reopenedNeverClosed)).toEqual([
+      false, false, true, true, false, false, false,
+    ]);
 
     // EXIT, mid-line: a region ends at its close wherever that sits, not
     // only at end of line. A test anchored to the line's end keeps the
@@ -324,9 +459,10 @@ describe('enclosing-symbol: the comment predicate, the brace walk and the region
 
     // PARITY INVERSION, pinned as the residual it is. A backtick inside a
     // regex literal between the declaration and the target flips the
-    // whole-file backtick count: the literal below then reads as closed, the
-    // opener in its content passes the template guard, and the declaration's
-    // brace is swallowed. This resolves INWARD, the walk's silent direction;
+    // whole-file backtick count: the SQL literal in
+    // regexBacktickThenLiteralOpener then reads as closed, the opener in its
+    // content passes the template guard, and the declaration's brace is
+    // swallowed. This resolves INWARD, the walk's silent direction;
     // the same file without the stray backtick resolves outward. Not closed,
     // because telling a regex backtick from a delimiter is the lexer this
     // module declines.
@@ -403,8 +539,9 @@ describe('enclosing-symbol: the comment predicate, the brace walk and the region
     // The region pass answers the same question the brace walk does and
     // needs the same two guards, or it reopens the hole it was added to
     // close: a SQL block comment inside a query literal would put every line
-    // below it inside a phantom region, and the star-leading factor read
-    // below would be invisible to the scans that consume this.
+    // after it inside a phantom region, and the star-leading factor read in
+    // sqlCommentThenLiveRead's scoreFactor would be invisible to the scans
+    // that consume this.
     const sqlCommentThenLiveRead = [
       'function citationSql() {',
       '  return `',
@@ -523,7 +660,7 @@ describe('enclosing-symbol: the comment predicate, the brace walk and the region
     // OPENER, line start only: the same boundary the brace walk draws. A
     // string holding an opener would open a phantom region running to the
     // next docblock's close, and every star-leading line between reads as
-    // prose, so the live read below would be skipped.
+    // prose, so the live read in midLineOpenerInAString would be skipped.
     const midLineOpenerInAString = [
       "const pattern = 'image/*';",
       'export function scoreFactor(w: Weights, cpq: CitationRow) {',
@@ -546,10 +683,10 @@ describe('enclosing-symbol: the comment predicate, the brace walk and the region
 
     // PARITY INVERSION, pinned as the residuals they are. A backtick inside
     // a regex literal flips the whole-file count for every line after it:
-    // the query literal below reads as closed, the opener in its content
-    // passes the template guard, a docblock further down supplies the close,
-    // and the star-leading read between is prose to the predicate — the
-    // silent direction. The same file without the stray backtick counts it.
+    // the query literal in regexBacktickInvertsParity reads as closed, the
+    // opener in its content passes the template guard, a docblock further
+    // down supplies the close, and the star-leading read between is prose to
+    // the predicate — the silent direction. The same file without the stray backtick counts it.
     const regexBacktickInvertsParity = [
       'const TICK_RE = /`/;',
       'const sql = `',

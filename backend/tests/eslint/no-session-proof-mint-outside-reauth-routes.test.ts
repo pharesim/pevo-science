@@ -117,6 +117,8 @@ import {
   enclosingSymbol,
   isCommentLine,
   occurrencesOf,
+  skipCommentLine,
+  skipCommentOr,
   sourcesUnder,
   type ScannedSource,
 } from '../support/enclosing-symbol.js';
@@ -178,18 +180,6 @@ const jointImportStatement = (lines: string[], lineIndex: number): string => {
   }
   return joined;
 };
-
-/** The prose-only skip this file's forbidden-shape scans hand to
- *  `occurrencesOf`: comment by
- *  shape plus the block-comment region `occurrencesOf` computes once per
- *  file, so a star-leading line of live code (a wrapped multiplication in a
- *  SQL literal) is scanned rather than read as a docblock continuation. */
-const skipCommentLine = (
-  line: string,
-  _lineIndex: number,
-  _lines: string[],
-  insideRegion: boolean,
-): boolean => isCommentLine(line, insideRegion);
 
 /** The three shapes that name the mint without holding a callable reference
  *  under a new name: its own definition, a whole-comment line, and an unaliased
@@ -457,11 +447,7 @@ function sessionIssuingSites(files: ScannedSource[]): { keys: string[]; sites: s
     seenNames.add(name);
     const callRe = new RegExp(`\\b${name}\\s*\\(`);
     const definitionRe = new RegExp(`\\bfunction\\s+${name}\\s*\\(`);
-    const calls = occurrencesOf(
-      files,
-      callRe,
-      (line, _i, _lines, inside) => definitionRe.test(line) || isCommentLine(line, inside),
-    );
+    const calls = occurrencesOf(files, callRe, skipCommentOr(definitionRe));
     for (const key of calls.keys) {
       keys.add(key);
       const sym = key.split('#')[1];
@@ -518,7 +504,7 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     const { keys, sites } = occurrencesOf(
       sources,
       SESSION_SLIDE_CALL_RE,
-      (line, _i, _lines, inside) => SESSION_SLIDE_DEFINITION_RE.test(line) || isCommentLine(line, inside),
+      skipCommentOr(SESSION_SLIDE_DEFINITION_RE),
     );
     expect(
       keys,
@@ -601,7 +587,7 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     const { keys, sites } = occurrencesOf(
       module,
       MEMSTORE_TOUCH_RE,
-      (line, _i, _lines, inside) => MEMSTORE_DEFINITION_RE.test(line) || isCommentLine(line, inside),
+      skipCommentOr(MEMSTORE_DEFINITION_RE),
     );
     expect(
       keys,
@@ -617,7 +603,7 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     const { keys, sites } = occurrencesOf(
       module,
       ENTRY_KEY_PREFIX_RE,
-      (line, _i, _lines, inside) => ENTRY_KEY_PREFIX_DEFINITION_RE.test(line) || isCommentLine(line, inside),
+      skipCommentOr(ENTRY_KEY_PREFIX_DEFINITION_RE),
     );
     expect(
       keys,
@@ -643,7 +629,7 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     const { keys, sites } = occurrencesOf(
       sources,
       SEEDING_HOOK_RE,
-      (line, _i, _lines, inside) => SEEDING_HOOK_DEFINITION_RE.test(line) || isCommentLine(line, inside),
+      skipCommentOr(SEEDING_HOOK_DEFINITION_RE),
     );
     expect(
       keys,

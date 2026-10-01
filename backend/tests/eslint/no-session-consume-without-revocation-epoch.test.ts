@@ -71,23 +71,23 @@ import {
   blockCommentInterior,
   enclosingSymbol,
   isCommentLine,
+  isCommentedOut,
   isModuleScopeKey,
   occurrencesOf,
+  skipCommentOr,
   sourcesUnder,
   type ScannedSource,
 } from '../support/enclosing-symbol.js';
 
-/** The prose-only skip this file's forbidden-shape scans hand to
- *  `occurrencesOf`: comment by
- *  shape plus the block-comment region `occurrencesOf` computes once per
- *  file, so a star-leading line of live code (a wrapped multiplication in a
- *  SQL literal) is scanned rather than read as a docblock continuation. */
-const skipCommentLine = (
-  line: string,
-  _lineIndex: number,
-  _lines: string[],
-  insideRegion: boolean,
-): boolean => isCommentLine(line, insideRegion);
+/** The skip for the SATISFYING side of this file's pairings: the epoch
+ *  reference and the surface-field mention. A match there vouches for a
+ *  consume or a surface, so an over-match is the silent failure, and the
+ *  region-aware skip the primary side uses reads prose as live wherever the
+ *  region pass under-reports a comment (a block comment opened mid-line, a
+ *  line-start opener refused by an inverted template-parity count). The
+ *  shape test in `isCommentedOut` keeps that prose out. */
+const skipCommentedOut = (line: string, lineIndex: number, lines: string[]): boolean =>
+  isCommentedOut(line, lineIndex, lines);
 
 /** A CALL to the session-surface consume: identifier followed by an open paren,
  *  optionally across whitespace so a wrapped call still matches. An import
@@ -140,13 +140,9 @@ const sources = sourcesUnder(path.resolve(__dirname, '..', '..', 'src'));
  *  satisfying set and reported separately for the primary side; see the file
  *  docblock for why a pairing scan must never let module scope satisfy. */
 function epochlessConsumes(files: ScannedSource[]) {
-  const consumes = occurrencesOf(
-    files,
-    CONSUME_CALL_RE,
-    (line, _i, _lines, inside) => CONSUME_DEFINITION_RE.test(line) || isCommentLine(line, inside),
-  );
+  const consumes = occurrencesOf(files, CONSUME_CALL_RE, skipCommentOr(CONSUME_DEFINITION_RE));
   const epochs = new Set(
-    occurrencesOf(files, EPOCH_REF_RE, skipCommentLine).keys.filter((k) => !isModuleScopeKey(k)),
+    occurrencesOf(files, EPOCH_REF_RE, skipCommentedOut).keys.filter((k) => !isModuleScopeKey(k)),
   );
   return {
     consumes,
@@ -157,13 +153,9 @@ function epochlessConsumes(files: ScannedSource[]) {
 
 /** The surface↔field pairing, same shape and same module-scope discipline. */
 function fieldlessSurfaces(files: ScannedSource[]) {
-  const surfaces = occurrencesOf(
-    files,
-    SURFACE_CALL_RE,
-    (line, _i, _lines, inside) => SURFACE_DEFINITION_RE.test(line) || isCommentLine(line, inside),
-  );
+  const surfaces = occurrencesOf(files, SURFACE_CALL_RE, skipCommentOr(SURFACE_DEFINITION_RE));
   const fields = new Set(
-    occurrencesOf(files, SURFACE_FIELD_RE, skipCommentLine).keys.filter((k) => !isModuleScopeKey(k)),
+    occurrencesOf(files, SURFACE_FIELD_RE, skipCommentedOut).keys.filter((k) => !isModuleScopeKey(k)),
   );
   return {
     surfaces,
@@ -246,7 +238,10 @@ function literalEpochSurfaces(files: ScannedSource[]) {
         const value = valueTextAfterKey(lines, i, 'sessionsInvalidatedAtMs', interior);
         const f = factFor(key());
         if (value === null || EPOCH_REF_RE.test(value)) {
-          f.epochRef = true;
+          // Satisfying-side, so read by shape like the epoch pairing: a
+          // write behind a comment close, or on a star line the region pass
+          // left live, does not vouch for the surface.
+          if (!isCommentedOut(line, i, lines)) f.epochRef = true;
         } else if (LITERAL_VALUE_RE.test(value)) {
           f.literal = true;
           f.lines.push(`${rel}:${i + 1} — ${line.trim()}`);
@@ -254,11 +249,7 @@ function literalEpochSurfaces(files: ScannedSource[]) {
       }
     });
   }
-  const surfaces = occurrencesOf(
-    files,
-    SURFACE_CALL_RE,
-    (line, _i, _lines, inside) => SURFACE_DEFINITION_RE.test(line) || isCommentLine(line, inside),
-  );
+  const surfaces = occurrencesOf(files, SURFACE_CALL_RE, skipCommentOr(SURFACE_DEFINITION_RE));
   const offenders: string[] = [];
   for (const key of surfaces.keys) {
     const f = facts.get(key);
@@ -396,6 +387,77 @@ describe('every session-window consume carries the account revocation epoch', ()
     const surfaceResult = fieldlessSurfaces([surfaceEvasion]);
     expect(surfaceResult.moduleScoped).toEqual([`lib/synthetic.ts#${MODULE_SCOPE}`]);
     expect(surfaceResult.offenders).toEqual([`lib/synthetic.ts#${MODULE_SCOPE}`]);
+  });
+
+  it('prose naming the epoch behind an under-reported comment region satisfies nothing', () => {
+    // Planted probes for the satisfying side. The region pass misses a block
+    // comment opened mid-line, so the star line inside it reads as live to
+    // the region-aware skip, and an epoch named there paired with the
+    // epoch-less consume below it in the same function. The shape test the
+    // satisfying scans use reads it as prose, so the consume stays an
+    // offender.
+    const midLineOpenedProse: ScannedSource = {
+      rel: 'routes/synthetic.ts',
+      lines: [
+        'async function consumeBesideProse(token: string, username: string) {',
+        '  const started = Date.now(); /* the epoch note',
+        '   * hiveSessionsInvalidatedAt is read by the caller',
+        '   */',
+        '  return consumeSessionFreshAuthToken(token, username, undefined);',
+        '}',
+      ],
+    };
+    expect(blockCommentInterior(midLineOpenedProse.lines)[2]).toBe(false);
+    expect(epochlessConsumes([midLineOpenedProse]).offenders).toEqual([
+      'routes/synthetic.ts#consumeBesideProse',
+    ]);
+
+    // The same through an inverted template-parity count: a stray backtick in
+    // a regex makes the region pass refuse a real line-start docblock opener,
+    // so its star line reads as live to the region-aware skip.
+    const parityInvertedProse: ScannedSource = {
+      rel: 'routes/synthetic.ts',
+      lines: [
+        'const TICK_RE = /`/;',
+        'async function consumeBesideProse(token: string, username: string) {',
+        '  /**',
+        '   * hiveSessionsInvalidatedAt is read by the caller',
+        '   */',
+        '  return consumeSessionFreshAuthToken(token, username, undefined);',
+        '}',
+      ],
+    };
+    expect(blockCommentInterior(parityInvertedProse.lines)[3]).toBe(false);
+    expect(epochlessConsumes([parityInvertedProse]).offenders).toEqual([
+      'routes/synthetic.ts#consumeBesideProse',
+    ]);
+
+    // Control: the same function reading the epoch in live code is paired.
+    const liveEpoch: ScannedSource = {
+      rel: 'routes/synthetic.ts',
+      lines: [
+        'async function consumeWithEpoch(req: Request, token: string, username: string) {',
+        '  const epoch = req.hiveSessionsInvalidatedAt;',
+        '  return consumeSessionFreshAuthToken(token, username, epoch);',
+        '}',
+      ],
+    };
+    expect(epochlessConsumes([liveEpoch]).offenders).toEqual([]);
+
+    // The value seam's epoch fact is satisfying-side as well: a shorthand
+    // write behind a comment close does not vouch for an accepting surface.
+    const epochBehindClose: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'async function consumeBehindClose(token, user, sessionsInvalidatedAtMs) {',
+        '  return consumeFreshAuthTokenForSurface(token, {',
+        '    acceptSession: true,',
+        '    /* forwarded */ sessionsInvalidatedAtMs,',
+        '  });',
+        '}',
+      ],
+    };
+    expect(literalEpochSurfaces([epochBehindClose]).offenders).toHaveLength(1);
   });
 
   it('a session-accepting surface with a literal epoch value is an offender', () => {

@@ -108,21 +108,11 @@ import {
   enclosingSymbol,
   isCommentLine,
   occurrencesOf,
+  skipCommentLine,
+  skipCommentOr,
   sourcesUnder,
   type ScannedSource,
 } from '../support/enclosing-symbol.js';
-
-/** The prose-only skip this file's forbidden-shape scans hand to
- *  `occurrencesOf`: comment by
- *  shape plus the block-comment region `occurrencesOf` computes once per
- *  file, so a star-leading line of live code (a wrapped multiplication in a
- *  SQL literal) is scanned rather than read as a docblock continuation. */
-const skipCommentLine = (
-  line: string,
-  _lineIndex: number,
-  _lines: string[],
-  insideRegion: boolean,
-): boolean => isCommentLine(line, insideRegion);
 
 const HELPER_MODULE = 'lib/custody-claim.ts';
 
@@ -513,7 +503,7 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
     const { keys, sites } = occurrencesOf(
       sources,
       HELPER_CALL_RE,
-      (line, _i, _lines, inside) => HELPER_DEFINITION_RE.test(line) || isCommentLine(line, inside),
+      skipCommentOr(HELPER_DEFINITION_RE),
     );
     expect(keys, `custodyClaimFor call sites:\n${sites.join('\n')}`).toEqual(
       [...ALLOWED_HELPER_CALL_SITES].sort(),
