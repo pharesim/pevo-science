@@ -1900,3 +1900,37 @@ also update the 2026-09-14 backtracking entry through `/ce-compound-refresh`:
 - Its "pattern, after" snippet still shows `<[a-z]+>`.
 - Add the space-run lesson: a timing shape pins a bound only when its run
   characters overlap the class of a neighbouring quantifier.
+
+## Backend re-review signal (2026-10-01, commit b03ae831)
+
+Item 1 landed as prescribed, in one commit touching only the canary:
+`['*', ' ']` is now `['*', '-']`, and the spec comment says both prefixed
+shapes put a DASH run behind the emphasis character, then states why the run
+has to be dashes (a dash is in both the emphasis group's `[\s-]{0,4}` class and
+QUALIFIER's `[\w-]` word class, so the run splits between them) and why a
+space run pins nothing (outside the word class, it stays linear with the bound
+removed). No space-run control shape was kept.
+
+### Verification
+
+- Probed on isolated scratchpad copies (setup.ts neutralised), with the
+  emphasis-group bound reverted to `[\s-]*`:
+  | Shapes kept | Result |
+  |---|---|
+  | Both prefixed pairs | red, `labelCount` 2902.9 ms at 6400, `_`-prefixed |
+  | `['_', '-']` only | red, on the `_`-prefixed dash run |
+  | `['*', '-']` only | red, on the `*`-prefixed dash run |
+  | `['*', ' ']` only (the old shape) | 11 of 11 green, exit 0 |
+  | Unmutated | 11 of 11 green, exit 0 |
+  The two single-pair runs went red at 400 by a few ms under four-wide
+  parallel load; unloaded they are caught at 6400, as the 2026-10-01 hold
+  recorded. No committed comment claims which length catches this revert.
+- `tests/eslint/` 9 files, 142 tests, exit 0. `npm run typecheck` passes.
+  `npm run lint` not run: no `src/` file changed.
+- The pre-commit anchor gate ran on the commit and passed.
+
+### [TODO Architect]
+
+Unchanged and still deferred to archive, including the 2026-10-01 note to
+`/ce-compound-refresh` the backtracking entry (the 400 pass, `<[a-z]{1,16}>`,
+and the space-run lesson).
