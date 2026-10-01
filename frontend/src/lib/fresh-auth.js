@@ -54,9 +54,9 @@ const WINDOW_PREFLIGHT_MARGIN_MS = 120_000;
 // triple alone. Single-slot by design: each ORCID fresh_auth round-trip mints
 // state for one target, so a second flow overwrites the cached entry (matches
 // the existing pevo_orcid_mode overwrite pattern). The token itself is a
-// single-use bearer bound to the JWT subject with the same 5-minute TTL as
-// session-kind proofs; backend invariant is identical (consumed atomically on
-// broadcast attempt, gone post-attempt whether success or failure).
+// single-use bearer bound to the JWT subject, with a 5-minute TTL; the backend
+// burns the token at the consume a request carrying it reaches, whatever that
+// consume then decides.
 
 // `RETURN_PATH_KEY` stashes pre-redirect context so the callback handler can
 // navigate the user back to the page they initiated the action on. Cleared by
@@ -250,8 +250,9 @@ function toastLocalized(section, name, fallback) {
 // stays unavailable. A second consecutive rejection does the opposite: it
 // retires the memo (`clearPasswordFactorMemo`), so the next resolution
 // re-reads the status rather than riding an answer the verifying route has
-// just contradicted twice. Only a rejection of the password retires it; a
-// transport failure on the retry mint leaves the memo standing.
+// just contradicted twice. On the retry mint, this function's own clear of
+// the memo runs only on an UNAUTHORIZED answer, the code a rejected password
+// draws; a transport failure there does not trigger it.
 //
 // Every await below is also a teardown boundary. The prompt is a human-length
 // pause and the mint is a round-trip, so the tab's subject can change under
@@ -510,7 +511,8 @@ function persistWindow(entry) {
     _memoryWindow = null;
   } catch {
     // The window still covers the rest of this page load through the mirror;
-    // only surviving the ORCID round-trip (a full page load) needs storage.
+    // what storage adds is surviving a full page load, such as a reload or
+    // the ORCID round-trip.
     //
     // Drop any older stored entry before installing the mirror. A failed
     // write can leave a stale window readable (quota hit after an earlier
@@ -673,7 +675,7 @@ export function cacheConsentOpProof(
       }),
     );
   } catch {
-    /* same swallow as cacheSessionProof */
+    /* swallowed; unlike cacheSessionProof's write, nothing is dropped */
   }
 }
 
@@ -687,28 +689,29 @@ export function cacheConsentOpProof(
 //
 // A token that is not a string is corruption, and it is dropped here with the
 // tokenless and unreadable-deadline cases rather than at either orchestrator.
-// One drop at the single reader is what both cache legs inherit —
-// `withSettingsFreshAuth` and `withAuthorshipFreshAuth` each hand whatever this
-// returns straight to their guarded call — and it is the placement
+// Dropping it at the single reader is what both cache legs inherit —
+// `withSettingsFreshAuth` and `withAuthorshipFreshAuth` each hand any token
+// this returns straight to their guarded call — and it is the placement
 // `evictUnnamedAcquisition` chose one slot over, for the same reason: a refusal
 // carried by each consumer refuses the value without dropping the entry behind
-// it, so the next attempt on that target re-reads it and refuses again.
-// The entry cannot outlive that refusal by way of the retry gate either:
-// `consentOpFreshAuthRetryGate` rethrows anything that is not
-// FRESH_AUTH_REQUIRED before it reaches its `clearProofCache` hook, and the
-// routes whose request schema declares the proof as a bounded string answer a
-// non-string with a validation rejection rather than a fresh-auth one — the
-// accreditation-metadata edit and the admin authority actions. On those the
-// gate's clear never runs, so short of a subject scrub nothing else would drop
-// the entry inside its TTL.
+// it, so every attempt on the entry's own target that still finds it refuses
+// it again. Leaving the value for the route to refuse would not retire the
+// entry either, on the routes whose request schema declares the proof as a
+// bounded string: the accreditation-metadata edit and the admin authority
+// actions. Those answer a non-string with a validation rejection rather than a
+// fresh-auth one, and `consentOpFreshAuthRetryGate` rethrows anything that is
+// not FRESH_AUTH_REQUIRED before it reaches its `clearProofCache` hook. So
+// without the drop here, nothing on the path of an attempt one of those routes
+// refuses this way would remove the entry, and every later attempt on the
+// entry's own target that found it would send the same value again.
 //
 // The drop sits with the corruption checks, BEFORE the target comparison, and
 // that ordering is load-bearing in both directions. An entry whose token is not
 // a string is unusable at every target, so waiting for a target match would
 // leave it cached for the target it does match. The comparison itself still
 // returns null WITHOUT removing, deliberately: a proof minted for another
-// target is valid for that target, and evicting it on an unrelated lookup would
-// charge the user a re-auth on a paper they were not acting on.
+// target is valid for that target, and an unrelated lookup is no reason to
+// retire it.
 //
 // Ungated, and for a stronger reason than `evictUnnamedAcquisition` had to
 // argue: the read, the type test and the removal are adjacent synchronous
@@ -732,10 +735,11 @@ export function getCachedConsentOpProof(
     const raw = sessionStorage.getItem(CONSENT_OP_PROOF_KEY);
     if (!raw) return null;
     const entry = JSON.parse(raw);
-    // An empty-string token is falsy and was always dropped here; the typeof
-    // test widens the same branch to every other shape a JSON round-trip can
-    // carry into the slot (a number, a boolean, an object, an array), each of
-    // which is truthy and would otherwise be returned and broadcast verbatim.
+    // An empty-string token is falsy and was always dropped here, as was every
+    // other falsy token; the typeof test widens the same branch to the truthy
+    // non-strings a JSON round-trip can carry into the slot (a non-zero
+    // number, `true`, an object, an array), each of which would otherwise be
+    // returned and broadcast verbatim.
     if (!entry || !entry.token || typeof entry.token !== 'string' || !entry.expiresAt) {
       sessionStorage.removeItem(CONSENT_OP_PROOF_KEY);
       return null;
@@ -829,19 +833,21 @@ export function clearReturnPath() {
 // the recovery that drops a password can run in another tab, and a re-login
 // as the same subject keeps this tab's state on purpose, so the subject scrub
 // never runs here. A memo hit answers "observed", which is exactly the answer
-// that never falls back to ORCID, so a stale memo would prompt for a password
-// that no longer exists on every action until a page reload. Two rejections
-// at the verifying route outrank the memo exactly as one success there
-// outranks the status endpoint; a real password holder who mistypes twice
-// pays one extra status read before the memo is rebuilt.
+// that never falls back to ORCID, so a stale memo would keep prompting for a
+// password that no longer exists for as long as it stood. A rejection at
+// a prompt and again at its re-prompt outranks the memo exactly as one
+// success at the verifying route outranks the status endpoint; a real
+// password holder who mistypes at both pays one extra status read before the
+// memo is rebuilt.
 let _passwordFactorMemo = null;
 // Pairs the memo with `clearPasswordFactorMemo()`: a clear landing while a
 // status fetch is in flight must not be undone by that fetch resolving
 // afterwards, so the writer captures the generation before its await and
 // declines the write when a clear happened in between.
 let _passwordFactorMemoGeneration = 0;
-// Concurrent resolutions coalesce onto one status request. The resolver has
-// direct callers on several surfaces (session acquisition, both consent-op
+// A resolution that finds a flight in progress for its own subject joins it
+// rather than issuing a second status request. The resolver has direct
+// callers on several surfaces (session acquisition, both consent-op
 // orchestrators, and their retry gates), and two racing callers must not each
 // spend the rate-limited status budget — nor land on different factors when
 // one request succeeds and its sibling transiently fails. Mirrors the
@@ -997,11 +1003,11 @@ const _acquireInFlight = { permissive: null, suppressed: null };
 let _acquireGeneration = 0;
 
 // Abandon the module-level in-flight state when the tab's subject-bound
-// session state is torn down (explicit logout, or a login that changes the
-// JWT subject). Called by the auth store's subject scrub alongside the cache
-// clears; this function owns only the in-flight promises and their
-// generation, while the caches and the password-factor memo keep their own
-// exported clears next to it in that scrub. Two hazards this closes:
+// session state is torn down (any `auth.disconnect()`, or a login that
+// changes the JWT subject). Called by the auth store's subject scrub alongside
+// the cache clears; this function owns the in-flight state, while the caches
+// and the password-factor memo keep their own exported clears next to it in
+// that scrub. Two hazards this closes:
 //   - a caller arriving AFTER the teardown must not join a flight started
 //     for the previous subject and inherit its outcome;
 //   - an acquisition still pending at teardown must not repopulate the
@@ -1031,9 +1037,9 @@ export function abandonInFlightAcquisitions() {
 // `ensureSessionWindow` and the broadcast unwinder `acquisitionAborted` — but
 // only the guard ever cleared, so a truthy non-string reaching the broadcast
 // surface was refused and left where it was, to be re-read and re-refused on
-// every later broadcast action until the entry's idle deadline arrived,
-// a sign-out scrubbed the slot, or an unrelated page gate or upload pre-flight
-// happened to run the evicting one. The upload pre-flight is not a third such
+// every later broadcast action until something else removed it: the entry's
+// idle deadline, say, or an unrelated page gate or upload pre-flight running
+// the evicting one. The upload pre-flight is not a third such
 // reading: `windowProof` (lib/ipfs-upload.js) calls `ensureSessionWindow` and
 // refuses through its OUTCOME, so it inherited the guard's clear from the start
 // and was never a reader that could strand a value.
@@ -1355,10 +1361,11 @@ export async function ensureSessionWindow({
   // token), and the mint callback hands `fresh_auth_proof` to
   // `cacheSessionProof` unexamined, narrowing only what it returns. So a
   // non-string here either came out of that slot or has just gone into it, and
-  // a refusal that leaves it there is a lockout rather than a refusal: every
-  // later reading finds the same entry and refuses again. Which is why the
-  // eviction belongs to `acquireSessionProof`, where those two legs and the two
-  // readings of the raw result pass through one drop; the
+  // a refusal that leaves a truthy one there is a lockout rather than a
+  // refusal: every acquisition whose cache read returns that entry hands it
+  // back to be refused again. Which is why the eviction belongs to
+  // `acquireSessionProof`, where those two legs and the two readings of the
+  // raw result pass through one drop; the
   // `clearCachedSessionProof()` in this guard is a deliberate restatement of
   // it, kept so this gate answers for its own refusal without a reader having
   // to trust an eviction they cannot see from here, and a second drop of an
@@ -1522,11 +1529,12 @@ export async function freshAuthWindowReady(opts = {}) {
 // two of those that start under an authenticated subject (the settings link
 // and accreditation) hold the same pin inline, through `subjectTeardownGuard`.
 //
-// The predicate also gates every unwind past that await, because the flow keys
-// the start wrote are the subject scrub's to remove and not this unwind's: the
-// scrub (`_scrubSubjectBoundState`) bumps the generation the predicate reads
-// and removes SUBJECT_BOUND_STORAGE_KEYS in one synchronous body, and this
-// flight wrote its keys before the await the teardown landed in. So a stale
+// The predicate also gates every unwind past that await, because once a
+// teardown has landed there the flow keys the start wrote are the subject
+// scrub's to remove and not this unwind's: the scrub
+// (`_scrubSubjectBoundState`) bumps the generation the predicate reads and
+// removes SUBJECT_BOUND_STORAGE_KEYS in one synchronous body, and this flight
+// wrote its keys before the await the teardown landed in. So a stale
 // flight's own keys are already gone, and whatever stands in them now was
 // written by a later flow in this tab. Taking those would strand it:
 // `completeOrcid` reads the mode marker to decide whether the callback carries
@@ -1673,8 +1681,9 @@ export async function beginAuthorshipOrcidFreshAuth(target, isStale) {
 //                       start round-trip it resolves FRESH_AUTH_CANCELLED
 //                       (already reported by the guard) instead of navigating
 //   run(proof)          the guarded call, retried once with the fresh proof
-//   clearProofCache     drops the surface's cached proof (before the retry
-//                       mints, and again after a successful retry run)
+//   clearProofCache     empties the cached-proof slot, whatever target it
+//                       holds: on entry for every FRESH_AUTH_REQUIRED, and
+//                       again after a successful retry run
 export async function consentOpFreshAuthRetryGate(err, {
   guard,
   resolveFactor,
@@ -1788,10 +1797,10 @@ function acquisitionAborted(proof) {
 // Callers treat the null return as "abort cleanly"; any user-facing message has
 // already been shown here.
 //
-// The window is multi-use, so a broadcast that succeeds leaves it cached and
-// merely slides its idle deadline. Acquisition is only reached on the first
-// action of a window (or the first after one closes), which is what makes a
-// burst of votes cost a single re-auth act.
+// The window is multi-use, so a broadcast that succeeds does not spend it, and
+// this wrapper's acquisition puts a re-auth act in front of the user only when
+// no live window is cached. That is what makes a burst of votes cost a single
+// re-auth act.
 //
 // Keychain (self-custody) users skip acquisition entirely; their per-request
 // signed canonical message is the fresh proof.
@@ -1826,12 +1835,12 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
   // lets the client fall behind the server and evict a live token — cannot be
   // reintroduced by editing one branch and not the other.
   //
-  // The slide is gated the way the dead-window clear below is: it belongs to
-  // this flight's own window only. The window slot is a single unkeyed entry
-  // with no subject binding, so once the guard reads torn-down the entry in it
-  // was minted by whoever the tab represents next, and re-anchoring its idle
-  // deadline on the departed subject's response would extend the successor's
-  // window on traffic that was never theirs.
+  // The slide is gated the way the dead-window clear below is: past a subject
+  // teardown it must leave the slot alone. The window slot is a single
+  // unkeyed entry with no subject binding, so once the guard reads torn-down
+  // the entry in it was minted by whoever the tab represents next, and
+  // re-anchoring its idle deadline on the departed subject's response would
+  // extend the successor's window on traffic that was never theirs.
   const attemptOnce = async (windowProof) => {
     const res = await broadcastOps(username, operations, { ...broadcastOpts, freshAuthProof: windowProof });
     if (!guard.tornDown()) slideSessionWindow();
@@ -1850,20 +1859,20 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
     // helper attaches; any new error code introduced upstream must be reflected
     // here.
     if (err?.code === 'FRESH_AUTH_REQUIRED') {
-      // A 401 against a window proof means the window is genuinely closed — the
-      // idle deadline or the absolute cap arrived, or a password reset or
-      // account recovery ended every outstanding proof. That is not a spent
-      // single-use token to be re-minted behind the user's back: drop the dead
-      // window and put a real re-auth act in front of them.
+      // A 401 against a window proof means the server no longer honours that
+      // window. That is not a spent single-use token to be re-minted behind
+      // the user's back: drop the dead window and put a real re-auth act in
+      // front of them.
       //
-      // Only this flight's own window is ours to drop. The generation moves
-      // solely inside the subject scrub, which evicts the window slot in the
-      // same synchronous block BEFORE it bumps — so a torn-down flight's own
-      // window is already gone, and whatever sits in the cache now was minted
-      // by whoever the tab represents next. Evicting that would charge the
-      // successor a re-auth for a rejection that was never theirs. The
-      // mismatch arm below is unaffected either way: its
-      // `handleSessionInconsistency` disconnect runs the same scrub again.
+      // Past a subject teardown, this clear must leave the window slot alone.
+      // The generation moves solely inside the subject scrub, which evicts the
+      // window slot in the same synchronous block BEFORE it bumps — so a
+      // torn-down flight's own window is already gone, and whatever sits in
+      // the cache now was minted by whoever the tab represents next. Evicting
+      // that would charge the successor a re-auth for a rejection that was
+      // never theirs. The mismatch arm below does not depend on this clear
+      // either way: its `handleSessionInconsistency` ends the session through
+      // the scrub, or finds it already ended.
       if (!guard.tornDown()) clearCachedSessionProof();
 
       if (
