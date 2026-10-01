@@ -263,3 +263,23 @@ captured at load (account plus canonical pair), and the page remounts when the e
 another paper or another account signs in. This task no longer carries it. Its own stash stays a
 separate mechanism (a `sessionStorage` slot in `SUBJECT_BOUND_STORAGE_KEYS`), and the "capture the
 target when the composing begins" advice in that note still applies to the stash.
+
+### Architect note (2026-10-01): blocker 2 decided, light accounts vouch; now sequenced behind the gate lift
+
+User decision: light accounts should be able to vouch. No recorded reason for the gate was found.
+It arrived with light accounts, when server-side signing covered comments and votes only, and the
+custody route's `custom_json` action list mirrors it. The gate is the bug, so per blocker 2's
+own second branch this task keeps all four surfaces, with AC 3 and AC 8's vouch-handler probe
+intact, and it sequences after the gate lift:
+
+- `backend-custody-admits-vouch-and-retract` (`pending/`) admits `vouch` and `retract_vouch` on
+  the custody route under the session-kind proof (`ARCHITECTURE.md` § 6.4, decided the same
+  day).
+- `ui-light-account-vouch` (`blocked/`, behind the backend task) removes the
+  `!this.isLightAccount` clauses and the Keychain-only message.
+
+What a passwordless account composes on the vouch surfaces: the `relationship` choice for a
+vouch, and `retractReason` for a retraction (`showRetract` is the view state that reveals the
+reason field).
+
+The architect moves this file to `pending/` once `ui-light-account-vouch` is archived.
