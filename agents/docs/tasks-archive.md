@@ -1,250 +1,250 @@
-## Flip the non-consent spec's known-defect pin now that the allowlist admits `comment_options` (archived 2026-10-01) — one review round; archived clean at 1f8c5cc0
+## Make clause-(c) companion citations resolvable and check them (archived 2026-10-01) — eight review rounds, seven holds; archived clean at 486caedb
 
 ### Architect archive note (2026-10-01)
 
-Reviewed 1f8c5cc0 against its parent with /ce-code-review (correctness, project-standards on
-root CLAUDE.md, testing, adversarial in-process, learnings): zero actionable findings, zero
-malformed returns, one anchor-50 P3 advisory suppressed. Verified: 1f8c5cc0 is an ancestor of
-main and touches only the two files. The signal's claims hold against the code (`workers: 1`,
-the `seedLightAccount` ON CONFLICT branch nulling the key columns, the citer sweep, the anchor
-gate at zero hits with the control firing). The e2e run was not repeated at review; the code
-read agrees with it.
+Reviewed 486caedb against its parent with /ce-code-review (correctness, project-standards on
+root CLAUDE.md, testing, learnings; adversarial skipped, the diff is comment-only): zero
+surviving findings, zero malformed returns. One correctness P3 (the re-split clause does not
+name QUALIFIER's bounded reach) was suppressed at anchor 50. Every clause of the rewritten
+space-run sentence was measured true by four reviewers and the architect independently: with
+the emphasis-group `[\s-]{0,4}` reverted to `[\s-]*`, both dash shapes double per doubling
+(about 140 ms at 400 to about 2.8 s at 6400) and the space shape stays near 0 ms through
+100,000. The anchor gate finds zero hits on the added lines.
 
-Residual risks recorded, not filed: the header's "400 or 403" omits a pre-gate throw that
-surfaces as the error handler's generic 500 (the message pin rejects it); the review page and
-the edit-page continuation post have no real-backend binding pin; the publish leg now reaches
-the row read under a real researcher's username, and the keyless seeded row is what keeps it
-short of signing. The signal's "six clause-(c) unit suites" is loose wording:
-`lib-fresh-auth-teardown` cites the spec but says no clause-(c) companion exists.
+The deferred [TODO Architect] is discharged in a85669fb via /ce-compound-refresh: the
+2026-09-14 backtracking entry (three lengths with the shortest sized against the costliest
+regression, `<[a-z]{1,16}>`, the space-run lesson as work per character), the 2026-09-16
+terminator entry (a linear curve is not a clean result), the clause-(c) entry (the ratchet as
+landed, bounded rather than monotonic; the backticked citation form; the stale push and
+"proposed" notes), and CONCEPTS.md's source-discipline canary entry.
 
-**Owner:** ui
-**Created:** 2026-09-30
+Still open, recorded in the canary header and not filed: the NFKC micro-sign fold in the
+mixed-script scan, a reverse declaration written in a file that itself mocks, and
+`real path with a mocked companion here:` read as citation-shaped. The free-prose backlog
+(103 files) and the file-less backlog (14 files) are the ratchet's deferred conversion work.
 
-Routed out of the architect re-review of `ui-non-consent-spec-header-overclaims`
-(archived 2026-09-30) and out of the `[TODO Architect] ui follow-up routing` row on
-`backend-custody-allowlist-comment-options`.
-
-## Why
-
-Backend commit `4cb4347b` added `comment_options` to the custody broadcast allowlist
-(`ALLOWED_OPS` in `backend/src/routes/custody.ts`), bound to its bundled `comment` op.
-`frontend/tests/e2e/non-consent-fresh-auth.spec.js` was written against the defect that
-commit fixes. It pins the old refusal as a positive assertion and describes it in its
-header and in several inline comments. All of that is now stale:
-
-- The header says the vote is the only broadcast in the file that reaches the gate, and
-  that the comment and publish bundles are refused earlier at the op allowlist.
-- The header's known-defect paragraph says the allowlist admits `comment`, `vote` and
-  `custom_json` only, and that the handler refuses the bundle before the fresh-auth gate.
-- The comment test carries a `known-defect` annotation and asserts a 403 `FORBIDDEN`
-  whose message names `comment_options`.
-- The publish test's comments say the allowlist refuses before the gate, and that the end
-  state is "refused before the gate as today".
-
-This was established by reading at the archive review. The e2e suite was not run, so
-whether the comment test is red at HEAD is not yet measured.
-
-One trap to check before trusting a green run. Every binding refusal `4cb4347b` added
-(author mismatch, bundled-comment mismatch, nonzero `percent_hbd`, non-empty
-`extensions`, the pinned `max_accepted_payout` and `allow_votes` / `allow_curation_rewards`
-values) also answers 403 `FORBIDDEN` with `comment_options` in the message. The old pin's
-three assertions are satisfied by any of those. If the composer's op misses a binding, the
-comment test stays green while reporting the old defect. A green comment test before the
-flip is therefore a finding about the SPA's op, not evidence that nothing needs doing.
-
-## Scope
-
-1. Run `non-consent-fresh-auth.spec.js` against the test stack first and record what the
-   comment test returns at HEAD. If it is green, read the refusal body: it is a binding
-   refusal, and the SPA's `comment_options` op disagrees with the backend's bindings. Stop
-   and record which binding in this file; that is a backend or composer decision, not a
-   pin flip.
-2. Replace the comment test's 403 pin with `expectPostGateStop` on the broadcast response
-   and drop the `known-defect` annotation.
-3. Rewrite the header so it describes the admitted allowlist: which broadcasts in the file
-   now pass the gate and where each stops. Delete the known-defect paragraph or reduce it
-   to what is still true. Rewrite the inline comments in the comment test and the publish
-   test that describe the allowlist refusal.
-4. Decide whether the publish test can now pin its broadcast response. It currently
-   asserts the request only. Its account is the HAF-indexed accredited researcher, not
-   necessarily the seeded keyless row, so check what the handler answers for that account
-   before pinning anything, and say in this file what you found.
-5. Reword the tail of `expectPostGateStop`'s JSDoc in
-   `frontend/tests/e2e/fixtures/light-account.js`. It says the outer catch's generic
-   envelope "would mean a step past the guard threw". The account-row read sits inside the
-   same `try` ahead of the guard, so a row-read throw produces the same generic envelope.
-   Say that the generic envelope would mean something inside the handler's `try` threw:
-   the account-row read ahead of the guard, or a step past it.
-6. Sweep the citers. `git grep -n -i "known.defect\|allowlist" -- frontend/tests` and read
-   every hit that describes this spec or the old refusal. The unit suites that cite this
-   spec as a clause-(c) companion describe the vote only and were true at the archive
-   review; confirm that at the head you work from rather than assuming it.
-
-## Acceptance criteria
-
-1. No sentence in `non-consent-fresh-auth.spec.js` or its citers says the custody
-   allowlist refuses `comment_options`, in either half of a compound sentence.
-2. The comment test asserts the post-gate stop, and no `known-defect` annotation remains
-   for this defect.
-3. The header states, per test, how far the real backend leg runs, and matches what the
-   tests assert.
-4. The `expectPostGateStop` JSDoc names the row read as a source of the generic envelope.
-5. No added line carries a task slug, a task redirect, a round or hold ordinal, a
-   line-number or SHA anchor, or a bare positional anchor.
-6. The signal block names the specs run against the test stack and what each returned,
-   including the pre-flip result from scope item 1.
-
-## Notes
-
-The solutions entry
-`agents/docs/solutions/conventions/carve-out-clause-a-impracticability-claims-are-unverified-prose-2026-09-22.md`
-is refreshed by the architect separately. Do not edit it here.
-
-## UI implementation signal (2026-10-01, commit 1f8c5cc0)
-
-Landed in `1f8c5cc0` ("ui(e2e): the non-consent spec pins the comment and publish
-broadcasts at the post-gate stop"), two files: `frontend/tests/e2e/non-consent-fresh-auth.spec.js`
-and `frontend/tests/e2e/fixtures/light-account.js`. Self-verified:
-`git merge-base --is-ancestor 1f8c5cc0 main` holds.
-
-**Specs run against the test stack.** Backend rebuilt from current main with
-`./deploy.sh restart` (4cb4347b is an ancestor), then `test-db-up` and `test-up`. Each
-run was `npx playwright test tests/e2e/non-consent-fresh-auth.spec.js --retries=0`.
-
-- Pre-flip, the spec unmodified (scope item 1): 3 passed, 1 failed, exit 1. The comment
-  test was red. The old pin expected 403 and received 500
-  `{"code":"INTERNAL_ERROR","message":"Posting key not available"}`. That is the
-  post-gate stop, not a binding refusal, so the composer's `comment_options` op satisfies
-  every binding 4cb4347b added (its values match `COMMENT_OPTIONS_MAX_ACCEPTED_PAYOUT`,
-  `percent_hbd: 0`, empty `extensions`, `allow_votes` and `allow_curation_rewards` true).
-  No binding disagreement to record. The ORCID, vote and publish tests passed. The
-  publish test ran rather than skipping.
-- Post-flip: 4 passed, exit 0. The publish test ran rather than skipping, and its new
-  broadcast pin held. After this run the header's tampered-control sentence was reworded
-  (see scope items 2 and 3). The change was comment-only and no assertion moved, so the run
-  stands.
-
-Stack restored to dev routing with `./deploy.sh up`.
-
-**Scope items 2 and 3.** The comment test ends in `expectPostGateStop` on the broadcast
-response, and the `known-defect` annotation is gone. The header's known-defect paragraph
-is deleted rather than reduced. Nothing in it is still a defect. The bundle facts it
-carried (the composer adds `comment_options` to every new post) now sit in a per-test
-paragraph that says how far each test's real backend leg runs. The comment and publish
-inline comments that described the allowlist refusal are rewritten. The header's
-tampered-control sentence is also reworded. It used to say the control is "what separates
-passed the gate from refused before it", which read as true of every broadcast once the
-paragraph covered all three. It now says the control shows the route checks the proof,
-and that a bundle the handler refuses before the gate answers 400 or 403, so the posting-key
-stop's 500 is what places a request past the gate.
-
-**Scope item 4, publish broadcast: pinned with `expectPostGateStop`.** The JWT subject is
-the HAF-indexed researcher's username. The handler reads
-`accounts WHERE username = <JWT subject>`, and the test seeds that row with
-`seedLightAccount`. Its `ON CONFLICT (username)` branch nulls `posting_key_enc`,
-`iv_posting`, `upgraded_at` and `sessions_invalidated_at`, so the row is keyless whether
-or not one existed before. Playwright runs with `workers: 1`, so no other spec touches
-the row mid-test, and `afterAll` deletes it. Measured: the broadcast answers the
-post-gate stop (green in the post-flip run). The pin matters beyond coverage. Now that
-the allowlist admits the bundle, this broadcast reaches the posting-key guard under a real
-researcher's username, and the pin asserts it stops there. The leg stays
-environment-gated by the test's existing HAF skip.
-
-**Scope item 5.** The `expectPostGateStop` JSDoc now says the generic envelope means
-something inside the handler's `try` threw, either the account-row read ahead of the
-guard or a step past it.
-
-**Scope item 6, citer sweep.** `git grep -n -i "known.defect\|allowlist" -- frontend/tests`
-returns 14 hits outside the spec. All are about the ORCID redirect-host allowlist
-(`fixtures/orcid.js`, `lib-fresh-auth-settings-orcid.test.js`, `pages-login`,
-`pages-recover` and `pages-signup` tests) and none describe this spec. The spec's citers
-(`git grep -n non-consent-fresh-auth`) are the six clause-(c) unit suites
-(`fresh-auth-401-retry`, `lib-fresh-auth-session-window`, `lib-fresh-auth-outcome-dispatch`,
-`lib-fresh-auth-teardown`, `lib-ipfs-upload`, `lib-ipfs-upload-real-window`) and
-`consent-op-fresh-auth.spec.js`. Each citing header was re-read in full at the head this
-work started from. They describe the vote leg and the upload legs only, and every
-sentence is still true, so no citer needed an edit.
-
-**Other verification.** The pre-commit hook's `anchor_violation` was run over every added
-line with `ALLOW_MARKER` set by hand: zero hits, and the control line fires. A read-only
-adversarial pass found no surviving defect in the two edited files. It had four lenses
-(backend truth, header against assertions, acceptance criteria, citers), with three
-skeptics per finding. The pass also flagged three stale docs outside the ui zone. All of
-them are already queued on `backend-custody-allowlist-comment-options`:
-`api-contracts/custody.md` (the allowlist constraint and the endpoint intro) and the root
-`CLAUDE.md` "(comment, vote only)" sentence.
-
-**Noticed, out of scope.** `frontend/tests/e2e/publish.spec.js` calls the publish
-bundle's second op "comment_options (rewards off)". That contradicts the rewards policy
-(rewards allowed, `percent_hbd: 0`). Not touched here.
-
-## Two authorship e2e specs mint session JWTs with Playwright tracing still on (archived 2026-10-01) — one review round; archived clean at d52ba575
-
-### Architect archive note (2026-10-01)
-
-Reviewed d52ba575 against its parent with /ce-code-review (correctness, security, testing,
-project-standards on root CLAUDE.md): zero findings, zero malformed returns. Verified by the
-architect: d52ba575 is an ancestor of main and touches only the two specs; AC 2 holds at
-d52ba575 for all ten `seedAccreditedSession` specs and for all sixteen specs that mint a
-session through any helper (`mintSessionJwt`, `seed*Session`). Neither changed file has a
-nested `test.use` that turns tracing back on. Not running the specs is accepted: `test.use`
-only changes which artifacts are kept.
-
-Residual risk recorded, not filed: the opt-out stays a per-spec convention with no
-mechanical pin, and `scanTracesForSecrets` skips on the dev host while `unzip` is absent.
-
-**Owner:** ui
-**Created:** 2026-10-01
-
-Routed out of the architect re-review of `ui-e2e-retry-model-comment-sweep` (archived
-2026-10-01), where the implementer listed it for triage.
+**Owner:** backend
+**Created:** 2026-09-02
 
 ## Why
 
-`frontend/tests/e2e/authorship-consent-actions.spec.js` and
-`frontend/tests/e2e/authorship-pending-discovery.spec.js` both seed a session through
-`seedAccreditedSession` in `fixtures/auth.js`. That helper mints a live backend-valid
-session JWT with `mintSessionJwt` and writes it to `localStorage` through
-`page.addInitScript`. Neither spec sets `test.use({ trace: 'off', ... })`, so the global
-`trace: 'retain-on-failure'` in `frontend/playwright.config.js` applies. A failing test in
-either spec leaves a `trace.zip` that holds the token under `frontend/test-results/`.
+The test-mock carve-out permits targeted mocking only if, among other clauses,
+clause (c) holds: the same risk class is covered by a real-path test elsewhere,
+or a follow-up task is filed. The compliance artifact for that clause is a
+sentence in the mocked test file's header naming the companion. It is free
+prose. Nothing resolves the named file, and nothing checks that it asserts
+anything in the claimed risk class.
 
-The other eight specs under `frontend/tests/e2e/` that call `seedAccreditedSession` all opt
-out, with a one-line reason (for example `review-submit.spec.js`: "This spec mints a live
-backend-valid bearer JWT via seedAccreditedSession. Disable trace/video/screenshot to keep
-that token out of trace.zip artifacts ...").
+Three headers have now been found citing companions that do not cover what they
+were cited for, across two separate incidents. In one, a header named
+`recover.test.ts` as the real-path `reissuedAt` companion and that file contains
+zero `reissuedAt` assertions. In another, two headers named "the settings
+password-reset suites" as the live `SESSION_INVALIDATED` companion when no
+settings suite asserts that code at all. An earlier incident had a header naming
+a companion that hoists `MOCK_VERIFY_SIGNATURE`, so it mocked the very surface
+it was cited for covering.
 
-`scanTracesForSecrets` in `global-teardown.js` is the backstop, and its JWT arm would catch
-the token. But it reads traces with `unzip -p`, and it skips with a warning when that binary
-is missing. `unzip` is not installed on the dev host (checked 2026-10-01). On that host the
-scan never runs, and the per-spec opt-out is the only defense. The scan's own docblock names
-the opt-out as the primary defense.
+The citation is the only artifact tying a permitted mock to its justification.
+When it is false the carve-out is voided silently: the mock stays, the
+justification evaporates, and nothing goes red. The existing guards do not see
+it. The `no-stale-comment-anchors` canary scans only `backend/src`, and both it
+and the `.githooks/pre-commit` gate match anchor SHAPES (slugs, ordinals, line
+cites, archive redirects); a bare filename in prose is a legal shape under both.
+
+Rationale, the two rot classes observed, and the design obstacles are recorded in
+`agents/docs/solutions/conventions/carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02.md`.
 
 ## Scope
 
-1. In each of the two specs, add `test.use({ trace: 'off', video: 'off', screenshot: 'off' });`
-   at module scope, after the imports. Add a short comment that gives the reason in the
-   same terms as the sibling specs: the spec mints a live session JWT through
-   `seedAccreditedSession`, and the global `retain-on-failure` default would otherwise
-   persist it.
-
-## Out of scope
-
-- Any change to `scanTracesForSecrets`, to the global trace default, or to how the scan
-  behaves without `unzip`.
-- Installing `unzip` on any host.
-- Any assertion, fixture, or mock change, and any other spec.
+1. Adopt a structured, resolvable citation form for clause-(c) companions: a
+   repo-relative path that resolves, paired with a risk-class token that occurs
+   in that file. The convention doc proposes one shape; the exact spelling is
+   this task's to settle.
+2. Add a canary that resolves each citation and asserts the named file contains
+   the named token. A vitest canary under `backend/tests/eslint/` is the likely
+   home rather than a `.githooks` arm, because resolving a path and grepping the
+   target requires repo reads that a fast pre-commit hook should not do.
+3. Decide the scoping. `grep -rl "carve-out" backend/tests --include=*.ts`
+   returns 114 files and `grep -rl "[Rr]eal-path companion" backend/tests
+   --include=*.ts` returns 111 of them, all free prose, so a whole-tree
+   assertion fails 111 files on the day it lands. A diff gate first (new and
+   edited headers must use the structured form) with the whole-tree assertion
+   deferred mirrors how the anchor classes were staged.
+4. Fix the one known live violation, carried deliberately as a documented
+   example: the clause (c) block in
+   `backend/tests/middleware/verifyHiveSignature-session-invalidation-failclosed.test.ts`
+   still attributes happy-path JWT acceptance to "the settings password-reset
+   suites" as a category. The claim is true and no single file is the obvious
+   referent, which is exactly why it needs a decision rather than a rewrite: pick
+   the file that best witnesses it, or drop that half of the sentence.
 
 ## Acceptance criteria
 
-1. Both specs set trace, video, and screenshot off for every test in the file.
-2. Every `frontend/tests/e2e/*.spec.js` that calls `seedAccreditedSession` sets
-   `trace: 'off'`.
-3. No assertion, fixture, or mock changes.
-4. New comment text follows root `CLAUDE.md` "Comment anchors": no task slug, round or hold
-   ordinal, line number, commit SHA, or bare positional reference.
+1. A citation naming a file that does not exist fails the canary.
+2. A citation naming a file that exists but does not contain the risk-class
+   token fails the canary.
+3. A correct citation passes, and the canary is shown to go red when the
+   citation is mutated in each of the two directions above.
+4. The parser handles a filename wrapped mid-token across a ` * ` docblock
+   continuation line. This occurs in the current corpus, and a line-based
+   extractor silently truncates such a name and then reports a nonexistent file.
+5. Whatever scoping is chosen, the suite is green when it lands, and what was
+   deferred is stated.
+6. The known violation in scope item 4 is resolved.
 
 ## Notes
 
-Running the two specs is optional: `test.use` changes which artifacts are kept, not what the
-tests assert. State in the signal block whether they ran.
+Grep the risk-class TOKEN inside the named file, never the cited filename. A
+check built on finding the filename inherits the exact blindness it exists to
+remove: the filename is present, the assertion is not.
+
+Token presence is necessary, not sufficient. It catches the observed rot classes
+and does not catch "the companion asserts it, but weakly"; that stays a review
+judgement.
+
+The follow-up-task branch of clause (c) cannot be checked this way. Task files
+archive and the archive trims, so a task-slug citation is a dead pointer by
+construction and must not appear in test source at all. Those citations should
+name the uncovered risk class in behavioural terms and nothing else.
+
+## Backend completion note (2026-09-02)
+
+**Structured form settled** (scope 1). One companion per label occurrence, inside
+the clause-(c) block:
+
+```
+ *   (c) Real-path companion: `backend/tests/routes/some-route.test.ts` [SOME_TOKEN]
+```
+
+Path repo-relative and backtick-delimited; risk-class token bracket-delimited,
+whitespace-free, closing the line. The path may wrap mid-token across a ` * `
+continuation (all whitespace inside the backticks is stripped on parse); the
+token may not.
+
+**Canary** (scope 2):
+`backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`.
+Five arms per citation: repo-relative path shape, path resolves, not a
+self-citation, the token occurs in the companion's CODE (block comments and
+comment-only lines stripped, `vi.mock(` lines excluded), and the token is not
+generic enough to resolve in more than 40 files under `backend/tests`.
+
+**Scoping decided** (scope 3). Validation of structured citations is whole-tree.
+The "must be structured" requirement is an in-tree ratchet rather than a
+`.githooks/pre-commit` arm, for two reasons: `.githooks/` is architect zone and
+outside backend's boundary, and the in-tree list is the stronger mechanism
+anyway (whole-tree rather than one diff, and no env var turns it off). A comment
+block that carries the canonical `real-path <adjective>? companion` label AND
+names a `*.test.ts` file must use the structured form unless its file is in
+`DEFERRED_FREE_PROSE` or the block carries the `carve-out-citation-allow`
+marker. `DEFERRED_CEILING` makes the list one-way, and a listed file that stops
+carrying an unstructured citation fails the hygiene arm, so a citation cannot be
+deleted to escape the ratchet quietly.
+
+**Deferred, explicitly** (scope 5): 102 files still carry free-prose citations
+(104 at landing, minus the two converted below). Also not ratcheted, and stated
+in the canary header: the one-off label nouns the corpus uses for the same idea
+(sibling coverage, real-HAF variant, no-mock companion) and the citations whose
+referent is prose rather than a file, which no parser can resolve. Detection is
+deliberately precision-biased for the same reason the pre-commit anchor gate
+scopes itself to known slug prefix families.
+
+**Known violation resolved** (scope 4 / AC 6). The compound sentence in
+`verifyHiveSignature-session-invalidation-failclosed.test.ts` is split. The
+happy-path half was re-derived from the code rather than repaired in prose: it
+now cites `verifyHiveSignature-authmethod.test.ts` [hiveAuthMethod], which
+admits a real Bearer JWT through the real middleware with `getAppPool` unmocked.
+That sidesteps the referent ambiguity in "the settings password-reset suites"
+(a reviewer pass found it could plausibly mean either the settings set-password
+suites or the `/api/auth/reset` suites, so repairing the prose would have
+hardened a guess). The revocation half keeps its three companions, now
+structured with `SESSION_INVALIDATED`. The sibling
+`verifyHiveSignature-replay-revocation-hardening.test.ts` was converted too,
+since it is the other half of the documented exemplar pair.
+
+**Verification.** Five mutation probes, each observed red and then restored:
+cited path mutated to a nonexistent file; token mutated to one absent from the
+companion; companion swapped to a file where the token appears only in comments;
+a converted citation reverted to free prose; a brand-new file added carrying a
+prose citation. Control green after each. Probe one also exercised the wrapped
+path on real content, since the mutation landed on the continuation half and the
+failure message named the rejoined path (AC 4). `npm run typecheck` passes.
+`tests/eslint/` plus the two converted suites: 10 files, 113 tests, all passing.
+`npm run lint` not run: it lints `src/` only and no `src/` file changed.
+
+**[TODO Architect]** `agents/docs/solutions/conventions/carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02.md`
+ends its canary section with "Do not describe this canary as existing. It is a
+proposal." That is now false, and the entry's sketch of the citation shape
+should be reconciled with the form settled here. The file is architect-owned, so
+backend has not touched it.
+
+## Architect re-review (2026-09-03) — HELD PENDING FIXES:
+
+All six acceptance criteria are met and independently verified: the wrapped-path
+parse rejoins correctly (8/8 corpus citations), all eight cited companions do
+assert their token in code, the suite is green, and the compound violation in the
+fail-closed header is genuinely resolved. The validation half of the canary is
+sound and is not what this hold is about.
+
+The ratchet half does not hold the property the header docblock and the commit
+message assert. Five independent escapes were reproduced on isolated copies, each
+landing a new free-prose citation with the suite green. Two of the canary's own
+arms are invisible to mutation of themselves. The completion note's scoping claim
+("the in-tree list is the stronger mechanism anyway ... no env var turns it off")
+is true of the whole-tree validation arm and false of the ratchet.
+
+Fix all eight. Items 1 to 5 are one mechanism and should be settled together
+rather than patched one at a time.
+
+1. `DEFERRED_FREE_PROSE` exempts a FILE, not the blocks that were on it at
+   landing, so any of the 102 listed files can gain brand-new free-prose
+   citations forever. Reproduced: a fresh free-prose clause-(c) block naming a
+   nonexistent file, appended to the deferred-listed `routes/settings.test.ts`,
+   leaves the suite green. 102 of 253 test files are listed, so roughly 40
+   percent of the corpus is permanently outside the ratchet rather than being a
+   backlog. Make the constant a path-to-count map pinning each file's
+   unstructured file-naming block count at landing, and fail when a listed file
+   EXCEEDS its pin. The audit loop already computes that number.
+
+2. The ceiling arm is `toBeLessThanOrEqual`, so a removal frees a permanent slot.
+   Reproduced in both halves: de-filing `lib/cache.test.ts`'s citation outright
+   (not converting it) and dropping its entry gives 101 green; parking a new
+   free-prose file in the freed slot returns to 102 green with the ceiling
+   untouched. This falsifies the header's "a file that leaves the list by any
+   route other than conversion goes red rather than draining the ratchet
+   quietly" and the commit message's "deleting a citation is not an exit from
+   the ratchet".
+
+3. The ceiling is a length check, so a same-length membership swap passes:
+   converting one entry, removing it, and adding a different brand-new
+   free-prose file in the same edit keeps the length at 102, green. Fix items 2
+   and 3 together with a frozen, never-edited snapshot of the landing filenames
+   plus a subset assertion, deriving the ceiling from that snapshot's length.
+   That subsumes a bare `toBe` and closes de-filing, the freed slot and the swap
+   in one mechanism. Do NOT land `toBe` alone; it leaves item 3 open.
+   The `DEFERRED_CEILING` docblock also asserts "The exact-membership check below
+   already goes red when an entry is added". No such check exists. Correct that
+   sentence in the same change: a comment claiming a guarantee the code does not
+   provide is the defect class this whole task exists to remove.
+
+4. A block that satisfies its label count short-circuits before `namesAFile` is
+   consulted, so one valid structured citation immunizes any amount of unchecked
+   prose beside it. Reproduced: unlabeled prose naming two real test files added
+   next to the structured citations in
+   `verifyHiveSignature-session-invalidation-failclosed.test.ts` stays green.
+   This re-admits the half-true compound, which the convention entry and this
+   canary's own header both name as the shape that survives review. Strip the
+   text matched by the citation pattern from the block, then fail when the
+   remainder still matches the names-a-test-file pattern, for non-deferred and
+   non-exempt blocks only.
+
+5. A companion claim naming no file is never ratcheted, so a new file whose only
+   clause-(c) line is "Real-path companion: the settings password-reset suites
+   cover the live happy path" passes. That is verbatim the shape AC 6 removed.
+   The header declines this class because such citations are "unresolvable by any
+   parser" and would need "an unbounded phrase list that rots". That reasoning
+   supports not VALIDATING a file-less claim; it does not support not REJECTING
+   one, which is dropping a single guard. Drop the names-a-file guard so a label
+   with fewer structured citations than labels fails regardless, and seed a
+   second deferred list for the existing file-less blocks. Measured cost: of 126
+   labelled blocks in the corpus, 110 name a test file and 16 name none, across
+   14 files. A 16-entry list, not the hundred-plus the header's framing implies.
