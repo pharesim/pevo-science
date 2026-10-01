@@ -196,3 +196,101 @@ not triaged again there.
    `SqlStatement.stopped` docblock, which the entry never links. Add the `{@link}` at the
    definition. A link is not a second statement of reach, so the one-definition shape
    stays. Nothing is false today; the correctness and adversarial lenses each found it.
+
+## Backend implementation signal (2026-10-01, commits 317afd8a, 37460891, 49893f27, efe962c6, 72732599, 7bcda9fe)
+
+All six SHAs verified as ancestors of HEAD with `git merge-base --is-ancestor`. The net change
+is `git diff c922c4b9 7bcda9fe -- backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`.
+The three middle commits are superseded: 72732599 reverts their in-string `;` terminator
+and escape cooking (see Scope item 1 below). Review the net diff, not each commit.
+
+**Scope item 1: closed, not named.** `enclosingQuote` now seeds each line with the template
+state the blanking reader ended the previous line in (`BlankedCode.template`). A head inside
+a template opened above is enclosed by it, reported as `{char: '`', at: -1}`, and its read
+ends at that template's backtick. At dollar depth > 0 the carried quote answers null, so a
+head in a `DO` body entered from above is still read to its own `;`. Why close rather than
+name: the fail-closed guarantee is what the other KNOWN LIMITS rest on, and the plumbing was
+sound. One layout stays quiet and is now named: a template holding two `;`-separated
+statements. That is the "same quoted text" bound the quoted-identifier bullet already gave for
+the same-line layout, and it now covers the opened-above layout too. It is pinned as a silence
+(`twoStatements`). The opened-above spelling of it was caught at the parent only because the
+read ran to the next `;`.
+
+Five probe rounds against c922c4b9, each finding confirmed by an independent verifier, turned
+up further layouts the change touched. Rounds 2 to 4 tried ending quoted reads at a `;` and
+cooking TypeScript escapes. Each round found another `;` that value-tracking misplaced (escaped
+quotes, `E''` values in every TypeScript string kind, String.raw, hex escapes, a `;` an
+interpolation evaluates to). 72732599 reverted all of that: a read inside a string ends at the
+string's own closing quote. Kept from those rounds:
+- `enclosingQuote` steps over an interpolation (before its span skip) to TypeScript's close.
+- A head in a nested template inside an interpolation is enclosed by that template and is
+  `interpolated`. `SqlStatement.interpolated` makes the assembled-write arm report an
+  `accounts` head there as `interpolation`. That also closes the comment-in-token-gap
+  narrowing the interpolation entry used to record.
+- A head in an interpolation's own code (`inCode`) gives up at once.
+- Inside interpolation code only a backtick opens a literal (comments are copied, not blanked).
+
+**Scope item 2.** The quoted-identifier bullet no longer gives "ends at the quote that encloses
+it" as an unbounded reason. It states where a read ends, defers to the dynamic-SQL entry for
+reach, and names the CTE-in-same-statement case. The gave-up half is carried by deferring
+reach to the dynamic-SQL definition (architect note 2026-09-30, first item).
+
+**Scope item 3, consumer by consumer, with fixtures in the new it-block `a template opened above
+its head delimits the read in every arm that reads from a head`:**
+- **fail-closed:** 6 plants red: `UPDATE ${table}` and `'UPDATE "accounts"'`, each with a `;`
+  after, no `;` inside `LITERAL_CAP`, and no `;` before end of file. Controls (template on the
+  head's line) red as before.
+- **assembled-write:** the `+` after an opened-above template's backtick is now read. The `+`
+  before it stays silent (on an earlier line), as named. A head literal opening after a
+  carried template closes on its line now finds its own quote, in both the backtick and `'`
+  spellings. The cast-joined `+` (`` `...` as string + `...` ``) is named and pinned silent in
+  both layouts.
+- **ALTER arm:** reads end at the backtick, so a clause past a bare `;` inside the template is
+  read (`alterAbove`). A column passed as an argument after the backtick (`format(`...%I`,
+  'updated_at')`) was caught at the parent only by over-reading. It is silent in both layouts
+  now, and the "assembled outside the literal" clause names it.
+- **every-statement-readable:** unchanged over the tree; pinned by `alterAbove` and the
+  closed-above literals.
+- **Architect note 2026-09-24 item 1:** the quoted ALTER head (`ALTER TABLE "accounts" DROP
+  COLUMN updated_at`) is named in the quoted-identifier bullet as having no backstop in any
+  arm, and pinned. The read was not widened.
+- **Architect note 2026-09-24 item 2:** the early-`;` ALTER case is closed by the read change,
+  so the `unreadableStatements` docblock needed no truncation sibling.
+- **Architect note 2026-09-30:**
+  - Header scan 2 lost "UNCONDITIONALLY". It now states the bound and defers to KNOWN LIMITS
+    by name.
+  - The dynamic-SQL entry and the `statementAt` docblock state the refusal as "gives up"
+    (`stopped`) and say that a cap or end-of-file read does resolve.
+  - The `{@link SqlStatement.stopped}` is added at the reach definition.
+  - The no-terminator layout is closed (the read ends at the backtick) and pinned.
+
+**Scope item 4: what the sweep covered.**
+- I grepped the file for every statement of where a read ends, what `enclosingQuote` finds,
+  and the join halves.
+- Five audit rounds, each with a header/KNOWN LIMITS lens, a docblock lens, a fixture-comment
+  lens (mutating each named feature to confirm its fixture reds) and two adversarial lenses.
+  Every finding was verified by an independent probe against both commits.
+- Every reader rule added here is mutation-pinned: the carried seed, the depth guard, the
+  interpolation step, the around reset, the depth reset inside an interpolation, the backtick-
+  only opener in interpolation code, the in-code give-up, and `interpolated` in the assembled
+  arm. Each reds a fixture when removed.
+- The fifth round's findings are all fixed in 7bcda9fe. I did not run a sixth round, so that
+  commit's own edits are unaudited.
+
+**Acceptance criteria.**
+1. Both plants (and the no-terminator and end-of-file members) red the fail-closed arm at
+   7bcda9fe, and are 30/30 green with the change removed. Measured in scratch copies built with
+   `git archive`.
+2. The canary passes (31 tests: 30 plus the new block). Typecheck and lint are clean.
+   `bridge-queue.ts`'s lease UPDATE is accepted, and the allowed-writer and
+   allowed-alteration tallies are unchanged.
+3. Removing the carried seed (pointing the read back at the `;`) reds the new block.
+   Re-measured over every scanned file at 7bcda9fe against c922c4b9, every read from every
+   head plus every assignment label: four reads move, each now ending at its own backtick
+   (bridge-queue.ts lease UPDATE, two auth.ts upsert `DO UPDATE SET`s, one profile.ts upsert).
+   Every arm result and every assignment label is byte-identical.
+
+**[TODO Architect]** The test title `a read that cannot reach its own terminator resolves no
+table` is still in terminator terms. I left it because
+`agents/docs/solutions/conventions/new-fail-closed-outcome-must-not-reuse-an-existing-sentinel-2026-09-15.md`
+cites it verbatim. If you rename it, update that citation in the same commit.
