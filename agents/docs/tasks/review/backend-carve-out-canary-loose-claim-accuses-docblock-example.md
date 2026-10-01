@@ -164,3 +164,31 @@ all in `backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.t
 Keep AC 3 as it stands: `LANDING_FREE_PROSE`, `LANDING_FILELESS`, both
 deferred maps and `LANDING_DIGEST` untouched, and canary green by exit code.
 Anchor any new comment on stable symbols only, as the task Notes say.
+
+## Backend re-review signal (2026-10-01, commit 3b98e303)
+
+1. `droppedNearMiss` probe beside `accusedProse` pins, at unparsed 1 and
+   labels 0: `(also routes/foo.test.ts) companion here: covered`,
+   `with a Postgres companion: covered`, the same with a backticked path and
+   `[A]`, and `(also routes/foo.test.ts) THE COMPANION: covered` (each with
+   the ` (c) Real-path` prefix, exact strings as measured). Mutants, each on
+   an isolated copy of the working tree with `accusedProse` re-pinned to
+   what the mutant spares; unmodified copy 11/11 exit 0:
+
+   | Narrowing alone | Canary | First failing pin | Control (`droppedNearMiss` loop removed) |
+   |---|---|---|---|
+   | after-noun `(?!\s[a-z])` | red, exit 1 | `... companion here: covered` | green, exit 0 |
+   | article lookahead before noun | red, exit 1 | `... with a Postgres companion: covered` | green, exit 0 |
+   | article-led-noun lookbehind | red, exit 1 | `... with a Postgres companion: covered` | green, exit 0 |
+
+   Per-string counts under each mutant (unparsed): after-noun drops pin 1
+   only; the lookahead drops pins 2 and 3; the lookbehind drops pins 2, 3
+   and 4. The `accusedProse` comment's bar now names these pins.
+2. Header precision-cost entry rewritten to list exactly those three
+   narrowings, the prose each spares and the pinned spellings each drops,
+   matching the per-string counts. The stop-word clause is gone.
+3. The `unparsed` assertion message adds: a line that is prose and not a
+   claim is reworded, or its block is marked `${ALLOW_MARKER}`.
+
+Canary green (11/11, exit 0) and `typecheck:tests` clean. `LANDING_*`, the
+deferred maps and `LANDING_DIGEST` are untouched.
