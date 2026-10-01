@@ -486,7 +486,10 @@
  *     template. Each blanks a span that was live, so each is a silent miss
  *     rather than a red bar, which is why the reader errs toward reading
  *     wherever it can: an unclosed comment opener is text, a value keeps its
- *     markers, and a decrement is an operator.
+ *     markers, and a decrement is an operator. The `E'...'` escape costs the
+ *     statement read the same way: the escaped quote closes the value there,
+ *     so a `;` later in the same value ends the read short of the statement,
+ *     and a column list or an ALTER clause past it is read by no arm.
  *   - A regex literal is told from a division by the code before its slash
  *     ({@link regexLiteralEnd}): after an OPERAND the slash divides, and after
  *     a keyword ({@link PATTERN_KEYWORD_RE}) or anything else it opens a
@@ -2248,6 +2251,10 @@ function readable(files: ScannedSource[]): Readable[] {
  *  is code rather than template text, so the scan starts over inside it with
  *  no quote open and only a literal opened there can enclose the position,
  *  which is how a head in a nested template is enclosed by that template.
+ *  Where none does, the head sits in the interpolation's own code, a comment
+ *  it carries among the places, and the template the interpolation sits in
+ *  answers for it, so its read is bounded by that template's backtick rather
+ *  than by a `;` alone.
  *  One whose close is on a later line is treated as around the position; the
  *  every-interpolation-closes arm reds it by line regardless.
  *
@@ -2277,6 +2284,9 @@ function enclosingQuote(
   let quote: string | null = lineIndex > 0 && code.template?.[lineIndex - 1] === true ? '`' : null;
   let at = -1;
   const closes = code.typescript?.closes[lineIndex];
+  // The template each interpolation around the position sits in, innermost
+  // last, which answers for a position in the interpolation's own code.
+  const around: Array<{ char: string; at: number }> = [];
   for (let i = 0; i < index; i++) {
     while (seen < events.length && events[seen].col === i) {
       depth += events[seen++].open ? 1 : -1;
@@ -2292,6 +2302,7 @@ function enclosingQuote(
       } else {
         // Around the position: it is code, and only a literal opened inside
         // the interpolation can enclose it.
+        around.push({ char: '`', at });
         quote = null;
         at = -1;
         i++;
@@ -2308,7 +2319,8 @@ function enclosingQuote(
       at = i;
     }
   }
-  return quote === null ? null : { char: quote, at };
+  if (quote !== null) return { char: quote, at };
+  return around[around.length - 1] ?? null;
 }
 
 interface StatementHead {
@@ -2416,8 +2428,9 @@ interface SqlStatement {
  * The SQL statement that starts at `matchIndex` on `lineIndex` of an
  * already-blanked file, read to its terminator.
  *
- * The read ends at the first of two terminators: a `;`, which ends a SQL
- * statement wherever it is written, and the closing quote of the string
+ * The read ends at the first of two terminators: a `;` outside every value
+ * and quoted identifier, which ends a SQL statement wherever it is written,
+ * and the closing quote of the string
  * ENCLOSING the keyword, so a backtick template and a single-quoted one-liner
  * are each read no further than their own quote. A literal that opens and
  * closes ahead of the keyword cannot hand the read a delimiter that
@@ -2498,6 +2511,9 @@ function statementAt(code: BlankedCode, lineIndex: number, matchIndex: number): 
     let col = i === lineIndex ? matchIndex : 0;
     let closedAt = -1;
     let opaque: string | null = null;
+    // Whether that value opened on an escaped quote, the way a SQL value is
+    // spelled inside a TypeScript string delimited by the same quote.
+    let opaqueEscaped = false;
     let escaped = false;
     while (col < line.length) {
       const char = line[col];
@@ -2534,9 +2550,18 @@ function statementAt(code: BlankedCode, lineIndex: number, matchIndex: number): 
       }
       if (opaque !== null) {
         if (char === '\\' && col + 1 < line.length) {
+          // An escaped quote of the value's own kind is that quote once the
+          // string is cooked, so it closes the value as a bare one does.
+          if (line[col + 1] === opaque) opaque = null;
           out += line.slice(col, col + 2);
           col += 2;
           continue;
+        }
+        // The string's own unescaped quote, met inside a value that opened on
+        // an escaped one, is where the string ends, value or no value.
+        if (opaqueEscaped && char === quote) {
+          closedAt = col;
+          break;
         }
         out += char;
         if (char === opaque) opaque = null;
@@ -2544,6 +2569,12 @@ function statementAt(code: BlankedCode, lineIndex: number, matchIndex: number): 
         continue;
       }
       if (char === '\\' && col + 1 < line.length) {
+        // An escaped `'` or `"` opens a value as a bare one does: cooked, it
+        // is that quote, and a `;` inside the value ends nothing.
+        if (line[col + 1] === "'" || line[col + 1] === '"') {
+          opaque = line[col + 1];
+          opaqueEscaped = true;
+        }
         out += line.slice(col, col + 2);
         col += 2;
         continue;
@@ -2554,6 +2585,7 @@ function statementAt(code: BlankedCode, lineIndex: number, matchIndex: number): 
       }
       if (char === "'" || char === '"') {
         opaque = char;
+        opaqueEscaped = false;
         out += char;
         col++;
         continue;
@@ -3756,6 +3788,52 @@ describe('accounts.updated_at is written by the two signup finalizes and nothing
     const nestedCode = asCode(nested);
     expect(enclosingQuote(nestedCode, 1, nested[1].indexOf('UPDATE'))).toEqual({ char: '`', at: nested[1].indexOf('`') });
     expect(unresolvedIn(nested)).toHaveLength(1);
+    // A head in the interpolation's own code, in no literal there, such as one
+    // named in a comment the interpolation carries, is answered by the
+    // template the interpolation sits in. Answered by nothing, it was read as
+    // a migration statement to the next `;`, past that template's backtick and
+    // over the write on the next line.
+    const inCode = [
+      'const rows = await Promise.all([',
+      '  db.query(`SELECT ${/* kept in step with update sessions */ cols} FROM t`),',
+      '  db.query(`UPDATE ${table} SET updated_at = NOW()`),',
+      ']);',
+    ];
+    const inCodeHead = inCode[1].indexOf('update sessions');
+    expect(enclosingQuote(asCode(inCode), 1, inCodeHead)).toEqual({ char: '`', at: inCode[1].indexOf('`') });
+    expect(unresolvedIn(inCode)).toHaveLength(1);
+    // AN ESCAPED QUOTE IS A SQL QUOTE once the string is cooked, so a value
+    // spelled with escaped quotes inside a string delimited by the same kind
+    // is a value, and a `;` inside it ends nothing. Read as an escape pair and
+    // nothing more, the value never opened and its `;` ended the read short
+    // of an ALTER clause, a MERGE insert list, or the `+` past the string.
+    // Each control is the same text with the `;` dropped from the value.
+    for (const [value, dropped] of [["\\'a;b\\'", "\\'ab\\'"], ['\\"a;b\\"', '\\"ab\\"']]) {
+      const delimiter = value.includes('"') ? '"' : "'";
+      const alter = (v: string): string[] => [
+        'async function f() {',
+        `  await pool.query(${delimiter}ALTER TABLE accounts RENAME COLUMN ${v} TO touched, DROP COLUMN updated_at${delimiter});`,
+        '}',
+      ];
+      expect(accountsColumnAlterations(readable([{ rel: 'x.ts', lines: alter(value) }])), value).toHaveLength(1);
+      expect(accountsColumnAlterations(readable([{ rel: 'x.ts', lines: alter(dropped) }])), dropped).toHaveLength(1);
+    }
+    const escapedMerge = [
+      'async function f() {',
+      "  await pool.query('MERGE INTO accounts a USING (SELECT \\'x;y\\' AS k) s ON a.k = s.k WHEN NOT MATCHED THEN INSERT (k, updated_at) VALUES (s.k, now())');",
+      '}',
+    ];
+    expect(scansOf(escapedMerge).tableFirst).toEqual(['x.ts#f']);
+    const escapedJoin = ["  await pool.query('UPDATE accounts SET note = \\'a;b\\'' + extra + ' WHERE id = $1', [id]);"];
+    expect(assembledWrites(readable([{ rel: 'x.ts', lines: escapedJoin }])).map((write) => write.how)).toEqual(['concatenation']);
+    // The escaped quote that closes the value closes it, too: left open, the
+    // value carries the `;` after it, and a second statement in the same
+    // string is read as part of the first and lent its table.
+    expect(unresolvedIn(["  await pool.query('UPDATE sessions SET note = \\'a\\'; UPDATE \"accounts\" SET updated_at = NOW()');"])).toHaveLength(1);
+    // And the string's own quote, met inside a value that opened on an
+    // escaped one, ends the string there: past it is code, not the value.
+    const unbalanced = asCode(["  pool.query('UPDATE sessions SET note = \\'open', [id]),", "  pool.query('UPDATE \"accounts\" SET updated_at = NOW()'),"]);
+    expect(statementAt(unbalanced, 0, unbalanced[0].indexOf('UPDATE')).closedAt).toBe(unbalanced[0].indexOf("', [id]"));
     // THE ALTER ARM reads the head's statement to the same end, so text past
     // the template's backtick is no longer part of it. A column passed as an
     // argument after the backtick was caught only by the read running on to
