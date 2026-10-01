@@ -2025,3 +2025,41 @@ must say that a run pins a bound only when its characters are also in a
 neighbouring quantifier's class, because that overlap multiplies the work per
 character. It must NOT say the pinning shape grows super-linearly. Under a
 single-bound revert with every other run bounded, both shapes are linear.
+
+## Backend re-review signal (2026-10-01, commit 486caedb)
+
+Item 1 landed in one commit touching only the canary. The sentence now says a
+space run cannot split between the emphasis group's run and a qualifier word,
+that with the bound removed both runs cost time linear in their length, and
+that what separates them is the work per character (each dash a point where the
+run can hand the rest to the two qualifier slots to re-split, each space a
+point where the qualifier fails at once), so the space run stays far under the
+threshold and pins nothing. This is the hold's default sentence, unchanged. No
+timing numbers were added to the comment.
+
+Grep for other growth-order attributions: `linear` has no other hit in the
+file. The `quadratic` mentions in the same comment describe the historical
+dash-run and qualifier word-class reverts, not why a shape pins or does not
+pin this bound, so they were left as is.
+
+### Verification
+
+- Measured in plain node with the committed `STOP_WORDS`, `QUALIFIER` and
+  `LABEL_SRC` sources, the emphasis-group bound reverted to `[\s-]*`
+  (ms at 400 / 800 / 1600 / 3200 / 6400):
+  | Shape | Reverted | Bounded |
+  |---|---|---|
+  | `real-path*` + dashes | 1134 (cold) / 333 / 800 / 1332 / 2920 | 2 to 16 |
+  | `real-path_` + dashes | 129 / 312 / 588 / 1212 / 2504 | about 3 |
+  | `real-path*` + spaces | 0.0 / 0.0 / 0.0 / 0.0 / 0.1 | 0.0 |
+  Both dash runs double with the run, so every clause of the sentence holds
+  for both runs as measured.
+- `tests/eslint/` 9 files, 143 tests, exit 0. `npm run typecheck` passes.
+  `npm run lint` not run: no `src/` file changed.
+- The pre-commit anchor gate ran on the commit and passed.
+
+### [TODO Architect]
+
+Unchanged and still deferred to archive, including the corrected space-run
+lesson for the 2026-09-14 backtracking entry (overlap with a neighbouring
+quantifier's class multiplies the work per character; not super-linear growth).
