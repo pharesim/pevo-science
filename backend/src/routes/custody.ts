@@ -552,9 +552,25 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
           // proof (gated below).
           'author_accept',
           'author_resign',
+          // Web-of-Trust vouches go through the session-kind proof like a
+          // vote, not the per-op gate.
+          'vouch',
+          'retract_vouch',
         ];
         if (!allowedActions.includes(payload.action)) {
           return sendError(res, 403, 'FORBIDDEN', `Only ${allowedActions.join(', ')} custom_json actions are allowed for custodial accounts`);
+        }
+        if (payload.action === 'vouch' || payload.action === 'retract_vouch') {
+          // Bind the op to its signer, as the vote arm binds `voter`. The read
+          // side already drops a vouch whose signer is not its `voucher`, so
+          // this keeps the server from signing an inert op that claims someone
+          // else, and from signing a self-vouch (hive-schemas § 2.5).
+          if (payload.voucher !== username) {
+            return sendError(res, 403, 'FORBIDDEN', `${payload.action} voucher must be '${username}'`);
+          }
+          if (typeof payload.vouchee !== 'string' || payload.vouchee === '' || payload.vouchee === username) {
+            return sendError(res, 400, 'VALIDATION_ERROR', `${payload.action} vouchee must be a Hive username other than the voucher`);
+          }
         }
       } catch {
         return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid custom_json payload');
