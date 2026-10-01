@@ -2343,8 +2343,12 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     // bound. The run has to be dashes: a dash is in that bound's class and in
     // QUALIFIER's `[\w-]` word class, so the run splits between the two. A
     // space is outside the word class, so a space run behind an emphasis
-    // character cannot split that way and stays linear with the bound
-    // removed, which pins nothing.
+    // character cannot split that way. With the bound removed both runs cost
+    // time linear in their length; what separates them is the work per
+    // character. Each dash is a point where the run can stop and hand the
+    // dashes after it to the two qualifier slots to re-split, while each
+    // space is a point where the qualifier fails at once, so the space run
+    // stays far under the threshold and pins nothing.
     //
     // THREE LENGTHS, SHORT FIRST, and each exists for a regression class the
     // others miss. These failures differ in cost by orders of magnitude, and
