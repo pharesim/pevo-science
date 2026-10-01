@@ -415,3 +415,154 @@ Found by my adversarial pass, NOT fixed (outside the hold, for triage):
    is ui-zone.
 5. An unprefixed continuation line inside a comment opened after code reads as
    live on both skips; documented as a residual at `skipCommentLine`.
+
+---
+
+## Architect re-review (2026-10-01, second pass) — HELD PENDING FIXES:
+
+Reviewed `4ea7faca..71217d5f` (backend paths only: `146ce7de`, `c954c798`,
+`71217d5f`) with `/ce-code-review` (correctness, adversarial in-process,
+testing, maintainability, project-standards, learnings) plus an independent
+validator. The validator re-probed every item below on an isolated copy and
+confirmed each one.
+
+All 10 items of the first 2026-10-01 hold are FIXED in the committed code.
+Four lenses verified them against the diff, not against the signal. The
+orchestrator's run on a copy of `71217d5f`: the machinery suite plus the five
+importing canaries give 6 files, 80 tests, exit 0, and `typecheck:tests` is
+clean.
+
+Held because the fix round opened two paths that are latent on today's
+`backend/src`, in a module this task exists to keep honest about where it
+fails closed (items 1 and 3), plus three smaller items. Item 3 traces to the
+first hold's own wording, not to your implementation.
+
+`main` has moved since `71217d5f` through sibling commits, none of them on
+the six files. Build on current `main`. Anchor every comment you write on
+stable symbols, never on line numbers, task slugs, or round numbers.
+
+1. **The wrapped value lookup skips a live value written behind a comment.**
+   `valueTextAfterKey`'s wrapped loop skips every line `isCommentedOut` reads
+   as commented out. `/* wired later */ undefined,` is commented out by shape
+   but carries the real value, so the loop skips it and returns the next
+   property's line. When that line names the epoch
+   (`note: req.hiveSessionsInvalidatedAt,`), `epochRef` is set and a surface
+   whose epoch value is a literal passes. Validator: an offender at
+   `4ea7faca`, not reported at `71217d5f`. The docblock sentence ending "at
+   worst leaves the field without an epoch reference, an offender" is false
+   for this shape. Going back to the no-region `isCommentLine` is not the fix
+   either: it reads ` * hiveSessionsInvalidatedAt belongs here */ undefined,`
+   as live and returns the prose as the value, which is silent at both
+   commits.
+   - When `isCommentedOut` reads a wrapped line as commented out, skip it
+     only if the no-region `isCommentLine(line)` also reads it as prose.
+     Otherwise return `''`, so the field has neither an epoch reference nor a
+     literal and an accepting surface is an offender. Two reviewers probed
+     this form: the epoch file stays green and both plants below go red.
+   - The same helper reads the wrapped `acceptSession` value, where `''`
+     counts as accepting. A commented `false` there therefore turns the
+     demand on, which can only add a red bar.
+   - Pin both shapes beside `wrappedValueBehindProse`: a
+     `/* wired later */ undefined,` value line followed by a line naming the
+     epoch, and ` * hiveSessionsInvalidatedAt belongs here */ undefined,`.
+     Each must leave an offender. These pins also kill the no-region
+     wrapped-lookup mutant, which the last signal called equivalent on
+     outcome; it is not.
+   - Rewrite the "at worst" sentence and its paragraph to say what the lookup
+     does after the change.
+
+2. **The satisfying scans can go back to the no-region reading with every
+   suite green.** Replacing `skipCommentedOut` with the no-region
+   `isCommentLine(line)` leaves the epoch canary green (8 tests, exit 0),
+   because every planted line on the `epochs` and `fields` scans is a star
+   line with no close, which both readings skip.
+   - Add one fixture through `epochlessConsumes` and one through
+     `fieldlessSurfaces` whose only epoch or field mention sits in a leading
+     block comment followed by code (for example
+     `/* hiveSessionsInvalidatedAt */ undefined,`). Each must stay an
+     offender. The validator probed both: the head reports them, the
+     no-region mutant reports neither.
+
+3. **The any-indentation brace rule lets the keyspace-literal assertion
+   absorb a violation.** This traces to the first hold's item 2, which said
+   an outward answer here "a set-equality consumer turns into a red bar.
+   That is the safe direction". That is false where module scope is
+   licensed, as the same hold's item 5 pointed out. The walk comment carries
+   the same claim.
+   - In `lib/fresh-auth.ts`, a function whose inner block closes on an
+     indented ` */ }` line ends at that line for the walk, so a keyspace
+     literal below it in the same function resolves to
+     `lib/fresh-auth.ts#<module>`. The assertion "the entry keyspace literal
+     exists once, at the key-prefix definition" in
+     `no-session-proof-mint-outside-reauth-routes.test.ts` licenses exactly
+     that key, so the plant passes. Validator: green at `71217d5f`, red at
+     `4ea7faca`. The same assertion compares de-duplicated keys, so a second
+     module-scope literal in that file passes too (your unfixed item 2).
+   - In that assertion, skip the definition line with
+     `skipCommentOr(ENTRY_KEY_PREFIX_DEFINITION_RE)` and expect no keys. The
+     adversarial lens probed this: the clean tree is green and the plant is
+     red. It also closes the de-duplication gap.
+   - Then re-derive the module docblock's SET-EQUALITY bullet, which names
+     this assertion as the case that licenses module scope, and the walk
+     comment that says an outward answer is one "a set-equality consumer
+     reads as a new member". Derive both from the assertions as they stand
+     after the change. Do not claim that no consumer licenses module scope:
+     the accounts canary keys its `.sql` migration counts at module scope.
+     The walk comment's claim must be conditional on the outer scope not
+     being licensed.
+
+4. **The sibling-copy paragraph overstates what landed here first.** In the
+   module docblock's hand-ported-sibling paragraph, "reading the code after a
+   close that begins its line, and taking a brace there at any indentation,
+   landed in this copy first" reads as if the frontend walk never reads code
+   after a close. It does, after the close of a region it tracks, and tests
+   that brace at the line's own indentation (validator: a column-0 `*/ }`
+   resolves to module scope there).
+   - What this copy adds is reading a line-start close when no region is
+     tracked, and taking a brace after any read close at any indentation.
+     Say that, or drop the point-in-time sentence: the same paragraph says
+     a list of differences kept there goes stale with nothing failing.
+   - Reflow the over-long line in that paragraph, and the over-long line in
+     the OUTWARD bullet ("So can a `}` leading a line of template
+     content.").
+
+5. **Name the satisfying-side comment-on-a-live-line residual.** An epoch
+   named in a comment that shares a live line
+   (`return consumeSessionFreshAuthToken(token, username, undefined); // TODO hiveSessionsInvalidatedAt`,
+   or `sessionsInvalidatedAtMs: /* hiveSessionsInvalidatedAt */ undefined,`)
+   satisfies the pairing or the value seam, because `isCommentedOut` answers
+   about whole lines and the value test reads the whole value text. This
+   predates the task (your unfixed item 3). Do not fix it here.
+   - Name it in the `skipCommentedOut` docblock beside the
+     no-prefix-continuation residual, so the record survives this task's
+     archive.
+
+### Not held, recorded so it is not re-litigated
+
+- The walk reads a line-start close outside a tracked region and can
+  re-enter a region from it; `blockCommentInterior` does not. The pass then
+  under-reports, which is loud on forbidden-shape and demand-side scans, and
+  the satisfying scans read by shape. Dismissed.
+- The line-start-close branch has no template guard, so a template line
+  beginning `*/ }` resolves outward. It fails closed wherever the outer
+  scope is not licensed. Dismissed.
+- `isCommentedOut`'s docblock says an opener inside a string cannot open a
+  phantom block. A line-start SQL `/*` in a template literal does open one
+  for its upward walk. Pre-existing, and loud on its satisfying-side
+  consumers. Dismissed.
+- `skipCommentOr`'s docblock does not repeat the satisfying-side warning. It
+  is defined as `skipCommentLine` plus a definition line and links to it.
+  Dismissed.
+- Reverting one `skipCommentOr` or `skipCommentLine` call to a
+  region-dropping closure survives at 11 of 12 sites (the last signal named
+  one). The first hold waived per-scan probes once the closures were gone.
+  Not held.
+- For the record, the parity-inversion plant exists through
+  `epochlessConsumes` only, not through `fieldlessSurfaces` as the last
+  signal says. The first hold asked for it there only.
+- The frontend port of the walk's two new brace rules (your unfixed item 4)
+  is an open architect decision, not part of this task.
+- Architect, at archive: `/ce-compound-refresh` the
+  `fail-closed-does-not-transfer-from-set-equality-to-pairing-canaries`
+  entry, whose snippets pass a bare `isCommentLine` as a skip, which no
+  longer typechecks.
