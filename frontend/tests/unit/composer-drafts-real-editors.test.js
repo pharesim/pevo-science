@@ -580,6 +580,24 @@ describe('composer drafts in the real app', () => {
       expect(drafts()['pevo-draft-edit:alice:alice:p1']).toMatchObject({ title: 'Before the sign-out' });
     });
 
+    it('the baseline outlives a re-render: work typed only in an editor is still work after the same account signs back in', async () => {
+      signIn('alice');
+      await visit('/edit/alice/p1', 'editPage');
+      const comp = await editorsReady('editPage');
+      comp._bodyEditor.editor.commands.insertContent('Typed body');
+      await pastDebounce();
+      const typedBody = drafts()['pevo-draft-edit:alice:alice:p1'].body;
+      expect(typedBody).toContain('Typed body');
+
+      auth.disconnect();
+      await settle();
+      signIn('alice');
+      const back = await editorsReady('editPage');
+      expect(back.editorsAtBaseline).toBe(false);
+      back._flushDraftSave();
+      expect(drafts()['pevo-draft-edit:alice:alice:p1']).toMatchObject({ body: typedBody });
+    });
+
     it("the edit page's sign-in call to action brings up the form with the editors and the account's author fields", async () => {
       const comp = await visit('/edit/alice/p1', 'editPage');
       await vi.waitFor(() => expect(comp.loadingPaper).toBe(false), { interval: 5 });

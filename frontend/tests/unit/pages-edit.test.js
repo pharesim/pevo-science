@@ -2805,6 +2805,26 @@ describe('editPage draft carries the addressed-review ticks', () => {
     }
   });
 
+  // Between the load and the editor mount the key is captured and the plain
+  // half of the baseline is taken, but not the editor half. A save the
+  // load's own field changes armed can fire in that window when the editor
+  // chunk is slow; it must write nothing, and above all not replace the
+  // stored draft the restore is about to bring back.
+  it('a write after the load and before the editors have mounted writes nothing', async () => {
+    arrangeLoad([REV_ONE, REV_TWO]);
+    const stored = storedDraft({ addressedReviews: [addressed(REV_TWO)] });
+    localStorage.setItem(draftKey(), stored);
+
+    const comp = loadedComponent();
+    await comp.loadPaperData();
+    expect(comp._draftKey).toBe(draftKey());
+    expect(comp._baselineEditors).toBe(null);
+
+    comp._flushDraftSave();
+
+    expect(localStorage.getItem(draftKey())).toBe(stored);
+  });
+
   it('restore reinstates a tick whose review is still on the paper', async () => {
     arrangeLoad([REV_ONE, REV_TWO]);
     localStorage.setItem(draftKey(), storedDraft({ addressedReviews: [addressed(REV_TWO)] }));
