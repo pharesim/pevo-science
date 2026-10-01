@@ -1,4 +1,4 @@
-## Two fresh-auth docblock counts disagree with the file they sit in (archived 2026-10-01) — four review rounds, three holds; archived clean at 8594733d; out-of-scope reports routed to two new ui tasks, the expired-JWT mint answer left open
+## Two fresh-auth docblock counts disagree with the file they sit in (archived 2026-10-01) — four review rounds, three holds; archived clean at 8594733d; out-of-scope reports routed to three new ui tasks
 
 ### Architect archive note (2026-10-01, third re-review)
 
@@ -31,10 +31,10 @@ approved as recommended):
   (holds for the authenticated-mode flows it describes).
 - (a) same-subject window race: dismissed, worst case one extra password prompt.
 - (b) an expired JWT answers the mint with 401 UNAUTHORIZED, read as a wrong password,
-  so the user is told re-authentication failed and never to sign in again: OPEN
-  architect decision, not filed. Options: a distinct backend code for an expired JWT
-  (recommended) handled in api.js like SESSION_INVALIDATED, or a client-side
-  `expiresAt` check before authenticated requests.
+  so the user is told re-authentication failed and never to sign in again: decided
+  client-side (an `expiresAt` check before `authenticatedRequest` sends, skew accepted)
+  over a distinct backend code; filed as
+  `ui-expired-session-token-reads-as-wrong-password`.
 - (c) an upload's username_mismatch after a cross-tab sign-in signs the new account
   out: filed as `ui-upload-mismatch-teardown-after-subject-change`.
 - (d) a failed consent-op cache write loses the ORCID proof: dismissed, reachable only
