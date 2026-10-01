@@ -303,3 +303,127 @@ ORCID start that rejects propagates the rejection, as
 `beginOrcidFreshAuthRedirect`'s docblock says. It counts neither clears nor
 consumers, so it is outside this task's population, and where it lands is
 awaiting a triage decision. Leave both sentences as they are under this hold.
+
+## UI re-review signal (2026-10-01, commit 8594733d)
+
+Landed in 8594733d (`ui(fresh-auth): removal claims scope themselves instead
+of counting removers`), verified an ancestor of main before this move.
+Comment-only: the comment-stripped file (esbuild, whitespace-minified) is
+byte-identical before and after. `npx vitest run` exit 0 at 88 files / 2016
+tests on a HEAD copy before the edit and on the edited tree after, with no
+Errors line. `npm run build` clean (run in a scratchpad copy). The pre-commit
+anchor gate passed at commit time and standalone (control line fires). The
+two leaves left untouched under the hold ("every teardown boundary ...") are
+unchanged.
+
+- **Hold item 1.** The total is gone and the gate sentence is the right way
+  round: "Leaving the value for the route to refuse would not retire the
+  entry either, on the routes whose request schema declares the proof as a
+  bounded string ... So without the drop here, nothing on the path of an
+  attempt one of those routes refuses this way would remove the entry, and
+  every later attempt on the entry's own target that found it would send the
+  same value again." **Deviations from the suggested shape, for architect
+  judgement:** (a) the route scope leads the claiming clause, because on the
+  coercing routes (change_email, delete_account, the custody broadcast) a
+  non-string reaches the consume as `missing`, answers FRESH_AUTH_REQUIRED,
+  and the gate's `clearProofCache` does run; (b) "the refused action's own
+  path" read generically covers other actions on the same routes, whose
+  untargeted success clears empty the slot, so the claim is scoped to "an
+  attempt one of those routes refuses this way" and to "the entry's own
+  target"; (c) "would draw the same validation rejection" was false, since a
+  later attempt can meet 401 SESSION_INVALIDATED first (`verifyHiveSignature`
+  runs before `validate` on those routes) and that teardown's scrub removes
+  the entry, so the sentence says what is invariant: the same value is sent.
+  The consumer-refusal clause before it had the same shape ("the next attempt
+  on that target re-reads it", with "that target" lacking an antecedent) and
+  is scoped the same way.
+- **Hold item 2.** "On the retry mint, this function's own clear of the memo
+  runs only on an UNAUTHORIZED answer, the code a rejected password draws; a
+  transport failure there does not trigger it." **Deviation:** "this
+  function's own clear" rather than "only a rejection of the password
+  retires it", because a 401 SESSION_INVALIDATED answer to the retry mint
+  retires the memo through the subject scrub inside the same call, and the
+  code tests the UNAUTHORIZED code, which more than a rejected password can
+  draw.
+- **Sweep.** Remover and writer sets derived from code for 17 slots (the
+  window slot and its mirror, the consent-op slot, the four flow keys, the
+  memo and its generation, the factor flight and its subject key, both
+  acquisition flights, `_acquireGeneration`, `_reportedTeardownGeneration`),
+  across all of src. 162 candidate sentences were judged against them under
+  a code lens and a read-alone lens, with a refuter for each flag. Then two
+  further adversarial passes ran over the rewritten text. Repaired, each by
+  dropping the total or moving the scope into the claiming clause: the
+  module header's consent-op sentence (it still called the token's TTL and
+  burn identical to session-kind proofs, which are a multi-use window), the
+  mirror's "only surviving the ORCID round-trip", `cacheConsentOpProof`'s
+  "same swallow", the reader's "One drop" count and its falsy-shape list,
+  the comparison's re-auth rationale, the memo's "until a page reload" and
+  "Two rejections", the factor flight's "coalesce onto one status request",
+  `abandonInFlightAcquisitions`' trigger list and "owns only",
+  `evictUnnamedAcquisition`'s until-list, the `ensureSessionWindow` lockout
+  sentence, the ORCID unwind's key-ownership clause, the retry gate's
+  `clearProofCache` hook line, and in `broadcastWithFreshAuth` the success
+  path, the slide gate, the 401 meaning, the gated clear ("this clear must
+  leave the window slot alone") and the mismatch-arm sentence.
+- **Checked and kept.** "Cleared by the callback handler after the proof
+  lands" (true, and it claims no exclusivity); "the two erasers" in the memo
+  docblock (`clearPasswordFactorMemo` has exactly two callers). Refuted by the
+  sweep: the "a teardown that already narrates itself" parenthetical, "The
+  tokenless and TTL drops it joins are ungated on the same grounds", and the
+  generation-pairing comment on `_passwordFactorMemoGeneration`.
+- `/ce-simplify` was not run: the diff has no executable lines. No
+  `/ce-compound`: the method is the hold's own instruction.
+
+Outside this task's population, left untouched for architect triage:
+
+1. `lib/ipfs-upload.js` carries the two sentences this commit rescoped in
+   `broadcastWithFreshAuth`: the slide comment above `attemptOnce` ("The
+   slide belongs to this flight's own window only") and `uploadFile`'s "Only
+   this flight's own window is this leg's to drop". Both gates test the
+   subject generation, not window identity.
+2. `mintViaPasswordFactor`'s opening says it is shared by the settings and
+   authorship orchestrators; `acquireSessionProof` calls it too. The same
+   sentence calls `mintFn(password)` "the only part that differs between
+   surfaces", but the message, `assumed` and the guard differ as well.
+3. `cacheConsentOpProof`'s docblock says the token "can still be passed to
+   the broadcast in-memory" after a failed write. Its only caller, the
+   `/orcid/callback` fresh-auth handler, navigates away and passes the token
+   nowhere.
+4. Teardown-narration attributions that a self-narrating teardown's claim
+   can falsify, because `tearDownSessionWithMessage` claims the report before
+   a parked guard unwinds: the FRESH_AUTH_CANCELLED row ("reported by
+   `subjectTeardownGuard`'s cancel"), `handleSessionInconsistency`'s "A repeat
+   detection does not disconnect again" and "says nothing when that teardown
+   has already been narrated", `reportTeardownOnce`'s "the first guard to
+   unwind under it speaks again", `claimTeardownReport`'s "any teardown that
+   shows a message of its own" (the settings account delete shows its own
+   toast without claiming), the acquisition's "has already spoken by the time
+   control returns here", and the window-outcome table's "already been
+   reported at the abort site".
+5. The username_mismatch rationale "no re-mint fixes it (every re-acquisition
+   would replay the same mismatched pair)".
+6. Clock anchoring: `readSessionWindow`'s "Every deadline in the entry is
+   client-anchored" and `cacheSessionProof`'s "the server-vs-client offset
+   drops out of the arithmetic entirely". `anchoredSpan` returns a span inside
+   [period/2, period] unchanged, so within that band the stored deadline is
+   the server's value and the skew is not cancelled.
+7. The ORCID redirect's "Taking those would strand it" consequence, and the
+   mode-marker comment's "route the callback to the wrong handler": dispatch
+   follows `data.mode` from the backend, and the marker feeds the back path,
+   the error copy and `completeOrcid`'s authenticated-request choice.
+
+Behaviour the sweep reported, not comment defects and not re-verified by me:
+
+a. Same-subject race: the gated clear and the slide act on whatever the
+   unkeyed slot holds while the generation has not moved, so a late 401 or a
+   late success on one flight can drop or re-anchor a window a sibling flight
+   of the same subject just minted. This needs a prompt and a mint to finish
+   inside one round-trip.
+b. An expired JWT on a mint answers 401 UNAUTHORIZED, which
+   `mintViaPasswordFactor` reads as a wrong password: the first mint
+   re-prompts, and the retry mint retires the memo.
+c. A username_mismatch from a flight that crossed a sign-out and sign-in
+   disconnects the new session, since `tearDownSessionWithMessage` gates on
+   `isConnected` only.
+d. A failed `cacheConsentOpProof` write (storage blocked) loses the
+   ORCID-minted proof with no in-memory fallback.
