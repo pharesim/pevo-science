@@ -581,12 +581,12 @@ export function initPublishPage() {
     },
 
     // A sign-in under an instance that captured no account. The form is kept
-    // and becomes this account's, attached files included. Author fields the
-    // user left empty take the accreditation prefill, and the baseline moves
-    // with them, since a prefill is not the user's work. A draft the account
-    // already stored is restored silently over a form still at its baseline,
-    // and otherwise offered through the choice card; then whatever the form
-    // holds is drafted under the new key.
+    // and becomes this account's, attached files included, and its empty
+    // author fields take the prefill. A draft the account already stored is
+    // restored silently over a form still at its baseline, and otherwise
+    // offered through the choice card. The citation collection merges after
+    // that restore, as on a signed-in load, and whatever the form then holds
+    // is drafted under the new key.
     _adoptAccount(account) {
       this._captureAccount(account);
       this._prefillEmptyAuthorFields();
