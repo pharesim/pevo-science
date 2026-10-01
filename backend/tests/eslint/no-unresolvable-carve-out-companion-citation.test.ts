@@ -2338,9 +2338,13 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     // run's own leading `_` does reach the `[\s-]{0,4}` INSIDE the emphasis
     // group, but hands it at most one dash before the next emphasis
     // character, so nothing in that slot grows with the run. The two prefixed
-    // shapes, `real-path_` before a dash run and `real-path*` before a space
-    // run, are the ones that put a whole run in that slot, and they are what
-    // pin that bound.
+    // shapes, `real-path_` and `real-path*`, each before a DASH run, are the
+    // ones that put a whole run in that slot, and they are what pin that
+    // bound. The run has to be dashes: a dash is in that bound's class and in
+    // QUALIFIER's `[\w-]` word class, so the run splits between the two. A
+    // space is outside the word class, so a space run behind an emphasis
+    // character cannot split that way and stays linear with the bound
+    // removed, which pins nothing.
     //
     // THREE LENGTHS, SHORT FIRST, and each exists for a regression class the
     // others miss. These failures differ in cost by orders of magnitude, and
@@ -2365,7 +2369,7 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     for (const runLength of [400, 6_400, 100_000]) {
       for (const [prefix, sep] of [
         ['', '-'], ['', '_'], ['', '*'], ['', '`'], ['', 'a-'], ['', 'a_'], ['', '_-*`'],
-        ['_', '-'], ['*', ' '],
+        ['_', '-'], ['*', '-'],
       ] as const) {
         const adversarial = `real-path${prefix}${sep.repeat(Math.ceil(runLength / sep.length))}x`;
         for (const [name, run] of [
