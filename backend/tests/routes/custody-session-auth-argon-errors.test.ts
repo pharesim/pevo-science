@@ -26,8 +26,8 @@
  *     queue or triggering the irreversible singleton drain. `getAppPool()`
  *     is mocked so we seed an `accounts` row deterministically (the
  *     route's middleware-then-handler reads it twice: once for the
- *     `sessions_invalidated_at` check by verifyHiveSignature, once for
- *     the `password_hash` + `upgraded_at` columns inside the handler).
+ *     `sessions_invalidated_at` check by verifyHiveSignature, once inside
+ *     the handler).
  *
  * (b) `verifyHiveSignature` is NOT mocked. The route requires a real JWT
  *     with `custody: 'light'` to pass the auth gate; we satisfy it via
@@ -116,15 +116,15 @@ function authHeader(username: string): string {
 // Seeds the two row reads the route + middleware do before hitting argon2:
 //   1. verifyHiveSignature → SELECT sessions_invalidated_at FROM accounts ...
 //      (returns null so the JWT remains valid).
-//   2. /session-auth handler → SELECT password_hash, upgraded_at FROM accounts ...
-//      (returns a non-null password_hash so the route reaches
+//   2. /session-auth handler → its accounts row read
+//      (returns a light row with a non-null password_hash so the route reaches
 //      `runWithArgon2Slot(argon2.verify(...))` instead of falling into the
 //      null-hash branch which would burn a sentinel and short-circuit
 //      before the mocked `runWithArgon2Slot` can throw the injected error).
 function seedSessionAuthAccount() {
   appQueryMock.mockResolvedValueOnce({ rows: [{ sessions_invalidated_at: null }] });
   appQueryMock.mockResolvedValueOnce({
-    rows: [{ password_hash: '$argon2id$placeholder', upgraded_at: null }],
+    rows: [{ password_hash: '$argon2id$placeholder', custody: 'light', upgraded_at: null }],
   });
 }
 

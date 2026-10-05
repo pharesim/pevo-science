@@ -717,10 +717,9 @@ describe.skipIf(!dbReachable)(
     });
 
     // ─── Stale JWT / missing DB row (401 canary) ───────────────────────
-    // Round-2 hold item 6: after the SELECT shape change to just
-    // `upgraded_at`, `rows[0]` access requires the `rows.length === 0`
-    // guard. A mutation dropping that guard would TypeError on the next-line
-    // property access → outer catch → 500. This test pins the 401 path so
+    // `rows[0]` access requires the `rows.length === 0` guard. A mutation
+    // dropping that guard would TypeError on the `account.upgraded_at` read
+    // → outer catch → 500. This test pins the 401 path so
     // any such silent regression flips a CI assertion.
 
     it('No DB row for JWT subject: returns 401 UNAUTHORIZED (stale session)', async () => {

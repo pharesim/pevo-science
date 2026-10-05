@@ -786,7 +786,8 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
   // password login awaits `argon2.verify` in between and can therefore mint
   // from a pre-upgrade snapshot. Neither claim is re-checked after minting,
   // and neither needs to be: every route that ACTS on a light claim re-reads
-  // `upgraded_at` and refuses a row that carries one. `POST /api/auth/session`
+  // the row and refuses it unless `custodyClaimFor` derives `'light'` from
+  // that read. `POST /api/auth/session`
   // copies a claim forward without acting on it: its handler reads no
   // `accounts` row, and the row its request does read is the one
   // `verifyHiveSignature` reads for `sessions_invalidated_at`, a revocation

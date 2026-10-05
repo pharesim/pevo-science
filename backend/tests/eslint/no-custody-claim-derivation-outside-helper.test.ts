@@ -120,10 +120,15 @@ const HELPER_CALL_RE = /\bcustodyClaimFor\s*\(/;
 const HELPER_DEFINITION_RE = /function\s+custodyClaimFor\s*\(/;
 
 /** Every site that turns a row into a custody value. Four session mints that
- *  read a row, plus the two settings handlers that report or branch on the
- *  same pair of columns. `ROW_READING_MINT_SITES` names the four. */
+ *  read a row, the two settings handlers that report or branch on the same
+ *  pair of columns, and the four custody routes that refuse a row whose claim
+ *  is not light. `ROW_READING_MINT_SITES` names the four mints. */
 const ALLOWED_HELPER_CALL_SITES = [
   'routes/auth.ts#POST /login',
+  'routes/custody.ts#POST /broadcast',
+  'routes/custody.ts#POST /fresh-auth',
+  'routes/custody.ts#POST /session-auth',
+  'routes/custody.ts#POST /upgrade',
   'routes/orcid.ts#handleLogin',
   'routes/recover.ts#POST /recover',
   'routes/recover.ts#POST /recover/verify',
@@ -131,8 +136,8 @@ const ALLOWED_HELPER_CALL_SITES = [
   'routes/settings.ts#GET /email',
 ];
 
-/** The helper callers that also mint, each binding the helper's result as the
- *  claim. Listed apart from the caller set because calling the helper is not a
+/** The helper callers whose mint binds the helper's result as the claim.
+ *  Listed apart from the caller set because calling the helper is not a
  *  licence to mint: the settings handlers call it and issue no session. An
  *  entry here that is not also a helper caller licenses nothing, since a
  *  variable mint outside the caller set is counted against the token refresh's
@@ -500,7 +505,7 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
     expect(sources.map((s) => s.rel)).toContain(HELPER_MODULE);
   });
 
-  it('exactly the row-reading mints and the two settings handlers call the helper', () => {
+  it('exactly the row-reading mints, the two settings handlers and the four custody gates call the helper', () => {
     const { keys, sites } = occurrencesOf(
       sources,
       HELPER_CALL_RE,
@@ -553,10 +558,10 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
     ).toEqual(tally(ALLOWED_CLAIM_CARRY_SITES));
     expect(
       tally(keysOf(atHelperCallers)),
-      'a helper caller mints only where this list says a row-reading mint ' +
-        'is, once per entry; a second mint in one symbol, or a first in a ' +
-        'caller that issued no session, is not licensed, and an entry no ' +
-        `mint uses is dropped:\n${sitesOf(atHelperCallers)}`,
+      'a helper caller mints a variable claim only where this list says a ' +
+        'row-reading mint is, once per entry; a second mint in one symbol, ' +
+        'or a first in a caller that issued no session, is not licensed, and ' +
+        `an entry no mint uses is dropped:\n${sitesOf(atHelperCallers)}`,
     ).toEqual(tally(ROW_READING_MINT_SITES));
   });
 

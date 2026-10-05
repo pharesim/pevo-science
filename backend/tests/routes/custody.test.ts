@@ -54,9 +54,9 @@ vi.mock('../../src/hive.js', async () => {
   };
 });
 
-// getAppPool returns a light-account row with non-null posting_key_enc /
-// iv_posting and no upgraded_at. The session-invalidation check inside
-// verifyHiveSignature also hits this pool; return a row without
+// getAppPool returns a light-account row: `custody` 'light', non-null
+// posting_key_enc / iv_posting, and no upgraded_at. The session-invalidation
+// check inside verifyHiveSignature also hits this pool; return a row without
 // sessions_invalidated_at for that lookup.
 // Hoisted as a module-scope const so the per-test save/restore pattern
 // (e.g., the outer-catch specs that install a throw-by-SQL-shape impl in
@@ -77,6 +77,7 @@ const DEFAULT_APP_QUERY_IMPL = async (sql: string, _params: unknown[]) => {
         {
           posting_key_enc: Buffer.from('ciphertext'),
           iv_posting: Buffer.from('iv'),
+          custody: 'light',
           upgraded_at: null,
         },
       ],
@@ -716,11 +717,10 @@ describe('BE-LOG-SHAPE-CONVERGENCE — custody.ts structured-log emissions (Item
 
   it('custody.upgrade.failed: outer-catch on /upgrade emits canonical error shape with err: <Error>', async () => {
     const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => undefined as never);
-    // BACKEND-CUSTODY-UPGRADE-SEED-PHRASE-REAUTH: the /upgrade route now
-    // SELECTs only `upgraded_at` (password_hash branch removed). Drive the
-    // outer-catch by throwing on the route's `upgraded_at` SELECT (after the
-    // middleware's `sessions_invalidated_at` lookup succeeds). Username is
-    // unique to dodge the per-account `upgradeLimiter` (max=1/hr) bucket.
+    // Drive the outer-catch by throwing on the route's `upgraded_at` SELECT
+    // (after the middleware's `sessions_invalidated_at` lookup succeeds).
+    // Username is unique to dodge the per-account `upgradeLimiter` (max=1/hr)
+    // bucket.
     const upgradeUser = `lightupgouterct_${Date.now() % 100000}`;
     appQueryMock.mockImplementation(async (sql: string, _params: unknown[]) => {
       if (sql.includes('sessions_invalidated_at')) {

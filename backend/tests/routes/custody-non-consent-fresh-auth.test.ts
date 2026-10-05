@@ -25,8 +25,8 @@
  *   - State C (ORCID-only, no password): broadcast with ORCID session-kind
  *     proof → 200. Previously blocked (no path to mint any kind of proof
  *     before this change).
- *   - State D (upgraded): broadcast → 403 ALREADY_UPGRADED regardless of
- *     proof. Encrypted keys are wiped at upgrade; nothing to decrypt.
+ *   - State D (upgraded): broadcast → 403 FORBIDDEN. Encrypted keys are
+ *     wiped at upgrade; nothing to decrypt.
  *   - Missing proof → 401 FRESH_AUTH_REQUIRED + reason 'missing'.
  *   - Cross-account proof (Bob's proof, Alice's JWT) → 403 + reason
  *     'username_mismatch'.

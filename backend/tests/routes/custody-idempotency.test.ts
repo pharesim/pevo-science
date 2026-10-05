@@ -64,6 +64,7 @@ const appQueryMock = vi.fn().mockImplementation(async (sql: string) => {
         {
           posting_key_enc: Buffer.from('ciphertext'),
           iv_posting: Buffer.from('iv'),
+          custody: 'light',
           upgraded_at: null,
         },
       ],

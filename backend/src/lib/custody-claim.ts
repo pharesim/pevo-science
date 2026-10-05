@@ -45,10 +45,13 @@
  * session-invalidation epoch revokes it whenever the mint lands in the same
  * integer second the upgrade stamped; a mint landing in a later second
  * survives that check and is refused instead at the route it is presented to.
- * Every route that ACTS on a light claim re-reads `upgraded_at` itself and
- * refuses a row that carries one (`/api/custody/broadcast`, `/fresh-auth`,
- * `/session-auth`, `/upgrade`), and the encrypted keys such a claim would
- * unlock were nulled by the upgrade in the statement that set the epoch.
+ * Every route that ACTS on a light claim (`/api/custody/broadcast`,
+ * `/fresh-auth`, `/session-auth`, `/upgrade`) re-reads the row itself and
+ * refuses it unless this helper derives `'light'` from that read. A row that
+ * carries an epoch is answered first, by the route's own `upgraded_at` branch;
+ * a row that never was light (§ 6.1 state G) has no epoch and is refused by
+ * the derived claim. The encrypted keys a stale light claim would unlock on an
+ * upgraded row were nulled by the upgrade in the statement that set the epoch.
  *
  * One consumer carries the claim without acting on it, so the guarantee is not
  * universal over consumers: `POST /api/auth/session` re-mints whatever
@@ -61,7 +64,8 @@
  * scope of this whole docblock: the response hands the value back to the
  * client, but spending a light claim still means reaching
  * `/api/custody/broadcast`, `/fresh-auth`, `/session-auth` or `/upgrade`, and
- * each of those re-reads the epoch and refuses the row the copy names.
+ * each of those re-reads the row the copy names and refuses it unless the
+ * claim derived here from that read is `'light'`.
  */
 
 export type CustodyClaim = 'light' | 'self';

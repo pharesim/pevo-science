@@ -122,7 +122,7 @@ router.get('/email', readLimiter, verifyHiveSignature, async (req: Request, res:
 //                                   expires (the upgrade sweeps session
 //                                   proofs only)
 //   State G (Keychain + email)    : 'orcid' when linked (the password issuer
-//                                   refuses its non-light claim)
+//                                   refuses the row's non-light claim)
 //
 // Keychain (Hive-signature) requests skip the body-proof check entirely — the
 // per-request signed canonical message IS the fresh proof and is already
@@ -644,7 +644,7 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
 //                                   expires (the upgrade sweeps session
 //                                   proofs only)
 //   State G (Keychain + email)    : 'orcid' when linked (the password issuer
-//                                   refuses its non-light claim)
+//                                   refuses the row's non-light claim)
 //
 // Keychain (Hive-signature) requests skip the body-proof check entirely — the
 // per-request signed canonical message IS the fresh proof and is already

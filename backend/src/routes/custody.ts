@@ -54,6 +54,7 @@ import {
 import { assertBodyRecord, requireStringField } from '../lib/body-record.js';
 import { HIVE_PERMLINK_MAX_LEN } from '../lib/hive-permlink.js';
 import { getPool, isHafConfigured } from '../db.js';
+import { custodyClaimFor } from '../lib/custody-claim.js';
 
 // Centralized length caps for custody body-shape validation. Shared between
 // the pre-limiter validators and the handler-side defense-in-depth reads so
@@ -431,9 +432,12 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     return sendError(res, 401, 'UNAUTHORIZED', 'Authentication required');
   }
 
-  // Only light (custodial) accounts can use this endpoint
+  // Only light (custodial) accounts can use this endpoint. The token's claim
+  // is checked here and the row's derived claim after the row read; both
+  // refusals give this one answer.
+  const refuseNonLight = () => sendError(res, 403, 'FORBIDDEN', 'This endpoint is only for custodial accounts. Use Hive Keychain to sign transactions.');
   if (custody !== 'light') {
-    return sendError(res, 403, 'FORBIDDEN', 'This endpoint is only for custodial accounts. Use Hive Keychain to sign transactions.');
+    return refuseNonLight();
   }
 
   let { operations } = req.body || {};
@@ -905,9 +909,10 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     const { rows } = await pool.query<{
       posting_key_enc: Buffer;
       iv_posting: Buffer;
+      custody: string | null;
       upgraded_at: string | null;
     }>(
-      'SELECT posting_key_enc, iv_posting, upgraded_at FROM accounts WHERE username = $1',
+      'SELECT posting_key_enc, iv_posting, custody, upgraded_at FROM accounts WHERE username = $1',
       [username],
     );
 
@@ -921,6 +926,14 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
     const account = rows[0];
     if (account.upgraded_at) {
       return sendError(res, 403, 'FORBIDDEN', 'Account has been upgraded to self-custody. Use Hive Keychain.');
+    }
+    // The token's claim is not the authority. A `'light'` JWT can outlive the
+    // light row it was minted for and name a later row of the same username
+    // that never held keys (ARCHITECTURE.md § 6.1 state G), and that row has
+    // no epoch for the `upgraded_at` branch to refuse. The row's derived claim
+    // must be light too.
+    if (custodyClaimFor(account) !== 'light') {
+      return refuseNonLight();
     }
 
     if (!account.posting_key_enc || !account.iv_posting) {
@@ -1019,8 +1032,9 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
   if (!username) {
     return sendError(res, 401, 'UNAUTHORIZED', 'Authentication required');
   }
+  const refuseNonLight = () => sendError(res, 403, 'FORBIDDEN', 'This endpoint is only for custodial accounts. Self-custody users sign consent ops via Hive Keychain.');
   if (custody !== 'light') {
-    return sendError(res, 403, 'FORBIDDEN', 'This endpoint is only for custodial accounts. Self-custody users sign consent ops via Hive Keychain.');
+    return refuseNonLight();
   }
 
   // Defense-in-depth re-read via the shared `requireStringField` helper. The
@@ -1120,9 +1134,10 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
   try {
     const { rows } = await pool.query<{
       password_hash: string | null;
+      custody: string | null;
       upgraded_at: string | null;
     }>(
-      'SELECT password_hash, upgraded_at FROM accounts WHERE username = $1',
+      'SELECT password_hash, custody, upgraded_at FROM accounts WHERE username = $1',
       [username],
     );
 
@@ -1133,6 +1148,11 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
     const account = rows[0];
     if (account.upgraded_at) {
       return sendError(res, 403, 'FORBIDDEN', 'Account has been upgraded to self-custody. Use Hive Keychain.');
+    }
+    // The row's derived claim must be light too, for the reason given at the
+    // same check in `/broadcast`.
+    if (custodyClaimFor(account) !== 'light') {
+      return refuseNonLight();
     }
 
     if (!account.password_hash) {
@@ -1211,8 +1231,9 @@ router.post('/session-auth', verifyHiveSignature, validateSessionAuthBodyShape, 
   if (!username) {
     return sendError(res, 401, 'UNAUTHORIZED', 'Authentication required');
   }
+  const refuseNonLight = () => sendError(res, 403, 'FORBIDDEN', 'This endpoint is only for custodial accounts. Self-custody users sign consent ops via Hive Keychain.');
   if (custody !== 'light') {
-    return sendError(res, 403, 'FORBIDDEN', 'This endpoint is only for custodial accounts. Self-custody users sign consent ops via Hive Keychain.');
+    return refuseNonLight();
   }
 
   // Defense-in-depth re-read via the shared `requireStringField` helper. See
@@ -1229,9 +1250,10 @@ router.post('/session-auth', verifyHiveSignature, validateSessionAuthBodyShape, 
   try {
     const { rows } = await pool.query<{
       password_hash: string | null;
+      custody: string | null;
       upgraded_at: string | null;
     }>(
-      'SELECT password_hash, upgraded_at FROM accounts WHERE username = $1',
+      'SELECT password_hash, custody, upgraded_at FROM accounts WHERE username = $1',
       [username],
     );
 
@@ -1242,6 +1264,11 @@ router.post('/session-auth', verifyHiveSignature, validateSessionAuthBodyShape, 
     const account = rows[0];
     if (account.upgraded_at) {
       return sendError(res, 403, 'FORBIDDEN', 'Account has been upgraded to self-custody. Use Hive Keychain.');
+    }
+    // The row's derived claim must be light too, for the reason given at the
+    // same check in `/broadcast`.
+    if (custodyClaimFor(account) !== 'light') {
+      return refuseNonLight();
     }
 
     if (!account.password_hash) {
@@ -1363,8 +1390,9 @@ router.post('/upgrade', verifyHiveSignature, validateUpgradeBodyShape, upgradeLi
     return sendError(res, 401, 'UNAUTHORIZED', 'Authentication required');
   }
 
+  const refuseNonLight = () => sendError(res, 403, 'FORBIDDEN', 'Only custodial accounts can upgrade');
   if (custody !== 'light') {
-    return sendError(res, 403, 'FORBIDDEN', 'Only custodial accounts can upgrade');
+    return refuseNonLight();
   }
 
   // Defense-in-depth re-read via the shared `requireStringField` helper. The
@@ -1429,9 +1457,10 @@ router.post('/upgrade', verifyHiveSignature, validateUpgradeBodyShape, upgradeLi
 
   try {
     const { rows } = await pool.query<{
+      custody: string | null;
       upgraded_at: string | null;
     }>(
-      'SELECT upgraded_at FROM accounts WHERE username = $1',
+      'SELECT custody, upgraded_at FROM accounts WHERE username = $1',
       [username],
     );
 
@@ -1443,6 +1472,13 @@ router.post('/upgrade', verifyHiveSignature, validateUpgradeBodyShape, upgradeLi
     const account = rows[0];
     if (account.upgraded_at) {
       return sendError(res, 409, 'ALREADY_UPGRADED', 'Account has already been upgraded to self-custody');
+    }
+    // The row's derived claim must be light too, for the reason given at the
+    // same check in `/broadcast`. A row that was never light has no light
+    // custody to end, and this handler's `UPDATE accounts` matches on the
+    // username alone.
+    if (custodyClaimFor(account) !== 'light') {
+      return refuseNonLight();
     }
 
     // Verify the signed_proof recovers a pubkey that matches `derived_pubkey`
