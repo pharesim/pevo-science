@@ -1,3 +1,215 @@
+## The loose-claim guard accuses the prose its own docblock cites as protected (archived 2026-10-05) — one hold; archived at 3b98e303 with two findings dismissed
+
+### Architect archive note (2026-10-05)
+
+Re-reviewed 3b98e303 against its parent with /ce-code-review (focused: orchestrator correctness,
+standards and requirements read plus one independent in-process adversarial read). All three
+items of the 2026-10-01 hold are fixed as prescribed. Canary 11/11, exit 0, on an isolated copy.
+Narrowings (a) and (b), rebuilt from the header's own wording, reproduce the signal exactly:
+alone red at the accusedProse pin, re-pinned red at droppedNearMiss, loop removed green. The
+new `unparsed` message is true: ratchetClass returns exempt before unparsed.
+
+Two findings, both dismissed by the user ("as recommended", 2026-10-05): (P2) a lower-case-only
+variant of narrowings (b) and (c) keeps every pin green while dropping `with an argon2
+companion:`. That is a narrowing no code makes, so it is preemptive hardening. (P3) header
+bullet (c), built as worded with a lower-case `the`, also drops three existing sentence-break
+pins, so "each narrowing on its own turns the canary red" credits the new pins with a red that
+other pins produce. That is prose about a declined alternative, with no reader consequence.
+The sibling tasks on the same file (reverse declaration, mixed-script) were held the same day.
+
+**Owner:** backend
+**Created:** 2026-10-01
+
+## Why
+
+The `LOOSE_CLAIM_SRC` docblock in
+`backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`
+reads: "The room after the noun stays tight: prose about a real code path and
+some unrelated companion thing ("running on the real path with a mocked
+companion here:") is common, and every extra character of slack there accuses
+more of it." A reader takes that example as prose the tight room protects.
+
+It is not protected. Measured on 2026-10-01 against an isolated copy of HEAD,
+on the normalised text:
+
+| Input | `labelCount` | `unparsedClaims` | `ratchetClass(blockShape(...))` |
+|---|---|---|---|
+| `running on the real path with a mocked companion here: the pool is stubbed` | 0 | `["real path with a mocked companion here:"]` | `unparsed` |
+| `This drives the real path with a mocked companion: getAppPool is stubbed.` | 0 | `["real path with a mocked companion:"]` | `unparsed` |
+
+The window after the noun is `{0,8}`, and ` here` is five characters, so the
+colon is in reach. A block carrying either sentence is an `unparsed` violation.
+The ALLOW_MARKER exempts it, so an author has a way through, but the docblock
+gives no hint that the marker is needed. No corpus file contains this shape
+today. The previous implementation round recorded it as found and not fixed,
+and confirmed it predates that round.
+
+The finding here is the sentence, not only the behaviour. A docblock that
+implies a guarantee the code does not provide is the defect class this canary
+has been held for in nearly every round.
+
+## Scope
+
+1. Correct the `LOOSE_CLAIM_SRC` docblock to measured behaviour. Either its
+   example becomes one the guard actually refuses, or the docblock says
+   plainly that this prose shape is accused and names the marker as the
+   author's remedy.
+2. Decide whether to narrow the guard so that prose shaped like the example is
+   not accused. The constraint is recall: every existing near-miss probe must
+   keep its current `unparsedClaims` count. Note that the obvious filter,
+   refusing a span whose filler's first word is a stop word, would drop the
+   pinned near-miss `(c) REAL-PATH (also routes/foo.test.ts) COMPANION: covered`
+   (one of the casing-recall probes, pinned at 1), whose filler's first word
+   is `also`. If no narrowing preserves every near-miss
+   probe and the corpus census, keep the behaviour, fix the docblock, and add
+   this shape to the header's list of known precision costs.
+
+## Acceptance criteria
+
+1. The docblock's example and wording match measured behaviour, and a probe
+   pins the example at its stated count: 0 if the guard now refuses it, 1 if
+   the docblock names it as accused.
+2. If the guard is narrowed, every existing `unparsedClaims` near-miss probe
+   returns its current count, the whole-tree census is unchanged, and the new
+   arm has a probe that goes red when the arm alone is neutered.
+3. The canary is green. `LANDING_FREE_PROSE`, `LANDING_FILELESS`, both
+   deferred maps and `LANDING_DIGEST` are untouched.
+
+## Notes
+
+This task and two sibling tasks edit the same canary file:
+`backend-carve-out-canary-mixed-script-confusable-set` and
+`backend-carve-out-canary-reverse-declaration-in-mocking-file`. Land them one
+at a time. Anchor any comment you write on stable symbols, never on line
+numbers, task slugs or round numbers.
+
+Reproduce on a probe copy built per the backend probe recipe, never in the
+shared checkout. Apply `normalizeCommentText` before calling `unparsedClaims`,
+`labelCount` or `blockShape`, as `auditSources` does. Console output is
+silenced in this suite, so write results to a file with the already-imported
+`writeFileSync`.
+
+## Backend implementation signal (2026-10-01, commit 615d77ce)
+
+Decision: keep the behaviour, fix the docblock (scope item 2's fallback).
+Three narrowings were measured on isolated copies of `d90204fa`, each green
+against every existing pin and the non-self census, and each dropped a
+plausible claim-shaped near-miss unaudited (labels=0, unparsed=0):
+
+| Narrowing | Prose spared | Near-miss dropped |
+|---|---|---|
+| refuse whitespace + lower-case word after the noun | P1 only (not the colon-straight-after variant) | `(also routes/foo.test.ts) companion here:` |
+| refuse (preposition +) article before the noun, `real` excepted | both examples | `Real-path with a Postgres companion:` |
+| refuse an article-led noun phrase (lookbehind) | both examples | `Real-path with a Postgres companion: <backticked path> [A]`, `THE COMPANION:` family |
+
+Three independent judges (recall, precision/scope, docblock truth) all chose
+keep-behaviour. Landed:
+
+- `LOOSE_CLAIM_SRC` docblock: the room is stated as measured (colon at most
+  eight characters past the noun and any plural ending, no sentence break),
+  the example is named as accused, and ALLOW_MARKER is named as the remedy.
+- Header "Gaps left open on purpose": new precision-cost entry naming the
+  three measured narrowings and what each drops.
+- `accusedProse` probe beside `nearMissGap`: both task sentences, after
+  `normalizeCommentText`, pin at unparsed 1, labels 0, class `unparsed`, and
+  `exempt` with the marker (AC 1, "names it as accused" branch).
+
+AC 2 not applicable (no narrowing). AC 3: canary green (11/11, exit 0),
+`typecheck:tests` clean; `LANDING_*`, deferred maps and `LANDING_DIGEST`
+untouched.
+
+Side finding, not acted on (for triage): the `unparsed` failure message asks
+for the structured form and never mentions ALLOW_MARKER, so prose accused this
+way is pointed at a fix it cannot take.
+
+## Architect re-review (2026-10-01) — HELD PENDING FIXES:
+
+Reviewed `615d77ce` via `/ce-code-review` (focused: orchestrator correctness
+and standards read plus one independent adversarial read). Verified on an
+isolated copy of `615d77ce`: canary green, 11/11, exit 0. A narrowing that
+spares the example sentence fails only the `accusedProse` assertion, so the
+probe can go red. AC 1 and AC 3 are met. Three prose and message items remain,
+all in `backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`.
+
+1. **The `accusedProse` comment states a bar that every declined narrowing
+   meets.** The comment says a narrowing that spares the example "must then
+   keep every `unparsedClaims` near-miss pin in this spec at its count". Your
+   signal table records each of the three declined narrowings as green against
+   every existing pin, so that bar does not stop any of them. Reproduced in
+   review: with "refuse whitespace + lower-case word after the noun" added to
+   `LOOSE_CLAIM_SRC` and the first `accusedProse` sentence re-pinned at 0 as the
+   comment directs, the canary is 11/11 green, while
+   `' (c) Real-path (also routes/foo.test.ts) companion here: covered'` yields
+   labels 0 and unparsed 0, so it is dropped unaudited. The spellings each
+   narrowing drops are named only in header prose; no probe pins them.
+   Fix: beside `accusedProse`, pin each near-miss from your table's "Near-miss
+   dropped" column, as the exact string you measured, at `unparsedClaims`
+   length 1 and `labelCount` 0. Show that each declined narrowing, applied on
+   its own with `accusedProse` re-pinned to 0, turns the canary red (one
+   mutant per narrowing), and state the result in the signal. Then reword the
+   `accusedProse` comment so its bar names these pins, not only the existing
+   near-miss pins.
+
+2. **The header's precision-cost entry lists a narrowing that was not
+   measured and would not spare the example.** The clause "refusing a filler
+   whose first word is a stop word drops the pinned shouted `(also ...)` set"
+   comes from this task file's Scope item 2. That wording was mine, not yours.
+   It is not one of the narrowings your signal records as measured. `STOP_WORDS`
+   in this file has no `with`, so refusing a span whose filler starts with a
+   `STOP_WORDS` member spares neither `accusedProse` sentence (the adversarial
+   probe kept both at 1). It therefore is not a narrowing "measured for that".
+   It also drops every `(also ...)` near-miss pin, not only the shouted set.
+   Meanwhile the entry leaves out a narrowing you did measure: refusing an
+   article-led noun phrase before the noun (the lookbehind). Fix: make the
+   entry's list exactly the narrowings you measured, each with the prose it
+   spares and the near-miss it drops, matching the pins from item 1. Drop the
+   stop-word clause, or keep it only with a statement that it was not measured
+   as a sparing narrowing, what it actually does under `STOP_WORDS`, and that
+   it drops every `(also ...)` pin.
+
+3. **The `unparsed` failure message never names the remedy the new docblock
+   gives.** In the spec "every citation-shaped line parses as the label, and
+   no comment word mixes scripts", the `unparsed` assertion message tells the
+   author to write `STRUCTURED_FORM` and does not mention `ALLOW_MARKER`, which
+   the `LOOSE_CLAIM_SRC` docblock now names as the author's remedy for accused
+   prose. The `DEFERRED_FILELESS` disagreement message already names the
+   marker. Fix: add a sentence to the `unparsed` message saying that a line
+   which is prose and not a claim is reworded or its block is marked with
+   `${ALLOW_MARKER}`. This is message text only, so guard behaviour and the
+   census are unchanged.
+
+Keep AC 3 as it stands: `LANDING_FREE_PROSE`, `LANDING_FILELESS`, both
+deferred maps and `LANDING_DIGEST` untouched, and canary green by exit code.
+Anchor any new comment on stable symbols only, as the task Notes say.
+
+## Backend re-review signal (2026-10-01, commit 3b98e303)
+
+1. `droppedNearMiss` probe beside `accusedProse` pins, at unparsed 1 and
+   labels 0: `(also routes/foo.test.ts) companion here: covered`,
+   `with a Postgres companion: covered`, the same with a backticked path and
+   `[A]`, and `(also routes/foo.test.ts) THE COMPANION: covered` (each with
+   the ` (c) Real-path` prefix, exact strings as measured). Mutants, each on
+   an isolated copy of the working tree with `accusedProse` re-pinned to
+   what the mutant spares; unmodified copy 11/11 exit 0:
+
+   | Narrowing alone | Canary | First failing pin | Control (`droppedNearMiss` loop removed) |
+   |---|---|---|---|
+   | after-noun `(?!\s[a-z])` | red, exit 1 | `... companion here: covered` | green, exit 0 |
+   | article lookahead before noun | red, exit 1 | `... with a Postgres companion: covered` | green, exit 0 |
+   | article-led-noun lookbehind | red, exit 1 | `... with a Postgres companion: covered` | green, exit 0 |
+
+   Per-string counts under each mutant (unparsed): after-noun drops pin 1
+   only; the lookahead drops pins 2 and 3; the lookbehind drops pins 2, 3
+   and 4. The `accusedProse` comment's bar now names these pins.
+2. Header precision-cost entry rewritten to list exactly those three
+   narrowings, the prose each spares and the pinned spellings each drops,
+   matching the per-string counts. The stop-word clause is gone.
+3. The `unparsed` assertion message adds: a line that is prose and not a
+   claim is reworded, or its block is marked `${ALLOW_MARKER}`.
+
+Canary green (11/11, exit 0) and `typecheck:tests` clean. `LANDING_*`, the
+deferred maps and `LANDING_DIGEST` are untouched.
+
 ## The custody broadcast admits a light account's vouch and vouch retraction (archived 2026-10-01) — archived clean at 519e6597 on the first pass
 
 ### Architect archive note (2026-10-01)
@@ -36,214 +248,3 @@ and `POST /api/wot/retract` already accept a JWT through `verifyHiveSignature` a
 voucher is accredited. Light accounts meet the accreditation criteria from signup
 (`ARCHITECTURE.md` "Accredited-Only Data Policy").
 
-## Scope
-
-1. Add `vouch` and `retract_vouch` to `allowedActions` in the `custom_json` arm.
-2. **Proof kind: the session window** (`ARCHITECTURE.md` § 6.4, the non-consent broadcast row,
-   decided 2026-10-01). Do NOT add them to the consent or credit gated sets, and do not add a
-   fresh-auth target for them. They go through the session-kind consume like a vote.
-3. **Bind the payload to the signer.** For both actions, refuse with 403 `FORBIDDEN` unless
-   the payload's `voucher` equals the authenticated username, as the `vote` arm does for
-   `voter`. Refuse with 400 `VALIDATION_ERROR` when `vouchee` is not a non-empty string or
-   equals the voucher (§ 2.5: a researcher cannot vouch for themselves). The read side already
-   ignores a vouch whose signer is not its `voucher` (the signer gate in
-   `activeVouchesCteBody`), so this binding is about the server not signing an op that is inert
-   or that claims someone else, not about closing a forgery path.
-4. Update the `allowedActions` refusal message, which lists the permitted actions.
-
-## Out of scope
-
-- The frontend gate (`ui-light-account-vouch`).
-- `agents/docs/api-contracts/custody.md`. Its permitted-action list is already out of date, and
-  the architect corrects it once, at the archive of `backend-custody-allowlist-comment-options`
-  or of this task, whichever is later.
-- The `revocation_outcome` values the frontend's retract handler branches on, which the
-  `/api/wot/retract` route no longer returns. That is a separate frontend cleanup.
-
-## Coordination
-
-`backend-custody-allowlist-comment-options` (in `pending/` with a hold) also edits
-`custody.ts`, in the `comment_options` arm and its own test file. This task touches only the
-`custom_json` arm. Stage your own hunks only.
-
-## Acceptance criteria
-
-1. A light account's `vouch` and `retract_vouch` bundles, each with a valid session-kind
-   proof, are broadcast (200), and without a proof they get 401 `FRESH_AUTH_REQUIRED`.
-2. A `voucher` other than the signer is 403, and a missing, non-string or self `vouchee` is
-   400. Each case is checked before the fresh-auth gate and asserts no broadcast.
-3. An unknown `custom_json` action is still 403.
-4. Each assertion is probed by reverting its own site; list probe and spec in the signal block.
-5. New comments follow root `CLAUDE.md` "Comment anchors".
-
-## Backend implementation signal (2026-10-01, commit 519e6597)
-
-Landed in `519e6597` (verified: `git merge-base --is-ancestor 519e6597 main`).
-
-- `backend/src/routes/custody.ts`, `custom_json` arm: `vouch` and `retract_vouch` added to
-  `allowedActions` (the refusal message is built from the list, so it names both). For both
-  actions, before the fresh-auth gate: `voucher !== username` is 403 `FORBIDDEN`
-  (`<action> voucher must be '<user>'`), and a `vouchee` that is not a string, is empty, or
-  equals the voucher is 400 `VALIDATION_ERROR` (`<action> vouchee must be a Hive username
-  other than the voucher`). Not added to the consent or credit gated sets, and no fresh-auth
-  target, so they take the session-kind consume like a vote.
-- `backend/tests/routes/custody-vouch-ops.test.ts` (new, 19 specs, run per action): admit with a
-  session proof (200, ops unchanged), second op in the same window (proof not spent), no proof
-  (401 `FRESH_AUTH_REQUIRED`, reason `missing`), six pre-gate refusals (each sends no proof and
-  asserts no broadcast), and an unknown action (`accredit`) still 403.
-- Red before the route change: 19/19 failed. After: green, plus the six sibling custody test
-  files (117 tests across 7 files). `npm run typecheck` and eslint clean.
-- Wider regression: every test file that references the custody broadcast, `routes/custody`
-  or `routes/wot` (33 files ran): 493 passed, 12 failed in 3 files (`idempotency-real-haf`,
-  `accreditation-idempotency`, `accreditation`), exit 1. The same 3 files on a copy of
-  `519e6597^` (before this change) fail 17 specs, which covers 11 of the 12. The twelfth
-  (`findCustodyBroadcastByIdempotencyKey`, another-username scoping) is in the known-failing
-  real-HAF file and tests the HAF SQL helper, not the route. None of the three reaches the
-  `custom_json` arm.
-
-Mutation probes (AC 4), each run on a scratchpad copy built from `519e6597`, against
-`custody-vouch-ops.test.ts`; baseline 19/19 green:
-
-| Probe (site reverted) | Killed by |
-|---|---|
-| drop `'vouch'` from `allowedActions` | all 9 `vouch` specs + the unknown-action message spec |
-| drop `'retract_vouch'` from `allowedActions` | all 9 `retract_vouch` specs + the unknown-action message spec |
-| voucher binding off | `a voucher other than the signer is 403`, `a missing voucher is 403` (both actions) |
-| drop the `typeof vouchee` check | `a missing vouchee is 400`, `a non-string vouchee is 400` (both actions) |
-| drop the empty-vouchee check | `an empty vouchee is 400` (both actions) |
-| drop the self-vouchee check | `a self vouchee is 400` (both actions) |
-| bind `vouch` only, not `retract_vouch` | all six `retract_vouch` refusal specs |
-| route vouch ops through the per-op gate instead of the session window | `with a session-kind proof broadcasts the op unchanged`, `the session-kind proof is not spent...` (both actions) |
-
-[TODO Architect] `agents/docs/api-contracts/custody.md` permitted-action list: add `vouch` and
-`retract_vouch` (session-kind proof), and the two new refusals (403 voucher binding, 400 vouchee
-shape), per this task's "Out of scope" note.
-
-## The ORCID-factor e2e cache assertion compares five keys against a seven-key entry (archived 2026-10-01) — archived clean at 660f2703 on the first pass
-
-### Architect archive note (2026-10-01)
-
-Reviewed 660f2703 against its parent with /ce-code-review (correctness, testing,
-project-standards on root CLAUDE.md, learnings; adversarial skipped, the diff is an ordinary
-per-feature assertion): zero findings in the diff, zero malformed returns. Reviewers read the
-reviewed commit, since 3c9f3b10 and 795f6df0 later edited the same spec. Verified: the writer
-stores seven keys with authorIndex and claimer normalized to null, the stub echoes no credit
-fields, and the backend /orcid/callback spreads author_index and claimer only when the target
-binds them, so the new comment is true on the real path too. Scope 2 (three CONSENT_OP_KEY
-read-backs, all in this file) was confirmed by three reviewers. AC 3 rests on the implementer's
-run; e2e was not re-run.
-
-One pre-existing P3 surfaced: the stubbed case's comment still points real verification at "the
-test.fixme below", which has not existed since 66a46ec1. It is already Scope item 1 of the
-pending ui-settings-orcid-factor-test-pointers task, so nothing new was filed.
-
-**Owner:** ui
-**Created:** 2026-09-14
-
-Surfaced by the implementer of the consent-op eviction parity task as a residual,
-deliberately not fixed there, and verified at architect review. Pre-existing and
-independent of that change; this is not a hold on it.
-
-## Why
-
-In `tests/e2e/settings-orcid-factor.spec.js`, the stubbed-callback case reads the
-consent-op slot back and asserts it with `toEqual` against a five-key object:
-`token`, `expiresAt`, `action`, `rootAuthor`, `rootPermlink`. `cacheConsentOpProof`
-has written seven keys since the credit-op extension, normalizing the two optional
-fields to `authorIndex: null, claimer: null`. `toEqual` treats a missing key as equal
-to `undefined` but not to `null`, so the assertion cannot pass. It fails on any e2e
-run of that file and will be read as fallout from whatever landed last.
-
-## Scope
-
-1. Make the assertion match the writer's real shape. Preferred: add
-   `authorIndex: null, claimer: null` to the expected object, so the spec keeps
-   pinning the exact entry shape. Do not loosen to `toMatchObject`; that would stop
-   catching an extra key.
-2. Check the other e2e specs that read this slot back for the same five-key shape
-   and fix any that share it.
-3. A ui session has an untracked `tests/e2e/consent-op-fresh-auth.spec.js` in
-   flight. If that work lands first and touches the same assertion, fold this fix
-   into it and say so here; otherwise fix in place.
-
-## Acceptance criteria
-
-1. The stubbed-callback case in `settings-orcid-factor.spec.js` passes against the
-   real writer.
-2. No e2e spec asserts the consent-op entry with the five-key shape.
-3. That e2e file is green under the E2E recipe in `agents/ui/CLAUDE.md`; any
-   pre-existing failures elsewhere in the run are noted, not chased.
-
-## UI implementation signal (2026-09-30, commit 660f2703)
-
-- **Scope 1.** `660f2703` adds `authorIndex: null, claimer: null` to the expected
-  object in the stubbed-callback case of `tests/e2e/settings-orcid-factor.spec.js`.
-  The assertion stays `toEqual`, so an extra key still fails it.
-- **Scope 2.** Re-enumerated from the code: `CONSENT_OP_KEY` is read back at three
-  sites, all in that one file. The stubbed-callback case was the only five-key
-  `toEqual`. The real-backend case uses `toMatchObject` on the triple plus a token
-  type check (the token and deadline are backend-minted, so an exact match is not
-  available there), and the mismatch case asserts `toBeNull`. No other e2e spec
-  reads the slot.
-- **Scope 3.** `tests/e2e/consent-op-fresh-auth.spec.js` has landed and does not
-  read the slot, so there was nothing to fold into; fixed in place.
-- **Verification.** Under the E2E recipe (restart, test-db-up, test-up):
-  `npx playwright test tests/e2e/settings-orcid-factor.spec.js` ran 4 passed,
-  exit 0. Only that file was run, so there are no elsewhere-failures to note. The
-  pre-fix red was not re-observed in this session; it follows from `toEqual`
-  not equating a missing key with `null`. Dev routing restored with
-  `./deploy.sh up`.
-- SHA self-verified: `git merge-base --is-ancestor 660f2703 main` exits 0.
-
-## Make clause-(c) companion citations resolvable and check them (archived 2026-10-01) — eight review rounds, seven holds; archived clean at 486caedb
-
-### Architect archive note (2026-10-01)
-
-Reviewed 486caedb against its parent with /ce-code-review (correctness, project-standards on
-root CLAUDE.md, testing, learnings; adversarial skipped, the diff is comment-only): zero
-surviving findings, zero malformed returns. One correctness P3 (the re-split clause does not
-name QUALIFIER's bounded reach) was suppressed at anchor 50. Every clause of the rewritten
-space-run sentence was measured true by four reviewers and the architect independently: with
-the emphasis-group `[\s-]{0,4}` reverted to `[\s-]*`, both dash shapes double per doubling
-(about 140 ms at 400 to about 2.8 s at 6400) and the space shape stays near 0 ms through
-100,000. The anchor gate finds zero hits on the added lines.
-
-The deferred [TODO Architect] is discharged in a85669fb via /ce-compound-refresh: the
-2026-09-14 backtracking entry (three lengths with the shortest sized against the costliest
-regression, `<[a-z]{1,16}>`, the space-run lesson as work per character), the 2026-09-16
-terminator entry (a linear curve is not a clean result), the clause-(c) entry (the ratchet as
-landed, bounded rather than monotonic; the backticked citation form; the stale push and
-"proposed" notes), and CONCEPTS.md's source-discipline canary entry.
-
-Still open, recorded in the canary header and not filed: the NFKC micro-sign fold in the
-mixed-script scan, a reverse declaration written in a file that itself mocks, and
-`real path with a mocked companion here:` read as citation-shaped. The free-prose backlog
-(103 files) and the file-less backlog (14 files) are the ratchet's deferred conversion work.
-
-**Owner:** backend
-**Created:** 2026-09-02
-
-## Why
-
-The test-mock carve-out permits targeted mocking only if, among other clauses,
-clause (c) holds: the same risk class is covered by a real-path test elsewhere,
-or a follow-up task is filed. The compliance artifact for that clause is a
-sentence in the mocked test file's header naming the companion. It is free
-prose. Nothing resolves the named file, and nothing checks that it asserts
-anything in the claimed risk class.
-
-Three headers have now been found citing companions that do not cover what they
-were cited for, across two separate incidents. In one, a header named
-`recover.test.ts` as the real-path `reissuedAt` companion and that file contains
-zero `reissuedAt` assertions. In another, two headers named "the settings
-password-reset suites" as the live `SESSION_INVALIDATED` companion when no
-settings suite asserts that code at all. An earlier incident had a header naming
-a companion that hoists `MOCK_VERIFY_SIGNATURE`, so it mocked the very surface
-it was cited for covering.
-
-The citation is the only artifact tying a permitted mock to its justification.
-When it is false the carve-out is voided silently: the mock stays, the
-justification evaporates, and nothing goes red. The existing guards do not see
-it. The `no-stale-comment-anchors` canary scans only `backend/src`, and both it
-and the `.githooks/pre-commit` gate match anchor SHAPES (slugs, ordinals, line
-cites, archive redirects); a bare filename in prose is a legal shape under both.
