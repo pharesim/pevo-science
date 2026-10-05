@@ -268,6 +268,9 @@ test('original-author edit broadcasts in-place comment with same parent_permlink
   // the diff branch (always broadcasting full body) would double every
   // paper-revision chain's Hive footprint.
   expect(commentBody.body.startsWith('@@')).toBe(true);
+  // A patch that carries the appended sentence, not the no-op patch an
+  // unchanged body sends, which also starts with `@@`.
+  expect(commentBody.body).toContain('drift detection');
 });
 
 test('accredited non-author (not co-author, no claim) cannot reach the edit form; gating panel renders, no broadcast', async ({
@@ -653,8 +656,8 @@ test('non-head edit target (own post no longer chain head) broadcasts full body,
   // always set head_author/head_permlink equal to paper.author/permlink,
   // so targetIsHead === true and only the diff branch was exercised.
   // This test pins the full-body branch by building a fixture where
-  // (a) the seeded researcher authored a continuation that USED to be
-  // the chain head, and (b) a later continuation by a different author
+  // (a) the seeded researcher's own post, the root, used to be the chain
+  // head, and (b) a later continuation by a different author
   // is now the head.
   const researcher = await pickAccreditedResearcher(request);
   if (!researcher) throw new Error('expected at least one accredited researcher in HAF');

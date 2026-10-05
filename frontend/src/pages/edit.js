@@ -54,22 +54,24 @@ function computeDiff(oldText, newText) {
 // empty string, and the chain rejects an empty body.
 const NO_OP_PATCH = '@@ -0,0 +0,0 @@\n';
 
-// The post a chain post continues: the chain link before it, or null for the
-// root. versions[] is in block order, and the composer publishes a
-// continuation against a head already on chain, so listing the posts in order
-// of their first version gives the chain's links in order.
-function chainPredecessor(versions, author, permlink) {
-  const seen = new Set();
-  let previous = null;
+// The `continues` a native edit keeps: its target's own. A response that holds
+// one post carries that post's own metadata, so its served `continues` is the
+// target's. In a longer chain the served metadata is the latest op's, so the
+// target's predecessor is read from the chain: the canonical root first, which
+// continues nothing, then the other posts in the order of their first version.
+// versions[] is in block order, and the composer publishes a continuation
+// against a head already on chain, so for links it published that order is the
+// chain's.
+function targetOwnContinues(versions, canonical, target, servedContinues) {
+  const posts = [canonical];
   for (const v of versions || []) {
     if (!v.author || !v.permlink) continue;
-    const key = `${v.author}/${v.permlink}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    if (v.author === author && v.permlink === permlink) return previous;
-    previous = { author: v.author, permlink: v.permlink };
+    if (posts.some(p => p.author === v.author && p.permlink === v.permlink)) continue;
+    posts.push({ author: v.author, permlink: v.permlink });
   }
-  return null;
+  if (posts.length === 1) return servedContinues || null;
+  const index = posts.findIndex(p => p.author === target.author && p.permlink === target.permlink);
+  return index > 0 ? posts[index - 1] : null;
 }
 
 const template = `
@@ -1635,15 +1637,18 @@ export function initEditPage() {
         const targetAuthor = ownPost ? ownPost.author : this.paper.author;
         const targetPermlink = ownPost ? ownPost.permlink : this.paper.permlink;
         const targetIsHead = targetAuthor === headAuthor && targetPermlink === headPermlink;
-        // A native edit keeps its target's own `continues`. pevoMeta is the
-        // latest op's metadata, which can be another chain post's.
-        const targetContinues = chainPredecessor(this.paper.versions, targetAuthor, targetPermlink);
         // Where the cache invalidation and the post-success navigate point,
         // whichever arm runs: the paper-detail endpoint resolves any chain
         // entry to its canonical root before reading. Captured here with the
         // other targets so _finishLanded reads nothing from `this.paper`.
         const canonicalAuthor = this.paper.canonical_author || this.paper.author;
         const canonicalPermlink = this.paper.canonical_permlink || this.paper.permlink;
+        const targetContinues = targetOwnContinues(
+          this.paper.versions,
+          { author: canonicalAuthor, permlink: canonicalPermlink },
+          { author: targetAuthor, permlink: targetPermlink },
+          pevoMeta.continues,
+        );
 
         // Detect a submit that would change nothing BEFORE paying for the
         // re-auth window. Everything it reads is already in hand and costs

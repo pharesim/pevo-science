@@ -854,6 +854,111 @@ describe('editPage handleSubmit sanitization', () => {
         .toEqual({ author: 'bob', permlink: 'cont-1' });
     });
 
+    it('native edit of a continuation post served as a paper of its own keeps the post it continues', async () => {
+      // bob/fork-2 continues alice/p1 but is not a link of p1's chain (an
+      // earlier continuation of the same head is), so the detail endpoint
+      // serves it alone, with its own metadata.
+      const { invalidatePaperCache } = await import('../../src/api.js');
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      invalidatePaperCache.mockResolvedValue({});
+
+      const comp = createComponent();
+      mockStores.auth.username = 'bob';
+      comp.paper = {
+        author: 'bob', permlink: 'fork-2',
+        head_author: 'bob', head_permlink: 'fork-2',
+        canonical_author: 'bob', canonical_permlink: 'fork-2',
+        body: 'bob fork body',
+        json_metadata: { pevotest: { version: 2, continues: { author: 'alice', permlink: 'p1' } } },
+        title: 'Bob fork',
+        versions: [
+          { version_number: 1, author: 'bob', permlink: 'fork-2' },
+          { version_number: 2, author: 'bob', permlink: 'fork-2' },
+        ],
+      };
+      comp._originalBody = '## Abstract\n\nbob abstract\n\n---\n\nbob fork body';
+      comp.title = 'Bob fork, retitled';
+      comp.abstract = 'bob abstract';
+      comp.body = 'bob fork body';
+      comp.discipline = 'Physics';
+      comp.authorName = 'Bob';
+      comp.authorAffiliation = 'Harvard';
+      comp.authorOrcid = '';
+      comp.keywordsText = 'quantum';
+
+      await comp.handleSubmit();
+
+      expect(comp.step).toBe('success');
+      const commentOp = broadcastOps.mock.calls[0][1][0];
+      expect(commentOp[1].author).toBe('bob');
+      expect(commentOp[1].permlink).toBe('fork-2');
+      expect(JSON.parse(commentOp[1].json_metadata).pevotest.continues)
+        .toEqual({ author: 'alice', permlink: 'p1' });
+    });
+
+    describe('a link whose first version is older than the root\'s', () => {
+      // bob published old-1 before alice's p1 existed and later pointed its
+      // metadata at p1, which the chain walk admits. versions[] is in block
+      // order, so old-1 is listed before the root. The served metadata is
+      // old-1's latest op.
+      function invertedChain(username) {
+        const comp = createComponent();
+        mockStores.auth.username = username;
+        comp.paper = {
+          author: 'alice', permlink: 'p1',
+          head_author: 'bob', head_permlink: 'old-1',
+          canonical_author: 'alice', canonical_permlink: 'p1',
+          body: 'bob old body',
+          json_metadata: { pevotest: { version: 3, continues: { author: 'alice', permlink: 'p1' } } },
+          title: 'Bob old title',
+          versions: [
+            { version_number: 1, author: 'bob', permlink: 'old-1' },
+            { version_number: 2, author: 'alice', permlink: 'p1' },
+            { version_number: 3, author: 'bob', permlink: 'old-1' },
+          ],
+        };
+        comp._originalBody = '## Abstract\n\nbob abstract\n\n---\n\nbob old body';
+        comp.title = `${username} revises`;
+        comp.abstract = `${username} abstract`;
+        comp.body = `${username} body revision`;
+        comp.discipline = 'Physics';
+        comp.authorName = username;
+        comp.authorAffiliation = 'MIT';
+        comp.authorOrcid = '';
+        comp.keywordsText = 'quantum';
+        return comp;
+      }
+
+      beforeEach(async () => {
+        const { invalidatePaperCache } = await import('../../src/api.js');
+        broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+        invalidatePaperCache.mockResolvedValue({});
+      });
+
+      it('the root continues nothing', async () => {
+        const comp = invertedChain('alice');
+
+        await comp.handleSubmit();
+
+        expect(comp.step).toBe('success');
+        const commentOp = broadcastOps.mock.calls[0][1][0];
+        expect(commentOp[1].permlink).toBe('p1');
+        expect(JSON.parse(commentOp[1].json_metadata).pevotest).not.toHaveProperty('continues');
+      });
+
+      it('the link continues the root', async () => {
+        const comp = invertedChain('bob');
+
+        await comp.handleSubmit();
+
+        expect(comp.step).toBe('success');
+        const commentOp = broadcastOps.mock.calls[0][1][0];
+        expect(commentOp[1].permlink).toBe('old-1');
+        expect(JSON.parse(commentOp[1].json_metadata).pevotest.continues)
+          .toEqual({ author: 'alice', permlink: 'p1' });
+      });
+    });
+
     it('head-author native edit still computes diff (diff base IS the chain head body)', async () => {
       // Bob (chain head) edits bob/cont-1. paper.body IS bob's current
       // body, so the diff is correct and the size optimization applies.
@@ -898,6 +1003,9 @@ describe('editPage handleSubmit sanitization', () => {
       // valid Hive comment ops, so this assertion just guards the
       // size-optimization regression we're protecting.
       expect(commentOp[1].body.startsWith('@@')).toBe(true);
+      // A patch that carries the change, not the no-op patch an unchanged
+      // body sends, which also starts with `@@`.
+      expect(commentOp[1].body).toContain('TWEAK');
     });
   });
 
