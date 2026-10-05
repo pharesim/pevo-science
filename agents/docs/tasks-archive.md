@@ -1,3 +1,156 @@
+## Close the last two retired-model sentences in fresh-auth, and pin the retirement contract (archived 2026-10-05) — clean review at b80ebff1; probes m1-m3 reproduced; two AC1 wording calls dismissed
+
+### Architect archive note (2026-10-05)
+
+Review of 6dd794d3 and b80ebff1 with /ce-code-review (full: correctness,
+project-standards, testing, adversarial in-process, learnings). Reviewers read
+git-show snapshots at b80ebff1, because sibling commit 83e3ce9a (the tier-prose task)
+and an uncommitted sibling edit had moved fresh-auth.ts after the reviewed commits.
+Zero findings at any severity. Suites at b80ebff1: 109 / 5 / 4, exit 0, nothing
+skipped. All three signal-block probes reproduced in isolated copies, each prober on
+its own Redis DB index: m1 fails the new ledger test, the redis-unavailable-burn ledger
+test and two offline-queue tests; m2 fails only the new retained-direction assertion;
+m3 fails the new ledger test and both new delSpy not-called assertions. The item 3
+deviation is accepted: the redis-unavailable-burn suite already pinned the release
+direction. Typecheck and lint were not re-run (implementer's claim).
+
+Two AC1 wording calls, dismissed by the user at triage. The "stays for the drain"
+clauses in the inFlightConsumes docblock and in burnConsentOpEntry's alreadySpent
+comment name the drain without the later-replay exit, but each already names a resolved
+GETDEL as an exit and the drain is the only guaranteed one. "Redis-issuance success" in
+the test-file header bullet and two test titles names the scenario precondition, not a
+conditional backup. The signal block's four out-of-scope statements were filed as the
+tier-prose task, now in review. No /ce-compound.
+
+### Task file
+
+**Owner:** backend
+**Created:** 2026-09-02
+
+Routed out of the architect review that archived the consent-op burn task. That task's
+six review passes were all one failure class: a sentence stating a model the code no
+longer implements, left standing by a rewrite that touched the lines around it. Two
+such sentences remain, and the release event the last round newly documented is
+asserted nowhere. Filed separately rather than held, because the parent's three items
+were confirmed closed and a seventh round on one comment is not worth reopening a
+1477-line task file.
+
+## Why
+
+The reviewed state is `b8b4277d`. Items 1 and 2 are prose defects in
+`backend/src/lib/fresh-auth.ts`; items 3 and 4 are test pins in
+`backend/tests/lib/fresh-auth.test.ts`.
+
+## Scope
+
+### 1. The session issuance backup comment states a conditional model its own code contradicts
+
+`issueSessionFreshAuthToken`'s comment above the `memStore.set(...)` call says the
+write happens "whenever Redis-issuance succeeds", and defends itself as "NOT dead code
+in the Redis-success branch". Both are false about the lines beneath them: the write is
+unconditional and runs before `getRedis()` is called at all, so no Redis-success branch
+contains it.
+
+It matters beyond tidiness because the sentence names `issueFreshAuthToken` as its
+referent ("same recovery rationale as"), and the consent-op sibling's matching comment
+was rewritten to the opposite, unconditional model. The cross-reference now resolves to
+text stating the opposite of what it claims to share. The question it misleads on,
+which tier can hold a presentable proof during a flap, is the reasoning the whole ledger
+design rests on.
+
+Fix: adopt the wording already used at the consent-op site, and drop the dead-code
+clause, which presupposes a branch the write does not sit in.
+
+### 2. The drain docblock's "one event" survives item 2 of the parent's round-6 hold
+
+The `drainSpentConsentOps` docblock still says the `DEL` resolving is "the one event
+that proves the canonical key unreadable". That sentence was deliberately not held in
+the parent's round 6, on the reasoning that its "its delete" scoping kept it defensible
+and that it would become the last over-readable statement in the file once the burn
+docblock adopted the two-event form. The burn docblock has adopted it. A wrap-tolerant
+sweep over both files now returns this as the only remaining hit.
+
+Fix: bring it into the same two-event form `burnConsentOpEntry` and `spentConsentOps`
+already use, scoped so it stays true of the drain specifically.
+
+### 3. The second release event has no test
+
+The burn's retirement contract has exactly two release events. The one the last round
+newly documented, the `alreadySpent` branch retiring an entry on its own resolved
+`GETDEL`, is asserted by nothing. The contract is agreed between prose and code only by
+inspection, which is precisely how the parent's item 2 drifted with no failing test to
+catch it.
+
+The hooks already exist: `_setSpentConsentOpForTests` and
+`_getSpentConsentOpsSizeForTests` are exported. Plant a ledger entry for a token whose
+Redis key is still live, consume it, then assert the consume is refused, the ledger is
+empty, and the canonical key is gone.
+
+Pin the retained direction too: an entry must SURVIVE a presentation whose own `GETDEL`
+rejects, since `redisLegRan` is false there and the guard must stay standing.
+
+### 4. Neither split-tier test pins that the tiers actually split
+
+Both split-tier race tests install a `redis.del` spy, restore it, and never assert on
+it. The compensating delete is issued only on the `!redisLegRan && burnedInMemStore &&
+redis` branch, so asserting it was NOT called is exactly the pin that the one burn which
+ran was arbitrated by a resolving `GETDEL` on the Redis tier rather than by the
+in-memory fallback. Without it the tests prove one winner without proving the fixture
+built the race it describes.
+
+Add the assertion to both tests.
+
+## Acceptance criteria
+
+1. Neither `backend/src/lib/fresh-auth.ts` nor `backend/tests/lib/fresh-auth.test.ts`
+   contains a statement of the retired conditional-backup or one-event-retirement model.
+   Verify with a wrap-tolerant sweep that collapses comment prefixes and newlines before
+   matching, not a single-line grep. Report the technique, not just the phrase searched.
+2. The `alreadySpent` release event and the retained direction each have a test that
+   fails when the behavior is mutated away.
+3. Both split-tier tests assert the compensating delete was not called.
+4. Mutation probes run per site against a committed baseline, with `git status` verified
+   clean for the target file immediately before every `git checkout --` restore.
+5. Typecheck and lint clean. The three fresh-auth suites pass.
+
+## Notes
+
+Items 1 and 2 are comment-only and change no behavior. Items 3 and 4 add assertions
+only. No production logic should change in this task; if it does, that is a signal the
+prose was describing something real that the code does not do, and it should be raised
+rather than silently fixed.
+
+Do not run the full suite concurrently with sibling agents. The per-file `${appTag}:*`
+Redis flush collides with other workers, and the parent task already recorded one
+deterministic pre-existing failure caused by exactly that collision.
+
+---
+
+Backend implementation signal (2026-09-30, commits `6dd794d3` and `b80ebff1`, both verified ancestors of `main`):
+
+**Item 1.** The comment above `memStore.set` in `issueSessionFreshAuthToken` now uses the consent-op site's unconditional wording and the dead-code clause is gone.
+
+**Item 2.** The `drainSpentConsentOps` docblock states both release events and scopes itself to the one the drain can produce.
+
+**Item 3, with one deviation from the task text.** The task says the `alreadySpent` release event "is asserted by nothing". That was not the case at the reviewed state: `fresh-auth-redis-unavailable-burn.test.ts` ("a ledger entry refuses the consume itself, with the canonical key still readable") already asserts refused, ledger empty, key gone, and two offline-queue tests assert the ledger empties after a refused replay. Probe m1 below confirms all of them kill the mutation. What was genuinely unpinned is the retained direction. So instead of a standalone duplicate, one new test in `fresh-auth.test.ts` ("a spent-proof ledger entry survives a presentation whose own GETDEL rejects, and retires on the one whose GETDEL resolves") pins both directions in sequence: the entry and key survive a rejected `GETDEL`, then both go on the resolved one.
+
+**Item 4.** Both split-tier tests assert `expect(delSpy).not.toHaveBeenCalled()`.
+
+**AC1, technique.** A four-lens read-only sweep over both files at `6dd794d3`, each finding then handed to an independent refuter. The mechanical lens extracted every line comment, block comment and test title, stripped comment prefixes, joined consecutive comment lines into single-space paragraphs (217 in the source, 265 in the test), and matched 22 case-insensitive pattern families (conditional-backup: `whenever Redis`, `Redis[- ]success`, `dead code`, `backup.{0,60}(when|if|on|whenever|after|once).{0,40}(succe|healthy|available|resolv|land)` and similar; one-event: `one event`, `only event`, `leaves only`, `only (once|when|on|after|by).{0,80}(DEL|delete)`, ledger/entry near `expir|stale|age|TTL|dispatch` and similar). 49 hits, all read against the code, all false positives. Three semantic lenses then read every statement about the backup write, about ledger retirement, and every line the first commit added. They found two statements the patterns could not: the `isConsentOpSpent` docblock bounding the ledger by "confirmed sweeps" (one event named where there are two) and the cleanup docblock's "under no-Redis ops" (presupposes the conditional backup). Both fixed in `b80ebff1`, along with a space my first commit dropped from a test title. One conditional-backup sentence in the test file (the flap-recovery test's "writes a backup to memStore on Redis-issuance success") was fixed in `6dd794d3`.
+
+**AC2 to AC4, probes.** Run serially in a scratchpad copy built with `git archive 6dd794d3 backend`, restored between mutants with `git show 6dd794d3:<path>` and `cmp`-verified at the end, so the shared checkout was never mutated and no `git checkout --` restore was needed. `b80ebff1` changes only comments and one test title, so the results carry.
+
+| Probe | Mutation in `burnConsentOpEntry` | Killed by |
+|---|---|---|
+| baseline | none | 109 / 5 / 4 pass |
+| m1 | remove `if (redisLegRan) spentConsentOps.delete(token);` | the new test (ledger size after the resolved `GETDEL`), the redis-unavailable-burn test named above, two offline-queue tests |
+| m2 | make that delete unconditional | the new test ONLY (ledger size after the rejected `GETDEL`); the other two suites stay green |
+| m3 | remove `redisLegRan = true;` | both split-tier tests, each at the new `delSpy` assertion, plus the new test |
+
+**AC5.** Typecheck clean. Lint: 0 errors, 1 pre-existing warning in `src/lib/author-supersession.ts`, untouched. The three suites pass at `b80ebff1` run one file at a time (109, 5, 4). Run as one three-file invocation, the offline-queue suite's first test failed once on a vanished canonical key, which is the per-file keyspace flush collision the task's notes describe, not a regression.
+
+**Out of scope, surfaced to the user rather than fixed.** The sweep confirmed four statements that are false or over-general but belong to neither retired model: the `fresh_auth.redis_getdel_failed` warn string promises "a compensating delete follows" on paths where none is issued (the new test drives one such path); the TTL-expiry describe comment in `fresh-auth.test.ts` says the in-memory guard is bypassed when Redis is available, though a nil reply falls through to it; and the `persistSessionSlide` docblock plus two test comments give "would recreate a key Redis has dropped" as the reason for skipping the write in cases where the key still stands.
+
 ## The publish spec never pins the $nextTick mount routing or the template x-ref names (archived 2026-10-05) — clean review at afa2237b; edit-spec observation moot at HEAD
 
 ### Architect archive note (2026-10-05)
@@ -95,155 +248,3 @@ Harness check: the publish spec's `createComponent` already mocks
 shape as the edit spec's, so the harness is unchanged.
 
 `$nextTick` inventory on the tested path: `init` holds publish.js's only
-`$nextTick` call site, and nothing init reaches (`createTimerGuard`,
-`_mergeCitationCollection`, `_loadAccreditedDirectory`) calls it. The only
-other `nextTick` hits under `frontend/src` are in `edit.js` and the
-`getting-started.js` template. The comment on the count states only that
-init dispatches through `$nextTick` exactly once.
-
-Probes, one fresh scratchpad copy each. The baseline spec at HEAD before
-the change ran 79 cases (not the 76 measured when this task was filed; no
-case was removed or weakened, the diff is additive plus one import).
-
-- AC 1, `$nextTick` block unwrapped to a bare `this._mountEditors()`:
-  before 79 passed / exit 0 (survived); after exit 1, failing case
-  `publishPage > init mounts the editors > builds one editor per ref
-  present when init runs`, message `AssertionError: expected "spy" to be
-  called 1 times, but got 0 times`.
-- AC 2, `x-ref="abstractEditor"` renamed: before survived; after exit 1,
-  failing case `publishPage > init mounts the editors > declares the x-ref
-  names _mountEditors reads in the template`, message `expected '…' to
-  contain 'x-ref="abstractEditor"'`. `x-ref="bodyEditor"` renamed: same
-  case, same shape of message for `bodyEditor`.
-- AC 3, `npx vitest run tests/unit/pages-publish.test.js`: 81 passed,
-  exit 0, no Errors line (also five consecutive runs, all exit 0).
-- AC 4, full unit suite in an isolated two-level copy: 87 files / 1977
-  tests passed, exit 0, no Errors line.
-
-Further mutants killed by the init case: deleting the block, duplicating
-it, adding a second empty `$nextTick`, swapping which ref feeds which
-editor, renaming either code-side `$refs` read. One known survivor, outside
-the acceptance criteria: replacing the block with an empty
-`this.$nextTick(() => {})` beside an inline `this._mountEditors()`. The
-count assertion pins the number of dispatches, not what runs inside the
-callback, and the comment is worded to claim no more than that.
-
-Observation for the architect, not acted on (edit spec is out of this
-task's scope): the edit spec's `a successful load mounts the editors`
-comment says refs assigned after the load are inert because of the
-`_editorsInitialized` latch. In publish.js the equivalent claim is false:
-`_mountEditors` reads `$refs` only after its dynamic import resolves, so
-refs assigned right after `init()` are still picked up (probe: moving the
-`$refs` assignment after `comp.init()` stayed green). The publish comment
-therefore does not carry that sentence. Whether the edit spec's sentence
-holds for `loadPaperData` was not measured here.
-
-## Add a reciprocal port pointer to backend/tests/support/enclosing-symbol.ts (archived 2026-10-05) — clean re-review at 2f27df71; declared deviation accepted; two HEAD-drift follow-ups filed
-
-### Architect archive note (2026-10-05)
-
-Re-review of 2f27df71 with /ce-code-review (full: correctness, adversarial in-process,
-project-standards, learnings). Reviewers read scratchpad copies of both files at
-2f27df71 and at HEAD 9e731556, because five later commits from the comment-predicate
-task (146ce7de, 71217d5f, d0c7f771, 431cca4a, 301be50f) edited the same file, this
-paragraph included. No defect in 2f27df71. Hold items 1 and 2 and the verb fix are met
-(two-way obligation, inventory replaced by "neither is a subset" plus "read the
-sibling", "has no equivalent", anchors on the path and exported symbols only).
-
-User decision 2026-10-05: the declared deviation is accepted. At 2f27df71 the shared
-helpers were identical in both copies (AST comparison after transpile; a 40,000-source
-fuzz found 0 divergences), because a8000291 had already ported the frontend's region
-handling, so "the frontend copy is currently ahead" would have been false. This ruling
-supersedes the "has to say which copy is currently ahead" sentence in the Why section
-below and the same ask in hold item 1: the paragraph names no direction and sends the
-reader to the sibling, which is the durable form since the direction has flipped twice.
-
-HEAD-state drift, not this task's: since 146ce7de the backend walk takes a `}` after a
-read comment close at any indentation, so the paragraph's closing-brace parenthetical
-no longer describes this copy, and the frontend walk resolves two such shapes INWARD.
-Routed (user decision 2026-10-05): backend-enclosing-symbol-brace-gloss-and-suite-citation
-(the parenthetical, plus the planted-probe sentence that omits enclosing-symbol.test.ts)
-and ui-enclosing-symbol-after-close-brace-port (port chosen over decline, plus the
-frontend docblock's "IS handled" sentence, its SET-EQUALITY "never a silent pass", and
-its path-less mention of the backend copy). Dismissed: a cross-zone parity spec running
-both copies over one fixture list (the copies diverge by design, so it needs a curated
-fixture list; the shapes are latent; the reciprocal docblock pointers are the agreed
-mechanism). No /ce-compound.
-
-### Task file
-
-**Owner:** backend
-**Created:** 2026-09-01
-
-Routed out of the architect review of the first frontend source-discipline canary
-(`ui-factor-resolver-source-discipline-canary`). The architect has ratified that the
-two `enclosing-symbol` implementations stay as deliberate dialect divergence rather
-than a shared cross-zone module; this task adds the one cheap mitigation that
-decision needs.
-
-## Why
-
-`frontend/tests/unit/eslint/enclosing-symbol.js` is a hand-port of
-`backend/tests/support/enclosing-symbol.ts`. Roughly 65-70 of its non-docblock lines
-are a near-literal, dialect-adjusted copy, including the closing-brace / indentation
-walk (the highest bug-risk region). The two files legitimately diverge, so a shared
-module is not warranted. That decision is ratified and is not reopened here.
-
-**Corrected at review (2026-09-08).** This section originally described the divergence
-as "the frontend adds Alpine method-shorthand and template-literal declaration shapes
-and a per-key occurrence tally; the backend has `isCommentedOut` the frontend dropped".
-That is wrong in two ways, and it is the same wrong framing the hold block at the end of
-this file asks you to fix in the docblock, so it is corrected here rather than left one
-screen above the instruction. `isCommentedOut` was never ported into the frontend copy
-and then removed, so nothing was "dropped" (`git log -S 'isCommentedOut'` on that path
-returns no commits). And the list is not exhaustive: the frontend also exports
-`blockCommentInterior`, takes an `insideRegion` argument on `isCommentLine`, counts
-template-literal backticks inside the brace walk, and returns `{ sources, foreign }`
-from `sourcesUnder` where the backend returns a bare array.
-
-The cost of the divergence is also not purely prospective. A bugfix to the shared
-brace-walk logic has no forcing function to reach the sibling copy, and that has already
-happened at least once: the frontend walk carries block-comment-region state the backend
-walk has no equivalent of, and that hardening landed before this task's implementation
-commit. So the pointer this task adds has to describe a two-way obligation and has to say
-which copy is currently ahead. The frontend docblock acknowledges the port
-one-directionally and without a path; the backend file had no pointer back at all.
-
-## Scope
-
-1. Add a one-line pointer in `backend/tests/support/enclosing-symbol.ts`'s docblock
-   naming `frontend/tests/unit/eslint/enclosing-symbol.js` as a hand-ported sibling,
-   so a change to the shared closing-brace / indent walk on EITHER side prompts reading
-   the other copy. Anchor it on the file path and the shared-algorithm description, not
-   on this task's slug. The originally-written "so a future change ... prompts checking
-   the frontend copy" was outbound-only; see the 2026-09-08 hold block at the end of this
-   file for what the wording now has to carry.
-
-## Acceptance criteria
-
-1. `backend/tests/support/enclosing-symbol.ts` carries a docblock note pointing at the
-   frontend sibling and naming the shared walk as the thing to keep in sync.
-
-## Notes
-
-Docblock-only, no code change. This is the backend-zone half of a decision recorded in
-full on the canary task; the frontend canary itself needs no change for this item.
-
-## Backend implementation note (2026-09-06)
-
-Landed as one paragraph at the tail of the file docblock in
-`backend/tests/support/enclosing-symbol.ts`. It names the sibling by path and
-names the shared walk (the upward declaration scan plus the
-closing-brace-at-or-left-of-indent test) as the thing to keep in sync.
-
-One item beyond the literal scope, surfaced and user-approved before it landed.
-The same docblock claimed `enclosingSymbol` is "exercised by planted positives
-and negatives in its own test file". No such file exists and none ever did: the
-planted probes live in three consuming canaries
-(`no-session-proof-mint-outside-reauth-routes`,
-`no-custody-claim-derivation-outside-helper`,
-`no-session-consume-without-revocation-epoch`), and the frontend hand-port
-already carries the corrected wording. The sentence now reads "in the canaries
-that consume it". It is the same false-citation class the new pointer exists to
-warn about, and the correction demonstrably failed to travel back across the
-port, so it was fixed in the same edit rather than deferred.
