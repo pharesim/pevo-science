@@ -310,3 +310,96 @@ Dismissed by the user at this review, recorded so they are not re-raised:
   Dismissed as preemptive hardening under the user's canary bar.
 
 Move the file back to `tasks/review/` when both sentences are fixed.
+
+---
+
+## UI re-review signal (2026-10-05, commit da08a48d)
+
+Both held items are fixed in
+`no-password-factor-derivation-outside-resolver.test.js`. Prose only: no
+assertion or matcher changed. The fix grew past the two sentences, by the
+user's decision, after verification showed that the held sentence rested on
+an older false claim. Details follow.
+
+**1. LAYERS addendum.** The last sentence now reads: the inline-script
+star re-export leaves the fetch's name to be written by the first module on
+that road that reaches for the fetch rather than relaying the whole script
+(where it binds the fetch under an alias or re-exports it, and otherwise
+where it uses it). A module that only relays the script by its own star
+re-export writes nothing for the name scan to count. In a `.js` file under
+`src` the name scan counts those sites, all but the aliased imports named in
+the new residual 4. In the entry document the entry-document assertion
+counts every one of them. I checked an importer inside the entry document,
+as you asked: no skip applies there, and the sentence credits that line to
+the entry-document assertion, not the name scan. The text departs from your
+starting point where measurement required it:
+- "Where it calls it" left out non-call uses (indirection, an argument, an
+  object member, a re-export). Each of those counts.
+- "In any file the canary reads" credited the name scan with entry-document
+  lines.
+- A `.ts` importer under `src` is caught by the extension gate, not by the
+  name scan. Hence "in a `.js` file under `src`".
+- A relay module writes no name. Hence "the first module on that road".
+
+**2. Occurrence-scan probe comment.** It now says the name scan pins an
+exact map, so a matcher that finds nothing turns it red. What the real tree
+cannot catch is a sub-predicate, such as the alias veto, breaking only on a
+shape the tree does not contain, "because no source in the tree puts that
+shape in front of it". I did not take the hold's "nothing in the tree
+exercises it": the tree does exercise the veto in the declining direction,
+since both real import specifiers pass through it. Mutants: veto always
+fires, the real-tree name scan goes red; veto never fires, only the probe
+goes red.
+
+**Beyond the two sentences, decided by the user on 2026-10-05:**
+- Your starting point and the held sentence both relied on DETECTION's
+  "vetoed by an `as` anywhere in the JOINED statement". That claim is false.
+  A comment between the name and its `as`, or an `as` past the join's bound
+  (the specifier line plus at most six lines below, ending at the first line
+  carrying `from` or `;`), spares an aliased specifier. The calls through
+  the alias then write no name. Measured green end to end, and Vite builds
+  the shape. The user chose to name it as residual 4, AN ALIAS THE VETO DOES
+  NOT REACH. DETECTION's veto sentence and STATUS_FETCH_ALIAS_RE's docblock
+  now state the veto's real reach, and the residuals intro and COVERAGE say
+  four.
+- The entry-document probe's "only these shapes go red" now says "of the
+  two entry-document checks only these planted shapes go red". It was the
+  same error as item 2: emptying both shared patterns also turns the name
+  scan and the password-state scan red.
+
+**Dismissed by the user this round:** `import {` text in a string, template
+literal or trailing comment gives `importStatementOpens` a false opener. A
+live reference alone on a bare-specifier-shaped line below it is then
+spared. The shape is contrived, nothing writes it, and it is not
+documented.
+
+**Considered and not changed.** All four are older than this change, sit
+outside the prose it touched or were only rewrapped, and are contrived or
+harmless:
+- An import line with a trailing comment that spells
+  `function fetchEmailStatus(` trips the definition skip. It belongs to the
+  dismissed family, through a different predicate.
+- Residual 2's body names only "an import specifier it spares". The
+  definition skip also drops a use riding on its line. The residual's title
+  and first sentence cover that case.
+- STATUS_FETCH_ALIAS_RE's docblock (rewrapped, wording unchanged) says "an
+  alias is the one shape that makes every later call site invisible". Plain
+  indirection hides later call sites too, though its own line counts.
+- The header of `enclosing-symbol.test.js` says every whole-tree assertion
+  is set-equality over resolved keys. That is broader than this canary:
+  import-site tracking is a file list, and the walk assertion is a floor
+  plus a census.
+
+**Verification.** Three adversarial workflow rounds ran, with four, three
+and two lenses. Every non-holding finding went to an independent refuter,
+which reproduced it in its own scratchpad copy. All probes ran in
+scratchpad copies, never in the checkout. In the final text, every clause
+either held under its lens or was adopted from a rewording a refuter
+measured. Results:
+- `tests/unit/eslint/`: 2 files, 18 passed, exit 0.
+- Anchor gate run standalone on the added lines: 0 hits, control line fires.
+- No em dashes.
+- da08a48d checked as an ancestor of HEAD.
+
+**Code review:** not run by ui, per `agents/ui/CLAUDE.md` (architect
+review at intake).
