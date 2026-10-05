@@ -255,3 +255,51 @@ Dismissed:
 - The test header's clause (c) names the revoked-session e2e spec, which is
   filed but not yet written. That satisfies clause (c). A note on
   `ui-revoked-session-e2e-real-path` asks it to update this suite's header too.
+
+## Architect amendment (2026-10-05): hold items widened to SESSION_INVALIDATED
+
+The review of `ui-session-invalidated-global-handling` (b3d52627, 7247ff5b)
+settled the open scope limit above. The user rejected the carve-out for
+`SESSION_INVALIDATED` on the same three surfaces, and its fix lands here,
+together with the `SESSION_EXPIRED` one: same sites, same condition. Five
+reviewers measured the revoked case at 7247ff5b, and the call sites are
+unchanged at HEAD. When the guarded request itself meets the revoked token (an
+open session window or a cached consent-op proof):
+
+- Upload: `uploadFile` has no branch for the code, so `describeUploadError`
+  maps it to `common.uploadFailed`. Publish adds an "Upload failed" toast and a
+  "Publishing failed" card, which is the only lasting text once the revoked
+  toast times out. Supplementary rows add their inline error. The editor adds
+  its image-upload failure and does not abandon the queued images.
+- Custody broadcast: `broadcastWithFreshAuth` rethrows the code untouched, so
+  vote-buttons toasts `vote.voteFailed` or `vote.cancelFailed`, the comment
+  composer shows `comments.postFailed`, and publish shows "Publishing failed".
+- Consent-op gate: `consentOpFreshAuthRetryGate` rethrows it. Authorship ops on
+  paper-detail toast `claims.claimFailed` and similar. On settings the inline
+  error sits inside the `isConnected` template, so it is hidden while signed
+  out; a reading not probed is that it reappears when the user signs back in
+  through the in-place prompt.
+
+No surface retries, re-mints or re-prompts on this code. That part is correct
+and stays.
+
+Amended items:
+
+1-3. Each item's `SESSION_EXPIRED` condition becomes `SESSION_EXPIRED` or
+   `SESSION_INVALIDATED`, with the same `guard.tornDown()` condition and the
+   same outcome (`UPLOAD_SESSION_TORN_DOWN`, `FRESH_AUTH_REDIRECT_PENDING`,
+   `{ cancelled: true }`). The `guard.tornDown()` condition matters for the
+   revoked code too: when another tab has already saved a newer session, the
+   auth store takes it up instead of tearing down, so the rejection arrives
+   with no teardown and no message and must keep reporting. The fix therefore
+   does not go into `describeUploadError`'s `null` cases for this code either.
+4. Tests: add one `SESSION_INVALIDATED` case per surface (upload, custody
+   broadcast, one consent-op orchestrator). Drive each with a 401
+   `SESSION_INVALIDATED` fetch response the way `session-revoked.test.js` does,
+   and assert that the page-level outcome adds nothing to the revoked-session
+   message. Retry-leg cases are still not required.
+
+The scope limits' remaining carve-outs stand for both codes: plain
+authenticated calls outside the named surfaces, the self-custody
+`run(undefined)` path, the `set_password` cold ORCID start, and the idle-tab
+notification poll.

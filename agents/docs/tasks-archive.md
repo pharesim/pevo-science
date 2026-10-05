@@ -1,3 +1,199 @@
+## Handle a server-revoked session (401 SESSION_INVALIDATED) in the SPA (archived 2026-10-05) — revoked-surface fixes moved to the expired-session hold; § 6.7 and contracts corrected; four items dismissed
+
+### Architect archive note (2026-10-05)
+
+Review of b3d52627 and 7247ff5b with /ce-code-review (full: correctness, security,
+adversarial in-process, testing, project-standards, julik-frontend-races, learnings).
+Reviewers read git-show snapshots at 7247ff5b, because b9de6dcc and 8594733d later
+reshaped api.js, auth.js, lib/fresh-auth.js and signer.js (handleRevokedSession now
+ends the session through _endSession). No P0 or P1. Scope 1-5 and AC 1, 2, 4, 5, 6
+met. AC 4 holds on the upload surface, the custody broadcast and the consent-op gate:
+every gate keys on the error code, so nothing re-mints, retries or re-prompts. Full
+unit suite at 7247ff5b in an isolated copy: 88 files, 1995 tests, exit 0; npm run
+build exit 0.
+
+Triage (user approved as recommended):
+- Carve-out rejected: the generic error SESSION_INVALIDATED adds next to the revoked
+  message on the upload surface, broadcastWithFreshAuth's callers and the consent-op
+  gate gets the SESSION_EXPIRED treatment. Landed as an amendment widening hold items
+  1-4 of `ui-expired-session-token-reads-as-wrong-password` to both codes (same
+  guard.tornDown() condition), not as a hold here.
+- AC 6 doc side landed: ARCHITECTURE.md § 6.7 and the common.md SESSION_INVALIDATED
+  row now say the SPA signs the user out in place and opens the sign-in prompt;
+  custody.md says other devices are signed out and same-browser tabs take up the
+  reissued token.
+- Narrowed implementer claim: "a cold light-account acquisition ends silently instead
+  of asking for a password" holds only while the tab's password-factor memo is empty.
+  With it set, the re-auth password prompt opens before any request, the mint meets
+  the revoked token, then one teardown and a null result, no retry. Not a credential
+  exposure. No change.
+- Dismissed: no test on the real sign-in modal's notice set/reset (P2, validator
+  confirmed a surviving mutant; works today); on the adoption branch the call site's
+  generic error is the only message (P3, same as the expired-session dismissal);
+  stale "You were signed out" notice in a tab after signing in from another tab;
+  adoption-path polling-restart mutant (no consequence); warm-memo test case.
+- Deferred again: /ce-compound-refresh of
+  solutions/conventions/guard-report-dedupes-per-event-not-per-holder-2026-09-02.md
+  (deferred at the session-inconsistency archive until this review). Run it once the
+  expired-session hold lands, since that hold adds the call-site quieting for both
+  codes.
+
+### Task file
+
+**Owner:** ui
+**Created:** 2026-09-02
+
+## Why
+
+The backend revokes every previously issued bearer JWT whenever an account's
+credentials rotate. Four routes do it today: `POST /api/auth/reset`, both
+recovery phases in `routes/recover.ts`, and `POST /api/custody/upgrade`. Each
+stamps `accounts.sessions_invalidated_at`, and `verifyHiveSignature` then
+refuses any bearer token minted at or before that instant with
+`401 SESSION_INVALIDATED`.
+
+Nothing in the SPA handles that code. A search of `frontend/src` and
+`frontend/tests` returns zero references to `SESSION_INVALIDATED`. The core
+`request` helper in `api.js` throws an `ApiRequestError` carrying the server's
+error code and leaves interpretation to each call site, and no call site
+recognizes this one. There is no central place that clears a session the server
+has already destroyed.
+
+Same-browser tabs are NOT the gap. The auth store's storage-event handler keys
+on the session localStorage entry, so a rotation performed in one tab
+propagates its reissued token to the other tabs of that browser, and a cleared
+entry disconnects them. What has no path is a session on **another browser or
+another device**: it holds a token the server has revoked, learns nothing until
+its next authenticated request, and then receives an error code no handler
+recognizes. The user sees whatever that particular call site does with an
+unexpected code, while the stored session stays on disk and continues to look
+valid to `_restoreSession` until its own `expiresAt` passes.
+
+This is pre-existing and general to all four writers rather than fallout of any
+one of them. A password reset already strands other devices this way today. It
+is filed now because the custody upgrade made it materially more reachable: the
+upgrade is a deliberate in-app action a user takes while plausibly signed in
+elsewhere, and it revokes on success rather than on a forgotten-password detour.
+
+`ARCHITECTURE.md` § 6.7 currently asserts the behavior as if it existed: "the
+SPA treats it as session expiry and redirects to login". That sentence is not
+implemented. Resolving this task means either making it true or correcting it.
+`ARCHITECTURE.md` is architect-owned, so do not edit it. Say which way it went
+and the architect will land the doc side.
+
+## Scope
+
+1. Recognize `SESSION_INVALIDATED` centrally rather than per call site. The
+   natural seam is the shared `request` helper in `api.js` or a thin wrapper
+   around it, so every authenticated route inherits the behavior instead of each
+   caller opting in.
+2. On that code, clear the stored session through the auth store's existing
+   disconnect path rather than a bespoke scrub. That path already exists for
+   explicit sign-out and already scrubs subject-bound state; reusing it keeps
+   the revoked-session teardown from drifting away from the sign-out teardown.
+   Confirm it also clears the session localStorage entry, so the storage event
+   propagates the sign-out to sibling tabs for free.
+3. Decide and implement what the user sees. A silent redirect to an anonymous
+   view is not obviously right: the user did not sign out, and telling them
+   nothing invites a bug report. Prefer surfacing that the session ended because
+   the account's credentials changed elsewhere, then routing to sign-in.
+4. Do not treat this as retriable. It is terminal for the held token, unlike the
+   `503` retry path the SPA already distinguishes. Make sure the handling cannot
+   be reached by the fresh-auth retry gate, which re-mints proofs on some 401s.
+   A revoked bearer token is not remintable and must not be retried into a loop.
+5. Check the interaction with the pending session-teardown work in flight on the
+   ui track. If a shared teardown helper is emerging there, route this through
+   it rather than adding a second teardown surface.
+
+## Acceptance criteria
+
+1. An authenticated request answered with `401 SESSION_INVALIDATED` clears the
+   stored session and routes the user to sign-in, from any page, without the
+   call site needing its own handler.
+2. The stored session entry is gone afterward, so a reload does not restore a
+   session the server has already revoked.
+3. The user is told the session ended because the account's credentials changed,
+   not shown a bare error or a silent anonymous page.
+4. The fresh-auth retry gate does not re-mint or retry against this code. A test
+   pins that a revoked bearer token produces one teardown and no retry loop.
+5. A test drives the real code path rather than asserting on a hand-built error
+   object, so a future change to how `request` surfaces error codes fails it.
+6. State in the task whether § 6.7's "redirects to login" sentence is now true or
+   still needs correcting, for the architect to land.
+
+## Notes
+
+Do not chase the same-browser multi-tab case as if it were broken; verify the
+storage-event path still covers it and leave it alone.
+
+The four writers are named here as context for why the code exists, not as a
+list to enumerate in code. Anchor any comment on the behavior (a revoked bearer
+token tears the session down) rather than on the roster of routes that can cause
+it, which will grow.
+
+## Implementation notes
+
+**UI implementation signal (2026-09-30, commits `b3d52627`, `7247ff5b`; both verified ancestors of `main`):**
+
+- `b3d52627` lands the central handling: the api.js bearer helper and the
+  custody broadcast in signer.js report `401 SESSION_INVALIDATED` to the auth
+  store's `handleRevokedSession`, which reuses `disconnect()` and the shared
+  fresh-auth teardown (`handleSessionRevoked`, a sibling of
+  `handleSessionInconsistency` over one shared body). New key
+  `auth.sessionRevoked`, stubbed in fifteen locales.
+- `7247ff5b` lands three items from the user's triage of a pre-handoff review:
+  the sign-in modal shows the reason while it is open, the copy no longer
+  names a cause, and a different unexpired session found in storage is adopted
+  instead of torn down.
+
+Decisions the task left open:
+
+- **Where the user lands (scope 3, criterion 1).** Decided with the user: the
+  SPA does not navigate. It signs out, shows the message, and opens the
+  existing sign-in modal on the current page. `/login` has no extension path
+  and no return path, and a route change destroys review and comment text,
+  attached files, and the key-upgrade retry state.
+- **§ 6.7 (criterion 6).** "Redirects to login" is still not literally true
+  and needs correcting, in `ARCHITECTURE.md` § 6.7 and in the
+  `SESSION_INVALIDATED` row of `api-contracts/common.md`: the SPA signs the
+  user out, says the account's sign-in details changed, and opens the sign-in
+  prompt in place. `api-contracts/custody.md` says other tabs are signed out
+  after an upgrade; same-browser tabs adopt the reissued token instead.
+- **Stale token.** The store acts only when the rejected token is still its
+  own, so a late rejection of an old token cannot sign out a reissued session.
+- **Retry gate (scope 4, criterion 4).** No gate matched this code before and
+  none does now. With the teardown running before the rejection propagates, a
+  cold light-account acquisition ends silently instead of asking for a
+  password on a dead session. Pinned in `session-revoked.test.js`.
+- **Shared teardown (scope 5).** Routed through the helper the
+  session-inconsistency task reshaped. If that task is held and the helper
+  moves, `handleSessionRevoked` moves with it.
+- **Same-browser tabs.** Left alone; `disconnect()` removes the stored entry,
+  so the storage event signs sibling tabs out.
+
+Not covered, by decision:
+
+- The upgrade POST in `pages/settings.js` is not hooked. It sends a pinned
+  token and belongs to `ui-upgrade-401-proof-budget-auth-failure-split`, which
+  now carries a note on the remaining race.
+- Call sites still receive the rejection, so some show their own generic error
+  next to the central message.
+
+Follow-ups filed from the triage: `ui-sign-in-modal-has-no-orcid-path`,
+`ui-recover-and-reset-leave-a-revoked-session-signed-in`,
+`ui-revoked-session-e2e-real-path`.
+
+Verification: full frontend unit suite green at `7247ff5b` (88 files, 1995
+tests, exit 0). Not checked in a browser and no e2e run.
+
+**Architect note (2026-10-05), for this task's review:** the review of
+`ui-expired-session-token-reads-as-wrong-password` rejected the "call sites
+still show their own generic error next to the central message" carve-out for
+`SESSION_EXPIRED` on the upload surface, the custody broadcast wrapper and the
+consent-op retry gate, and held that task for it. This task carries the same
+carve-out for `SESSION_INVALIDATED` on the same surfaces. Decide at review
+whether the revoked rejection gets the same treatment.
+
 ## Decide whether a second concurrent session-inconsistency detection should speak (archived 2026-10-05) — clean review at 790eee0e; silent-sign-out message accepted; implementer's successor-teardown item already filed
 
 ### Architect archive note (2026-10-05)
@@ -52,199 +248,3 @@ hold should not absorb.
 the teardown report, and toasts. The disconnect and the claim now sit inside an
 `if (auth)` branch, so the claim is only stamped when there was a real teardown to claim,
 but nothing gates the sequence against a SECOND caller detecting the same fault. It is
-called from five sites across three modules (the broadcast surface's first-attempt and retry mismatch arms,
-the consent-op retry gate, and the upload surface's mismatch teardown).
-
-Two concurrent flights that each detect the same corrupted session therefore each run the
-whole sequence, and the user sees two identical "Session inconsistency detected. Please
-sign in again." messages for one incident. Reproduced by driving two mismatch legs
-concurrently: two toasts, where the surrounding work's stated contract is exactly one
-message per teardown.
-
-The reachable shape is the publish page, where an inline-image upload and the submit
-broadcast can be in flight together against the same divergent JWT-and-proof pair.
-
-## The decision this task exists to make
-
-The `_reportedTeardownGeneration` claim cannot solve this, and reaching for it is the
-trap: each call's `disconnect()` re-runs the subject scrub and bumps the generation, so
-the second detector legitimately observes a new generation. Under the dedup mechanism's
-own semantics, two detectors are two teardowns, not one teardown reported twice.
-
-So the question is not "how do we dedup this" but "should a second, genuinely new teardown
-speak at all". Suppressing it also suppresses a real second event; keeping it means the
-one-message contract holds per teardown but not per incident.
-
-The proposal to evaluate, not to apply unexamined: gate on the store's own liveness before
-disconnecting, so a second caller short-circuits once the first has torn down.
-
-```js
-const auth = Alpine.store('auth');
-if (auth) {
-  if (!auth.isConnected) return;
-  auth.disconnect();
-  claimTeardownReport();
-}
-toastLocalized(/* ... */);
-```
-
-Note the shape: the liveness short-circuit and the claim both belong INSIDE the `if (auth)`
-branch. An earlier draft of this proposal was written against a version of the function
-whose claim ran unconditionally; applied literally on top of the current code it would move
-`claimTeardownReport()` back outside the branch and re-introduce the stamping-with-no-
-teardown defect that branch exists to prevent.
-
-Whichever way it goes, the outcome must be written down where the next reader meets it:
-either the function's docblock states that repeat detections are deliberately silent, or
-it states that each detection speaks and why that is the right trade.
-
-## Acceptance criteria
-
-1. A decision is recorded in the code, not only in this file: `handleSessionInconsistency`
-   carries a docblock sentence stating whether a repeat detection speaks, and why.
-2. Two concurrent flights that each detect `username_mismatch` against the same corrupted
-   session produce the message count that decision calls for, pinned by a test that fails
-   if the behaviour flips.
-3. If the early return is adopted, the store fixtures that stub `disconnect` as a bare
-   `vi.fn()` (they never flip `isConnected`) are updated so the suites exercise the
-   production shape rather than passing because the flag never moves.
-4. No surface loses its teardown message entirely: a single detection still reports, and
-   the existing "exactly one" assertions across the fresh-auth and upload suites stay green.
-
-## Notes
-
-Related but distinct from the report-collapse mechanism already in `fresh-auth.js`: that
-one dedups several flights abandoned by ONE scrub, and works. This is about several scrubs
-raised by several detectors of one underlying fault. Do not widen the existing claim to
-cover this case without first settling the question above.
-
-UI implementation signal (2026-09-30, commit `790eee0e`):
-
-**Decision: a repeat detection is quiet.** Only the detector that finds the store
-still connected disconnects and shows the re-login message. Recorded in the
-`handleSessionInconsistency` docblock (AC1).
-
-The proposal's bare `return` was amended. A detector that finds the store already
-disconnected calls `reportTeardownOnce()` (the claim-keyed report extracted from
-the guard's `cancel`) and then returns. After a sibling detector that is silent,
-because the first detector claimed the generation. After a sign-out that showed
-nothing (this tab's, or another tab's over the storage event) it shows the
-session-changed message once. Reason: with a bare return that second sequence
-ends with no message at all, since every caller shape is silent at the page
-layer, which AC4 rules out. The liveness check and the claim both stay inside the
-`if (auth)` branch.
-
-- AC2: `fresh-auth-401-retry.test.js` "two flights detecting the same corrupted
-  session tear down and report once" (one disconnect, one toast). Observed red
-  before the change (2 and 2). A second pin covers the upload leg through the
-  real window and the real `tornDownSession`
-  (`lib-ipfs-upload-real-window.test.js`), and a third covers the mismatch that
-  lands after a silent sign-out.
-- AC3: the three suites that run the real handler on a mismatch
-  (`fresh-auth-401-retry`, `lib-settings-fresh-auth`, `lib-authorship-consent`)
-  now carry `isConnected` and a disconnect that flips it. The consent-op suites
-  returned a fresh store literal per read; they now return one object. Suites
-  that never drive a mismatch into the real handler were left alone.
-- AC4: full unit suite green, 87 files, 1980 tests, exit 0. No Playwright run
-  (no e2e spec induces `username_mismatch`).
-
-**For architect triage, not fixed here (pre-existing, out of this task's scope):**
-none of the five mismatch arms consults its teardown guard before calling
-`handleSessionInconsistency`. If a login lands before the mismatch response
-(another tab signs in as someone else, or a re-login inside the round trip),
-the store reads connected again and the handler disconnects the successor's
-healthy session with the re-login message. The liveness gate neither causes nor
-cures this, and the docblock says so. Closing it means threading the guard into
-the arms, which changes what the primary single-flight mismatch does, so it is a
-decision rather than a fix.
-
-## Close the last two retired-model sentences in fresh-auth, and pin the retirement contract (archived 2026-10-05) — clean review at b80ebff1; probes m1-m3 reproduced; two AC1 wording calls dismissed
-
-### Architect archive note (2026-10-05)
-
-Review of 6dd794d3 and b80ebff1 with /ce-code-review (full: correctness,
-project-standards, testing, adversarial in-process, learnings). Reviewers read
-git-show snapshots at b80ebff1, because sibling commit 83e3ce9a (the tier-prose task)
-and an uncommitted sibling edit had moved fresh-auth.ts after the reviewed commits.
-Zero findings at any severity. Suites at b80ebff1: 109 / 5 / 4, exit 0, nothing
-skipped. All three signal-block probes reproduced in isolated copies, each prober on
-its own Redis DB index: m1 fails the new ledger test, the redis-unavailable-burn ledger
-test and two offline-queue tests; m2 fails only the new retained-direction assertion;
-m3 fails the new ledger test and both new delSpy not-called assertions. The item 3
-deviation is accepted: the redis-unavailable-burn suite already pinned the release
-direction. Typecheck and lint were not re-run (implementer's claim).
-
-Two AC1 wording calls, dismissed by the user at triage. The "stays for the drain"
-clauses in the inFlightConsumes docblock and in burnConsentOpEntry's alreadySpent
-comment name the drain without the later-replay exit, but each already names a resolved
-GETDEL as an exit and the drain is the only guaranteed one. "Redis-issuance success" in
-the test-file header bullet and two test titles names the scenario precondition, not a
-conditional backup. The signal block's four out-of-scope statements were filed as the
-tier-prose task, now in review. No /ce-compound.
-
-### Task file
-
-**Owner:** backend
-**Created:** 2026-09-02
-
-Routed out of the architect review that archived the consent-op burn task. That task's
-six review passes were all one failure class: a sentence stating a model the code no
-longer implements, left standing by a rewrite that touched the lines around it. Two
-such sentences remain, and the release event the last round newly documented is
-asserted nowhere. Filed separately rather than held, because the parent's three items
-were confirmed closed and a seventh round on one comment is not worth reopening a
-1477-line task file.
-
-## Why
-
-The reviewed state is `b8b4277d`. Items 1 and 2 are prose defects in
-`backend/src/lib/fresh-auth.ts`; items 3 and 4 are test pins in
-`backend/tests/lib/fresh-auth.test.ts`.
-
-## Scope
-
-### 1. The session issuance backup comment states a conditional model its own code contradicts
-
-`issueSessionFreshAuthToken`'s comment above the `memStore.set(...)` call says the
-write happens "whenever Redis-issuance succeeds", and defends itself as "NOT dead code
-in the Redis-success branch". Both are false about the lines beneath them: the write is
-unconditional and runs before `getRedis()` is called at all, so no Redis-success branch
-contains it.
-
-It matters beyond tidiness because the sentence names `issueFreshAuthToken` as its
-referent ("same recovery rationale as"), and the consent-op sibling's matching comment
-was rewritten to the opposite, unconditional model. The cross-reference now resolves to
-text stating the opposite of what it claims to share. The question it misleads on,
-which tier can hold a presentable proof during a flap, is the reasoning the whole ledger
-design rests on.
-
-Fix: adopt the wording already used at the consent-op site, and drop the dead-code
-clause, which presupposes a branch the write does not sit in.
-
-### 2. The drain docblock's "one event" survives item 2 of the parent's round-6 hold
-
-The `drainSpentConsentOps` docblock still says the `DEL` resolving is "the one event
-that proves the canonical key unreadable". That sentence was deliberately not held in
-the parent's round 6, on the reasoning that its "its delete" scoping kept it defensible
-and that it would become the last over-readable statement in the file once the burn
-docblock adopted the two-event form. The burn docblock has adopted it. A wrap-tolerant
-sweep over both files now returns this as the only remaining hit.
-
-Fix: bring it into the same two-event form `burnConsentOpEntry` and `spentConsentOps`
-already use, scoped so it stays true of the drain specifically.
-
-### 3. The second release event has no test
-
-The burn's retirement contract has exactly two release events. The one the last round
-newly documented, the `alreadySpent` branch retiring an entry on its own resolved
-`GETDEL`, is asserted by nothing. The contract is agreed between prose and code only by
-inspection, which is precisely how the parent's item 2 drifted with no failing test to
-catch it.
-
-The hooks already exist: `_setSpentConsentOpForTests` and
-`_getSpentConsentOpsSizeForTests` are exported. Plant a ledger entry for a token whose
-Redis key is still live, consume it, then assert the consume is refused, the ledger is
-empty, and the canonical key is gone.
-
-Pin the retained direction too: an entry must SURVIVE a presentation whose own `GETDEL`
-rejects, since `redisLegRan` is false there and the guard must stay standing.
