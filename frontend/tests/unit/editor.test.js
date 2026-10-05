@@ -572,3 +572,54 @@ describe('PevoEditor image-upload queue', () => {
     });
   });
 });
+
+// A real editor under jsdom: the text a page reads back from an editor in
+// markdown mode, and the counter shown under it.
+describe('PevoEditor in markdown mode', () => {
+  let container;
+  let editor;
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    editor = new PevoEditor(container, { variant: 'full', initialMarkdown: 'First text' });
+  });
+
+  afterEach(() => {
+    editor.destroy();
+    container.remove();
+  });
+
+  const textarea = () => container.querySelector('[data-md-textarea]');
+  const counter = () => container.querySelector('[data-char-count]').textContent;
+  const toggleMode = () => container.querySelector('[data-action="markdownToggle"]').click();
+
+  it('setContent replaces the source view, the textarea and the counter, with no transaction after it', () => {
+    toggleMode();
+    expect(editor.markdownMode).toBe(true);
+    editor.setContent('**Replaced** text');
+    expect(editor.getMarkdown()).toBe('**Replaced** text');
+    expect(textarea().value).toBe('**Replaced** text');
+    expect(counter()).toBe(String('**Replaced** text'.length));
+
+    editor.setContent('');
+    expect(editor.getMarkdown()).toBe('');
+    expect(textarea().value).toBe('');
+    expect(counter()).toBe('0');
+  });
+
+  it('a transaction on the hidden document keeps the count of the source view', () => {
+    toggleMode();
+    editor.setContent('**Bold** text');
+    editor.normalize();
+    expect(counter()).toBe(String('**Bold** text'.length));
+  });
+
+  it('the toggle back to visual counts the rendered text', () => {
+    toggleMode();
+    editor.setContent('**Bold** text');
+    toggleMode();
+    expect(editor.markdownMode).toBe(false);
+    expect(counter()).toBe(String('Bold text'.length));
+  });
+});
