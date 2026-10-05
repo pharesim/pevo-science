@@ -4217,3 +4217,39 @@ pt: signIn.orcidGoToLogin
 sv: signIn.orcidGoToLogin
 tr: signIn.orcidGoToLogin
 zh: signIn.orcidGoToLogin
+
+### Added 2026-10-06 (ui-sign-in-modal-has-no-orcid-path)
+
+The ORCID buttons on the sign-in and sign-up pages. Both keys landed as English
+stubs on 2026-04-19, before this ledger existed, and were never listed here.
+
+ar: login.orcidLogin
+cs: login.orcidLogin
+da: login.orcidLogin
+de: login.orcidLogin
+es: login.orcidLogin
+fa: login.orcidLogin
+fr: login.orcidLogin
+he: login.orcidLogin
+it: login.orcidLogin
+nl: login.orcidLogin
+pl: login.orcidLogin
+pt: login.orcidLogin
+sv: login.orcidLogin
+tr: login.orcidLogin
+zh: login.orcidLogin
+ar: signup.orcidSignup
+cs: signup.orcidSignup
+da: signup.orcidSignup
+de: signup.orcidSignup
+es: signup.orcidSignup
+fa: signup.orcidSignup
+fr: signup.orcidSignup
+he: signup.orcidSignup
+it: signup.orcidSignup
+nl: signup.orcidSignup
+pl: signup.orcidSignup
+pt: signup.orcidSignup
+sv: signup.orcidSignup
+tr: signup.orcidSignup
+zh: signup.orcidSignup
