@@ -474,3 +474,102 @@ textual and do not depend on it, and your earlier audit rounds established
 it.
 
 Move the file back to `tasks/review/` when item 1 is fixed.
+
+---
+
+## UI re-review signal (2026-10-05, commit 4154eb9d)
+
+Item 1 is fixed in the LAYERS addendum of
+`no-password-factor-derivation-outside-resolver.test.js`, and nothing else in
+the file changed. Prose only: no assertion or matcher changed.
+
+**a. The exception list.** It now reads: "In a `.js` file under `src` the
+name scan counts those sites, except for the shapes named in A MATCH RIDING
+ON A SKIPPED LINE and AN ALIAS THE VETO DOES NOT REACH and for any line one
+of the shared scan machinery's own residuals drops; `enclosing-symbol.js`
+names those residuals." This departs from the hold's "needs residuals 2 and 4
+only", by the user's decision, because a third shape measured green. A `src`
+module that imports the fetch unaliased from the html-proxy id and writes
+`// ${fetchEmailStatus()}` on a line inside a template literal is counted
+nowhere: `isCommentLine` drops the line (its TEMPLATE PARITY residual). The
+control, `<p>${fetchEmailStatus()}</p>`, is red at the name scan. Two more
+shapes the machinery names also measured green with red controls, and the
+machinery clause covers both:
+- THE CLOSE SEARCH: `/*/` followed by live code inside an open region.
+- A use on a definition-shaped line: `occurrencesOf`'s general "a match
+  riding on a skipped line" residual.
+Your residual-2 plant reproduced: green on one line, red at the call when
+split.
+
+**b. The premise.** The exception now comes straight after the premise: a
+module that reaches the fetch without spelling its name (a computed key on a
+namespace import of the script, say) "writes the name at none of those
+sites, so neither the name scan nor the entry-document assertion counts its
+reach for the fetch, and if it also reads the discriminator through a
+computed key it is the shape named in A NAME THAT IS NEVER SPELLED". It does
+not say that either check misses the whole module. The entry-document
+assertion also applies the `hasPassword` pattern, so an inline module that
+reaches the fetch through a computed key but spells `hasPassword` is red
+there (measured). Residual 3 is only the shape that computes both.
+
+**Other wording changes in the group.** All three uses of "those sites" now
+point at the premise's own list (alias binding, re-export, use), so
+DETECTION's by-design skips are not read into it. The relay sentence moved
+to the end of the paragraph, so the pointer stays next to that list.
+"Every one of them" became "every one of those sites".
+
+**Whole group checked against code, as the hold asked.** Every clause was
+measured with the road planted:
+- Each premise site under `src` is red at its line.
+- The computed-key reach is green under `src` and in the entry document.
+  When the module spells `hasPassword`, the password-state scan or the
+  entry-document assertion lists the line that spells it, and the reach adds
+  nothing to either count (a reach split onto its own line is not listed).
+  With both keys computed it is green in both places.
+- Each shape in the exception list is green with a red control.
+- The same shapes inside an inline module in `index.html` are red, and so
+  is an HTML comment naming the fetch.
+- A relay-only module is green.
+
+**Dismissed by the user this round, recorded so they are not re-raised:**
+- A line that starts inside a quoted string continued from the line above
+  with a trailing backslash, where the string text begins `//` (or `/*` with
+  no close after it on that line), is read as a comment and dropped. Plant:
+  `'x\` then `//' + status.fetchEmailStatus();`, green, while the one-line
+  control is red. No residual names it. It is the same family as the
+  undocumented U+2028 / U+2029 / lone-CR line-split gap. So the exception
+  list is exact for the documented residuals, not for these two contrived
+  line-contract shapes.
+- DETECTION's "A namespace import (`import * as api`) ... is caught at its
+  usage sites, which cannot avoid writing the name" is contradicted by the
+  paragraph's computed-key example: `api['fetch' + 'EmailStatus']()` is green
+  even with no road. Pre-existing, since residual 3 already contradicted it
+  at the base. The same "cannot avoid" absolute about `hasPassword` sits in
+  LAYERS item 3, the HAS_PASSWORD_RE docblock, the password-state assertion
+  message and a test title. All are left as they are.
+
+**Considered and not changed.** All are older than this change and outside
+the paragraph:
+- Residual 4 says "The password-state scan still counts every
+  `hasPassword` the derivation spells out", with no qualifier. A spelled
+  `hasPassword` on a `//`-leading template line is dropped (measured green).
+- Residual 2's body names only import-specifier riders. The definition skip
+  is unanchored, so trailing prose spelling `function fetchEmailStatus(`
+  also drops a use on its line. `occurrencesOf`'s docblock names the general
+  case.
+- A quoted import name (`'fetchEmailStatus' as f`) beside an unaliased
+  duplicate on one line slips the alias veto. It rides on the spared line,
+  which is the same general case.
+
+**Verification.** Two adversarial workflow rounds ran, each with three
+lenses (correctness, adversarial, prose and standards). Every non-holding
+finding went to two independent refuters, 16 in the first round and 8 in
+the second, each reproducing in its own scratchpad copy. All probes ran in
+scratchpad copies, never in the checkout. Results:
+- `tests/unit/eslint/`: 2 files, 18 passed, exit 0.
+- Anchor gate run standalone on the added lines: 0 hits, control line fires.
+- No em dashes; width matches the docblock.
+- 4154eb9d checked as an ancestor of HEAD.
+
+**Code review:** not run by ui, per `agents/ui/CLAUDE.md` (architect review
+at intake).
