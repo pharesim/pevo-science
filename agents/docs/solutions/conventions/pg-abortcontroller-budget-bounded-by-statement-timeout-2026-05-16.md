@@ -40,9 +40,9 @@ grep -rn "AbortSignal\|signal:" node_modules/pg/lib/ | head
 
 pg v8.x never shipped `signal:` support in `pool.query` / `client.query`. The belief that it exists is widespread (long-running GitHub issue tracker discussion, speculative TypeScript types in some `@types/pg` versions, other Node DB libraries with the integration), but the pg mainline does not implement it.
 
-The implementer correctly fell back to "manual abort check between queries" per the task spec. The trap surfaced in review: the docblock at `routes/papers.ts:~2084-2097`, the config knob comment at `config.ts:~82-93`, and the `.env.example` operator-facing documentation all framed the budget as wall-clock-tight ("3000ms default per request"). The actual per-request worst case is `hafWalkerWallClockMs` (3000ms) + the last-in-flight `statement_timeout` (`backend/src/db.ts:22` = 30000ms) = **~33s, not 3000ms.**
+The implementer correctly fell back to "manual abort check between queries" per the task spec. The trap surfaced in review: the walker's docblock in `backend/src/routes/papers.ts`, the `hafWalkerWallClockMs` comment in `backend/src/config.ts`, and the `.env.example` operator-facing documentation all framed the budget as wall-clock-tight ("3000ms default per request"). The actual per-request worst case is `hafWalkerWallClockMs` (3000ms) + the last-in-flight `statement_timeout` (30000ms, which `getPool` in `backend/src/db.ts` sets on every new HAF connection) = **~33s, not 3000ms.**
 
-With `pool.max = 3` (`backend/src/db.ts:24`), three concurrent aborted requests can hold all three connection slots for up to ~27s post-abort, queuing subsequent requests behind `connectionTimeoutMillis=5s` failures.
+With `pool.max = 3` (the same `getPool`), three concurrent aborted requests can hold all three connection slots for up to ~27s post-abort, queuing subsequent requests behind `connectionTimeoutMillis=5s` failures.
 
 Four reviewers cross-corroborated this independently (security + adversarial Opus; reliability + performance Sonnet); each had to dig into `node_modules/pg/lib/` to verify. Multi-reviewer convergence on a library-claim refutation is the signal that this is a structural trap, not a one-off mistake. Every future AbortController-on-pg surface in PEvO will face the same gap unless the convention is documented.
 
@@ -64,7 +64,7 @@ The comment IS the fix on this path. Without it, the next reviewer reading the c
 
 ### 2. Tighten `statement_timeout` for the affected code path
 
-Per-query `SET LOCAL statement_timeout = 5000` at the top of the path, or a dedicated walker connection pool initialized with a tighter timeout in `connectionString`. Reduces the tail from ~30s to ~5s but still doesn't cancel in-flight queries. The gap remains; the bound is just smaller. Combine with option 1's comment; the comment now says `budget + 5000` instead of `budget + 30000`.
+`SET LOCAL statement_timeout = 5000` inside a transaction the path opens on a checked-out client (outside a transaction block `SET LOCAL` has no effect; `queryWithStatementTimeout` in `backend/src/reputation.ts` is the in-repo shape), or a dedicated walker connection pool initialized with a tighter timeout in `connectionString`. Reduces the tail from ~30s to ~5s but still doesn't cancel in-flight queries. The gap remains; the bound is just smaller. Combine with option 1's comment; the comment now says `budget + 5000` instead of `budget + 30000`.
 
 ### 3. Real cancellation via `Client.cancel()`
 
@@ -133,7 +133,7 @@ The wrapper bails before dispatching the next query; the last in-flight query ha
 ```ts
 // Budget stops new queries from being dispatched after config.hafWalkerWallClockMs.
 // In-flight pool.query continues until PostgreSQL's statement_timeout
-// (backend/src/db.ts:22 = 30000ms). Real per-request worst case = budget +
+// (getPool in backend/src/db.ts = 30000ms). Real per-request worst case = budget +
 // statement_timeout = ~33s. pg v8.x does not support AbortSignal in pool.query;
 // Client.cancel() is the only way to cancel in-flight queries (heavyweight,
 // out of scope here). See agents/docs/solutions/conventions/
@@ -183,12 +183,17 @@ The gap is no longer silent. Future maintainers extending the wrapper see the ra
 // starvation risk) but Client.cancel() is overkill.
 const client = await pool.connect();
 try {
+  await client.query('BEGIN'); // SET LOCAL only takes effect inside a transaction
   await client.query('SET LOCAL statement_timeout = 5000');
   for (const row of cascade) {
-    if (walkerAbort.signal.aborted) return null;
+    if (walkerAbort.signal.aborted) break; // not return: COMMIT must run before release
     const result = await client.query(sql, params);
     // ...
   }
+  await client.query('COMMIT');
+} catch (err) {
+  await client.query('ROLLBACK').catch(() => {});
+  throw err;
 } finally {
   client.release();
 }
@@ -218,7 +223,6 @@ Run this check on every pg major-version bump and on every new AbortController-o
 - `agents/docs/solutions/conventions/verify-library-claims-before-load-bearing-security-margins-2026-04-22.md` — causal predecessor. The canonical PEvO learning that third-party-library claims (dhive broadcast timeout) must be verified empirically, not assumed from documentation or ecosystem analogy. This doc is the same shape applied to pg: "Node-postgres has `signal:` support since v8" was an empirically-false claim that survived task drafting and only surfaced in code-review on cross-reviewer convergence. Verification recipe above is the per-PR enforcement.
 - `agents/docs/solutions/conventions/verify-resource-knob-math-before-load-bearing-security-margins-2026-04-22.md` — sibling on knob-math discipline. `hafWalkerWallClockMs` is a knob whose claimed bound is wrong because a library-behavior assumption (pg AbortSignal) didn't hold. Same family: knob math must be derived from empirically verified library behavior.
 - `agents/docs/solutions/conventions/chain-write-timeout-ambiguous-outcome-2026-04-22.md` — adjacent timeout-semantics convention. Different mechanism (broadcast timer fire says nothing about chain-state) but same family of "timer fire is not the outcome you think it is" hazards. Pairs with this doc when designing any budget+timeout surface that crosses an I/O boundary the timer can't reach into.
-- `backend/src/routes/papers.ts` (canonical-root walker, ~lines 2084-2097) — the first PEvO instance of this pattern. Documented gap per this convention; accepted as residual risk for the walker's deployment shape per the architect triage on 2026-05-16.
-- `backend/src/db.ts:22` — `statement_timeout = 30000` (the tail bound that pairs with every AbortController-on-pg budget).
-- `backend/src/db.ts:24` — `pool.max = 3` (the slot-starvation amplifier under concurrent abort).
+- `backend/src/routes/papers.ts` (the walker budget's docblock, "Real worst-case per request = `hafWalkerWallClockMs` + `statement_timeout`") — the first PEvO instance of this pattern. Documented gap per this convention; accepted as residual risk for the walker's deployment shape per the architect triage on 2026-05-16.
+- `backend/src/db.ts` `getPool` — `SET statement_timeout = 30000` on each new HAF connection (the tail bound that pairs with every AbortController-on-pg budget) and `max: 3` (the slot-starvation amplifier under concurrent abort).
 - Origin: `/ce-code-review` of commits `1d01a21` + `79078d7` + `741a3e9` (`backend-haf-walker-wall-clock-budget` round-1, 2026-05-16), four-reviewer cross-corroboration (security, adversarial, reliability, performance).
