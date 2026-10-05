@@ -565,6 +565,40 @@ describe('composer drafts in the real app', () => {
       expect(drafts()['pevo-draft-publish:eve']).toMatchObject({ title: 'Signed-out work' });
     });
 
+    it("the choice card's Discard gives the empty author fields the prefill an accreditation that arrived under the card held back, and the prefill alone is not work", async () => {
+      localStorage.setItem('pevo-draft-publish:eve', JSON.stringify({ title: 'Stored earlier', abstract: '', body: '', savedAt: Date.now() - 60_000 }));
+      const comp = await visit('/publish', 'publishPage');
+      await editorsReady('publishPage');
+      type('#paper-title', 'Signed-out work');
+      await settle();
+      // The modal's email path: no accreditation with the session; the
+      // store's polling fetches it while the card stands.
+      auth.loginFromResponse({
+        token: 'token-eve', expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        username: 'eve', custody: 'light', is_accredited: false, accreditation: null,
+      });
+      await settle();
+      expect(comp.draftChoice).toBe('saved');
+      await vi.waitFor(() => expect(auth.accreditation).not.toBeNull(), WAIT);
+      await settle();
+      // Non-vacuous: the card held the form as it was.
+      expect(comp.draftChoice).toBe('saved');
+      expect(comp.authorName).toBe('');
+      expect(comp.authorAffiliation).toBe('');
+
+      document.querySelector('[data-testid="draft-choice-card"] button:not(.btn-primary)').click();
+      await settle();
+      expect(comp.draftChoice).toBe(null);
+      expect(comp.title).toBe('Signed-out work');
+      expect(comp.authorName).toBe('Eve E');
+      expect(comp.authorAffiliation).toBe('Uni E');
+      expect(drafts()['pevo-draft-publish:eve']).toMatchObject({ title: 'Signed-out work', authorName: 'Eve E', authorAffiliation: 'Uni E' });
+      // With the typed title gone, the form is back at its baseline.
+      type('#paper-title', '');
+      await pastDebounce();
+      expect(drafts()).toEqual({});
+    });
+
     it('a sign-in under a signed-out form that holds nothing restores the stored draft as a load would', async () => {
       localStorage.setItem('pevo-draft-publish:eve', JSON.stringify({ title: 'Stored earlier', abstract: '', body: '', savedAt: Date.now() - 60_000 }));
       const comp = await visit('/publish', 'publishPage');
@@ -1343,6 +1377,120 @@ describe('composer drafts in the real app', () => {
       await vi.waitFor(() => expect(router.route).toBe('paper-detail'), WAIT);
       expect(router.params).toEqual({ author: 'alice', permlink: 'p1' });
       expect(drafts()).toEqual({});
+    });
+  });
+
+  describe('a citation collection merge is drafted before the collection goes, and a landed instance leaves the collection alone', () => {
+    const COLLECTION = [{ author: 'zed', permlink: 'cited', title: 'Cited' }];
+    const PUBLISH_KEY = 'pevo-draft-publish:alice';
+    const EDIT_KEY = 'pevo-draft-edit:alice:alice:p1';
+
+    // Another tab cites a paper: it writes the collection, and this tab hears
+    // of it through a storage event.
+    function citeInAnotherTab() {
+      const value = JSON.stringify(COLLECTION);
+      localStorage.setItem('pevo-citation-collection', value);
+      window.dispatchEvent(new StorageEvent('storage', { key: 'pevo-citation-collection', newValue: value }));
+    }
+
+    // Leave the page while the save the merge armed is still pending, so
+    // destroy() clears it unfired. The merge and the navigation are separate
+    // events, as they are for a user: the citations watcher's callback has run
+    // and armed the save before the page is left. A navigation in the same
+    // tick would let that callback arm a save on the destroyed instance.
+    async function leaveAtOnce(comp) {
+      await settle();
+      expect(comp._draftTimer).not.toBe(null);
+      router.navigate('/about');
+      await settle();
+      expect(comp._draftTimer).toBe(null);
+      expect(comp._storageListener).toBe(null);
+    }
+
+    function draftedCitations(key) {
+      return drafts()[key]?.citations?.map((c) => c.permlink);
+    }
+
+    it('on the publish page, for a merge at load', async () => {
+      signIn('alice');
+      localStorage.setItem('pevo-citation-collection', JSON.stringify(COLLECTION));
+      await visit('/publish', 'publishPage');
+      const comp = await editorsReady('publishPage');
+      expect(comp.citations.map((c) => c.permlink)).toEqual(['cited']);
+      expect(localStorage.getItem('pevo-citation-collection')).toBeNull();
+      await leaveAtOnce(comp);
+      expect(draftedCitations(PUBLISH_KEY)).toEqual(['cited']);
+    });
+
+    it('on the publish page, for a merge from another tab', async () => {
+      signIn('alice');
+      await visit('/publish', 'publishPage');
+      const comp = await editorsReady('publishPage');
+      citeInAnotherTab();
+      expect(comp.citations.map((c) => c.permlink)).toEqual(['cited']);
+      expect(localStorage.getItem('pevo-citation-collection')).toBeNull();
+      await leaveAtOnce(comp);
+      expect(draftedCitations(PUBLISH_KEY)).toEqual(['cited']);
+    });
+
+    it('on the edit page, for a merge at load', async () => {
+      signIn('alice');
+      localStorage.setItem('pevo-citation-collection', JSON.stringify(COLLECTION));
+      await visit('/edit/alice/p1', 'editPage');
+      const comp = await editorsReady('editPage');
+      expect(comp.citations.map((c) => c.permlink)).toEqual(['cited']);
+      expect(localStorage.getItem('pevo-citation-collection')).toBeNull();
+      await leaveAtOnce(comp);
+      expect(draftedCitations(EDIT_KEY)).toEqual(['cited']);
+    });
+
+    it('on the edit page, for a merge from another tab', async () => {
+      signIn('alice');
+      await visit('/edit/alice/p1', 'editPage');
+      const comp = await editorsReady('editPage');
+      citeInAnotherTab();
+      expect(comp.citations.map((c) => c.permlink)).toEqual(['cited']);
+      expect(localStorage.getItem('pevo-citation-collection')).toBeNull();
+      await leaveAtOnce(comp);
+      expect(draftedCitations(EDIT_KEY)).toEqual(['cited']);
+    });
+
+    it('a landed publish page leaves a cite from another tab in the collection', async () => {
+      signIn('alice');
+      await visit('/publish', 'publishPage');
+      const comp = await editorsReady('publishPage');
+      type('#paper-title', 'Alice publishes');
+      type('#discipline', 'Physics');
+      comp._abstractEditor.editor.commands.insertContent('An abstract');
+      await settle();
+      document.querySelector('[x-data="publishPage"] form button[type="submit"]').click();
+      await vi.waitFor(() => expect(comp.step).toBe('success'), WAIT);
+      expect(comp._landed).toBe(true);
+
+      citeInAnotherTab();
+      expect(comp.citations).toEqual([]);
+      expect(JSON.parse(localStorage.getItem('pevo-citation-collection'))).toEqual(COLLECTION);
+      await vi.waitFor(() => expect(router.route).toBe('paper-detail'), WAIT);
+      expect(drafts()).toEqual({});
+      expect(JSON.parse(localStorage.getItem('pevo-citation-collection'))).toEqual(COLLECTION);
+    });
+
+    it('a landed edit page leaves a cite from another tab in the collection', async () => {
+      signIn('alice');
+      await visit('/edit/alice/p1', 'editPage');
+      const comp = await editorsReady('editPage');
+      type('#edit-title', 'Alice retitles');
+      await settle();
+      document.querySelector('[x-data="editPage"] form button[type="submit"]').click();
+      await vi.waitFor(() => expect(comp.step).toBe('success'), WAIT);
+      expect(comp._landed).toBe(true);
+
+      citeInAnotherTab();
+      expect(comp.citations).toEqual([]);
+      expect(JSON.parse(localStorage.getItem('pevo-citation-collection'))).toEqual(COLLECTION);
+      await vi.waitFor(() => expect(router.route).toBe('paper-detail'), WAIT);
+      expect(drafts()).toEqual({});
+      expect(JSON.parse(localStorage.getItem('pevo-citation-collection'))).toEqual(COLLECTION);
     });
   });
 });

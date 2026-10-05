@@ -1422,13 +1422,18 @@ export function initEditPage() {
     },
 
     // Merging takes the collection out of storage, so the citations it adds
-    // live only in the form from then on. Held back until the baseline exists
-    // and no choice card stands: the merged citations then count as user work
-    // and are drafted, neither a restore, the choice nor the restored card's
-    // Discard can replace them, and a visitor who cannot edit the paper (no
-    // form, so no baseline) leaves the collection where it is.
+    // have no other copy from then on. They are drafted at once, before the
+    // collection goes: an instance destroyed before the debounce fires saves
+    // nothing. The merge is held back wherever _writeDraft refuses, so no entry
+    // leaves the collection without being stored: without a key, until the
+    // baseline exists, while a choice card stands, and once the instance has
+    // landed. The merged citations then count as user work, and neither a
+    // restore, the choice nor the restored card's Discard can replace them. A
+    // visitor who cannot edit the paper (no key, no form) leaves the
+    // collection where it is, and so does a landed instance, for the next form
+    // to merge.
     _mergeCitationCollection() {
-      if (!this._hasBaseline || this.draftChoice) return;
+      if (this._landed || !this._draftKey || !this._hasBaseline || this.draftChoice) return;
       const key = 'pevo-citation-collection';
       const raw = localStorage.getItem(key);
       if (!raw) return;
@@ -1436,6 +1441,7 @@ export function initEditPage() {
       if (!Array.isArray(collection) || collection.length === 0) return;
       this._mergedCitations.push(...collection);
       this._appendMissingCitations(collection);
+      this._writeDraft();
       localStorage.removeItem(key);
     },
 

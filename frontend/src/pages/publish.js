@@ -649,7 +649,7 @@ export function initPublishPage() {
     // passes none, and the store's polling fills it in later. The prefill the
     // sign-in could not apply is applied then, for the account this instance
     // drafts for, and not under a standing choice card, which holds the form
-    // as it is.
+    // as it is. The card's Discard applies it instead.
     _onAccreditationChange() {
       if (!this._draftAccount || this._draftAccount !== this.username || this.draftChoice) return;
       this._prefillEmptyAuthorFields();
@@ -759,10 +759,13 @@ export function initPublishPage() {
     },
 
     // The choice card's Discard: the stored draft goes, and the form's own
-    // work, held back while the card stood, is drafted in its place.
+    // work, held back while the card stood, is drafted in its place. The
+    // author fields it leaves empty take the prefill first, which an
+    // accreditation that arrived while the card stood could not apply.
     discardPendingDraft() {
       if (this._landed || !this._pendingDraft) return;
       this._clearDraftChoice();
+      this._prefillEmptyAuthorFields();
       localStorage.removeItem(this._draftKey);
       this._writeDraft();
       this._mergeCitationCollection();
@@ -1027,14 +1030,17 @@ export function initPublishPage() {
     },
 
     // Merging takes the collection out of storage, so the citations it adds
-    // live only in the form from then on. Held back until the instance has an
-    // account and a baseline, and while no choice card stands: the merged
-    // citations then count as user work and are drafted, neither a restore,
-    // the choice nor the restored card's Discard can replace them, and a
+    // have no other copy from then on. They are drafted at once, before the
+    // collection goes: an instance destroyed before the debounce fires saves
+    // nothing. The merge is held back wherever _writeDraft refuses, so no entry
+    // leaves the collection without being stored: until the instance has an
+    // account and a baseline, while a choice card stands, and once it has
+    // landed. The merged citations then count as user work, and neither a
+    // restore, the choice nor the restored card's Discard can replace them. A
     // signed-out visitor, whose form is not drafted, leaves the collection
-    // where it is.
+    // where it is, and so does a landed instance, for the next form to merge.
     _mergeCitationCollection() {
-      if (!this._draftKey || !this._hasBaseline || this.draftChoice) return;
+      if (this._landed || !this._draftKey || !this._hasBaseline || this.draftChoice) return;
       const key = 'pevo-citation-collection';
       const raw = localStorage.getItem(key);
       if (!raw) return;
@@ -1042,6 +1048,7 @@ export function initPublishPage() {
       if (!Array.isArray(collection) || collection.length === 0) return;
       this._mergedCitations.push(...collection);
       this._appendMissingCitations(collection);
+      this._writeDraft();
       localStorage.removeItem(key);
     },
 
