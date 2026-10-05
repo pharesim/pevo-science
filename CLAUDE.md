@@ -50,6 +50,13 @@ A decentralized platform for open scientific publication and interactive evaluat
 7. A **complete** task is `git mv`ed by the implementer from `pending/` to `review/`. The architect reviews, then **archives** it: prepend its contents to `agents/docs/tasks-archive.md` under a `## <Title> (archived <YYYY-MM-DD>)` heading, trim `tasks-archive.md` from the bottom to at most **250 lines** (full history stays in git), and `git rm` the task file. No strikethrough (`~~`); completed task files are deleted.
 8. **Review → held-pending-fixes → re-review.** When review finds issues that block archive, the architect appends an **`Architect re-review (<date>) — HELD PENDING FIXES:`** block listing the fixes and `git mv`s the file back to `tasks/pending/`, so it shows in the implementer's startup listing. The implementer lands the fixes and `git mv`s it to `tasks/review/`; that move is the re-review signal. Implementers do NOT edit the hold block or mark items fixed inside it: the commit diff is the evidence and the architect updates the block at re-review. A held task that becomes blocked on another agent's decision goes to `blocked/` per rule 6.
 9. **No spec file sprawl.** No new files in `agents/docs/` outside `tasks/`, `api-contracts/` and `solutions/`. Allowed: `ARCHITECTURE.md`, `tasks-archive.md`, `api-contract.md` (index), `api-contracts/*.md`, `hive-schemas.md`, `reputation-algorithm.md`, `tasks/**/*.md` (task files + README), `solutions/**/*.md`. Keep them current with related code changes.
+10. **Priority.** Every task file carries a `**Priority:**` line under `**Created:**`; a file without one counts as `normal`.
+    - `high`: security defects, data loss or corruption, a broken user-facing flow.
+    - `normal`: product features and behavioral bugs.
+    - `low`: comment and prose fixes, canary and pin upkeep, tooling and convention hygiene.
+    - `deferred (<until when>)`: not picked up until the stated condition holds, e.g. `deferred (until all other open tasks are archived)`.
+
+    The agent filing a task sets it, the architect adjusts it at review or triage, and the user can override it at any time. Don't change the priority of a task you are implementing; if it looks wrong, say so in the signal block. **Pick order:** a task the user names comes first; otherwise `high`, then `normal`, then `low`, alphabetically within one priority, skipping `deferred` tasks whose condition is unmet. This applies to implementers picking from `pending/` and to the architect picking from `review/`, and startup summaries list tasks in this order with their priority.
 
 ## Commits and Pushes
 
@@ -145,8 +152,8 @@ Mock targets under the carve-out: shared pool/cache helpers (`getPool()`, `getAp
 **Do NOT explore the codebase on startup:** no recursive `ls`, no `**/*` globs, no project-structure sweeps. Instead:
 
 1. Read `agents/<role>/CLAUDE.md` if acting as a specific agent.
-2. List `agents/docs/tasks/pending/` (implementer) or `agents/docs/tasks/review/` (architect) for your role's slugs, plus `agents/docs/tasks/blocked/` for anything blocked on you (and `agents/docs/TASKS.md` while it exists).
+2. List `agents/docs/tasks/pending/` (implementer) or `agents/docs/tasks/review/` (architect) for your role's slugs, in pick order with their priority (rule 10), plus `agents/docs/tasks/blocked/` for anything blocked on you (and `agents/docs/TASKS.md` while it exists).
 3. Read only the files the current task needs.
-4. Implementers (backend, ui): for a task of yours in `tasks/pending/`, verify the issue and double-check the implementation; if it checks out, implement it via `/ce-work`, otherwise ask the user. Architect: the equivalent is `tasks/review/`; see `agents/architect/CLAUDE.md`.
+4. Implementers (backend, ui): for the task the user names, or else the first of yours in pick order in `tasks/pending/`, verify the issue and double-check the implementation; if it checks out, implement it via `/ce-work`, otherwise ask the user. Architect: the equivalent is `tasks/review/`; see `agents/architect/CLAUDE.md`.
 
 This applies to top-level Claude, subagents and Explore agents. "Initiate <role> agent" means follow that role's startup protocol, not a broad exploration pass. If the user references prior work this session has no context for, invoke `/ce-sessions` before guessing.
