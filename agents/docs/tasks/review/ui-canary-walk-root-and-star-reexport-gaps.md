@@ -177,3 +177,75 @@ then.
   `review/` edits it. The backend tasks that cite the frontend
   `isCommentLine` / `sourcesUnder` shapes read them as the reference for a
   backend port and do not change them.
+
+---
+
+## UI implementation signal (2026-10-05, commits da55b836, dcef32d7, b1aea005, f5d35df2, 5ff74908)
+
+**Scope, as decided by the user on 2026-10-05: item 1 only.** Items 2
+(line-break-proof star re-export ban) and 3 (tighter walk floor plus a
+`components/` membership pin) were put to the user against their 2026-09-16
+canary bar: a canary branch is worth it only where review would likely miss
+the violation, and ways around a canary that no code writes today are
+dismissed. Both are shapes nobody writes today and both are already partly
+caught (the name scan sees a star-re-exported fetch at its call site; the
+walker has its own planted-tree probe). The user chose to dismiss them.
+Acceptance criteria 2 and 4 are therefore not delivered, by decision.
+
+**Decision recorded in the WALK paragraph: a fifth assertion beside the four
+layers, not a widened walk root.** A wider root would not read `index.html`
+anyway (the walk reads `.js` only, so it would land in the extension census as
+a foreign file), it would sweep in tests, `public`, `node_modules`, report
+output and package files, and the scans' skip predicates read JS comment
+syntax, not HTML. The new assertion licenses nothing and skips nothing: any
+`fetchEmailStatus` or `hasPassword` in `frontend/index.html`, inside an HTML
+comment included, is a red bar. The extension census is untouched.
+
+**AC1, evidence.** Mutation probes ran in scratchpad copies of
+`git archive da55b836 frontend`, never in the checkout. Each plant turned only
+the new entry-document test red: an `x-show` reading `hasPassword` on the
+re-auth modal's heading; an inline module script importing
+`fetchEmailStatus as f`, on one line and across lines; an HTML comment naming
+`hasPassword`; and a multi-line attribute whose continuation line starts with
+`*` or `//` (the shapes the JS comment predicate would skip in a `.js` file).
+The same plants stay green at `da55b836^`. Matcher mutants (return `[]`, drop
+either pattern arm, off-by-one site label) turn the planted-shape probe red. A
+wrong `index.html` path fails the file at load.
+
+**AC3.** A new COVERAGE paragraph states what is read (every `.js` under
+`src`, and the entry document) and what is not (a module outside `src` that a
+source imports or the entry document loads, a second page added as a build
+input, `node_modules`), plus the residuals within what is read. A paragraph
+under the LAYERS list explains why import-site tracking and the star ban add
+nothing in the entry document.
+
+**Self-verification.** After da55b836, four audit rounds ran (claims against
+code and against Vite/Alpine behavior, comment-anchor conventions with the
+pre-commit gate run standalone and its control line firing, and adversarial
+coverage), each finding checked by a refuting verifier. dcef32d7, b1aea005,
+f5d35df2 and 5ff74908 are the prose corrections they produced. One false
+claim was caught this way: the first LAYERS addendum said an inline module
+script's exports cannot be imported, but Vite's html-proxy makes them
+importable. Three pre-existing sentences that the new assertion had made
+inexact were also rescoped to the walk: the extension-gate message,
+GRANULARITY, and the floor and walker-probe comments. All five SHAs were
+checked as ancestors of HEAD. `tests/unit/eslint/`: 2 files, 18 tests, all
+pass (16 before), exit 0. No production code changed.
+
+**Considered and not built (dismissed under the same bar, no code writes
+them today):** spelling either name through an HTML character reference or a
+`\u` identifier escape; Alpine directives inside locale strings rendered
+through `x-html`; a factor decision built on a proxy field (calling the
+licensed `loadEmailStatus` and branching on `hasEmail`); a content floor for
+`index.html`.
+
+**Pre-existing, observed, not changed (outside scope):** the walk's
+occurrence-scan planted probe justifies itself with "an edit that mangles a
+pattern leaves every scan empty and the suite stays green". That is false
+for the three exact-map scans, which go red when their matcher finds nothing.
+The case it really guards is a sub-predicate such as the alias veto breaking
+on a shape the tree does not contain. The new probe's comment no longer
+leans on that sentence.
+
+**Code review:** not run by ui, per `agents/ui/CLAUDE.md` (architect review
+at intake).
