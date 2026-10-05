@@ -1,3 +1,163 @@
+## Decide whether a second concurrent session-inconsistency detection should speak (archived 2026-10-05) — clean review at 790eee0e; silent-sign-out message accepted; implementer's successor-teardown item already filed
+
+### Architect archive note (2026-10-05)
+
+Review of 790eee0e with /ce-code-review (full: correctness, project-standards,
+testing, adversarial in-process, julik-frontend-races, learnings). Reviewers read
+git-show snapshots at 790eee0e, because five later sibling commits (590d211a,
+b3d52627, 7247ff5b, 8594733d, b9de6dcc) had reshaped fresh-auth.js, moving the handler
+body into tearDownSessionWithMessage. No finding at the reporting threshold. All four
+ACs met. Full unit suite at 790eee0e re-run in an isolated copy: 87 files, 1980 tests,
+exit 0. Mutation probes in isolated copies: dropping the isConnected gate fails 3 pins;
+a bare return in the disconnected branch fails the silent-sign-out pin; claiming
+before disconnect fails 4 tests. The project-standards pass was shallow (it did not
+open the cited convention docs).
+
+Triage (user approved as recommended):
+- Accepted, no change: a mismatch after a silent sign-out shows the session-changed
+  message instead of the re-login message (unrequested behavior rule; reasoned in the
+  docblock and pinned).
+- Folded into `ui-fresh-auth-and-upload-comments-that-overclaim` (item 4, new bullet):
+  the `UPLOAD_SESSION_TORN_DOWN` comment in lib/ipfs-upload.js names only the re-login
+  toast (correctness + adversarial, still present at HEAD). The matching
+  broadcastWithFreshAuth "runs the same scrub again" sentence was already gone at HEAD.
+- Implementer's "For architect triage" item (mismatch arms do not consult their
+  teardown guard, so a session established mid-flight is torn down): already filed as
+  `ui-upload-mismatch-teardown-after-subject-change`, which covers the upload leg and
+  asks for a check of the broadcast and consent-op arms. Not worsened by this diff
+  (adversarial S3 probe).
+- Dismissed: no upload-plus-broadcast cross-surface pin (same handler, probe correct
+  today); AC3 fixture flips unobserved in the settings and authorship suites; the gate's
+  dependency on disconnect() being the sole isConnected=false writer (holds at HEAD).
+- Deferred: /ce-compound-refresh of
+  solutions/conventions/guard-report-dedupes-per-event-not-per-holder-2026-09-02.md,
+  whose code sample predates the liveness gate and reportTeardownOnce. Run it after
+  `ui-session-invalidated-global-handling` is reviewed, since that task reshaped the
+  same handler.
+
+### Task file
+
+**Owner:** ui
+**Created:** 2026-09-02
+
+Routed out of the architect round-3 review of `ui-consent-op-teardown-guard`
+(`69686a16`). Not held there: three reviewers raised it independently and the adversarial
+pass reproduced it, but the validator established the behaviour as pre-existing and
+unaffected by that commit, and the obvious fix carries a behaviour decision the round-3
+hold should not absorb.
+
+## Why
+
+`handleSessionInconsistency()` in `lib/fresh-auth.js` disconnects the auth store, claims
+the teardown report, and toasts. The disconnect and the claim now sit inside an
+`if (auth)` branch, so the claim is only stamped when there was a real teardown to claim,
+but nothing gates the sequence against a SECOND caller detecting the same fault. It is
+called from five sites across three modules (the broadcast surface's first-attempt and retry mismatch arms,
+the consent-op retry gate, and the upload surface's mismatch teardown).
+
+Two concurrent flights that each detect the same corrupted session therefore each run the
+whole sequence, and the user sees two identical "Session inconsistency detected. Please
+sign in again." messages for one incident. Reproduced by driving two mismatch legs
+concurrently: two toasts, where the surrounding work's stated contract is exactly one
+message per teardown.
+
+The reachable shape is the publish page, where an inline-image upload and the submit
+broadcast can be in flight together against the same divergent JWT-and-proof pair.
+
+## The decision this task exists to make
+
+The `_reportedTeardownGeneration` claim cannot solve this, and reaching for it is the
+trap: each call's `disconnect()` re-runs the subject scrub and bumps the generation, so
+the second detector legitimately observes a new generation. Under the dedup mechanism's
+own semantics, two detectors are two teardowns, not one teardown reported twice.
+
+So the question is not "how do we dedup this" but "should a second, genuinely new teardown
+speak at all". Suppressing it also suppresses a real second event; keeping it means the
+one-message contract holds per teardown but not per incident.
+
+The proposal to evaluate, not to apply unexamined: gate on the store's own liveness before
+disconnecting, so a second caller short-circuits once the first has torn down.
+
+```js
+const auth = Alpine.store('auth');
+if (auth) {
+  if (!auth.isConnected) return;
+  auth.disconnect();
+  claimTeardownReport();
+}
+toastLocalized(/* ... */);
+```
+
+Note the shape: the liveness short-circuit and the claim both belong INSIDE the `if (auth)`
+branch. An earlier draft of this proposal was written against a version of the function
+whose claim ran unconditionally; applied literally on top of the current code it would move
+`claimTeardownReport()` back outside the branch and re-introduce the stamping-with-no-
+teardown defect that branch exists to prevent.
+
+Whichever way it goes, the outcome must be written down where the next reader meets it:
+either the function's docblock states that repeat detections are deliberately silent, or
+it states that each detection speaks and why that is the right trade.
+
+## Acceptance criteria
+
+1. A decision is recorded in the code, not only in this file: `handleSessionInconsistency`
+   carries a docblock sentence stating whether a repeat detection speaks, and why.
+2. Two concurrent flights that each detect `username_mismatch` against the same corrupted
+   session produce the message count that decision calls for, pinned by a test that fails
+   if the behaviour flips.
+3. If the early return is adopted, the store fixtures that stub `disconnect` as a bare
+   `vi.fn()` (they never flip `isConnected`) are updated so the suites exercise the
+   production shape rather than passing because the flag never moves.
+4. No surface loses its teardown message entirely: a single detection still reports, and
+   the existing "exactly one" assertions across the fresh-auth and upload suites stay green.
+
+## Notes
+
+Related but distinct from the report-collapse mechanism already in `fresh-auth.js`: that
+one dedups several flights abandoned by ONE scrub, and works. This is about several scrubs
+raised by several detectors of one underlying fault. Do not widen the existing claim to
+cover this case without first settling the question above.
+
+UI implementation signal (2026-09-30, commit `790eee0e`):
+
+**Decision: a repeat detection is quiet.** Only the detector that finds the store
+still connected disconnects and shows the re-login message. Recorded in the
+`handleSessionInconsistency` docblock (AC1).
+
+The proposal's bare `return` was amended. A detector that finds the store already
+disconnected calls `reportTeardownOnce()` (the claim-keyed report extracted from
+the guard's `cancel`) and then returns. After a sibling detector that is silent,
+because the first detector claimed the generation. After a sign-out that showed
+nothing (this tab's, or another tab's over the storage event) it shows the
+session-changed message once. Reason: with a bare return that second sequence
+ends with no message at all, since every caller shape is silent at the page
+layer, which AC4 rules out. The liveness check and the claim both stay inside the
+`if (auth)` branch.
+
+- AC2: `fresh-auth-401-retry.test.js` "two flights detecting the same corrupted
+  session tear down and report once" (one disconnect, one toast). Observed red
+  before the change (2 and 2). A second pin covers the upload leg through the
+  real window and the real `tornDownSession`
+  (`lib-ipfs-upload-real-window.test.js`), and a third covers the mismatch that
+  lands after a silent sign-out.
+- AC3: the three suites that run the real handler on a mismatch
+  (`fresh-auth-401-retry`, `lib-settings-fresh-auth`, `lib-authorship-consent`)
+  now carry `isConnected` and a disconnect that flips it. The consent-op suites
+  returned a fresh store literal per read; they now return one object. Suites
+  that never drive a mismatch into the real handler were left alone.
+- AC4: full unit suite green, 87 files, 1980 tests, exit 0. No Playwright run
+  (no e2e spec induces `username_mismatch`).
+
+**For architect triage, not fixed here (pre-existing, out of this task's scope):**
+none of the five mismatch arms consults its teardown guard before calling
+`handleSessionInconsistency`. If a login lands before the mismatch response
+(another tab signs in as someone else, or a re-login inside the round trip),
+the store reads connected again and the handler disconnects the successor's
+healthy session with the re-login message. The liveness gate neither causes nor
+cures this, and the docblock says so. Closing it means threading the guard into
+the arms, which changes what the primary single-flight mismatch does, so it is a
+decision rather than a fix.
+
 ## Close the last two retired-model sentences in fresh-auth, and pin the retirement contract (archived 2026-10-05) — clean review at b80ebff1; probes m1-m3 reproduced; two AC1 wording calls dismissed
 
 ### Architect archive note (2026-10-05)
@@ -88,163 +248,3 @@ empty, and the canonical key is gone.
 
 Pin the retained direction too: an entry must SURVIVE a presentation whose own `GETDEL`
 rejects, since `redisLegRan` is false there and the guard must stay standing.
-
-### 4. Neither split-tier test pins that the tiers actually split
-
-Both split-tier race tests install a `redis.del` spy, restore it, and never assert on
-it. The compensating delete is issued only on the `!redisLegRan && burnedInMemStore &&
-redis` branch, so asserting it was NOT called is exactly the pin that the one burn which
-ran was arbitrated by a resolving `GETDEL` on the Redis tier rather than by the
-in-memory fallback. Without it the tests prove one winner without proving the fixture
-built the race it describes.
-
-Add the assertion to both tests.
-
-## Acceptance criteria
-
-1. Neither `backend/src/lib/fresh-auth.ts` nor `backend/tests/lib/fresh-auth.test.ts`
-   contains a statement of the retired conditional-backup or one-event-retirement model.
-   Verify with a wrap-tolerant sweep that collapses comment prefixes and newlines before
-   matching, not a single-line grep. Report the technique, not just the phrase searched.
-2. The `alreadySpent` release event and the retained direction each have a test that
-   fails when the behavior is mutated away.
-3. Both split-tier tests assert the compensating delete was not called.
-4. Mutation probes run per site against a committed baseline, with `git status` verified
-   clean for the target file immediately before every `git checkout --` restore.
-5. Typecheck and lint clean. The three fresh-auth suites pass.
-
-## Notes
-
-Items 1 and 2 are comment-only and change no behavior. Items 3 and 4 add assertions
-only. No production logic should change in this task; if it does, that is a signal the
-prose was describing something real that the code does not do, and it should be raised
-rather than silently fixed.
-
-Do not run the full suite concurrently with sibling agents. The per-file `${appTag}:*`
-Redis flush collides with other workers, and the parent task already recorded one
-deterministic pre-existing failure caused by exactly that collision.
-
----
-
-Backend implementation signal (2026-09-30, commits `6dd794d3` and `b80ebff1`, both verified ancestors of `main`):
-
-**Item 1.** The comment above `memStore.set` in `issueSessionFreshAuthToken` now uses the consent-op site's unconditional wording and the dead-code clause is gone.
-
-**Item 2.** The `drainSpentConsentOps` docblock states both release events and scopes itself to the one the drain can produce.
-
-**Item 3, with one deviation from the task text.** The task says the `alreadySpent` release event "is asserted by nothing". That was not the case at the reviewed state: `fresh-auth-redis-unavailable-burn.test.ts` ("a ledger entry refuses the consume itself, with the canonical key still readable") already asserts refused, ledger empty, key gone, and two offline-queue tests assert the ledger empties after a refused replay. Probe m1 below confirms all of them kill the mutation. What was genuinely unpinned is the retained direction. So instead of a standalone duplicate, one new test in `fresh-auth.test.ts` ("a spent-proof ledger entry survives a presentation whose own GETDEL rejects, and retires on the one whose GETDEL resolves") pins both directions in sequence: the entry and key survive a rejected `GETDEL`, then both go on the resolved one.
-
-**Item 4.** Both split-tier tests assert `expect(delSpy).not.toHaveBeenCalled()`.
-
-**AC1, technique.** A four-lens read-only sweep over both files at `6dd794d3`, each finding then handed to an independent refuter. The mechanical lens extracted every line comment, block comment and test title, stripped comment prefixes, joined consecutive comment lines into single-space paragraphs (217 in the source, 265 in the test), and matched 22 case-insensitive pattern families (conditional-backup: `whenever Redis`, `Redis[- ]success`, `dead code`, `backup.{0,60}(when|if|on|whenever|after|once).{0,40}(succe|healthy|available|resolv|land)` and similar; one-event: `one event`, `only event`, `leaves only`, `only (once|when|on|after|by).{0,80}(DEL|delete)`, ledger/entry near `expir|stale|age|TTL|dispatch` and similar). 49 hits, all read against the code, all false positives. Three semantic lenses then read every statement about the backup write, about ledger retirement, and every line the first commit added. They found two statements the patterns could not: the `isConsentOpSpent` docblock bounding the ledger by "confirmed sweeps" (one event named where there are two) and the cleanup docblock's "under no-Redis ops" (presupposes the conditional backup). Both fixed in `b80ebff1`, along with a space my first commit dropped from a test title. One conditional-backup sentence in the test file (the flap-recovery test's "writes a backup to memStore on Redis-issuance success") was fixed in `6dd794d3`.
-
-**AC2 to AC4, probes.** Run serially in a scratchpad copy built with `git archive 6dd794d3 backend`, restored between mutants with `git show 6dd794d3:<path>` and `cmp`-verified at the end, so the shared checkout was never mutated and no `git checkout --` restore was needed. `b80ebff1` changes only comments and one test title, so the results carry.
-
-| Probe | Mutation in `burnConsentOpEntry` | Killed by |
-|---|---|---|
-| baseline | none | 109 / 5 / 4 pass |
-| m1 | remove `if (redisLegRan) spentConsentOps.delete(token);` | the new test (ledger size after the resolved `GETDEL`), the redis-unavailable-burn test named above, two offline-queue tests |
-| m2 | make that delete unconditional | the new test ONLY (ledger size after the rejected `GETDEL`); the other two suites stay green |
-| m3 | remove `redisLegRan = true;` | both split-tier tests, each at the new `delSpy` assertion, plus the new test |
-
-**AC5.** Typecheck clean. Lint: 0 errors, 1 pre-existing warning in `src/lib/author-supersession.ts`, untouched. The three suites pass at `b80ebff1` run one file at a time (109, 5, 4). Run as one three-file invocation, the offline-queue suite's first test failed once on a vanished canonical key, which is the per-file keyspace flush collision the task's notes describe, not a regression.
-
-**Out of scope, surfaced to the user rather than fixed.** The sweep confirmed four statements that are false or over-general but belong to neither retired model: the `fresh_auth.redis_getdel_failed` warn string promises "a compensating delete follows" on paths where none is issued (the new test drives one such path); the TTL-expiry describe comment in `fresh-auth.test.ts` says the in-memory guard is bypassed when Redis is available, though a nil reply falls through to it; and the `persistSessionSlide` docblock plus two test comments give "would recreate a key Redis has dropped" as the reason for skipping the write in cases where the key still stands.
-
-## The publish spec never pins the $nextTick mount routing or the template x-ref names (archived 2026-10-05) — clean review at afa2237b; edit-spec observation moot at HEAD
-
-### Architect archive note (2026-10-05)
-
-Review of afa2237b with /ce-code-review (full: correctness, project-standards, testing,
-adversarial in-process, julik-frontend-races, learnings). Reviewers read git-show copies
-of the reviewed tree, because five later ui(drafts) commits rewrote publish.js and
-extended the spec after afa2237b. Zero findings at any severity. The architect
-re-measured every signal-block claim in isolated copies at afa2237b: spec 81 passed /
-exit 0 / no Errors line; full unit suite 87 files / 1977 tests / exit 0; the $nextTick
-unwrap fails `builds one editor per ref present when init runs` with "expected spy to
-be called 1 times, but got 0 times", and each x-ref rename fails `declares the x-ref
-names _mountEditors reads in the template`. At HEAD c3e921ff the spec runs 99 passed,
-the unwrap mutant is still killed, and publish.js still holds exactly one $nextTick
-call site and both x-refs, so the count comment's invariant still holds.
-
-Residual, accepted and not filed: the count pins the number of dispatches, not what
-runs inside the callback (an inline mount beside an unrelated $nextTick stays green).
-The implementer disclosed this survivor class, the comment claims only the count, and
-the mount reads $refs after its dynamic import, so production impact is nil.
-
-The implementer's observation about the edit spec's "refs assigned afterwards are inert"
-sentence is moot: 4882cd42 replaced edit.js's _editorsInitialized latch with a
-mount-generation counter and removed that sentence along with its describe (now `the
-form mounts the editors on every render`). Nothing filed. No /ce-compound.
-
-### Task file
-
-**Owner:** ui
-**Created:** 2026-09-28
-
-Measured during the architect re-review of the edit-spec mount-coverage
-task, by probes in isolated copies (pages-publish spec baseline 76 passed /
-exit 0):
-
-- `frontend/src/pages/publish.js` holds exactly one `$nextTick(` call site,
-  which schedules `_mountEditors()`, and its template carries the same
-  `x-ref="abstractEditor"` / `x-ref="bodyEditor"` pair `_mountEditors`
-  reads.
-- Unwrapping that `$nextTick` block to a bare `this._mountEditors()`
-  SURVIVED the publish spec: 76 passed, exit 0.
-- Renaming the template's `x-ref="abstractEditor"` likewise SURVIVED.
-
-This is the twin of the two pins the edit spec now carries in its
-`a successful load mounts the editors` describe: the exact-count `$nextTick`
-routing assertion and the template `toContain` case over both x-ref names.
-`pages-publish.test.js` already has the `_mountEditors teardown-during-init
-guard` describe and the mocked `createEditor` harness, but nothing drives
-the real mount-scheduling path and nothing reads the template. Mirror the
-edit spec's two pins, adapted to publish.js's own structure:
-
-1. A case on the real mount-scheduling path asserting the mount effect
-   (`createEditor` once per present ref, `_editorsInitialized` true) AND the
-   `$nextTick` routing. Before pinning an exact call count, verify
-   publish.js's `$nextTick` call-site inventory on the tested path, and
-   state the invariant the count rests on in the comment, no broader than
-   what the assertion enforces.
-2. A template case asserting the publish page's exported template carries
-   both `x-ref` names `_mountEditors` reads.
-
-## Constraints
-
-- `frontend/tests/unit/pages-publish.test.js` only; nothing under
-  `frontend/src/`.
-- Check the publish spec's harness first: if its component factory does not
-  already mock `$nextTick` as a synchronous spy the way the edit spec's
-  `createComponent` does, mirror that harness shape; the mock stays
-  synchronous either way.
-- Comment anchors on stable symbols (`_mountEditors`, `$nextTick`, the
-  template export name), never task slugs, hold ordinals, line numbers or
-  SHAs; the pre-commit anchor gate refuses otherwise.
-- Proof-first in isolated scratchpad copies, never the shared checkout: show
-  both mutants surviving before the change and killed after, one fresh copy
-  per probe.
-
-## Acceptance criteria
-
-1. Unwrapping the `$nextTick` mount-scheduling block in a scratchpad copy of
-   `publish.js` fails at least one test; cite the failing case name and
-   message in the signal block.
-2. Renaming either template `x-ref` in a scratchpad copy of `publish.js`
-   fails the template case.
-3. `npx vitest run tests/unit/pages-publish.test.js` reports no Errors line
-   and exits 0, with no existing test removed or weakened.
-4. The full frontend unit suite exits 0 in an isolated two-level copy.
-
-UI implementation signal (2026-09-30, commit afa2237b):
-
-Landed in `afa2237b` (`frontend/tests/unit/pages-publish.test.js` only; an
-ancestor of main, verified with `git merge-base --is-ancestor`). A new
-`init mounts the editors` describe holds both pins.
-
-Harness check: the publish spec's `createComponent` already mocks
-`$nextTick` as a synchronous spy (`vi.fn((fn) => fn && fn())`), the same
-shape as the edit spec's, so the harness is unchanged.
-
-`$nextTick` inventory on the tested path: `init` holds publish.js's only

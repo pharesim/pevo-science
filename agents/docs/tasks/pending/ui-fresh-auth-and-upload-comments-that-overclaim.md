@@ -59,7 +59,15 @@ misleads the next reader about a fresh-auth invariant.
      site (`subjectTeardownGuard`)");
    - `handleSessionInconsistency`'s "says nothing when that teardown has already been
      narrated" (the code's condition is that the teardown was claimed, which is not the
-     same thing for the unclaimed settings-delete toast).
+     same thing for the unclaimed settings-delete toast);
+   - in `lib/ipfs-upload.js`, the `UPLOAD_SESSION_TORN_DOWN` comment's parenthetical
+     ("the re-login toast, by whichever flight detected the corrupted session first").
+     When the mismatch lands on a store that a sign-out already disconnected,
+     `handleSessionInconsistency` skips the disconnect and reports through
+     `reportTeardownOnce`, so the message already shown is the session-changed one, or
+     none from this call when that teardown was already claimed. (Added at the
+     2026-10-05 archive of the repeat-detection task, where two reviewers raised it
+     independently.)
 
    In each, the conclusion the sentence draws (the caller adds no message of its own)
    is the part to keep; correct the attribution so it is true for a self-narrating
