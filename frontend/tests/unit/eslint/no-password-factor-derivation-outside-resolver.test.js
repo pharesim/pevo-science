@@ -43,9 +43,12 @@
  * directory above `src`, is the page Vite builds from, and carries the global
  * re-auth modal, the inline password prompt that is one of the resolver's two
  * answers. It gets an assertion of its own beside the four layers, not a
- * wider root. A root wide enough to hold it also holds the test tree, the
- * build config, `public` and `node_modules`, each needing an exclusion, and
- * the scans' skip predicates read JavaScript comment syntax, not HTML. The
+ * wider root. A wider root would not read it either: the walk reads `.js`
+ * only, so the entry document would land in the extension census as a
+ * foreign file, and reading it would mean teaching the walk HTML, whose
+ * comments the scans' skip predicates do not parse. That root would also
+ * take in the test tree, `public`, `node_modules`, report output and the
+ * package files, each needing an exclusion or a license. The
  * entry-document assertion needs no skip at all, because it licenses no
  * site: any occurrence there of the status fetch's name or of the
  * discriminator fails, one inside an HTML comment included. It reads one
@@ -61,9 +64,11 @@
  * residuals (CONSTANT-WIDTH REPLACEMENT, A MATCH RIDING ON A SKIPPED LINE, A
  * NAME THAT IS NEVER SPELLED).
  *
- * GRANULARITY. Occurrence assertions are over `file#symbol` pairs resolved by
- * `enclosingSymbol`, never over files: a file already on an allowed list
- * would absorb a second, different occurrence silently. The licensed sites
+ * GRANULARITY. The walk's occurrence assertions are over `file#symbol` pairs
+ * resolved by `enclosingSymbol`, never over files: a file already on an
+ * allowed list would absorb a second, different occurrence silently. The
+ * entry-document assertion licenses nothing, so it lists lines rather than
+ * symbols: there is no member for a file to absorb. The licensed sites
  * are named individually, including the rendering-only read in
  * `pages/settings.js`, which is a legitimate member rather than a
  * pattern-excluded one so that a DIFFERENT offending shape in the same file
@@ -117,11 +122,13 @@
  *     rebinding shape that writes neither the function's name nor the
  *     property's.
  *
- * The entry-document assertion applies layers 1 and 3 there, with nothing
- * licensed. Layers 2 and 4 have nothing to add in that file: with no
- * specifier skip, layer 1 already fails any import that names the fetch,
- * and an inline module script's exports have no path another module could
- * import them from.
+ * The entry-document assertion applies the name scan and the password-state
+ * scan there, with nothing licensed. Import-site tracking and the star
+ * re-export ban add nothing in that file. With no specifier skip, an import
+ * there that names the fetch already fails. And a star re-export in an
+ * inline module script, which the bundler does make importable, still
+ * leaves its importer writing the fetch's name at the call, which the name
+ * scan counts in any file the canary reads.
  *
  * Residuals, pinned in prose rather than silently absorbed. Three, and each
  * one is left to review of the diff for its own reason.
@@ -146,9 +153,9 @@
  *     derivation that assembles the fetch's name from string fragments and
  *     reads the discriminator through a computed key writes neither token
  *     and is invisible to all four layers and to the entry-document
- *     assertion alike. No textual guard closes this and
- *     none should be attempted: the defence is that such a module is
- *     conspicuous in review precisely because it went to the trouble.
+ *     assertion alike. No textual guard closes this and none should be
+ *     attempted: the defence is that such a module is conspicuous in
+ *     review precisely because it went to the trouble.
  */
 import { describe, it, expect } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -325,7 +332,7 @@ const ALLOWED_PASSWORD_STATE_SITES = {
 const NON_SCRIPT_EXTENSIONS = new Set(['.css']);
 
 const UNSCANNED_EXTENSION =
-  'This canary scans .js files only, and Vite resolves other script extensions ' +
+  'The walk under src scans .js files only, and Vite resolves other script extensions ' +
   '(.mjs, .cjs, .ts, .jsx) with no configuration, so a module in one of them would ship ' +
   'unscanned and could carry a second factor derivation unseen. Author frontend modules as ' +
   '.js, or extend the walker (sourcesUnder) and its planted probe to the new extension in ' +
@@ -347,8 +354,8 @@ const entryDocumentLines = readFileSync(path.resolve(here, '..', '..', '..', 'in
 
 describe('single password-factor resolver: no second fetchEmailStatus-derived decision', () => {
   it('walks a plausible number of source files and finds nothing script-shaped it cannot read', () => {
-    // Without this, a walker that returned nothing would make every assertion
-    // below vacuously true and the canary would enforce nothing.
+    // Without this, a walker that returned nothing would make every scan over
+    // the walked sources vacuously true.
     expect(sources.length).toBeGreaterThan(40);
     const rels = sources.map((s) => s.rel);
     expect(rels).toContain('api.js');
@@ -901,7 +908,7 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
   it('the entry-document scan fires on markup, an inline script, and an HTML comment alike', () => {
     // Planted shapes for the entry-document matcher, for the reason the walk's
     // scans carry theirs: a matcher that returns nothing leaves the
-    // whole-document assertion green while it enforces nothing. A line naming
+    // entry-document assertion green while it enforces nothing. A line naming
     // neither identifier, and one naming a longer identifier that merely
     // starts with the discriminator, mint no site.
     expect(
