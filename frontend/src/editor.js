@@ -701,6 +701,11 @@ export class PevoEditor {
   // Replace the content without reporting it through onChange. In markdown
   // mode the source view is replaced too: it is what getMarkdown returns and
   // what the user sees there, so leaving it would keep the old text in both.
+  // It takes the content as the editor holds it once normalised, the text a
+  // toggle into markdown mode shows, not the text passed in: a caller that
+  // reads the field back and takes a baseline over it would otherwise hold
+  // text the editor rewrites (a list's spacing), and visual mode would then
+  // report that rewrite as a change.
   setContent(markdown) {
     if (!this.editor) return;
     if (markdown) {
@@ -710,7 +715,8 @@ export class PevoEditor {
       this.editor.commands.clearContent(false);
     }
     if (this.markdownMode) {
-      this.markdownSource = markdown || '';
+      this.normalize();
+      this.markdownSource = this.turndown.turndown(this.editor.getHTML());
       this._els.mdTextarea.value = this.markdownSource;
       this.charCount = this.markdownSource.length;
       this._updateCharCount();

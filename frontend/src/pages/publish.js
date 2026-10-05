@@ -401,16 +401,18 @@ export function initPublishPage() {
     // user work.
     _baselineFields: null,
     _baselineEditors: null,
-    // Set when another account signed in; the instance is replaced once no
-    // submit is in flight.
+    // Set when another account signed in over the account this instance
+    // drafts for (a provisional adoption is taken over instead). The instance
+    // is replaced once no submit is in flight, and never once it has landed.
     _remountRequested: false,
     // True from the moment the broadcast resolves with a result. Set only by
     // _markLanded and never reset: a landed instance is finished.
     _landed: false,
     _storageListener: null,
     // Every entry _mergeCitationCollection took out of the citation
-    // collection. The collection is gone once merged, so the restored card's
-    // Discard puts these back rather than dropping the only copy.
+    // collection, less any the user removed since. The collection is gone once
+    // merged, so the restored card's Discard puts these back rather than
+    // dropping the only copy.
     _mergedCitations: [],
 
     maxUploadSizeMB: getMaxUploadSizeMB(),
@@ -568,7 +570,8 @@ export function initPublishPage() {
     // keeps the username and never reaches this. An instance that captured no
     // account adopts the one that signs in, and so does one whose adoption is
     // still provisional. Any other account gets a fresh instance, because this
-    // one's form and key belong to the captured account.
+    // one's form and key belong to the captured account, unless the instance
+    // has landed: it then navigates to the paper itself.
     _onAccountChange(next) {
       if (!next || next === this._draftAccount) return;
       if (this._draftAccount === null) {
@@ -1009,6 +1012,10 @@ export function initPublishPage() {
     removeCitation(index) {
       const removed = this.citations.splice(index, 1)[0];
       if (removed?.author && removed?.permlink) {
+        // A removal is the user declining the citation, which is also why it
+        // leaves the collection: the restored card's Discard does not put it
+        // back.
+        this._mergedCitations = this._mergedCitations.filter(c => !(c.author === removed.author && c.permlink === removed.permlink));
         const key = 'pevo-citation-collection';
         const raw = localStorage.getItem(key);
         if (raw) {

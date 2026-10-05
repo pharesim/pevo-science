@@ -688,6 +688,25 @@ describe('composer drafts in the real app', () => {
       });
     });
 
+    it("the publish page's restored card Discard does not put back a merged citation the user removed", async () => {
+      signIn('eve');
+      localStorage.setItem('pevo-draft-publish:eve', JSON.stringify({
+        title: 'Stored earlier', abstract: 'A', body: 'B', citations: [], savedAt: Date.now() - 60_000,
+      }));
+      localStorage.setItem('pevo-citation-collection', JSON.stringify([
+        { author: 'zed', permlink: 'cited', title: 'Cited' },
+        { author: 'xia', permlink: 'kept', title: 'Kept' },
+      ]));
+      await visit('/publish', 'publishPage');
+      const comp = await editorsReady('publishPage');
+      expect(comp.citations.map((c) => c.permlink)).toEqual(['cited', 'kept']);
+      comp.removeCitation(0);
+
+      document.querySelector('[data-testid="draft-restored-card"] button').click();
+      expect(comp.citations.map((c) => c.permlink)).toEqual(['kept']);
+      expect(drafts()['pevo-draft-publish:eve'].citations.map((c) => c.permlink)).toEqual(['kept']);
+    });
+
     it('text typed after a session teardown is drafted under the key the instance captured', async () => {
       signIn('alice');
       await visit('/publish', 'publishPage');
@@ -870,10 +889,45 @@ describe('composer drafts in the real app', () => {
       expect(comp.title).toBe('Paper p1');
       expect(comp.body).toContain('one');
       expect(comp.body).not.toContain('Drafted');
+      // The text the editor holds, as after the first mount, not the served
+      // text it was handed.
+      expect(comp.body).not.toBe('Intro.\n\n* one\n* two\n');
       expect(markdownTextarea('editPage', 'bodyEditor').value).toBe(comp.body);
       expect(charCounter('editPage', 'bodyEditor').textContent).toBe(String(comp.body.length));
       expect(comp.editorsAtBaseline).toBe(true);
       await pastDebounce();
+      expect(drafts()).toEqual({});
+
+      // Back in visual mode, an edit undone leaves the form at its baseline.
+      toMarkdownMode('editPage', 'bodyEditor');
+      comp._bodyEditor.editor.commands.insertContentAt(1, 'X');
+      comp._bodyEditor.editor.commands.deleteRange({ from: 1, to: 2 });
+      await pastDebounce();
+      expect(comp.editorsAtBaseline).toBe(true);
+      expect(drafts()).toEqual({});
+    });
+
+    it("after the restored card's Discard in markdown mode, a sign-out and back in drafts nothing", async () => {
+      signIn('alice');
+      localStorage.setItem('pevo-draft-edit:alice:alice:p1', JSON.stringify({
+        title: 'Drafted title', abstract: 'The abstract.', body: 'Drafted body', keywordsText: '',
+        authorName: 'Alice A', authorAffiliation: 'Uni A', authorOrcid: '0000-0001-0000-0001',
+        newCoAuthors: [], citations: [], addressedReviews: [], savedAt: Date.now() - 60_000,
+        head_marker: 'alice/p1/1/100',
+      }));
+      await visit('/edit/alice/p1', 'editPage');
+      await editorsReady('editPage');
+      toMarkdownMode('editPage', 'bodyEditor');
+      document.querySelector('[data-testid="draft-restored-card"] button').click();
+      await settle();
+
+      // The re-render builds the editors in visual mode from the form's text.
+      auth.disconnect();
+      await settle();
+      signIn('alice');
+      const back = await editorsReady('editPage');
+      await pastDebounce();
+      expect(back.editorsAtBaseline).toBe(true);
       expect(drafts()).toEqual({});
     });
 
@@ -907,6 +961,28 @@ describe('composer drafts in the real app', () => {
           citations: [expect.objectContaining({ permlink: 'served' }), expect.objectContaining({ permlink: 'cited' })],
         }),
       });
+    });
+
+    it("the restored card's Discard does not put back a merged citation the user removed", async () => {
+      signIn('alice');
+      localStorage.setItem('pevo-draft-edit:alice:alice:p1', JSON.stringify({
+        title: 'Drafted title', abstract: 'The abstract.', body: 'Drafted body', keywordsText: '',
+        authorName: 'Alice A', authorAffiliation: 'Uni A', authorOrcid: '0000-0001-0000-0001',
+        newCoAuthors: [], citations: [], addressedReviews: [], savedAt: Date.now() - 60_000,
+        head_marker: 'alice/p1/1/100',
+      }));
+      localStorage.setItem('pevo-citation-collection', JSON.stringify([
+        { author: 'zed', permlink: 'cited', title: 'Cited' },
+        { author: 'xia', permlink: 'kept', title: 'Kept' },
+      ]));
+      await visit('/edit/alice/p1', 'editPage');
+      const comp = await editorsReady('editPage');
+      expect(comp.citations.map((c) => c.permlink)).toEqual(['cited', 'kept']);
+      comp.removeCitation(0);
+
+      document.querySelector('[data-testid="draft-restored-card"] button').click();
+      expect(comp.citations.map((c) => c.permlink)).toEqual(['kept']);
+      expect(drafts()['pevo-draft-edit:alice:alice:p1'].citations.map((c) => c.permlink)).toEqual(['kept']);
     });
 
     it('a draft that changed only the body is restored and kept: the baseline is the loaded form, not the restored one', async () => {

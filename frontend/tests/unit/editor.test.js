@@ -608,6 +608,26 @@ describe('PevoEditor in markdown mode', () => {
     expect(counter()).toBe('0');
   });
 
+  it('setContent shows the content as the editor holds it, the text visual mode reads back for the same content', () => {
+    // A list the editor rewrites: what visual mode reads back after the
+    // rewrite is what the source view must hold.
+    const listed = 'Intro.\n\n* one\n* two\n';
+    const visualEl = document.createElement('div');
+    document.body.appendChild(visualEl);
+    const visual = new PevoEditor(visualEl, { variant: 'full' });
+    visual.setContent(listed);
+    visual.normalize();
+    const readBack = visual.getMarkdown();
+    visual.destroy();
+    visualEl.remove();
+    expect(readBack).not.toBe(listed);
+
+    toggleMode();
+    editor.setContent(listed);
+    expect(editor.getMarkdown()).toBe(readBack);
+    expect(textarea().value).toBe(readBack);
+  });
+
   it('a transaction on the hidden document keeps the count of the source view', () => {
     toggleMode();
     editor.setContent('**Bold** text');
