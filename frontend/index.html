@@ -405,6 +405,12 @@
               </button>
 
               <p class="text-sm text-ink/60 mt-4 text-center">
+                <span x-text="$t('signIn.orcidPrompt')"></span>
+                <a :href="$lp('/login')" class="text-pevo-teal hover:underline font-medium"
+                   @click.prevent="cancel(); $store.router.navigate('/login')" x-text="$t('signIn.orcidGoToLogin')"></a>
+              </p>
+
+              <p class="text-sm text-ink/60 mt-2 text-center">
                 <span x-text="$t('common.noAccount')"></span>
                 <a :href="$lp('/signup')" class="text-pevo-teal hover:underline font-medium"
                    @click.prevent="cancel(); $store.router.navigate('/signup')" x-text="$t('common.signUp')"></a>
@@ -443,6 +449,11 @@
               <p class="text-xs text-ink-muted mt-3">
                 <a :href="$lp('/reset-password')" class="text-pevo-teal hover:underline"
                    @click.prevent="cancel(); $store.router.navigate('/reset-password')" x-text="$t('login.forgotPassword')"></a>
+              </p>
+              <p class="text-xs text-ink-muted mt-2">
+                <span x-text="$t('signIn.orcidPrompt')"></span>
+                <a :href="$lp('/login')" class="text-pevo-teal hover:underline"
+                   @click.prevent="cancel(); $store.router.navigate('/login')" x-text="$t('signIn.orcidGoToLogin')"></a>
               </p>
 
               <div class="flex justify-end gap-3 mt-5">

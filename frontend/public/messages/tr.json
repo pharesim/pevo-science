@@ -938,6 +938,8 @@
     "signInToContinue": "Devam etmek için giriş yapın.",
     "browserExtensionOption": "Hive Keychain",
     "browserExtensionDescription": "Kendi Hive hesabı olan kullanıcılar için",
+    "orcidPrompt": "Use ORCID to sign in?",
+    "orcidGoToLogin": "Go to the sign-in page",
     "browserExtensionTitle": "Keychain ile bağlan",
     "browserExtensionNotInstalled": "Hive Keychain tarayıcınızda yüklü değil.",
     "usernamePlaceholder": "ör. satoshi",

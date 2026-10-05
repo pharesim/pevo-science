@@ -938,6 +938,8 @@
     "signInToContinue": "Log in om verder te gaan.",
     "browserExtensionOption": "Hive Keychain",
     "browserExtensionDescription": "Voor gebruikers met een eigen Hive-account",
+    "orcidPrompt": "Use ORCID to sign in?",
+    "orcidGoToLogin": "Go to the sign-in page",
     "browserExtensionTitle": "Verbinden met Keychain",
     "browserExtensionNotInstalled": "Hive Keychain is niet geïnstalleerd in uw browser.",
     "usernamePlaceholder": "bijv. satoshi",

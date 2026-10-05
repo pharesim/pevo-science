@@ -934,6 +934,8 @@
     "signInToContinue": "Logga in för att fortsätta.",
     "browserExtensionOption": "Hive Keychain",
     "browserExtensionDescription": "För användare med eget Hive-konto",
+    "orcidPrompt": "Use ORCID to sign in?",
+    "orcidGoToLogin": "Go to the sign-in page",
     "browserExtensionTitle": "Anslut med Keychain",
     "browserExtensionNotInstalled": "Hive Keychain är inte installerat i din webbläsare.",
     "usernamePlaceholder": "t.ex. satoshi",

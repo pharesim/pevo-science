@@ -4180,3 +4180,40 @@ pt: recover.switchAccount
 sv: recover.switchAccount
 tr: recover.switchAccount
 zh: recover.switchAccount
+
+### Added 2026-10-06 (ui-sign-in-modal-has-no-orcid-path)
+
+A line in the sign-in window, in its first view and in its email form: a
+question for people who sign in through ORCID, then a link to the sign-in
+page, where the ORCID button is. The link text names the page it opens.
+
+ar: signIn.orcidPrompt
+cs: signIn.orcidPrompt
+da: signIn.orcidPrompt
+de: signIn.orcidPrompt
+es: signIn.orcidPrompt
+fa: signIn.orcidPrompt
+fr: signIn.orcidPrompt
+he: signIn.orcidPrompt
+it: signIn.orcidPrompt
+nl: signIn.orcidPrompt
+pl: signIn.orcidPrompt
+pt: signIn.orcidPrompt
+sv: signIn.orcidPrompt
+tr: signIn.orcidPrompt
+zh: signIn.orcidPrompt
+ar: signIn.orcidGoToLogin
+cs: signIn.orcidGoToLogin
+da: signIn.orcidGoToLogin
+de: signIn.orcidGoToLogin
+es: signIn.orcidGoToLogin
+fa: signIn.orcidGoToLogin
+fr: signIn.orcidGoToLogin
+he: signIn.orcidGoToLogin
+it: signIn.orcidGoToLogin
+nl: signIn.orcidGoToLogin
+pl: signIn.orcidGoToLogin
+pt: signIn.orcidGoToLogin
+sv: signIn.orcidGoToLogin
+tr: signIn.orcidGoToLogin
+zh: signIn.orcidGoToLogin

@@ -1,5 +1,32 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { mockLoginFromResponse } from './fixtures/mock-auth.js';
+
+const ROOT = resolve(__dirname, '../..');
+const INDEX_HTML = readFileSync(resolve(ROOT, 'index.html'), 'utf8');
+const EN_MESSAGES = JSON.parse(readFileSync(resolve(ROOT, 'public/messages/en.json'), 'utf8'));
+
+// The shipped markup of one modal mode, from its x-if template to the next
+// mode's.
+function modeMarkup(mode) {
+  const modal = INDEX_HTML.slice(INDEX_HTML.indexOf('<div x-data="signInModal">'));
+  const start = modal.indexOf(`<template x-if="mode === '${mode}'">`);
+  if (start === -1) throw new Error(`no ${mode} mode in the sign-in modal markup`);
+  const next = modal.indexOf(`<template x-if="mode === '`, start + 1);
+  return modal.slice(start, next === -1 ? undefined : next);
+}
+
+// Run shipped binding code with `scope` as its scope, the way Alpine runs it:
+// `evaluate` returns an attribute binding's value, `runHandler` runs an event
+// handler's statements.
+function evaluate(expression, scope) {
+  return new Function('scope', `with (scope) { return (${expression}); }`)(scope);
+}
+
+function runHandler(statements, scope) {
+  new Function('scope', `with (scope) { ${statements} }`)(scope);
+}
 
 const mockLoginWithPassword = vi.fn();
 const mockResendVerification = vi.fn();
@@ -293,6 +320,54 @@ describe('signInModal', () => {
       resolveFirst({});
       await p1;
       expect(mockResendVerification).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // A passwordless light account cannot use the email path, and the browser
+  // extension does not apply to it, so both the chooser and the email form
+  // link to the /login page, where ORCID sign-in starts. The bindings are
+  // taken from the shipped markup and evaluated against a real instance.
+  describe('ORCID sign-in line', () => {
+    const MODES = ['choose', 'email'];
+
+    function loginLink(mode) {
+      const links = [...modeMarkup(mode).matchAll(/<a\s[^>]*>/g)]
+        .map(([tag]) => tag)
+        .filter((tag) => tag.includes("navigate('/login')"));
+      expect(links).toHaveLength(1);
+      return links[0];
+    }
+
+    it.each(MODES)('the %s mode links to the locale-prefixed /login page', (mode) => {
+      const href = loginLink(mode).match(/:href="([^"]+)"/)[1];
+      expect(evaluate(href, { $lp: (path) => `lp:${path}` })).toBe('lp:/login');
+    });
+
+    it.each(MODES)('the %s mode link closes the modal and settles the prompt before navigating', async (mode) => {
+      const click = loginLink(mode).match(/@click\.prevent="([^"]+)"/)[1];
+      const comp = createComponent();
+      const prompted = comp.prompt();
+      comp.mode = mode;
+      // The modal sits outside the routed page and survives the route
+      // change, so it must already be closed when the router runs.
+      let openWhenNavigated;
+      mockRouterStore.navigate.mockImplementationOnce(() => { openWhenNavigated = comp.open; });
+
+      runHandler(click, comp);
+
+      expect(mockRouterStore.navigate).toHaveBeenCalledWith('/login');
+      expect(openWhenNavigated).toBe(false);
+      expect(comp.mode).toBe('choose');
+      await expect(prompted).resolves.toBeNull();
+    });
+
+    it.each(MODES)('every string in the %s mode resolves in en.json', (mode) => {
+      const keys = [...modeMarkup(mode).matchAll(/\$t\('([^']+)'\)/g)].map(([, key]) => key);
+      expect(keys).toEqual(expect.arrayContaining(['signIn.orcidPrompt', 'signIn.orcidGoToLogin']));
+      for (const key of keys) {
+        const value = key.split('.').reduce((node, part) => node?.[part], EN_MESSAGES);
+        expect(typeof value, key).toBe('string');
+      }
     });
   });
 
