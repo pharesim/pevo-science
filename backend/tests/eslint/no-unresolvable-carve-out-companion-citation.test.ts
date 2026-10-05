@@ -293,12 +293,12 @@
  * pass for one is a violation in any comment, labelled or not
  * (`mixedScriptWords`). For every script but Greek that means any letter of
  * the script. For Greek it means only the letters the Unicode confusables
- * data maps to a single basic (ASCII) Latin letter (`GREEK_LOOKALIKES`), read
- * on the letter with its accents stripped, so unit and math notation
+ * data maps to a single basic (ASCII) Latin letter once combining marks are
+ * removed, as the normalisation removes them (`GREEK_LOOKALIKES`), read on
+ * the letter with its accents stripped, so unit and math notation
  * (microseconds spelt with the micro sign, a Delta, an Omega, a pi) passes. A
  * look-alike is therefore folded to what it renders as or refused outright,
- * with four residuals, none of which a comment in this corpus has a reason to
- * contain: a confusable that is a single-script word of its own; a
+ * with four residuals: a confusable that is a single-script word of its own; a
  * Latin-script look-alike NFKC does not fold (a dotless `i`, a Latin alpha, a
  * small-capital `T`); a Greek letter whose confusable is such a non-ASCII
  * Latin letter (tau for that small-capital `T`, epsilon for an open `e`),
@@ -768,7 +768,7 @@ const DEFERRED_FILELESS: Readonly<Record<string, number>> = {
  * pattern looks at it, so a look-alike character cannot make the label or a
  * path read one way and match another. Look-alike LETTERS from another script
  * are not folded; `mixedScriptWords` refuses them beside a Latin letter, and
- * the header's normalisation paragraph lists the residual it does not.
+ * the header's normalisation paragraph lists the residuals it does not refuse.
  */
 function normalizeCommentText(text: string): string {
   return text
@@ -781,27 +781,32 @@ function normalizeCommentText(text: string): string {
 
 /** Greek letters that render as a basic Latin letter, keyed by that letter.
  *  The source is the Unicode confusables data (UTS #39, `confusables.txt`):
- *  every Greek letter whose prototype is one ASCII letter, listed by what NFKC
- *  leaves of it, since the check reads folded text. An accented form (a tonos,
- *  a breathing) is not listed: NFKC keeps it composed, so `mixedScriptWords`
- *  strips its accents before the lookup and reads its base letter. Most
- *  entries NFKC leaves
- *  as they are. Of the ones it folds, the rho and upsilon symbols fold to
- *  letters already listed, the lunate small sigma folds to the final sigma
- *  (listed under `c`), and the lunate capital sigma folds to capital sigma
- *  (listed under `C`). That last is why capital sigma is refused beside a
- *  Latin letter although the summation sign is honest notation: unlisted, a
- *  shouted label spelt with a lunate capital sigma for its `C` would reach
- *  the patterns with a sigma there, and the label would hide. The
- *  mathematical Greek alphanumerics fold to plain Greek letters and are
- *  covered the same way. Escapes rather than literal glyphs, because the
+ *  every Greek letter whose prototype, with its combining marks removed, is
+ *  one ASCII letter, listed by what NFKC leaves of it. Both halves are how the
+ *  check reads text: `normalizeCommentText` folds with NFKC and drops
+ *  combining marks. So eta, whose prototype is `n` with a vertical line
+ *  below, and the thetas, whose prototype is `O` with a short stroke through
+ *  it, are listed: the Latin twin reaches the patterns as a plain `n` or `O`
+ *  and is caught, and the Greek letter must not pass where its twin is
+ *  caught. An accented form (a tonos, a breathing) is not listed: NFKC keeps
+ *  it composed, so `mixedScriptWords` strips its accents before the lookup
+ *  and reads its base letter. Most entries NFKC leaves as they are. Of the
+ *  ones it folds, the rho and upsilon symbols fold to letters already listed,
+ *  the two theta symbols fold to the two thetas, the lunate small sigma folds
+ *  to the final sigma (listed under `c`), and the lunate capital sigma folds
+ *  to capital sigma (listed under `C`). That last is why capital sigma is
+ *  refused beside a Latin letter although the summation sign is honest
+ *  notation: unlisted, a shouted label spelt with a lunate capital sigma for
+ *  its `C` would reach the patterns with a sigma there, and the label would
+ *  hide. The mathematical Greek alphanumerics fold to plain Greek letters and
+ *  are covered the same way. Escapes rather than literal glyphs, because the
  *  literal glyph is exactly what a reviewer cannot tell from its Latin twin. */
 const GREEK_LOOKALIKES: Readonly<Record<string, string>> = {
   a: '\u03B1', A: '\u0391', B: '\u0392', c: '\u03C2', C: '\u03A3', E: '\u0395',
   F: '\u03DC', H: '\u0397', i: '\u03B9', j: '\u03F3', J: '\u037F', K: '\u039A',
-  l: '\u0399', M: '\u039C\u03FA', N: '\u039D', o: '\u03BF\u03C3', O: '\u039F',
-  p: '\u03C1\u03F8', P: '\u03A1', r: '\u1D26', T: '\u03A4', u: '\u03C5',
-  v: '\u03BD', X: '\u03A7', y: '\u03B3', Y: '\u03A5', Z: '\u0396',
+  l: '\u0399', M: '\u039C\u03FA', n: '\u03B7', N: '\u039D', o: '\u03BF\u03C3',
+  O: '\u039F\u03B8\u0398', p: '\u03C1\u03F8', P: '\u03A1', r: '\u1D26', T: '\u03A4',
+  u: '\u03C5', v: '\u03BD', X: '\u03A7', y: '\u03B3', Y: '\u03A5', Z: '\u0396',
 };
 const GREEK_LOOKALIKE_LETTERS: ReadonlySet<string> = new Set(Object.values(GREEK_LOOKALIKES).join(''));
 
@@ -820,9 +825,10 @@ const GREEK_LOOKALIKE_LETTERS: ReadonlySet<string> = new Set(Object.values(GREEK
  *  listing every look-alike of every script would trade a rule that cannot be
  *  incomplete for a table that can. What the narrowing still costs: a Greek
  *  look-alike glued to Latin as notation (rho before `gh`, sigma before `x`,
- *  capital sigma before `i`) is refused. The remedy is a space or the ASCII
- *  spelling, because the scan runs before the ratchet's exempt test, so the
- *  ALLOW_MARKER does not cover this verdict, and no backlog does either. */
+ *  capital sigma before `i`, theta after `cos`) is refused. The remedy is a
+ *  space or the ASCII spelling, because the scan runs before the ratchet's
+ *  exempt test, so the ALLOW_MARKER does not cover this verdict, and no
+ *  backlog does either. */
 function mixedScriptWords(text: string): string[] {
   const baseOf = (letter: string): string => letter.normalize('NFD').replace(/\p{M}/gu, '');
   const out: string[] = [];
@@ -1934,25 +1940,37 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     expect(mixedScriptWords(normalizeCommentText('waits 250\u00B5s, then \u0394t elapses; 250\u03BCs too; 10 k\u2126; \u03C0r'))).toEqual([]);
     // A Greek look-alike is still refused, in the label and in a filename.
     expect(mixedScriptWords('c\u03BFmpanion Re\u03B1l-path \u03C5ser.test.ts')).toEqual(['c\u03BFmpanion', 'Re\u03B1l', '\u03C5ser']);
+    // So are the letters whose confusable carries a combining mark the
+    // normaliser drops: an eta for the `n` of the label, and a capital theta
+    // for the `O` of a shouted one. Their Latin twins reach the patterns as
+    // plain `n` and `O`, so the Greek letter must not pass where they do.
+    expect(mixedScriptWords(normalizeCommentText(
+      'Real-path companio\u03B7: settings.test.ts covers the rest of the gate. REAL-PATH C\u0398MPANION: settings.test.ts',
+    ))).toEqual(['companio\u03B7', 'C\u0398MPANION']);
     // Every member, from an independent copy of `GREEK_LOOKALIKES`, is refused
     // beside a Latin letter, so dropping any one member is red; and the table
     // equals the copy, so adding one without a probe is red too.
     const greekLookalikes =
       '\u03B1\u0391\u0392\u03C2\u03A3\u0395\u03DC\u0397\u03B9\u03F3\u037F\u039A\u0399\u039C\u03FA' +
-      '\u039D\u03BF\u03C3\u039F\u03C1\u03F8\u03A1\u1D26\u03A4\u03C5\u03BD\u03A7\u03B3\u03A5\u0396';
+      '\u039D\u03B7\u03BF\u03C3\u039F\u03B8\u0398\u03C1\u03F8\u03A1\u1D26\u03A4\u03C5\u03BD\u03A7' +
+      '\u03B3\u03A5\u0396';
     for (const letter of greekLookalikes) {
       const hex = `U+${letter.codePointAt(0)?.toString(16).toUpperCase()}`;
       expect(mixedScriptWords(`x${letter}x`), hex).toEqual([`x${letter}x`]);
     }
     expect(new Set(Object.values(GREEK_LOOKALIKES).join(''))).toEqual(new Set(greekLookalikes));
     // A look-alike NFKC folds is refused in its folded form: the lunate small
-    // and capital sigmas, the rho symbol and a mathematical bold rho.
-    expect(mixedScriptWords(normalizeCommentText('\u03F2ompanion \u03F9OMPANION \u03F1ath \u{1D6D2}ath')))
-      .toEqual(['\u03C2ompanion', '\u03A3OMPANION', '\u03C1ath', '\u03C1ath']);
+    // and capital sigmas, the rho symbol, a mathematical bold rho, and the
+    // small and capital theta symbols.
+    expect(mixedScriptWords(normalizeCommentText('\u03F2ompanion \u03F9OMPANION \u03F1ath \u{1D6D2}ath c\u03D1mpanion C\u03F4MPANION')))
+      .toEqual(['\u03C2ompanion', '\u03A3OMPANION', '\u03C1ath', '\u03C1ath', 'c\u03B8mpanion', 'C\u0398MPANION']);
     // An accented look-alike is read by its base letter: NFKC keeps a tonos
     // or a breathing composed, and unread it hid the label at no cost.
-    expect(mixedScriptWords(normalizeCommentText('Re\u03ACl c\u03CCmpanion compan\u1F30on')))
-      .toEqual(['Re\u03ACl', 'c\u03CCmpanion', 'compan\u1F30on']);
+    expect(mixedScriptWords(normalizeCommentText('Re\u03ACl c\u03CCmpanion compan\u1F30on compa\u03AEion')))
+      .toEqual(['Re\u03ACl', 'c\u03CCmpanion', 'compan\u1F30on', 'compa\u03AEion']);
+    // The cost of a letter in the table: theta glued to a Latin letter as
+    // notation is refused, as rho and sigma glued to one are.
+    expect(mixedScriptWords(normalizeCommentText('cos\u03B8 \u03C1gh \u03C3x'))).toEqual(['cos\u03B8', '\u03C1gh', '\u03C3x']);
     // A residual the header records, pinned so closing it is a visible edit:
     // a Greek letter whose confusable is a Latin letter outside ASCII passes,
     // as its Latin twin always has (tau beside a small-capital T, epsilon
