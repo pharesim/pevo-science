@@ -553,7 +553,7 @@ describe('withAuthorshipFreshAuth', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it('non-fresh-auth errors propagate to the caller', async () => {
+  it('a FORBIDDEN rejection propagates to the caller', async () => {
     mockGetCachedConsentOpProof.mockReturnValue('cached-proof');
     run.mockRejectedValueOnce(codedError('FORBIDDEN'));
     await expect(withAuthorshipFreshAuth(TARGET, LIGHT, run)).rejects.toThrow('FORBIDDEN');

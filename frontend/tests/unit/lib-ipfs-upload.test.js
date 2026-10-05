@@ -439,10 +439,9 @@ describe('uploadFile', () => {
     expect(mockGuardCancel).not.toHaveBeenCalled();
   });
 
-  it('a non-mismatch failure on the retry propagates raw, with no teardown', async () => {
-    // The retry's catch reclassifies exactly one thing: a username mismatch.
-    // Any other failure keeps its own identity so the page layer describes the
-    // real cause instead of tearing down a session that is still consistent.
+  it('an INTERNAL_ERROR on the retry propagates raw, with no teardown', async () => {
+    // The failure keeps its own identity so the page layer describes the real
+    // cause instead of tearing down a session that is still consistent.
     mockUploadFileToIpfs
       .mockRejectedValueOnce(freshAuthRejected('expired'))
       .mockRejectedValueOnce(codedError('INTERNAL_ERROR'));

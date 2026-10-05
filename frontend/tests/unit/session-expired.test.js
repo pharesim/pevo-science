@@ -53,6 +53,8 @@ vi.mock('alpinejs', () => ({
 vi.mock('../../src/keychain.js', () => ({
   isKeychainInstalled: vi.fn(() => false),
   waitForKeychain: vi.fn(async () => false),
+  // A self-custody upload signs its pre-flight descriptor through Keychain.
+  signMessage: vi.fn(async () => ({ signature: 'keychain-signature' })),
 }));
 
 import { initAuth } from '../../src/auth.js';
@@ -121,6 +123,7 @@ function liveAnswer(path) {
     });
   }
   if (path.startsWith('/api/custody/fresh-auth')) return okResponse({ fresh_auth_proof: 'op-proof' });
+  if (path.startsWith('/api/ipfs/upload-token')) return okResponse({ upload_token: 'upload-token' });
   if (path.startsWith('/api/notifications')) return okResponse({ events: [], latest_block: 0, has_more: false });
   return okResponse({});
 }
@@ -434,6 +437,22 @@ describe('the upload surface on an expired session', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(stores.auth.isConnected).toBe(false);
     expect(toastMessages()).toEqual([EXPIRED_COPY]);
+  });
+
+  it('abandons a self-custody upload whose transfer leg meets the expiry, adding nothing to the expiry message', async () => {
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ ...JSON.parse(saved('self-jwt')), custody: 'self' }));
+    stores.auth._restoreSession();
+    expire();
+
+    const err = await uploadFile(pickedFile()).catch((e) => e);
+
+    // The Keychain-signed pre-flight carries no bearer token, so the transfer
+    // leg is the first request to meet the expiry check, and it is not sent.
+    expect(requestedPaths()).toEqual(['/api/ipfs/upload-token']);
+    expect(bearerRequests()).toEqual([]);
+    expect(stores.auth.isConnected).toBe(false);
+    expect(toastMessages()).toEqual([EXPIRED_COPY]);
+    expect(describeUploadError(err)).toBeNull();
   });
 
   it('still reports the refused upload when a newer session of the same account was adopted', async () => {

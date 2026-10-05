@@ -153,8 +153,8 @@ async function resolveProof(target, guard) {
  *                                 and a re-login toast shown here — the caller
  *                                 aborts cleanly without a second toast
  *
- * Non-fresh-auth errors (a Keychain rejection, a 403 from the chain gate, a
- * transport error) propagate to the caller, which keeps its op-level handling.
+ * Other errors (a Keychain rejection, a 403 from the chain gate, a transport
+ * error) propagate to the caller, which keeps its op-level handling.
  *
  * @param {{action: string, rootAuthor: string, rootPermlink: string, authorIndex?: number|null, claimer?: string|null}} target
  * @param {{ custody: string, username: string }} ctx

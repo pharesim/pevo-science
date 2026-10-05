@@ -443,7 +443,7 @@ describe('withSettingsFreshAuth', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it('propagates a non-fresh-auth error (e.g. DUPLICATE) to the caller', async () => {
+  it('propagates a DUPLICATE rejection to the caller', async () => {
     run.mockRejectedValue(codedError('DUPLICATE'));
     await expect(withSettingsFreshAuth('change_email', LIGHT, run)).rejects.toMatchObject({ code: 'DUPLICATE' });
   });
@@ -498,7 +498,7 @@ describe('withSettingsFreshAuth', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it('a non-fresh-auth error on the RETRY action propagates, exactly as on the first', async () => {
+  it('a DUPLICATE on the RETRY action propagates, exactly as on the first', async () => {
     // The gate re-mints and calls the action again; a DUPLICATE surfacing on
     // that second call is the action's own error and belongs to the caller's
     // per-action handling. Mapping it to freshAuthFailed would tell the user

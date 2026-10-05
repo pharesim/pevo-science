@@ -158,8 +158,8 @@ async function resolveProof(action, { username }, guard) {
  *                             re-login toast shown here — the caller aborts
  *                             cleanly without a second toast
  *
- * Non-fresh-auth errors (DUPLICATE, validation, transport, etc.) propagate to
- * the caller, which keeps the existing per-action error handling.
+ * Other errors (DUPLICATE, validation, transport, etc.) propagate to the
+ * caller, which keeps the existing per-action error handling.
  *
  * @param {string} action - the fresh-auth target action, e.g. the settings
  *   actions ('change_email' | 'set_password' | 'delete_account' |

@@ -234,7 +234,16 @@ export async function uploadFile(file) {
   // re-acquire the window for whoever the tab represents at that moment.
   const guard = subjectTeardownGuard();
   const proof = await windowProof(guard);
-  if (!proof) return uploadFileToIpfs(file);
+  if (!proof) {
+    // Self-custody takes no window, but its transfer leg is a bearer request,
+    // so a session ending can still meet it.
+    try {
+      return await uploadFileToIpfs(file);
+    } catch (err) {
+      if (unwindIfSessionEnded(err, guard)) throw uploadError(UPLOAD_SESSION_TORN_DOWN);
+      throw err;
+    }
+  }
 
   try {
     return await attemptOnce(file, proof, guard);

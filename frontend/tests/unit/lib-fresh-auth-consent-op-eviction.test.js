@@ -8,11 +8,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // fresh-auth handler writes the response's `fresh_auth_proof` into that slot
 // while type-checking the echoed target fields of the same response. So a
 // truthy non-string could reach the slot and be handed straight to the guarded
-// call. `consentOpFreshAuthRetryGate` would normally heal that, but its first
-// statement rethrows any error whose code is not FRESH_AUTH_REQUIRED and its
-// `clearProofCache` hook runs after that rethrow: on a route whose request
-// schema declares the proof as a bounded string, a non-string draws a
-// validation rejection instead and nothing drops the entry. The
+// call. `consentOpFreshAuthRetryGate` would normally heal that, but it
+// rethrows a validation rejection before its `clearProofCache` hook runs: on a
+// route whose request schema declares the proof as a bounded string, a
+// non-string draws a validation rejection instead and nothing drops the entry. The
 // accreditation-metadata edit and the admin authority actions are that class;
 // the settings and custody routes coerce a non-string to undefined and answer
 // FRESH_AUTH_REQUIRED with reason `missing`, which the gate does clear on.
@@ -247,8 +246,7 @@ describe('withSettingsFreshAuth over the real consent-op cache', () => {
     '$label is gone after a rejection the retry gate rethrows',
     async ({ token }) => {
       // The non-remintable path, and the one the gate's own clear cannot reach:
-      // its first statement rethrows any error whose code is not
-      // FRESH_AUTH_REQUIRED, and `clearProofCache` runs after that rethrow. The
+      // the gate rethrows this rejection before `clearProofCache` runs. The
       // accreditation-metadata edit declares its proof as a bounded string, so a
       // non-string draws this rejection rather than a fresh-auth one and nothing
       // downstream heals the slot.
