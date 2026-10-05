@@ -295,3 +295,66 @@ it as an unverified state G row, and nothing in normal use clears it: the mailed
 `POST /api/auth/verify`, which now matches only username-NULL rows. The window is improbable
 (a full Hive-broadcast finalize has to finish inside one argon2 verify). Triage it with this
 task's other findings.
+
+## Architect re-review (2026-10-05) — HELD PENDING FIXES:
+
+Reviewed d33792ce with `/ce-code-review`, scoped to this task. Out of scope: the
+`POST /api/auth/signup` handler (reviewed and held under the signup upsert task) and the
+`GET /api/settings/email/verify/:token` handler (held under the settings verify task). Scope
+items 1 to 8b and 10 to 12 and AC1 to AC5 are met. Two items are held.
+
+1. **Delete the custody-oracle claim.** In `routes/recover.ts`, the comment above the
+   ORCID-recovery refusal ends "The 401 + generic message matches the no-ORCID branch so the
+   route does not become a custody-state oracle." The refusal answers 'Account does not have a
+   verified ORCID' before the `orcid_token` is read. A light B or C row with an ORCID answers a
+   bad token with 'Invalid or expired ORCID token'. So for an account that has an ORCID, the two
+   messages tell a light row from a D or G row.
+   - `routes/recover.ts`: delete "so the route does not become a custody-state oracle", keeping
+     "The 401 + generic message matches the no-ORCID branch."
+   - `tests/routes/recover-orcid-state-g.test.ts` header: delete ", which keeps the route from
+     becoming a custody oracle", so the sentence ends at "...no-ORCID branches return."
+
+2. **Key the resend's token write on the token it read.** `POST /api/auth/resend-verification`
+   reads the row, runs the argon2 verify, and then writes the new token with `WHERE id = $3`. A
+   confirm plus finalize that completes in between leaves a signup hex token on a finalized row.
+   For that light account:
+   - `POST /api/auth/recover` looks the account up with `verify_token IS NULL`, so neither
+     recovery method finds it.
+   - Set-password and the ORCID link and accredit modes refuse it as an unverified state G row.
+   - The mailed link is redeemed by `POST /api/auth/verify`, which matches only username-NULL
+     rows, so it does not clear the token.
+
+   Add the token the handler read to the UPDATE's WHERE (`AND verify_token = <the token read>`).
+   When the UPDATE matches no row, send no mail and return the same uniform message. Every
+   interleaving then matches no row: the row moving from E to F, being finalized or being
+   deleted, and a concurrent resend that already replaced the token (the resend whose write
+   landed mails the live token). Only a caller who passed the password check reaches this write,
+   so the no-mail answer adds no oracle. No new spec is required. An interleave spec was
+   dismissed as preemptive hardening, as at the settings verify review.
+
+Dismissed at this review (recorded so the archive keeps them):
+- Reset plus login on an unverified G row (security). The validator rejected it as not
+  introduced here. At d33792ce~1 whoever holds the mailbox could already click the settings
+  verify link, reset the password and log in, and `reset-request` and `reset` are unchanged by
+  this diff. An architect note on `backend-password-reset-gates-on-account-state` asks for that
+  shape in its measurement.
+- The re-issue UPDATE keyed on `username` alone. A verify click that lands in between is
+  overwritten, but that is the caller's own requests racing, behind the fresh-auth gate, and
+  recoverable.
+- `updateAccountOrcid` not reading `rowCount`. It is already in the signal block, and re-linking
+  the same ORCID passes the binding check.
+- One shared helper for the unverified-G predicate, and `settings.ts` length. No project rule
+  backs either.
+- Specs for an expired, not yet reaped, unverified G row at the ORCID and set-password gates, for
+  the re-issue restore's no-op branch, and for the `pending_email` duplicate check's
+  `IS DISTINCT FROM` (no pending signup row carries `pending_email`). All are preemptive test
+  hardening.
+- The canary docblock's "declined rather than rewritten" clause is held under the signup upsert
+  task, together with its `writeSignupRow` twin.
+
+Filed at this review: `backend-signup-finalize-lookups-skip-finalized-rows`, for finalized rows
+the old `POST /api/auth/verify` may have given a `confirmed:` token.
+
+At archive: the `[TODO Architect]` doc updates and filing the `[TODO UI]` task.
+
+When both items are in, `git mv` this file back to `tasks/review/`.

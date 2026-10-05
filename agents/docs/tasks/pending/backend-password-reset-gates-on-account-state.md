@@ -75,3 +75,10 @@ adds a password) makes that sentence true, and so does the `ORCID_REQUIRED` comm
 `tests/routes/settings-set-password.test.ts` that restates it. If step 1 sends this task to
 `blocked/` and a different rule lands, rescope both comments to that rule in the same pass:
 either limit them to this route, or name the reset path that also adds a password.
+
+## Architect note (2026-10-05), carried from the state G review
+
+Since d33792ce, `POST /api/auth/login` logs in a state G row whose email is still unverified,
+given its password: the pending block is scoped to `username IS NULL`. So a password that
+reset adds to such a row is a working login. In step 1, measure the unverified G row, with and
+without a password, as a state of its own next to the verified G row.
