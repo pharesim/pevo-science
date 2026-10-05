@@ -124,3 +124,44 @@ prefill, tests and comments, post-destroy arming, completeness), each finding ch
 7 confirmed, 1 refuted (an ARCHITECTURE § 8 sentence that was already incomplete before this work,
 dismissed). Simplify was skipped because the code change is under the 30-line threshold. Code review
 is the architect's at intake.
+
+## Architect re-review (2026-10-05) — HELD PENDING FIXES:
+
+Reviewed 642db679, bdae812c and f9f661a5 with /ce-code-review (correctness, adversarial, testing, frontend
+races, project standards, learnings, then an independent validator). Scope 1, Scope 2, AC1, AC2 and AC4 are
+met. For AC3 the testing reviewer re-planted the nine mutants in the signal block, and each went red on the
+test the table names. One item:
+
+1. **Restoring a draft that already holds the accreditation's author values drafts the prefill as work
+   (publish.js, `_applyDraft` and `_prefillEmptyAuthorFields`).** f9f661a5 moves the baseline only for the
+   author fields the prefill fills, and `_applyAccreditationPrefill` fills only empty fields. A draft an
+   accredited session stored normally holds the prefilled name and affiliation, so a restored author field
+   the prefill did not fill keeps the baseline taken before the accreditation was known (`''`). Clearing the
+   restored text then stores a draft whose only text is the author fields, and the next /publish load
+   restores it with the "draft restored" card over an empty form. Reproduced in copies of f9f661a5:
+   (a) choice-card Restore after an email sign-in, the accreditation arriving while the card stands;
+   (b) silent restore after an email sign-in, the accreditation arriving after the restore; (c) Restore
+   after a name was typed before a Keychain sign-in. The user approved the assumption the fix rests on: an
+   author value equal to the drafting account's accreditation is not user work, since a fresh signed-in load
+   shows the same value.
+   - Required: once the accreditation is known, an author field whose value equals the accreditation's has
+     its baseline at that value, at the choice card's Restore, at the silent restore, and when the
+     accreditation arrives after either. One candidate, probe-checked in review (composer-drafts-real-editors
+     and pages-publish, 162/162): in `_prefillEmptyAuthorFields`, after the fill loop, also set the baseline
+     of an author field that already equals the accreditation's value, and keep `_prefilledFields` fill-only
+     so `_readoptAccount` still empties only what the prefill filled.
+   - Pins in `frontend/tests/unit/composer-drafts-real-editors.test.js`, each red with the fix reverted:
+     (a) the Restore test's shape with a stored draft holding authorName 'Eve E' and authorAffiliation
+     'Uni E'; (b) the silent restore after an email sign-in with that draft, the accreditation arriving after
+     the restore. In both, once the restored text is cleared, `drafts()` is `{}`.
+   - The `_applyDraft` and `_prefillEmptyAuthorFields` docblocks must be true of the new code. Add only the
+     text the fix needs (root CLAUDE.md "Comment anchors").
+
+Dismissed at triage (no action): the testing reviewer's unpinned silent-restore call to `_applyDraft`. Wherever
+the silent restore runs with the accreditation known, an earlier prefill (at init, or in `_adoptAccount`) has
+already set each empty author field's baseline to the accreditation's value, so that call's baseline move
+changes nothing there and no pin can go red on it. Also dismissed: a localStorage quota error in the merge's
+write, which throws before the collection is removed, so the cites stay in it.
+
+Architect-side, not part of this hold: the signal block's in-flight-submit cite loss is still open with the
+user (file a `ui-` task or dismiss).
