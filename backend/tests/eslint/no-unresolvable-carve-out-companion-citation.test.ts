@@ -775,14 +775,14 @@ const DEFERRED_FILELESS: Readonly<Record<string, number>> = {
 // --- parsing -----------------------------------------------------------------
 
 /**
- * Comment text as a reader sees it: compatibility-normalised, format
- * characters (soft hyphens, zero-width joiners) and combining marks (grapheme
- * joiners, variation selectors) dropped, every dash mapped to `-`, every space
- * separator mapped to a space. Applied to every collected block before any
- * pattern looks at it, so a look-alike character cannot make the label or a
- * path read one way and match another. Look-alike LETTERS from another script
- * are not folded; `mixedScriptWords` refuses them beside a Latin letter, and
- * the header's normalisation paragraph lists the residuals it does not refuse.
+ * Comment text: compatibility-normalised, format characters (soft hyphens,
+ * zero-width joiners) and combining marks (grapheme joiners, variation
+ * selectors) dropped, every dash mapped to `-`, every space separator mapped
+ * to a space. Applied to every collected block before any pattern looks at
+ * it. Look-alike LETTERS of a script other than Latin and Common are not
+ * folded to a Latin letter; `mixedScriptWords` refuses them beside a Latin
+ * letter, and the header's normalisation paragraph lists the residuals it
+ * does not refuse.
  */
 function normalizeCommentText(text: string): string {
   return text
