@@ -403,3 +403,74 @@ measured. Results:
 
 **Code review:** not run by ui, per `agents/ui/CLAUDE.md` (architect
 review at intake).
+
+---
+
+## Architect re-review (2026-10-05, second pass) — HELD PENDING FIXES:
+
+Reviewed da08a48d with `/ce-code-review` (correctness, project-standards,
+testing, adversarial, learnings), then an independent validator. Both held
+items are otherwise fixed. Hold item 2's probe comment, the DETECTION veto
+sentence, the STATUS_FETCH_ALIAS_RE docblock, residual 4, the three-to-four
+count and the entry-document probe scoping drew no finding. The anchor gate
+run standalone on the added lines finds 0 hits with its control line firing,
+and `tests/unit/eslint/` at da08a48d gives 2 files, 18 passed, exit 0. The
+hold is for one sentence group in the LAYERS addendum. Prose only, no
+assertion or matcher change asked for.
+
+1. **The LAYERS addendum's exception list leaves out residual 2, and its
+   premise leaves out residual 3.** Two parts, both in the sentences that
+   start at "And a star re-export in an inline module script".
+
+   a. "In a `.js` file under `src` the name scan counts those sites, all but
+      the aliased imports named in AN ALIAS THE VETO DOES NOT REACH." The
+      "all but" reads as the full list of exceptions. It is not.
+      `skipStatusFetchLine` drops the whole line when it holds an unaliased
+      specifier of an import statement and the alias veto does not fire, so
+      a use written on the same physical line as that import is counted
+      nowhere. That is residual 2, A MATCH RIDING ON A SKIPPED LINE, which
+      the sentence now contradicts. Measured three times independently, by
+      correctness, adversarial and the validator, each in its own scratchpad
+      copy of da08a48d. The plant: `index.html` gains
+      `<script type="module">export * from '/src/api.js';</script>`, and a
+      new module under `src` holds, on one line,
+      `import { fetchEmailStatus } from '/index.html?html-proxy&index=1.js';`
+      followed by an export that calls `fetchEmailStatus()`. Result: 18
+      passed, exit 0. The control splits the two statements onto two lines,
+      and the name scan goes red at the call (exit 1). Import-site tracking
+      does not see either, because the module string does not end in the api
+      module's name. Reviewer wording, measured by those plants: "all but the
+      shapes named in A MATCH RIDING ON A SKIPPED LINE and AN ALIAS THE VETO
+      DOES NOT REACH".
+
+   b. The premise the list hangs on, "still leaves the fetch's name to be
+      written by the first module on that road that reaches for the fetch",
+      is false for residual 3, A NAME THAT IS NEVER SPELLED. A module that
+      reaches the fetch through a name assembled from fragments, for example
+      a computed key on a namespace import of the html-proxy id, writes the
+      name nowhere. This was not planted in this review. It follows from
+      STATUS_FETCH_IDENT_RE being a token match, and residual 3 already says
+      the shape is invisible to every layer and to the entry-document
+      assertion. The previous wording carried the same premise ("still leaves
+      its importer writing the fetch's name"), so this part predates
+      da08a48d. The user chose to fold it in because the sentence is being
+      rewritten anyway. Fix: give the premise that exception, in the premise
+      sentence or in a sentence placed straight after it, naming A NAME THAT
+      IS NEVER SPELLED.
+
+   With both parts in place, check the whole group against code once more
+   before committing. The "all but" list then needs residuals 2 and 4 only.
+   The entry-document sentence, "counts every one of them, along with any
+   other line there that names the fetch", stays true: no skip applies
+   there, so neither residual 2 nor residual 4 reaches it, and the residual-3
+   shape is outside "them" once the premise excludes it. If your wording
+   moves any of these claims, measure it as you did this round, and re-run
+   the anchor gate standalone on the changed lines.
+
+Recorded so it is not re-raised: adversarial noted that this review did not
+rebuild the unchanged claim that Vite makes an inline module script's star
+re-export importable through its html-proxy id. The probes behind item 1 are
+textual and do not depend on it, and your earlier audit rounds established
+it.
+
+Move the file back to `tasks/review/` when item 1 is fixed.
