@@ -809,34 +809,38 @@ describe('editPage handleSubmit sanitization', () => {
     });
 
     it('head native edit of a continuation post keeps the post it continues when the latest op is the root\'s', async () => {
-      // alice/p1 <- bob/cont-1, and alice edited p1 after bob's continuation,
-      // so the served metadata is p1's and names nothing to continue.
+      // alice/p1 <- bob/cont-1 <- carol/cont-2, and alice edited p1 between
+      // the two continuations and again after carol's, so the served metadata
+      // is p1's and names nothing to continue, and p1 has a version listed
+      // between cont-1's and cont-2's.
       const { invalidatePaperCache } = await import('../../src/api.js');
       broadcastOps.mockResolvedValue({ tx_id: 'tx' });
       invalidatePaperCache.mockResolvedValue({});
 
       const comp = createComponent();
-      mockStores.auth.username = 'bob';
+      mockStores.auth.username = 'carol';
       comp.paper = {
         author: 'alice', permlink: 'p1',
-        head_author: 'bob', head_permlink: 'cont-1',
+        head_author: 'carol', head_permlink: 'cont-2',
         canonical_author: 'alice', canonical_permlink: 'p1',
-        body: 'bob current body',
-        json_metadata: { pevotest: { version: 3 } },
-        title: 'Bob version',
+        body: 'carol current body',
+        json_metadata: { pevotest: { version: 5 } },
+        title: 'Carol version',
         versions: [
           { version_number: 1, author: 'alice', permlink: 'p1' },
           { version_number: 2, author: 'bob', permlink: 'cont-1' },
           { version_number: 3, author: 'alice', permlink: 'p1' },
+          { version_number: 4, author: 'carol', permlink: 'cont-2' },
+          { version_number: 5, author: 'alice', permlink: 'p1' },
         ],
       };
-      comp._originalBody = '## Abstract\n\nbob abstract\n\n---\n\nbob current body';
-      comp.title = 'Bob version, retitled';
-      comp.abstract = 'bob abstract';
-      comp.body = 'bob current body';
+      comp._originalBody = '## Abstract\n\ncarol abstract\n\n---\n\ncarol current body';
+      comp.title = 'Carol version, retitled';
+      comp.abstract = 'carol abstract';
+      comp.body = 'carol current body';
       comp.discipline = 'Physics';
-      comp.authorName = 'Bob';
-      comp.authorAffiliation = 'Harvard';
+      comp.authorName = 'Carol';
+      comp.authorAffiliation = 'Oxford';
       comp.authorOrcid = '';
       comp.keywordsText = 'quantum';
 
@@ -844,10 +848,10 @@ describe('editPage handleSubmit sanitization', () => {
 
       expect(comp.step).toBe('success');
       const commentOp = broadcastOps.mock.calls[0][1][0];
-      expect(commentOp[1].author).toBe('bob');
-      expect(commentOp[1].permlink).toBe('cont-1');
+      expect(commentOp[1].author).toBe('carol');
+      expect(commentOp[1].permlink).toBe('cont-2');
       expect(JSON.parse(commentOp[1].json_metadata).pevotest.continues)
-        .toEqual({ author: 'alice', permlink: 'p1' });
+        .toEqual({ author: 'bob', permlink: 'cont-1' });
     });
 
     it('head-author native edit still computes diff (diff base IS the chain head body)', async () => {
