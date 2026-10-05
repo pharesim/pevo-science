@@ -96,3 +96,30 @@ and the user recovers by signing in again, but it lands at the irreversible
 step. A "rotation in flight" marker set around the upgrade POST in both legs,
 which `handleRevokedSession` defers to, would close the same-tab case. The
 sibling-tab case would need that marker visible across tabs.
+
+## Note from the expired-session work (2026-10-05)
+
+The auth store now has `endSessionIfExpired(sentToken)`. The api.js bearer
+helper and the custody broadcast call it before sending: past the session's
+`expiresAt` (client clock) it ends the session through the same path as
+`handleRevokedSession` (stale-token check, adoption of a newer stored session,
+teardown, sign-in offer) and the request is not sent. The upgrade flow does
+not go through either sender, so it is not covered.
+
+A verification pass traced that gap. Nothing on the upgrade path makes an
+authenticated request through api.js: the old-phrase check and the proof
+signing are local, `account_update` goes to the Hive node through dhive, and
+`_postUpgradeBackend` / `retryUpgradeBackend` send a raw fetch with the pinned
+token. A session that expired after the page mounted is caught only by the
+notification poll or by some other authenticated action. Inside that window
+the irreversible `account_update` lands, and the POST's 401 for the expired JWT
+is the bare `UNAUTHORIZED` this task cannot yet separate from the proof arms,
+so two Try Agains spend the budget and wipe the seed.
+
+The expiry arm is separable on the client now, with no backend change. Calling
+`Alpine.store('auth').endSessionIfExpired(upgradeToken)` before the
+upgrade POST in both legs can route an expired session to the before-cleanup
+session-changed sub-case without spending the budget. The same check before the
+`account_update` broadcast would stop the irreversible step from starting on a
+session that cannot complete it. Both are for this task to decide; the
+staleness question the reviewer note raises applies to the second one.
