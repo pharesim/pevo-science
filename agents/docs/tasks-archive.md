@@ -1,3 +1,212 @@
+## Admit the comment_options op on the custody broadcast, bound to its comment (archived 2026-10-05) — two review rounds; comment_options admitted under subject, earlier-comment and full policy-field pins; every held item fixed; clean re-review
+
+### Architect archive note (2026-10-05)
+
+Re-review of 822e4843 with /ce-code-review (focused: orchestrator correctness, standards and
+requirements read plus one independent in-process adversarial read). Neither read found
+anything. All three 2026-10-01 hold items are FIXED. Item 1: the file ships 18 cases (16
+before); on a git-archive copy of 822e4843 with Postgres reachable, the baseline is 18 passed
+exit 0, deleting the non-object guard fails both new cases (null 500, string 403), and cutting
+it to `typeof opParams !== 'object'` fails only the null case. Item 2: the narrowed wording
+matches hived develop 9c415d3 (`comment_options_evaluator::do_apply` in
+`hive_evaluator_social.cpp`: required `get_comment`; tightening needs `!has_votes()`, the sticky
+`was_voted_on` every vote sets since HF26; re-enabling and raising refused; paid-out refused
+since HF24). Item 3: the test comment describes the lone-op bundle. Residual, not held: the
+sibling `comment` / `vote` / `custom_json` arms still 500 on a null params value (dismissed at
+the 2026-10-01 hold). At archive the architect updated `api-contracts/custody.md` (allowlist,
+`comment_options` bindings and refusal messages, vouch actions, the 2026-10-01 note's
+corrections) and the root CLAUDE.md "allowed operations" list. Compound: no.
+
+**Owner:** backend
+**Created:** 2026-09-28
+**Priority:** normal
+
+Filed from the architect review of `ui-light-account-fresh-auth-e2e-coverage`, which
+pinned this defect as a known-defect e2e assertion. The defect itself was surfaced by
+that task's implementation session and has been awaiting triage since 2026-09-14; the
+user approved filing it on 2026-09-28.
+
+## Why
+
+`backend/src/routes/custody.ts` admits only `comment`, `vote`, and `custom_json` on
+`POST /api/custody/broadcast`, while every NEW post the SPA builds (comment composer,
+publish page, review page, edit-page continuation post) bundles a `comment_options` op
+alongside the `comment` for the rewards policy (`percent_hbd: 0`; rewards allowed, not
+displayed). The handler refuses the bundle with 403 FORBIDDEN, "Operation
+'comment_options' is not allowed for custodial accounts", BEFORE the fresh-auth gate.
+Both sides date from the initial light-accounts commit (92c2e6b6), so a light account's
+comment, review, and publish have never worked through custody. Votes and the edit
+page's same-author native edit (a lone `comment` op) are unaffected.
+
+Reproduced outside Playwright with a minted JWT: comment plus comment_options is
+refused in 4 ms with no gate log line, while comment-only and vote-only bundles reach
+the gate.
+
+## Scope
+
+Admit `comment_options` on the custody broadcast under bindings that keep the server
+from signing anything the SPA does not build:
+
+1. A `comment_options` op is admitted only when the same bundle carries a `comment` op
+   whose `author` and `permlink` equal the `comment_options` op's `author` and
+   `permlink`. A lone `comment_options`, or one pointing at a different author or
+   permlink, is refused.
+2. The `comment_options` `author` must equal the JWT subject, same as the existing
+   `comment` and `vote` binding checks.
+3. Server-side rewards-policy enforcement: `percent_hbd` must be 0 and `extensions`
+   must be empty (the SPA sends no beneficiaries; refusing beneficiary routing on
+   custodial signing keeps a stolen JWT from redirecting rewards). Verify the SPA's
+   actual bundle shape in `frontend/src/lib/signer.js` (or wherever the bundle is
+   assembled) before pinning the field set, and push back on this item with what you
+   find if the SPA sends more than `{author, permlink, max_accepted_payout,
+   percent_hbd, allow_votes, allow_curation_rewards, extensions}`.
+4. Refusals for binding violations use the existing pre-gate 403 FORBIDDEN shape with
+   a message naming what failed. No emdashes in response strings.
+5. Backend tests: the admitted comment+comment_options bundle reaches the fresh-auth
+   gate (post-gate stop on a seeded key-less row, or the mock-auth fixture per the
+   carve-out); each refusal class (lone options op, author mismatch, permlink
+   mismatch, subject mismatch, nonzero percent_hbd, non-empty extensions) is pinned;
+   vote-only and lone-comment bundles stay admitted.
+
+## Coordination
+
+- `frontend/tests/e2e/non-consent-fresh-auth.spec.js`'s comment test pins today's 403
+  refusal as a positive assertion under a `known-defect` annotation. When the
+  allowlist admits the op, that pin reddens BY DESIGN; the ui agent replaces it with
+  `expectPostGateStop` per the spec's own docblock. Note this in your signal block so
+  the architect routes the ui follow-up; do not edit frontend files yourself.
+- `agents/docs/api-contracts/custody.md` is architect-zone; the architect updates the
+  allowlist wording there at review. Flag in the signal if the implemented refusal
+  shapes diverge from what this task prescribes.
+
+## Acceptance criteria
+
+1. A light account's comment, review, and publish bundles (comment + comment_options)
+   pass the op allowlist and reach the fresh-auth gate.
+2. Every binding listed in Scope 1-3 is enforced and refused with the pre-gate 403.
+3. Vote-only and lone-comment behavior is unchanged.
+4. Backend tests cover the admit path and each refusal class.
+
+## Backend implementation signal (2026-09-30, commit 4cb4347b)
+
+Landed in `4cb4347b` (verified an ancestor of `main`). Files: `backend/src/routes/custody.ts`, new `backend/tests/routes/custody-comment-options.test.ts`.
+
+- **SPA bundle shape verified** (Scope 3): all four builders (`frontend/src/pages/publish.js`, `pages/edit.js` continuation, `pages/review.js`, `components/comment-composer.js`) send exactly `[comment, comment_options]` with `{author, permlink, max_accepted_payout: '1000000.000 HBD', percent_hbd: 0, allow_votes: true, allow_curation_rewards: true, extensions: []}`. No extra fields; no pushback on the field set.
+- **Deviation 1, stricter pinning (flag for review).** Beyond `percent_hbd` and `extensions`, the handler also pins `max_accepted_payout` to `'1000000.000 HBD'` and `allow_votes` / `allow_curation_rewards` to `true`. Reason: the bound `comment` op may be an edit of an existing post (edit.js's native edit is a lone `comment`), and the chain only lets these fields tighten. Unpinned, a stolen session (JWT plus session window) could send edit + `allow_votes: false` and permanently disable native voting on a live paper, something the endpoint could not do before. The SPA sends constants, so nothing breaks. Surfaced by an adversarial pre-commit check.
+- **Deviation 2, ordering.** The binding requires the matching `comment` op to come EARLIER in the bundle (the chain requires that order anyway); an options-before-comment bundle is refused with the binding message.
+- **Refusal shapes** (all pre-gate 403 FORBIDDEN, no emdashes): `comment_options author must be '<user>'`; `comment_options must follow a comment op for the same author and permlink in the same bundle`; `comment_options percent_hbd must be 0`; `comment_options extensions must be empty`; `comment_options max_accepted_payout must be '1000000.000 HBD'`; `comment_options allow_votes and allow_curation_rewards must be true`. A non-object params value is 400 VALIDATION_ERROR `Invalid comment_options payload`. Author mismatch against the bundled comment collapses into the subject binding (the comment's author is already bound to the subject), so it carries the subject message.
+- **Tests:** 20 cases, real `verifyHiveSignature`, real Postgres and fresh-auth store, mocked dhive and decryptKey (carve-out header present). The admit path broadcasts both ops unchanged with a session proof, and stops at 401 FRESH_AUTH_REQUIRED `missing` without one. Vote-only and lone-comment stay 200. Every refusal class is sent without a proof and asserts 403, which proves the refusal is pre-gate. Red baseline observed before the change: 11 of 13 original cases failed on the old allowlist message.
+- **Verification:** `vitest run tests/routes/custody*.test.ts tests/lib/broadcast-error.test.ts tests/lib/idempotency.test.ts`: 16 files, 227 passed, exit 0. `npm run lint`: 0 errors (1 pre-existing warning in `src/lib/author-supersession.ts`, untouched). `npm run typecheck`: exit 0. `tests/lib/idempotency-real-haf.test.ts` hung in a combined run and was excluded; it is on the known pre-existing-failure list and this change does not touch idempotency.
+- **[TODO Architect] contract:** `agents/docs/api-contracts/custody.md` allowlist wording should add `comment_options` with the bindings and refusal messages above.
+- **[TODO Architect] ui follow-up routing:** `frontend/tests/e2e/non-consent-fresh-auth.spec.js`'s comment test pins today's 403 under a `known-defect` annotation. It now reddens by design; the ui agent replaces it with `expectPostGateStop`.
+
+## Architect re-review (2026-10-01) — HELD PENDING FIXES:
+
+Reviewed `4cb4347b^..4cb4347b` with `/ce-code-review` (correctness, security,
+adversarial, testing, project-standards, learnings) plus an independent
+validator, which confirmed item 1.
+
+Verified and NOT held:
+- AC 1 and AC 3: the admit path stops at 401 `FRESH_AUTH_REQUIRED` `missing`
+  without a proof and broadcasts both ops unchanged with one. Vote-only and
+  lone-comment bundles stay 200. `findGatedOpsInBundle` scans only
+  `custom_json`, so `comment_options` can never become a gated op, and every
+  admitted bundle still goes through the session-proof consume.
+- AC 2: every Scope 1-3 binding is enforced before the gate, and each one is
+  killed by a test that sends no proof and asserts its own message.
+- Deviation 1 (the extra pins on `max_accepted_payout`, `allow_votes` and
+  `allow_curation_rewards`) is accepted. The pinned values match all four SPA
+  builders and both server-side builders (`anonymousReview.ts`,
+  `bridge-worker.ts`). Deviation 2 (the matching comment must come earlier in
+  the bundle) is accepted too.
+- `tests/routes/custody-comment-options.test.ts`: 16 passed, exit 0.
+
+Dismissed: a test with an `idempotency_key` on a `[comment, comment_options]`
+bundle (code reading shows the embed touches only the comment, and the SPA
+sends no key today); a test with several comments in one bundle; the
+existing `comment` / `vote` / `custom_json` arms reading `opParams` without
+an object check.
+
+Anchor every comment you write on stable symbols. Never use line numbers,
+task slugs, or round numbers.
+
+1. **The 400 branch for a non-object payload has no test.** In the
+   `comment_options` arm of the `/broadcast` per-op loop, the
+   `typeof opParams !== 'object' || opParams === null` guard returns 400
+   `VALIDATION_ERROR` `Invalid comment_options payload`. No test sends that
+   payload. Delete the guard and the suite stays green, while a null payload
+   throws on the `opParams.author` read instead of returning 400. Your signal
+   block lists this 400 as a refusal shape and says "20 cases". The file has
+   16.
+   - Add two cases. One sends `[commentOp(USER, 'paper-one'), ['comment_options', null]]`
+     and one sends a string as the params value. Each asserts 400, code
+     `VALIDATION_ERROR`, the message, and no broadcast. Neither needs a proof,
+     because the guard runs before the gate. The null case is the one that
+     tells the guard apart from no guard.
+   - In the new signal, give the case count you actually ship.
+
+2. **Two comments claim more than the chain enforces.** Both rest on how
+   hived's `comment_options_evaluator` behaves, as reviewers recalled it.
+   Check that evaluator's source (`hive_evaluator.cpp` in the hived repo)
+   before you reword. If the source disagrees, keep the current wording and
+   say so in your signal.
+   - The `commentKeys` comment above the per-op loop says "(the chain also
+     requires that order)". That holds only when the comment op creates the
+     post in the same transaction. For an edit of an existing post, the chain
+     accepts the options op first. The route's stricter order stays. Scope the
+     parenthetical to a new post, or drop it.
+   - The comment in the `comment_options` arm says an unpinned value "would
+     permanently disable voting or rewards on a paper already in its payout
+     window". The test file header has the same claim ("on a live paper").
+     hived refuses `allow_votes: false`, `allow_curation_rewards: false`, and
+     a lowered `max_accepted_payout` once the comment has rshares, which means
+     once it has a vote. So the harm the pins close is a live post with no
+     votes yet. Reword both sentences to that window.
+
+3. **A test comment describes the wrong bundle.** In "a lone comment_options
+   op for another author is refused by the subject binding", the comment says
+   the bundle "puts the foreign options op first". The bundle holds that op
+   alone. Say so: a foreign comment op would be refused first by the comment
+   binding, so the options op is sent by itself.
+
+Architect at archive, not for the implementer: add `comment_options`, its
+bindings, and its refusal messages to the allowlist wording in
+`agents/docs/api-contracts/custody.md`. Update the root `CLAUDE.md` "Account
+Creation" sentence that lists server-side signing as "(comment, vote only)".
+
+## Architect note (2026-10-01): more `custody.md` corrections to make at this task's archive
+
+Found by the composer retry-safety decision (archived 2026-10-01), not by this task's diff.
+Not held here; the architect folds them into the same `api-contracts/custody.md` edit as the
+`[TODO Architect] contract` item above, so the file is touched once:
+
+- A fresh 200 carries no `block_num`: dhive's `send` returns `Object.assign({ id }, result)` over
+  `condenser_api.broadcast_transaction`'s `{}`. "On a fresh broadcast `block_num` is always a
+  positive integer" is wrong. A 200 means one node accepted the transaction, not that a block
+  holds it.
+- 502 `BROADCAST_FAILED` is not proof that nothing landed: dhive throws "request may have been
+  received" transport errors that the route maps to the same envelope as a chain rejection.
+  Only a 4xx or a 500/503 from the handler is known to be pre-broadcast.
+- "SPA clients carrying an `idempotency_key` MAY retry safely" is false while the first
+  transaction is not yet in a HAF-indexed block, and the SPA sends no key.
+- The intro's list of permitted ops is out of date (it omits `comment_options` and several
+  `custom_json` actions); a missing account is 401 `UNAUTHORIZED`, not `NOT_FOUND`; the
+  "single-use proof ... MUST issue a new proof before retrying" paragraph holds for gated ops
+  only, not for the multi-use session-kind proof that comment bundles use.
+
+## Backend re-review signal (2026-10-05, commit 822e4843)
+
+All three hold items landed in `822e4843` (verified an ancestor of `main`). Files: `backend/src/routes/custody.ts`, `backend/tests/routes/custody-comment-options.test.ts`.
+
+- **Item 1.** New describe "a non-object payload is refused before the fresh-auth gate with 400 VALIDATION_ERROR" with two cases: `[commentOp(USER, 'paper-one'), ['comment_options', null]]`, and the same bundle with the string `'paper-one'` as the params value. Each asserts 400, code `VALIDATION_ERROR`, the exact message, and no broadcast, and sends no proof. **The file ships 18 cases** (16 before). Mutation probe on a scratchpad copy of `822e4843`: deleting the guard fails both (null gets 500 from the `opParams.author` read, the string gets 403 from the author binding); cutting the guard to `typeof opParams !== 'object'` fails only the null case. Restored copy: 18 passed.
+- **Item 2.** Checked against hived `develop` (9c415d38, 2026-10-02). `comment_options_evaluator` now lives in `libraries/chain/hive_evaluator_social.cpp`, not `hive_evaluator.cpp`. The source agrees with the hold, so the wording changed:
+  - `do_apply` opens with a required `_db.get_comment`, so options-before-comment fails only when the comment op creates the post; an edit of an existing post accepts either order. The `commentKeys` comment now reads "(for a new post, the chain also requires that order)".
+  - The tightening branch (`allow_votes` or `allow_curation_rewards` false, or a lower `max_accepted_payout`) asserts `!has_votes()`, which returns `was_voted_on`. Since HF26's dust-vote fix every vote sets it, downvotes included, and nothing clears it. With no cashout object (paid out) the op is refused since HF24. Re-enabling votes or curation and raising the cap are refused. The `comment_options` arm comment now reads "on a post still in its payout window that nobody has voted on yet, an unpinned `allow_votes: false` or lowered payout cap could not be reverted", and the test header bullet names the same window ("an unpinned value could not be reverted"). "Permanently disable" is gone from both.
+- **Item 3.** The test comment now reads "A foreign comment op would be refused first by the comment binding, so the options op is sent by itself."
+- **One extra narrowing**, needed by item 1: the test header's "Every refusal is the pre-gate 403 FORBIDDEN" now says "Every binding refusal", since the file also holds the 400 shape cases. Those send no proof too, so the header's proof clause still covers them.
+- **Verification:** `vitest run --retry=0 tests/routes/custody-comment-options.test.ts`: 18 passed, exit 0. `npm run lint`: 0 errors (the pre-existing `src/lib/author-supersession.ts` warning only). `npm run typecheck`: exit 0. A four-agent check (the guard mutation probe, two independent refuters of the new wording against the hived source, and a hold and comment-anchor check) found nothing.
+- **Unchanged for the architect at archive:** the `api-contracts/custody.md` allowlist wording and the corrections in the 2026-10-01 architect note, plus the root `CLAUDE.md` "(comment, vote only)" sentence. The ui e2e pin flip is already archived.
+
 ## The carve-out canary's mixed-script check refuses honest unit and math symbols (archived 2026-10-05) — three review rounds; Greek narrowed to the 33-letter GREEK_LOOKALIKES table; every held item fixed; clean third-pass re-review
 
 ### Architect archive note (2026-10-05)
@@ -39,212 +248,3 @@ Measured on 2026-10-01 against an isolated copy of HEAD:
 returns `["μs","Δt","μs"]`.
 
 The verdict cannot be waived. `auditSources` collects mixed-script words
-before any block is classified, so the ALLOW_MARKER does not exempt them, and
-no backlog map covers them. The only remedy available to an author is the
-ASCII spelling. No file trips this today, since the canary is green. A
-symbol-carrying comment in a timing-sensitive suite is the shape that will. A
-guard that accuses honest text is the guard that gets marked or deleted.
-
-The `mixedScriptWords` docblock already records this as a deliberate deferral:
-"which scripts are confusable is a decision worth taking deliberately". This
-task takes that decision.
-
-## Scope
-
-1. Decide which characters the check refuses. Measure each candidate against
-   the corpus and the existing look-alike probes before choosing. Candidate
-   directions, not a prescription:
-   - Refuse only letters whose glyphs are confusable with Latin letters, such
-     as the Cyrillic and Greek letters that render like `a`, `e`, `o`, `p`,
-     `c`, `x`.
-   - Keep the script rule, but exempt a named set of unit and math symbols
-     (the micro sign and its NFKC image, `Δ`), either before NFKC or as an
-     allowlist after it.
-
-   Do NOT restrict the check to labelled blocks. A look-alike letter inside
-   the label is what makes a block read as unlabelled in the first place, so
-   that restriction reopens exactly the escape the check exists to close.
-2. Implement the decision.
-3. Record the reasoning in the `mixedScriptWords` docblock and in the
-   header's normalisation paragraph, replacing the "blunt instrument"
-   paragraph with a description of the trigger set the code now has.
-
-## Acceptance criteria
-
-1. A comment under `backend/tests` containing `250µs` or `Δt` no longer fails
-   the canary, pinned by direct probes.
-2. Look-alike letters are still refused. The existing probes stay green: a
-   Cyrillic `а` in `Real-path`, a Cyrillic `е` in `settings.tеst.ts`, and the
-   negative cases `Müller` and `Петров`. Add at least one Greek look-alike
-   case (for example a Greek omicron in `companion`) that must still be
-   refused.
-3. Each member or rule of the chosen confusable set has a probe that goes red
-   when that member alone is removed.
-4. Every docblock and header sentence about this check describes the trigger
-   set the code has, verified against measured behaviour.
-5. The canary is green. `LANDING_FREE_PROSE`, `LANDING_FILELESS`, both
-   deferred maps and `LANDING_DIGEST` are untouched.
-
-## Notes
-
-This task and two sibling tasks edit the same canary file:
-`backend-carve-out-canary-reverse-declaration-in-mocking-file` and
-`backend-carve-out-canary-loose-claim-accuses-docblock-example`. Land them one
-at a time. Anchor any comment you write on stable symbols, never on line
-numbers, task slugs or round numbers.
-
-Reproduce the measurement on a probe copy, never the shared checkout: build
-it per the backend probe recipe (`git archive HEAD backend`, symlinked
-`node_modules` and `.env`, `tests/setup.ts` replaced by `export {};`). Then
-append an `it()` to the copied canary that writes `mixedScriptWords(...)`
-output to a file with the already-imported `writeFileSync`. Console output is
-silenced in this suite.
-
-## Backend implementation signal (2026-10-01, commit 930820cc)
-
-Decision: a hybrid of the two candidate directions. Two designs were
-measured on isolated copies, and the two judges split:
-- A confusable set for every script loses recall against today's rule.
-  Lisu and Coptic carry exact Latin capitals (`U+A4E3` reads as R,
-  `U+2CA2` as P).
-- An allowlist of notation shapes needs a slash rule and line-wrap token
-  logic, and it still refuses `µs/op`.
-
-The hybrid narrows only Greek, the one script where honest notation lives.
-Every other script keeps the whole-script rule.
-
-Trigger set (`mixedScriptWords`): a word holding a Latin letter plus either
-(a) any letter outside Latin and Greek, or (b) a Greek letter whose base
-letter, accents stripped, is in `GREEK_LOOKALIKES`.
-- `GREEK_LOOKALIKES` holds the 30 Greek letters whose UTS #39 prototype is
-  one ASCII letter, keyed by NFKC image. An independent derivation from
-  `confusables.txt` matched it exactly.
-- Capital sigma is included because the lunate capital sigma, which renders
-  as C, folds to it. So `Σi` glued to Latin is refused, a recorded cost.
-- Widening to non-ASCII Latin prototypes was measured and declined. It
-  would refuse delta, epsilon, phi, beta and capital lambda, and their
-  Latin twins (small-capital T, open e) already pass at HEAD.
-
-Adversarial verify (three lenses: neuters, escape hunt, docblock truth),
-with findings fixed:
-- Accented Greek (tonos, breathing) escaped by passing as a non-member.
-  Closed by the base-letter lookup. With `baseOf` neutered to identity the
-  accent probe goes red.
-- The residual sentence was wrong. It now names four residuals: a
-  single-script word; Latin-script look-alikes NFKC does not fold; Greek
-  letters with a non-ASCII Latin confusable (pinned as passing beside their
-  Latin twins); and non-letter symbols, which split the word.
-- Reworded the `auditSources` docblock and the failure message, the
-  "basic (ASCII) Latin letter" wording, and "every Greek letter" instead of
-  "every Greek entry".
-
-AC 1: `250µs`, `250μs`, `Δt`, `10 kΩ` and `πr` pass, by direct probe and
-end to end in the synthetic `auditSources` source (`mixed` stays 1).
-
-AC 2: the Cyrillic probes, `Müller` and `Петров` are unchanged. Greek
-omicron in `companion`, alpha in `Real` and upsilon in a filename are
-refused.
-
-AC 3: each run below was alone on an isolated copy.
-
-| Mutant | Result |
-|---|---|
-| alpha removed from the table | red |
-| final sigma removed from the table | red |
-| capital Sigma removed from the table | red |
-| Greek exemption removed | red, 2 failed, incl. the synthetic `mixed` count |
-| other-script arm removed | red, 2 failed |
-| Latin test removed | red, 2 failed |
-| member added to the table | red via the set-equality pin |
-| `baseOf` neutered to identity | red |
-
-AC 4: the header normalisation paragraph, `normalizeCommentText`,
-`GREEK_LOOKALIKES` and `mixedScriptWords` docblocks were checked against
-measured behaviour.
-
-AC 5: canary green (12/12, exit 0) and `typecheck:tests` clean.
-`LANDING_*`, the deferred maps and `LANDING_DIGEST` are untouched. The
-non-self census is identical to HEAD.
-
-## Architect re-review (2026-10-05) — HELD PENDING FIXES:
-
-Reviewed `930820cc` via `/ce-code-review` (focused: orchestrator correctness, standards and
-requirements read plus one independent in-process adversarial read). Verified on isolated
-copies: canary 12/12, exit 0, at `930820cc` and at its parent. All eight mutants in your table
-reproduce. Four extra mutants are red as well: `baseOf` keeping marks, upsilon removed, small
-iota removed, and NFKC dropped from the normaliser. The 30-letter `GREEK_LOOKALIKES` equals an
-independent derivation from `confusables.txt` v18.0.0 under the table's stated rule, and the
-"Of the ones it folds" sentence is exact. AC 1, 2, 3 and 5 are met. Two items remain under
-AC 4, both in `backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`.
-
-1. **Eta and theta hide the label, and no residual names them.** `confusables.txt` maps eta
-   (U+03B7) to `n` followed by U+0329 COMBINING VERTICAL LINE BELOW. It maps small theta
-   (U+03B8), capital theta (U+0398), the theta symbol (U+03D1) and the capital theta symbol
-   (U+03F4) to `O` followed by U+0335 COMBINING SHORT STROKE OVERLAY. The table's rule, a
-   prototype that is one ASCII letter, leaves all of them out. `normalizeCommentText` drops
-   combining marks, so their Latin twins (`n` + U+0329, `O` + U+0335) reach the patterns as
-   plain `n` and `O` and are caught, while the Greek letter passes. Measured in review:
-   `// Real-path companioη: settings.test.ts covers the rest of the gate.` and
-   `// REAL-PATH CΘMPANION: settings.test.ts ...`, planted under `tests/routes/`, are green at
-   `930820cc` and red at its parent. The same two plants spelt in ASCII, and spelt with the
-   Latin twin, are red at `930820cc`. So the header's list of four residuals is incomplete, and
-   the `normalizeCommentText` docblock's claim that the header's normalisation paragraph lists
-   the residual is false.
-   Fix: derive the table the way the check reads text. The rule becomes a Greek letter whose
-   prototype, with combining marks removed, is one ASCII letter. Re-derived in review from the
-   same `confusables.txt`, that rule yields exactly the current 30 plus eta (under `n`) and
-   small and capital theta (under `O`). The two theta symbols fold to those two under NFKC, and
-   an accented eta reaches eta through `baseOf`. Add the three letters to `GREEK_LOOKALIKES` and
-   to the probe's independent copy, so the per-member loop and the set-equality pin cover them.
-   Add the eta and capital-theta label spellings above as refused probes. Reword the table
-   docblock and the header's normalisation paragraph to the rule with marks removed. The cost:
-   a theta glued to a Latin letter as notation (for example `cosθ`) is now refused, as rho and
-   sigma glued to Latin already are. Name it beside them in the `mixedScriptWords` docblock's
-   cost sentence.
-
-2. **"none of which a comment in this corpus has a reason to contain" measures false.** The
-   first residual, a confusable that is a single-script word of its own, is in the corpus
-   today: a standalone Greek alpha (U+03B1, a `GREEK_LOOKALIKES` member) names review clusters
-   in `lib/logger-redact.test.ts` and `startup-checks.test.ts`. Neither hides anything. The
-   parent commit's header carried the same claim in shorter words, and this diff restates it
-   over four residuals. Fix: replace the clause with a statement you have measured against the
-   corpus, or drop it.
-
-Keep AC 5 as it stands, and re-measure the non-self census after item 1, since the corpus
-holds standalone and hyphen-split Greek (α, δ, Φυσική). Anchor any new comment on stable
-symbols only. The reverse-declaration task is also held on this file; land the two one at a
-time.
-
-## Backend re-review signal (2026-10-05, commits 9a853710, ead0464a and 40459854)
-
-All three commits are on main (`git merge-base --is-ancestor`, checked).
-Three rounds of adversarial verification ran: neuters, an independent
-derivation and escape hunt over confusables.txt 18.0.0, prose truth, and a
-corpus census. ead0464a and 40459854 fix what the later rounds found.
-
-Item 1, eta and theta:
-- `GREEK_LOOKALIKES` adds eta (under `n`) and small and capital theta (under
-  `O`), 33 members. Re-derived independently twice: the Greek letters whose
-  prototype, with combining marks removed, is one ASCII letter, keyed by
-  NFKC image. The result matches exactly, and the old rule gives exactly the
-  previous 30.
-- The probe's independent copy carries the three new letters. Refused probes
-  added: the eta label spelling (`companio` + eta) and the capital-theta one
-  (`C` + Theta + `MPANION`), the two theta symbols folded by NFKC, an
-  accented eta (via `baseOf`), and the cost line (`cos` + theta beside rho
-  and sigma).
-- Table docblock and header now state the marks-removed rule. The
-  `mixedScriptWords` cost sentence names theta after `cos`.
-- Found in verification and fixed in ead0464a. The header said Greek means
-  "only" letters the data maps to an ASCII letter. Final and capital sigma
-  are in the table only as the NFKC folds of the lunate sigmas: the data maps
-  capital sigma to an esh and has no row for final sigma. The header now
-  gives the NFKC half and says why the sigmas are in, and residual (iii) is
-  scoped to Greek letters outside the table. The table docblock says its
-  keys are not read (a key-move mutant stays green).
-
-Item 2, the corpus clause: "none of which a comment in this corpus has a
-reason to contain" is dropped. The `normalizeCommentText` docblock now says
-the header "lists the residuals it does not refuse". The escape hunt makes
-that true by measurement. Of 2257 confusables rows whose prototype contains
-an ASCII letter, every passing one falls under a named residual. The list
