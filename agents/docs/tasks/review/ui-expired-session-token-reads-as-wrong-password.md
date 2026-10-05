@@ -304,3 +304,74 @@ The scope limits' remaining carve-outs stand for both codes: plain
 authenticated calls outside the named surfaces, the self-custody
 `run(undefined)` path, the `set_password` cold ORCID start, and the idle-tab
 notification poll.
+
+**UI re-review signal (2026-10-05, commit `5dc0772b`; verified ancestor of `main`):**
+
+Items 1-4, as amended to both codes, landed in one commit. One shared helper,
+`unwindIfSessionEnded(err, guard)` in `lib/fresh-auth.js` (next to
+`isUsernameMismatch`), matches `SESSION_EXPIRED` or `SESSION_INVALIDATED`
+only when the guard reads torn down. Each surface calls it on both legs:
+
+- Upload: `uploadFile`'s catch (right after the mismatch branch) and
+  `retryOnce`'s catch throw `UPLOAD_SESSION_TORN_DOWN`.
+  `describeUploadError` is unchanged.
+- Custody broadcast: `broadcastWithFreshAuth`'s outer catch, ahead of the
+  `FRESH_AUTH_REQUIRED` branch, and the retry leg's catch, ahead of the
+  mismatch check and the wrap, return `FRESH_AUTH_REDIRECT_PENDING`.
+- Consent-op gate: `consentOpFreshAuthRetryGate` returns `{ cancelled: true }`
+  on entry, ahead of its non-FRESH_AUTH_REQUIRED rethrow, and in the retry
+  `run`'s catch.
+
+One addition to the literal hold form, for the architect to accept or
+reject: the helper calls `guard.cancel()` before returning true. Where the
+ending spoke (expiry or revoked teardown), the teardown claim makes that call
+silent. It speaks when the guard reads torn down without a message, which
+happens when the auth store adopts ANOTHER account's stored session at
+`_endSession` (the subject scrub runs, nothing is said). Under the literal
+form the null code would then be silent with no message at all. A same-account
+adoption runs no scrub, so the guard condition keeps reporting the rejection
+there, as the hold requires.
+
+Comments narrowed where the change made them false: the gate docblock's
+"rethrow untouched" sentence, the cached-proof drop comment in
+`getCachedConsentOpProof`'s docblock, the two orchestrators' catch comments,
+`UPLOAD_SESSION_TORN_DOWN`'s "re-login toast" parenthetical, and
+`retryOnce`'s "Only a mismatch is reclassified".
+
+Tests:
+
+- `session-expired.test.js`: the two open-window cases now assert the
+  page-level outcome (`describeUploadError(err)` null, broadcast resolves
+  `null`). New: a settings action whose cached ORCID proof outlived the
+  session resolves `{ cancelled: true }`. New: same-account adoption under
+  the upload still describes `common.uploadFailed` with no toast. New:
+  another-account adoption under the upload is null-coded with the one
+  session-changed toast.
+- `session-revoked.test.js`: the broadcast case now expects a `null`
+  resolve. New: an upload under an open window is null-coded with only the
+  revoked toast. New: a settings action with a cached proof resolves
+  `{ cancelled: true }` with only the revoked toast. Each drives a 401
+  `SESSION_INVALIDATED` fetch response. The existing "keeps a session whose
+  token was replaced while the broadcast was in flight" case still expects
+  the rejection, which pins the guard condition on the broadcast.
+- `lib-ipfs-upload.test.js`: the mocked `fresh-auth.js` factory pulls the
+  real `unwindIfSessionEnded`.
+- Retry legs are implemented but not pinned (not required).
+
+Verification:
+
+- Red before the fix: 7 of the new or changed cases failed. The rejection
+  reached the caller, and `describeUploadError` gave `common.uploadFailed`.
+- Seven mutants, each killed in a scratchpad copy: the guard condition
+  dropped, `guard.cancel()` dropped, each code dropped from the list, and
+  the gate's, the broadcast's and the upload's call sites removed.
+- Full frontend unit suite: 91 files, 2140 tests, exit 0. One earlier run hit
+  the known absolute-cap flake in `lib-fresh-auth-session-window`, which
+  passed 3 of 3 runs alone and on the full rerun. `npm run build` was clean,
+  run in an isolated copy. `frontend/` has no lint config.
+- A `ce-simplify-code` pass (reuse, quality, efficiency) applied 5 findings:
+  the orchestrator comment overclaim, two test tidy-ups, and two ordering
+  moves. It skipped 3: exporting the code constants from `api.js` (outside
+  the diff's files), a shared `pickedFile` fixture, and folding the two upload
+  checks into one.
+- No `/ce-code-review`, per the UI agent rule. No e2e run.
