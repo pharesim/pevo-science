@@ -623,7 +623,10 @@ export class PevoEditor {
         this.onChange(md);
       },
       onTransaction: ({ editor: ed }) => {
-        this.charCount = ed.state.doc.textContent.length;
+        // In markdown mode the count is the source view's, as typing there
+        // keeps it: a transaction on the hidden document (a normalise, the
+        // i18n refresh) must not swap in the rendered text's length.
+        this.charCount = this.markdownMode ? this.markdownSource.length : ed.state.doc.textContent.length;
         this._updateCharCount();
         this._updateToolbarActiveStates();
       },
@@ -695,6 +698,9 @@ export class PevoEditor {
 
   // --- Public API ---
 
+  // Replace the content without reporting it through onChange. In markdown
+  // mode the source view is replaced too: it is what getMarkdown returns and
+  // what the user sees there, so leaving it would keep the old text in both.
   setContent(markdown) {
     if (!this.editor) return;
     if (markdown) {
@@ -702,6 +708,12 @@ export class PevoEditor {
       this.editor.commands.setContent(html, { emitUpdate: false });
     } else {
       this.editor.commands.clearContent(false);
+    }
+    if (this.markdownMode) {
+      this.markdownSource = markdown || '';
+      this._els.mdTextarea.value = this.markdownSource;
+      this.charCount = this.markdownSource.length;
+      this._updateCharCount();
     }
   }
 
@@ -920,10 +932,11 @@ export class PevoEditor {
   _toggleMarkdownMode() {
     if (!this.editor) return;
     if (this.markdownMode) {
-      // Switching back to visual
+      // Switching back to visual. The mode flips first, so the transaction
+      // setContent makes counts the rendered text.
       const html = markdownToHtml(this.markdownSource);
-      this.editor.commands.setContent(html, { emitUpdate: false });
       this.markdownMode = false;
+      this.editor.commands.setContent(html, { emitUpdate: false });
       this._els.mdWrap.style.display = 'none';
       this._els.visualWrap.style.display = '';
     } else {

@@ -474,6 +474,10 @@ export function initEditPage() {
     _loadInFlight: false,
     _originalBody: '',
     _storageListener: null,
+    // Every entry _mergeCitationCollection took out of the citation
+    // collection. The collection is gone once merged, so the restored card's
+    // Discard puts these back rather than dropping the only copy.
+    _mergedCitations: [],
 
     navigate(path) {
       Alpine.store('router').navigate(path);
@@ -686,8 +690,12 @@ export function initEditPage() {
     // A submit in flight finishes before the instance is replaced: whether an
     // account change between its legs may still send anything is the upload
     // batch guard's decision, not this one's. The pending debounce is flushed
-    // first, under the key this instance captured.
+    // first, under the key this instance captured. A landed instance is never
+    // replaced and the request is dropped: the instance navigates to the paper
+    // itself, and a replacement would cancel that navigation, leaving a fresh
+    // form with no word that the edit was saved.
     _remountWhenSettled() {
+      if (this._landed) { this._remountRequested = false; return; }
       if (!this._remountRequested || this.isSubmitting || !this._mounted) return;
       this._remountRequested = false;
       this._flushDraftSave();
@@ -1007,7 +1015,10 @@ export function initEditPage() {
     // is gone and the instance writes nothing. The form returns to the paper
     // as loaded: the prefill runs again, the rows and ticks only a draft adds
     // are emptied, the editors take the loaded text, and the baseline is taken
-    // again over it.
+    // again over it. The citations the collection merge brought in then go
+    // back in after the baseline, so they are drafted as work, and at once:
+    // they have no other copy left, and an instance destroyed before the
+    // debounce fires saves nothing.
     discardDraft() {
       if (this._landed) return;
       this._prefillForm();
@@ -1019,6 +1030,8 @@ export function initEditPage() {
       localStorage.removeItem(this._draftKey);
       this.draftRestored = false;
       this.draftSavedAt = null;
+      this._appendMissingCitations(this._mergedCitations);
+      this._writeDraft();
     },
 
     draftTimeAgo() {
@@ -1404,9 +1417,9 @@ export function initEditPage() {
     // Merging takes the collection out of storage, so the citations it adds
     // live only in the form from then on. Held back until the baseline exists
     // and no choice card stands: the merged citations then count as user work
-    // and are drafted, neither a restore nor the choice can replace them, and
-    // a visitor who cannot edit the paper (no form, so no baseline) leaves the
-    // collection where it is.
+    // and are drafted, neither a restore, the choice nor the restored card's
+    // Discard can replace them, and a visitor who cannot edit the paper (no
+    // form, so no baseline) leaves the collection where it is.
     _mergeCitationCollection() {
       if (!this._hasBaseline || this.draftChoice) return;
       const key = 'pevo-citation-collection';
@@ -1414,13 +1427,19 @@ export function initEditPage() {
       if (!raw) return;
       const collection = JSON.parse(raw);
       if (!Array.isArray(collection) || collection.length === 0) return;
-      for (const entry of collection) {
+      this._mergedCitations.push(...collection);
+      this._appendMissingCitations(collection);
+      localStorage.removeItem(key);
+    },
+
+    // Append each entry the form does not cite yet, counting for reputation.
+    _appendMissingCitations(entries) {
+      for (const entry of entries) {
         const exists = this.citations.some(c => c.author === entry.author && c.permlink === entry.permlink);
         if (!exists) {
           this.citations.push({ author: entry.author, permlink: entry.permlink, title: entry.title || '', reputation_relevant: true });
         }
       }
-      localStorage.removeItem(key);
     },
 
     dragCitationStart(index) {

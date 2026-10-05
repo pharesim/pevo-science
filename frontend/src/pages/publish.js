@@ -391,6 +391,10 @@ export function initPublishPage() {
     // account signs in under the form and the instance adopts it.
     _draftAccount: null,
     _draftKey: null,
+    // The author fields _prefillEmptyAuthorFields filled since the account was
+    // captured. A provisional adoption empties them again for the account
+    // that takes its place.
+    _prefilledFields: [],
     // The form as loaded, in two halves: the plain fields once the prefill is
     // done, the editor fields once both editors have normalised their content.
     // Nothing is drafted until both exist, and a form equal to them holds no
@@ -404,6 +408,10 @@ export function initPublishPage() {
     // _markLanded and never reset: a landed instance is finished.
     _landed: false,
     _storageListener: null,
+    // Every entry _mergeCitationCollection took out of the citation
+    // collection. The collection is gone once merged, so the restored card's
+    // Discard puts these back rather than dropping the only copy.
+    _mergedCitations: [],
 
     maxUploadSizeMB: getMaxUploadSizeMB(),
 
@@ -536,6 +544,7 @@ export function initPublishPage() {
     _captureAccount(account) {
       this._draftAccount = account || null;
       this._draftKey = account ? publishDraftKey(account) : null;
+      this._prefilledFields = [];
       if (account) removeLegacyDrafts();
     },
 
@@ -557,23 +566,48 @@ export function initPublishPage() {
     // teardown survives the trip to the sign-in page, and the same account
     // signing back in finds the instance as it left it. A custody upgrade
     // keeps the username and never reaches this. An instance that captured no
-    // account adopts the one that signs in. Any other account gets a fresh
-    // instance, because this one's form and key belong to the captured account.
+    // account adopts the one that signs in, and so does one whose adoption is
+    // still provisional. Any other account gets a fresh instance, because this
+    // one's form and key belong to the captured account.
     _onAccountChange(next) {
       if (!next || next === this._draftAccount) return;
       if (this._draftAccount === null) {
         this._adoptAccount(next);
         return;
       }
+      if (this.draftChoice) {
+        this._readoptAccount(next);
+        return;
+      }
       this._remountRequested = true;
       this._remountWhenSettled();
+    },
+
+    // An adoption whose choice card still stands is provisional (ARCHITECTURE.md
+    // § 8): the card has kept every write away from the adopted account's key,
+    // and a fresh instance would drop the form the card is holding, attached
+    // files included. The account that signs in before the user picks takes
+    // the instance over instead. The author fields the first account's prefill
+    // filled are emptied first, value and baseline, so they take the new
+    // account's prefill and not the first account's name.
+    _readoptAccount(account) {
+      this._clearDraftChoice();
+      for (const field of this._prefilledFields) {
+        this[field] = '';
+        this._baselineFields[field] = JSON.stringify('');
+      }
+      this._adoptAccount(account);
     },
 
     // A submit in flight finishes before the instance is replaced: whether an
     // account change between its legs may still send anything is the upload
     // batch guard's decision, not this one's. The pending debounce is flushed
-    // first, under the key this instance captured.
+    // first, under the key this instance captured. A landed instance is never
+    // replaced and the request is dropped: the instance navigates to the paper
+    // itself, and a replacement would cancel that navigation, leaving a fresh
+    // form with no word that the paper was published.
     _remountWhenSettled() {
+      if (this._landed) { this._remountRequested = false; return; }
       if (!this._remountRequested || this.isSubmitting || !this._mounted) return;
       this._remountRequested = false;
       this._flushDraftSave();
@@ -604,6 +638,7 @@ export function initPublishPage() {
     _prefillEmptyAuthorFields() {
       for (const field of this._applyAccreditationPrefill()) {
         this._baselineFields[field] = JSON.stringify(this[field]);
+        this._prefilledFields.push(field);
       }
     },
 
@@ -873,7 +908,10 @@ export function initPublishPage() {
 
     // The "draft restored" card's Discard. Refused once landed, when the card
     // is gone and the instance writes nothing. The form returns to the loaded
-    // one, and the baseline is taken again over it.
+    // one, and the baseline is taken again over it. The citations the
+    // collection merge brought in then go back in after the baseline, so they
+    // are drafted as work, and at once: they have no other copy left, and an
+    // instance destroyed before the debounce fires saves nothing.
     discardDraft() {
       if (this._landed) return;
       localStorage.removeItem(this._draftKey);
@@ -893,6 +931,8 @@ export function initPublishPage() {
       this._loadEditorsFromFields();
       this._baselineFields = snapshotFields(this._plainFields());
       this._baselineEditors = snapshotFields(this._editorFields());
+      this._appendMissingCitations(this._mergedCitations);
+      this._writeDraft();
     },
 
     draftTimeAgo() {
@@ -982,9 +1022,10 @@ export function initPublishPage() {
     // Merging takes the collection out of storage, so the citations it adds
     // live only in the form from then on. Held back until the instance has an
     // account and a baseline, and while no choice card stands: the merged
-    // citations then count as user work and are drafted, neither a restore nor
-    // the choice can replace them, and a signed-out visitor, whose form is not
-    // drafted, leaves the collection where it is.
+    // citations then count as user work and are drafted, neither a restore,
+    // the choice nor the restored card's Discard can replace them, and a
+    // signed-out visitor, whose form is not drafted, leaves the collection
+    // where it is.
     _mergeCitationCollection() {
       if (!this._draftKey || !this._hasBaseline || this.draftChoice) return;
       const key = 'pevo-citation-collection';
@@ -992,13 +1033,19 @@ export function initPublishPage() {
       if (!raw) return;
       const collection = JSON.parse(raw);
       if (!Array.isArray(collection) || collection.length === 0) return;
-      for (const entry of collection) {
+      this._mergedCitations.push(...collection);
+      this._appendMissingCitations(collection);
+      localStorage.removeItem(key);
+    },
+
+    // Append each entry the form does not cite yet, counting for reputation.
+    _appendMissingCitations(entries) {
+      for (const entry of entries) {
         const exists = this.citations.some(c => c.author === entry.author && c.permlink === entry.permlink);
         if (!exists) {
           this.citations.push({ author: entry.author, permlink: entry.permlink, title: entry.title || '', reputation_relevant: true });
         }
       }
-      localStorage.removeItem(key);
     },
 
     dragCitationStart(index) {
