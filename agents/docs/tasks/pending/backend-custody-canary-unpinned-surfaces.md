@@ -289,3 +289,35 @@ write on stable symbols. Never use line numbers, task slugs, or round numbers.
    gives two entries. The failure is loud, a false red on that symbol's tally
    and never a silent pass. Narrow the sentence to whole comment lines and say
    what happens to trailing text.
+
+## Architect addendum (2026-10-05) — one more prose item for this hold:
+
+Folded in from the closing review of `backend-custody-column-self-alignment`
+(commit `cca00888`, which added the joined-count pair and the sentence below)
+rather than holding that task a sixth time for one sentence. Same file, same
+shape as items 1 to 3: prose only, no new probe wanted.
+
+4. **The `STATEMENT_JOIN_CAP` docblock names only one of the escapes the cap
+   creates.** Its cost sentence reads: "What it costs is a derivation whose
+   epoch read and yielding branch sit more than four joined lines apart: that
+   one escapes." The cap bounds every shape `inlineDerivations` scans through
+   `statementOccurrences`, not only `EPOCH_TERNARY_RE`, so `COLUMN_COPY_RE`
+   and `COLUMN_DESTRUCTURE_RE` lose the same tail. Measured at `cca00888` by
+   the correctness lens and confirmed by an independent validator: a
+   one-per-line `const {` destructure with three or more members ahead of
+   `custody,` reports zero copy sites at cap 4 and two at cap 40, and a
+   wrapped accessor chain with four or more member lines before `?.custody`
+   behaves the same way. The `it()` titled "a derivation wrapped,
+   optional-chained, bracketed, or destructured is still refused" presents
+   destructures as covered with no such qualifier, and the cap's docblock is
+   what a maintainer reads before moving the constant, so the omission reads
+   as coverage that is not there. No multi-line declaration destructure exists
+   in `backend/src` today; the cap's value is already pinned by the
+   joined-count pair, which stays as it is.
+   Requirement: make the cost sentence cover every family the cap bounds (the
+   epoch derivation, and the column copy and destructure shapes, each of which
+   escapes once its two halves sit more than four joined lines apart), or scope it
+   explicitly to the epoch derivation and state the copy/destructure cost
+   beside it. Do not change the cap, the pair, or any pattern. Measure the
+   sentence you write against the patterns before landing it, the same way
+   items 1 to 3 ask.
