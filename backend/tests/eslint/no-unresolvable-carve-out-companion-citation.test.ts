@@ -304,17 +304,21 @@
  * the folds of the lunate sigmas, which render as `c` and `C`. Unit and math
  * notation (microseconds spelt with the micro sign, a Delta, an Omega, a pi)
  * passes. A look-alike is therefore folded to what it renders as or refused
- * outright, with four residuals: a confusable that is a single-script word of
+ * outright, with five residuals: a confusable that is a single-script word of
  * its own; a Latin-script look-alike NFKC does not fold (a dotless `i`, a
  * Latin alpha, a small-capital `T`) or folds to a letter other than the one
  * it renders as (a long `s`, folded to `s` though it renders as `f`); a Greek
  * letter outside the table whose confusable is such a non-ASCII Latin letter
  * (tau for that small-capital `T`, epsilon for an open `e`), which hides
- * nothing its Latin twin does not already hide; and a look-alike the runtime
+ * nothing its Latin twin does not already hide; a look-alike the runtime
  * does not read as a letter (a digit zero, a danda, an APL rho, the Greek
  * musical symbols, a letter newer than the runtime's Unicode version) or a
  * letter NFKC folds into a letter and a punctuation mark (an `l` with a
- * middle dot), which splits the word it sits in instead of mixing it.
+ * middle dot), which splits the word it sits in instead of mixing it; and a
+ * spacing mark that renders as a letter (a Telugu anusvara for an `o`), which
+ * the normalisation deletes with the other combining marks, so the word
+ * reaches the patterns with that letter missing and a label spelt with one
+ * hides.
  *
  * SCOPE: VALIDATION IS WHOLE-TREE. Any structured citation, in any comment,
  * anywhere under `backend/tests`, is resolved and checked, in every file,
@@ -1993,6 +1997,9 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     // zero for the `O` and an `l` with a middle dot each split the word, and
     // a long `s` folds to a plain `s`.
     expect(mixedScriptWords(normalizeCommentText('C0MPANION Rea\u0140-path \u017For'))).toEqual([]);
+    // A spacing mark that renders as a letter is deleted with the other
+    // marks, so the word reaches the patterns with that letter missing.
+    expect(normalizeCommentText('c\u0C02mpanion')).toBe('cmpanion');
     // Every other script keeps the whole-script rule: a Lisu letter that
     // renders as `R` and a Coptic one that renders as `P`.
     expect(mixedScriptWords('\uA4E3eal-\u2CA2ath')).toEqual(['\uA4E3eal', '\u2CA2ath']);
