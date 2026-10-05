@@ -93,3 +93,21 @@ while deciding the composer retry-safety question. Neither depends on any other 
   5. Filed as `ui-edit-no-change-guard-compares-served-authors` (normal, `0498a574`): the no-change guard compares the form with the raw head claim, so an untouched form whose served authors differ from it now lands a metadata-only version instead of failing.
 - Residual, filed at the user's choice as `ui-native-edit-continues-from-target-own-metadata` (low, `59018357`): a link re-pointed onto the middle of a chain by a hand-made op reads out of order, so another author's edit of a continuation can name the wrong predecessor. The root and the listing are protected.
 - Simplify pass (`/ce-simplify-code` over the `edit.js` changes, run after the move; the UI protocol puts it before): the reuse and efficiency reviewers found nothing; the quality reviewer raised three optional nits. Applied in `89db458e` (verified on `main`): a blank line setting the `targetContinues` capture apart from the comment about the captures `_finishLanded` reads. Skipped: returning `undefined` rather than `null` from `targetOwnContinues` (the `null` matches `userPostInChain`), and testing body equality instead of `diffText === ''` (equivalent; the current form is the task's own wording and the probes above pin it).
+
+## Architect re-review (2026-10-06) — HELD PENDING FIXES:
+
+Reviewed `6e10bd5e`..`89db458e` with `/ce-code-review` (correctness, adversarial, project-standards, testing, learnings; one finding validated independently). AC1 to AC5 are met, and the seven unit kill claims were re-measured and held. Two items:
+
+1. **A native edit takes the patch path only when the served body is the target post's.** With `continues` fixed, a non-head edit keeps the chain intact, so the latest op can belong to a post other than the head. The paper detail serves a chain's body as the replay of its latest op (`detail.body = latest.body`), and the replay applies each patch to the patched post's own previous body. So when the latest op is not the target's:
+   - an unchanged body sends `NO_OP_PATCH`, the target keeps its own older body, its op becomes the latest, and the paper page loses the other author's revision;
+   - a changed body's patch is computed against the other post's text and applied to the target's own body.
+
+   Fix: take the patch path (the computed patch, or `NO_OP_PATCH` for an unchanged body) only when the last `versions[]` entry names the target post, or carries no `author`/`permlink`. Otherwise send the full `newPostBody`, changed or not. For this one case this replaces the Out-of-scope sentence "Do not send the full body for the empty case": that sentence's reason is the creation body a single-post detail serves, while a chain detail serves the replayed body. Single-post papers keep the patch path.
+
+   Tests: correct the fixture of `head native edit of a continuation post keeps the post it continues when the latest op is the root's` so `paper.body` and `_originalBody` hold the root's latest text, as the backend serves it for that chain, and assert the full body there. Add a changed-body spec in the same chain state. The head-target specs whose last `versions[]` entry is the target (`head-author native edit still computes diff`, the unchanged-body specs) stay on the patch path. Probe each new site by reverting it, and list the probes in the signal block.
+
+   `agents/docs/ARCHITECTURE.md` § 8 "What a native edit sends" now carries this as its rule 2.
+
+2. **Narrow the `targetOwnContinues` docblock.** Delete ", which continues nothing". A post served as a paper of its own and since continued is the canonical of a multi-post response and does continue a post. That case moved to `ui-native-edit-continues-from-target-own-metadata`.
+
+Dismissed: the unpinned skip of a `versions[]` entry without `author`/`permlink` (the guard is correct, and only a degraded HAF read reaches it).
