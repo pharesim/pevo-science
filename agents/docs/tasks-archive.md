@@ -1,3 +1,125 @@
+## Pin the subject across the page-level ORCID start round-trips (archived 2026-10-05) — archived clean at dbb9e8ab on the first pass
+
+### Architect archive note (2026-10-05)
+
+Reviewed 977409f3 + dbb9e8ab (range db7d91d1..dbb9e8ab) with /ce-code-review (correctness,
+project-standards on root CLAUDE.md, testing, adversarial in-process, julik-frontend-races,
+learnings): zero findings, all seven requirements (Scope 1-3, AC 1-4) met. Full frontend unit
+suite at dbb9e8ab in an isolated copy: 87 files / 1975 tests, exit 0. Red at base reproduced by
+three lenses (12 of 18 fail at db7d91d1). The testing lens re-probed the two mutants the signal
+left unprobed after dbb9e8ab (username-compare predicate, a stale catch that reports): both killed.
+
+Triage (user, as recommended): the recover.js ORCID start has the same unpinned shape and is
+reachable with a live session; filed as ui-recover-orcid-start-subject-pin. The spec header's
+clause (c) disclosure is accepted, no start-leg e2e follow-up. Dismissed: a cross-tab login as
+another user while the tab is at orcid.org still scrubs the mode marker before the callback reads
+it (fails closed, user-initiated, outside this task). No /ce-compound.
+
+**Owner:** ui
+**Created:** 2026-09-02
+
+Routed out of the architect re-review of `ui-cross-user-session-teardown`
+(`659131b8`). Not held there: these two flows are outside that task's scope
+and have neither an acquisition flight nor a consent-op guard, so the
+generation predicate that closed the session path is not available to them.
+
+## Why
+
+`settings.js#handleOrcidLink` (mode `link`) and
+`accreditation.js#handleOrcidVerify` (mode `accredit`) both require an
+authenticated subject. Each writes `pevo_orcid_mode` inline, awaits
+`startOrcid`, then assigns `window.location.href` with no re-check. A subject
+teardown landing inside that await (a cross-tab login storage event, or a
+same-tab disconnect from the header) sends the new subject's tab to ORCID on
+the previous subject's behalf: the OAuth state was minted under the previous
+subject's JWT. On return the scrub has removed the mode key, so
+`/orcid/callback` reads mode '' and completes unauthenticated; the backend
+refuses before consuming state, and the user lands on the generic
+"verification failed" dead-end after a full OAuth round-trip. Fail-closed,
+nothing minted, but the same shape the cross-user task's redirect-boundary
+hold closed for the session path.
+
+The login, signup, and recover starters run without an authenticated subject
+and are out of scope. The consent-op starters are covered by
+`ui-consent-op-teardown-guard`.
+
+## Scope
+
+1. Before the navigation in each of the two flows, re-check that the tab still
+   represents the subject the start request was made for. Two acceptable
+   shapes; pick the smaller and say which: (a) capture the auth store's
+   `username` (or the tab-subject marker) before `startOrcid` and compare
+   after it resolves; (b) route both flows through the shared
+   `beginOrcidFreshAuthRedirect` with a predicate built the same way.
+2. On a mismatch, reset the flow's busy flag (`orcidLinking` /
+   `orcidLoading`) and return without navigating, as a silent clean cancel
+   matching the session path. Do NOT remove the mode or return-path keys in
+   that branch: the scrub that changed the subject already removed this
+   flow's keys, so a removal there can only hit a later flow's keys (the
+   defect the cross-user task's round-2 hold corrects).
+3. Tests, red at base, one per flow: `startOrcid` pending, subject change
+   driven through the real store path (`loginFromResponse` for a different
+   username, or the storage event), resolve the start, assert no navigation,
+   the busy flag reset, and a successor flow's keys intact.
+
+## Acceptance criteria
+
+1. Neither flow navigates after a subject change during its start await.
+2. The busy flag resets on that path.
+3. The stale path removes no storage keys.
+4. Both tests drive the real subject-change path, not a hand-rolled helper,
+   and were observed red at base.
+
+UI implementation signal (2026-09-30, commits `977409f3` + `dbb9e8ab`, both verified ancestors of `main`):
+
+- **Shape chosen: (a), inline, with the teardown generation as the predicate
+  rather than a username compare.** Both handlers open
+  `subjectTeardownGuard()` before `await startOrcid(...)` and read
+  `guard.tornDown()` after it. The task's "Why" says the generation predicate
+  is not available to these flows; it is, the guard is an exported value any
+  caller can open. It is also the stricter pin: the generation is bumped by
+  the same scrub that removes the mode marker, so it fires exactly when this
+  flow's key is gone. A username compare misses a sign-out followed by a login
+  as the same user (username matches again, marker scrubbed, navigation
+  dead-ends at the callback). Only `tornDown` is read, never `cancel`, so the
+  unwind is silent as scope item 2 asks.
+- **Stale resolve:** busy flag reset, return, no navigation, nothing removed.
+- **Stale reject (beyond the literal scope, same rationale):** the catch also
+  returns early when the guard reads torn down. Busy flag reset, no inline
+  error or toast, no `console.warn`, no key removal. A live rejection is
+  unchanged.
+- **`fresh-auth.js`:** one docblock sentence on `beginOrcidFreshAuthRedirect`,
+  which said the page-level flows carry no predicate.
+- **Tests:** new `frontend/tests/unit/pages-orcid-start-subject-pin.test.js`,
+  18 cases (9 per flow), driving the REAL auth store (`initAuth`) over the REAL
+  `lib/fresh-auth.js`: `loginFromResponse` as another user, the storage-event
+  handler for a cross-tab login and a cross-tab sign-out, `disconnect()`, and
+  sign-out then same-user login. Plus stale reject, live reject, unchanged
+  subject, and same-subject re-login (the last two must still navigate).
+  Observed red at base: 10 of the first version's 16 cases (8 navigation, 2
+  stale-reject key removal); the 2 stale-reject cases again red on the silence
+  assertions before `dbb9e8ab`.
+- **Verification:** full frontend unit suite 87 files / 1975 tests, exit 0, no
+  Errors line. Mutation probes in scratchpad copies at `977409f3` (delete
+  either early return, un-gate either catch removal, remove a key in the stale
+  branch, open the guard after the await, drop the busy reset) were all
+  killed. Two mutants survived there and are what `dbb9e8ab` closes: a
+  username-compare predicate, and a stale branch that sets an inline error.
+  Those two were not re-probed after the fix; the cases that kill them are in
+  the suite. No browser check and no `npm run build`: the change has no
+  rendered surface and the pages load under vitest.
+- **No e2e companion** for the start leg of either flow (the spec header's
+  clause (c) says so). `orcid-link.spec.js` covers the link callback leg only.
+- **Out of scope, for the architect to route:** the task says the recover
+  starter runs without an authenticated subject. `recover.js` has no
+  `isConnected` gate and `/recover` has no guest-only route guard, so its
+  ORCID start is reachable with a live session and has the same unpinned
+  shape: a teardown inside its await scrubs `pevo_orcid_return_to` and
+  `pevo_orcid_mode`, it navigates anyway, and the return lands on signup
+  instead of `/recover`; its catch removes both keys unconditionally. Login
+  and signup render their starters only under `!isConnected`, so the claim
+  holds for those. Not touched here.
+
 ## The loose-claim guard accuses the prose its own docblock cites as protected (archived 2026-10-05) — one hold; archived at 3b98e303 with two findings dismissed
 
 ### Architect archive note (2026-10-05)
@@ -126,125 +248,3 @@ way is pointed at a fix it cannot take.
 
 Reviewed `615d77ce` via `/ce-code-review` (focused: orchestrator correctness
 and standards read plus one independent adversarial read). Verified on an
-isolated copy of `615d77ce`: canary green, 11/11, exit 0. A narrowing that
-spares the example sentence fails only the `accusedProse` assertion, so the
-probe can go red. AC 1 and AC 3 are met. Three prose and message items remain,
-all in `backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`.
-
-1. **The `accusedProse` comment states a bar that every declined narrowing
-   meets.** The comment says a narrowing that spares the example "must then
-   keep every `unparsedClaims` near-miss pin in this spec at its count". Your
-   signal table records each of the three declined narrowings as green against
-   every existing pin, so that bar does not stop any of them. Reproduced in
-   review: with "refuse whitespace + lower-case word after the noun" added to
-   `LOOSE_CLAIM_SRC` and the first `accusedProse` sentence re-pinned at 0 as the
-   comment directs, the canary is 11/11 green, while
-   `' (c) Real-path (also routes/foo.test.ts) companion here: covered'` yields
-   labels 0 and unparsed 0, so it is dropped unaudited. The spellings each
-   narrowing drops are named only in header prose; no probe pins them.
-   Fix: beside `accusedProse`, pin each near-miss from your table's "Near-miss
-   dropped" column, as the exact string you measured, at `unparsedClaims`
-   length 1 and `labelCount` 0. Show that each declined narrowing, applied on
-   its own with `accusedProse` re-pinned to 0, turns the canary red (one
-   mutant per narrowing), and state the result in the signal. Then reword the
-   `accusedProse` comment so its bar names these pins, not only the existing
-   near-miss pins.
-
-2. **The header's precision-cost entry lists a narrowing that was not
-   measured and would not spare the example.** The clause "refusing a filler
-   whose first word is a stop word drops the pinned shouted `(also ...)` set"
-   comes from this task file's Scope item 2. That wording was mine, not yours.
-   It is not one of the narrowings your signal records as measured. `STOP_WORDS`
-   in this file has no `with`, so refusing a span whose filler starts with a
-   `STOP_WORDS` member spares neither `accusedProse` sentence (the adversarial
-   probe kept both at 1). It therefore is not a narrowing "measured for that".
-   It also drops every `(also ...)` near-miss pin, not only the shouted set.
-   Meanwhile the entry leaves out a narrowing you did measure: refusing an
-   article-led noun phrase before the noun (the lookbehind). Fix: make the
-   entry's list exactly the narrowings you measured, each with the prose it
-   spares and the near-miss it drops, matching the pins from item 1. Drop the
-   stop-word clause, or keep it only with a statement that it was not measured
-   as a sparing narrowing, what it actually does under `STOP_WORDS`, and that
-   it drops every `(also ...)` pin.
-
-3. **The `unparsed` failure message never names the remedy the new docblock
-   gives.** In the spec "every citation-shaped line parses as the label, and
-   no comment word mixes scripts", the `unparsed` assertion message tells the
-   author to write `STRUCTURED_FORM` and does not mention `ALLOW_MARKER`, which
-   the `LOOSE_CLAIM_SRC` docblock now names as the author's remedy for accused
-   prose. The `DEFERRED_FILELESS` disagreement message already names the
-   marker. Fix: add a sentence to the `unparsed` message saying that a line
-   which is prose and not a claim is reworded or its block is marked with
-   `${ALLOW_MARKER}`. This is message text only, so guard behaviour and the
-   census are unchanged.
-
-Keep AC 3 as it stands: `LANDING_FREE_PROSE`, `LANDING_FILELESS`, both
-deferred maps and `LANDING_DIGEST` untouched, and canary green by exit code.
-Anchor any new comment on stable symbols only, as the task Notes say.
-
-## Backend re-review signal (2026-10-01, commit 3b98e303)
-
-1. `droppedNearMiss` probe beside `accusedProse` pins, at unparsed 1 and
-   labels 0: `(also routes/foo.test.ts) companion here: covered`,
-   `with a Postgres companion: covered`, the same with a backticked path and
-   `[A]`, and `(also routes/foo.test.ts) THE COMPANION: covered` (each with
-   the ` (c) Real-path` prefix, exact strings as measured). Mutants, each on
-   an isolated copy of the working tree with `accusedProse` re-pinned to
-   what the mutant spares; unmodified copy 11/11 exit 0:
-
-   | Narrowing alone | Canary | First failing pin | Control (`droppedNearMiss` loop removed) |
-   |---|---|---|---|
-   | after-noun `(?!\s[a-z])` | red, exit 1 | `... companion here: covered` | green, exit 0 |
-   | article lookahead before noun | red, exit 1 | `... with a Postgres companion: covered` | green, exit 0 |
-   | article-led-noun lookbehind | red, exit 1 | `... with a Postgres companion: covered` | green, exit 0 |
-
-   Per-string counts under each mutant (unparsed): after-noun drops pin 1
-   only; the lookahead drops pins 2 and 3; the lookbehind drops pins 2, 3
-   and 4. The `accusedProse` comment's bar now names these pins.
-2. Header precision-cost entry rewritten to list exactly those three
-   narrowings, the prose each spares and the pinned spellings each drops,
-   matching the per-string counts. The stop-word clause is gone.
-3. The `unparsed` assertion message adds: a line that is prose and not a
-   claim is reworded, or its block is marked `${ALLOW_MARKER}`.
-
-Canary green (11/11, exit 0) and `typecheck:tests` clean. `LANDING_*`, the
-deferred maps and `LANDING_DIGEST` are untouched.
-
-## The custody broadcast admits a light account's vouch and vouch retraction (archived 2026-10-01) — archived clean at 519e6597 on the first pass
-
-### Architect archive note (2026-10-01)
-
-Reviewed 519e6597 against its parent with /ce-code-review (correctness, security, adversarial
-in-process, testing, project-standards on root CLAUDE.md, learnings): zero findings in the diff,
-all nine requirements (Scope 1-4, AC 1-5) met. The testing lens re-ran the spec in a copy of
-519e6597 (19 passed, exit 0) and six of the probe-table mutants (all killed); correctness traced
-every probe row against head and base. Signer binding agrees with the read-side signer gate, and
-vouch ops skip the gated-op scan, so they take the session-kind consume.
-
-One pre-existing P2 surfaced (security and adversarial, independently): the read-side WoT count
-admits a self-vouch from an accred_pinned account, so a WoT member one vouch short of threshold
-can stay accredited. Filed as backend-wot-read-side-drops-self-vouch. The custody.md contract
-update and the root CLAUDE.md "(comment, vote only)" line stay with the archive of
-backend-custody-allowlist-comment-options, which is still pending and so archives later.
-
-**Owner:** backend
-**Created:** 2026-10-01
-
-## Why
-
-Light accounts are meant to vouch (user decision, 2026-10-01). They cannot today, at two layers:
-the custody broadcast refuses the ops, and the profile page hides the forms. This task lifts the
-backend layer; `ui-light-account-vouch` lifts the frontend one after it.
-
-In `backend/src/routes/custody.ts`, the `custom_json` arm of `POST /api/custody/broadcast`
-admits only the actions in its `allowedActions` list (`revote`, the three credit ops and the two
-consent ops). A light account's `vouch` or `retract_vouch` gets 403 `FORBIDDEN`. That limit dates
-from when light accounts were introduced and server-side signing covered comments and votes
-only; nothing records a reason to keep vouches out.
-
-Nothing else blocks the path. Both ops carry `required_posting_auths: [voucher]`
-(`hive-schemas.md` § 2.5, § 2.6), so the stored posting key signs them. `POST /api/wot/vouch`
-and `POST /api/wot/retract` already accept a JWT through `verifyHiveSignature` and check that the
-voucher is accredited. Light accounts meet the accreditation criteria from signup
-(`ARCHITECTURE.md` "Accredited-Only Data Policy").
-
