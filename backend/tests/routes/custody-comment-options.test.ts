@@ -13,9 +13,10 @@
  *     stolen session cannot route rewards through beneficiaries;
  *   - `max_accepted_payout`, `allow_votes` and `allow_curation_rewards` carry
  *     the SPA's values. The bound comment op may edit an existing post, and
- *     the chain only lets these fields tighten, so an unpinned value could
- *     permanently disable voting or rewards on a live paper.
- * Every refusal is the pre-gate 403 FORBIDDEN: the refusal tests send NO
+ *     the chain only lets these fields tighten, so on a post still in its
+ *     payout window that nobody has voted on yet an unpinned value could not
+ *     be reverted.
+ * Every binding refusal is the pre-gate 403 FORBIDDEN: the refusal tests send NO
  * fresh-auth proof, so a refusal that ran after the gate would surface as
  * 401 FRESH_AUTH_REQUIRED instead and fail the assertion.
  *
@@ -248,8 +249,8 @@ describe.skipIf(!dbReachable)('POST /api/custody/broadcast admits comment_option
     });
 
     it('a lone comment_options op for another author is refused by the subject binding', async () => {
-      // A foreign comment is refused by the comment binding, so this bundle
-      // puts the foreign options op first to reach the options binding alone.
+      // A foreign comment op would be refused first by the comment binding,
+      // so the options op is sent by itself.
       await expectRefused(
         [optionsOp(OTHER, 'their-paper')],
         new RegExp(`comment_options author must be '${USER}'`),
@@ -308,6 +309,24 @@ describe.skipIf(!dbReachable)('POST /api/custody/broadcast admits comment_option
         [commentOp(USER, 'paper-one'), optionsOp(USER, 'paper-one', { extensions: undefined })],
         /comment_options extensions must be empty/,
       );
+    });
+  });
+
+  describe('a non-object payload is refused before the fresh-auth gate with 400 VALIDATION_ERROR', () => {
+    async function expectInvalidPayload(params: unknown) {
+      const res = await broadcast([commentOp(USER, 'paper-one'), ['comment_options', params]]);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(res.body.error.message).toBe('Invalid comment_options payload');
+      expect(sendOperationsMock).not.toHaveBeenCalled();
+    }
+
+    it('null params', async () => {
+      await expectInvalidPayload(null);
+    });
+
+    it('string params', async () => {
+      await expectInvalidPayload('paper-one');
     });
   });
 });

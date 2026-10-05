@@ -466,7 +466,7 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
 
   // Validate each operation. `commentKeys` holds the author/permlink of every
   // `comment` op validated so far, so a `comment_options` op binds only to a
-  // comment that precedes it (the chain also requires that order).
+  // comment that precedes it (for a new post, the chain also requires that order).
   const commentKeys = new Set<string>();
   for (const op of operations) {
     if (!Array.isArray(op) || op.length !== 2) {
@@ -503,9 +503,9 @@ router.post('/broadcast', verifyHiveSignature, broadcastLimiter, async (req: Req
       // post it configures and pin every policy field to the SPA's values, so
       // a stolen session can neither retarget another post's options nor route
       // its rewards. The bound comment op may be an edit of an existing post,
-      // and the chain lets these fields only ever tighten: an unpinned
-      // `allow_votes: false` or lowered payout cap would permanently disable
-      // voting or rewards on a paper already in its payout window.
+      // and the chain lets these fields only ever tighten: on a post still in
+      // its payout window that nobody has voted on yet, an unpinned
+      // `allow_votes: false` or lowered payout cap could not be reverted.
       if (typeof opParams !== 'object' || opParams === null) {
         return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid comment_options payload');
       }
