@@ -249,3 +249,64 @@ leans on that sentence.
 
 **Code review:** not run by ui, per `agents/ui/CLAUDE.md` (architect review
 at intake).
+
+---
+
+## Architect re-review (2026-10-05) — HELD PENDING FIXES:
+
+Reviewed da55b836, dcef32d7, b1aea005, f5d35df2 and 5ff74908 with
+`/ce-code-review` (correctness, project-standards, testing, adversarial,
+learnings). The entry-document assertion itself is clean. AC1 and AC3 are met,
+the plants and matcher mutants behave as the signal block says, the anchor gate
+finds nothing in the added lines, and the suite claim reproduces in a scratchpad
+copy (`tests/unit/eslint/`: 2 files, 18 passed, exit 0 at `5ff74908`; 16 at
+`da55b836^`). The hold is for two sentences of prose in
+`no-password-factor-derivation-outside-resolver.test.js`. No assertion or
+matcher change is asked for.
+
+1. **The LAYERS addendum says the name scan counts the importer's binding.**
+   Its last sentence: "a star re-export in an inline module script, which the
+   bundler does make importable, still leaves its importer writing the fetch's
+   name where it binds or calls it, which the name scan counts in any file the
+   canary reads." For an importer under `src`, an unaliased import specifier is
+   skipped by `skipStatusFetchLine`, as DETECTION in the same docblock says, so
+   the binding is not counted there. The name scan counts the importer's uses
+   of the name, and the binding only when it is aliased, because the alias
+   veto keeps an aliased specifier. Measured by the adversarial lens in
+   scratchpad copies of `5ff74908`: an unaliased import from the inline
+   script's html-proxy id, planted in a `src` module, left the suite green (18
+   passed, exit 0). A call added to the same module turned it red at the call.
+   Fix: reword the clause so it names only what is counted. The reviewer
+   offered "still leaves its importer writing the fetch's name where it calls
+   it, or where it binds it under an alias, which the name scan counts in any
+   file the canary reads" as a starting point. Before adopting it, check it
+   against an importer inside the entry document as well: no skip applies
+   there, and it is the entry-document assertion that counts, not the name
+   scan.
+
+2. **Pre-existing, bundled in by the user's decision: the occurrence-scan
+   probe's opening comment.** In `it('the occurrence scan fires on aliases,
+   indirection, and re-exports, and spares imports, prose, and the
+   definition')`, the comment says "an edit that mangles a pattern leaves every
+   scan empty and the suite stays green while the canary enforces nothing".
+   Your signal block already found this false for the three exact-map scans
+   (the name scan, import-site tracking and the password-state scan). Each
+   pins licensed entries, so a matcher that finds nothing turns it red. Only
+   the star re-export ban and the entry-document assertion, which expect no
+   sites, stay green on an empty matcher. Fix: state what the probe actually
+   defends, which your signal block also names. A sub-predicate, such as the
+   alias veto, can break on a shape the real tree does not contain, and the
+   real-tree scans cannot notice because nothing in the tree exercises it.
+
+Dismissed by the user at this review, recorded so they are not re-raised:
+
+- COVERAGE does not name the locale strings under `public/messages`, which
+  some pages render through `x-html`, as a markup surface the canary does not
+  read. No locale string carries a directive, the signal block already records
+  this shape as considered and not built, and the "Read:" list states the read
+  surface in full.
+- The entry-document self-test plants no line starting with `*` or `//`, so
+  routing `entryDocumentSites` through the JS comment skip would stay green.
+  Dismissed as preemptive hardening under the user's canary bar.
+
+Move the file back to `tasks/review/` when both sentences are fixed.
