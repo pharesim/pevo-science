@@ -56,7 +56,9 @@ endpoint, `current_version`). The editor-baseline item below is shared with
    introduces (its Scope 2 says how it must be taken); if that task has not landed when this one
    starts, introduce it here to the same rule, and whichever lands second reuses the first's.
 3. **The send rule** (native arm), in the order § 8 states, without its first rule:
-   an unchanged body sends the no-op patch (as today, whatever characters the body holds);
+   a target other than the post the latest version belongs to sends the full body, changed or
+   not (keep it as the native-edit no-op fix lands it);
+   otherwise an unchanged body sends the no-op patch (as today, whatever characters the body holds);
    otherwise `computeDiff` throwing, or a base or new body containing a character outside the
    Basic Multilingual Plane, sends the full body; otherwise the existing fallbacks (a non-head
    target, a patch not shorter than the body) send the full body; otherwise the patch.
