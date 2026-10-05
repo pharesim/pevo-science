@@ -295,19 +295,25 @@
  * space), and a word that spells a Latin letter beside a letter that could
  * pass for one is a violation in any comment, labelled or not
  * (`mixedScriptWords`). For every script but Greek that means any letter of
- * the script. For Greek it means only the letters the Unicode confusables
- * data maps to a single basic (ASCII) Latin letter once combining marks are
- * removed, as the normalisation removes them (`GREEK_LOOKALIKES`), read on
- * the letter with its accents stripped, so unit and math notation
- * (microseconds spelt with the micro sign, a Delta, an Omega, a pi) passes. A
- * look-alike is therefore folded to what it renders as or refused outright,
- * with four residuals: a confusable that is a single-script word of its own; a
- * Latin-script look-alike NFKC does not fold (a dotless `i`, a Latin alpha, a
- * small-capital `T`); a Greek letter whose confusable is such a non-ASCII
- * Latin letter (tau for that small-capital `T`, epsilon for an open `e`),
- * which hides nothing its Latin twin does not already hide; and a look-alike
- * that is a symbol rather than a letter (an APL rho, the Greek musical
- * symbols), which splits the word it sits in instead of mixing it.
+ * the script. For Greek it means only the letters in `GREEK_LOOKALIKES`, read
+ * on the letter with its accents stripped: those the Unicode confusables data
+ * maps to a single basic (ASCII) Latin letter once combining marks are
+ * removed, listed by what NFKC folds them to, as the normalisation folds and
+ * removes. The NFKC half is why final and capital sigma are refused: they are
+ * the folds of the lunate sigmas, which render as `c` and `C`. Unit and math
+ * notation (microseconds spelt with the micro sign, a Delta, an Omega, a pi)
+ * passes. A look-alike is therefore folded to what it renders as or refused
+ * outright, with four residuals: a confusable that is a single-script word of
+ * its own; a Latin-script look-alike NFKC does not fold (a dotless `i`, a
+ * Latin alpha, a small-capital `T`) or folds to a letter other than the one
+ * it renders as (a long `s`, folded to `s` though it renders as `f`); a Greek
+ * letter outside the table whose confusable is such a non-ASCII Latin letter
+ * (tau for that small-capital `T`, epsilon for an open `e`), which hides
+ * nothing its Latin twin does not already hide; and a look-alike the runtime
+ * does not read as a letter (a digit zero, a danda, an APL rho, the Greek
+ * musical symbols, a letter newer than the runtime's Unicode version) or a
+ * letter NFKC folds into a letter and a punctuation mark (an `l` with a
+ * middle dot), which splits the word it sits in instead of mixing it.
  *
  * SCOPE: VALIDATION IS WHOLE-TREE. Any structured citation, in any comment,
  * anywhere under `backend/tests`, is resolved and checked, in every file,
@@ -783,6 +789,7 @@ function normalizeCommentText(text: string): string {
 }
 
 /** Greek letters that render as a basic Latin letter, keyed by that letter.
+ *  The keys are for the reader; the check reads only the letters.
  *  The source is the Unicode confusables data (UTS #39, `confusables.txt`):
  *  every Greek letter whose prototype, with its combining marks removed, is
  *  one ASCII letter, listed by what NFKC leaves of it. Both halves are how the
@@ -1979,6 +1986,10 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     // as its Latin twin always has (tau beside a small-capital T, epsilon
     // beside an open e).
     expect(mixedScriptWords(normalizeCommentText('settings.\u03C4est.ts settings.t\u03B5st.ts settings.\u1D1Best.ts settings.t\u025Bst.ts'))).toEqual([]);
+    // And the residuals that never reach this check as a mixed word: a digit
+    // zero for the `O` and an `l` with a middle dot each split the word, and
+    // a long `s` folds to a plain `s`.
+    expect(mixedScriptWords(normalizeCommentText('C0MPANION Rea\u0140-path \u017For'))).toEqual([]);
     // Every other script keeps the whole-script rule: a Lisu letter that
     // renders as `R` and a Coptic one that renders as `P`.
     expect(mixedScriptWords('\uA4E3eal-\u2CA2ath')).toEqual(['\uA4E3eal', '\u2CA2ath']);
