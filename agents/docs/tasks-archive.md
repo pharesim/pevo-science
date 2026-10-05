@@ -1,3 +1,204 @@
+## Custody routes trust a token's light claim for a row that was never light (archived 2026-10-05) — one review round; the four light-claim custody routes gate on the row's derived claim; R1 and R3 filed as backend-custody-row-gate-overclaim-and-upgrade-write-predicate; R2 and R4 dismissed
+
+### Architect archive note (2026-10-05)
+
+Review of c18d37cf with /ce-code-review (full: correctness, security, in-process adversarial,
+testing, project-standards, learnings; the validator batch was empty). Clean: no primary findings,
+Scope 1 to 3 and AC 1 to 4 met. Orchestrator probe on a git-archive copy of c18d37cf:
+custody-state-g-light-claim.test.ts 4/4 green, and 4/4 red with the four row checks disabled
+(broadcast 500, fresh-auth 200, session-auth 200, upgrade 401), matching the signal block.
+Security and correctness reproduced that control; correctness ran the AC 2 suites green.
+
+Triage (user: "as recommended"):
+- Filed backend-custody-row-gate-overclaim-and-upgrade-write-predicate (low). R1: the two
+  custodyClaimFor docblock sentences and the orcid.ts handleLogin sentence say every light-claim
+  route re-reads the row and refuses it, while /broadcast answers an idempotency hit with 200
+  already_landed before its row read. R3: the /upgrade UPDATE has no state predicate, so a G row
+  swapped in during the getAccounts await would still be moved to D.
+- Dismissed: R2 (AC 1's wording against the /broadcast idempotency-hit path; the specified
+  outcome, nothing signed or written); R4 (the SPA upgrade wizard under a stale light claim for a
+  G row broadcasts account_update and then gets the 403; it needs two devices plus a delete and a
+  Keychain re-add inside one JWT's life, and the wizard confirms the new seed first).
+- [TODO Architect] ARCHITECTURE.md § 6.2 State G and the § 6.4 /fresh-auth and /upgrade rows:
+  rewritten in the archive commit to describe the row-derived gate.
+- Compound: no (the stale-light-JWT path is recorded in ARCHITECTURE.md § 6.2 State G).
+
+**Owner:** backend
+**Created:** 2026-10-05
+**Priority:** high
+
+Surfaced by the architect re-review of the state-G account-state comments task and approved
+for filing by the user on 2026-10-05.
+
+## Why
+
+The four custody routes that act on a light claim (`POST /api/custody/broadcast`,
+`/fresh-auth`, `/session-auth`, `/upgrade`) gate on `req.hiveCustody === 'light'`.
+`verifyHiveSignature` takes that value from the presented JWT. From the row, each route reads
+`upgraded_at` (plus `password_hash` on the two proof routes, and the encrypted posting key on
+`/broadcast`) and refuses a row with an epoch. That refuses every upgraded row. It does not
+refuse a row that was never light. A state G row (ARCHITECTURE.md § 6.1) has `custody` NULL and
+no `upgraded_at`, so only the token's claim stands between it and these routes.
+
+A `'light'` JWT can reach a G row:
+
+1. A light account (A, B or C) is deleted through `DELETE /api/settings/email`. Deleting the row
+   deletes its `sessions_invalidated_at` with it, so `verifyHiveSignature` has no epoch to
+   revoke the account's JWTs against.
+2. `POST /api/auth/session` re-mints whatever claim the presented token carries, with a new
+   `iat` and a full expiry, so the token can be kept alive.
+3. The same username registers an email through the settings add flow (Keychain signature
+   path). The INSERT stamps no `sessions_invalidated_at`, so the old token is still live.
+4. Once the G row's email is verified and it has a password (ORCID linked, then
+   `POST /api/settings/set-password`), the light JWT plus that password mints a consent-kind
+   proof at `/fresh-auth` (for example `change_email` or `delete_account`, which the settings
+   mechanism check accepts because it reads only `password_hash` and `orcid`) or opens a
+   session window at `/session-auth`.
+5. `/upgrade` needs no password. The light JWT plus a signature from a key in the account's
+   on-chain key set moves the G row to `custody = 'self'` with `upgraded_at` set: the UPDATE
+   is `WHERE username = $1` with no state predicate. § 6.3 lists no G → D transition. If the G
+   row's email is still unverified, the result carries a hex `verify_token` and an epoch, a
+   combination § 6.1 does not enumerate (§ 6.5 invariant #4).
+
+Nothing is escalated today. Step 4 needs the G row's password, step 5 needs the owner's key,
+and `/broadcast` fails for a G row because it holds no encrypted posting key. The defect is
+that the routes rest their authority on a claim the row no longer backs, and the code's own
+descriptions state a rule the code does not implement:
+
+- `routes/settings.ts`, both fresh-auth factor tables (the POST /email and DELETE /email
+  headers), the State G line: "'orcid' when linked (the password issuer refuses its non-light
+  claim)". This wording came from an architect hold, not from an implementer miss. It becomes
+  true once the issuer refuses the row.
+- `lib/custody-claim.ts`, the `custodyClaimFor` docblock: "Every route that ACTS on a light
+  claim re-reads `upgraded_at` itself and refuses a row that carries one", and the closing
+  paragraph's "each of those re-reads the epoch and refuses the row the copy names". Both hold
+  for an upgraded row and say nothing true about a G row, which has no epoch to re-read.
+- ARCHITECTURE.md § 6.2 (State G) and § 6.4 (the password fresh-auth row and the upgrade row)
+  now record this divergence and the intended gate.
+
+## Scope
+
+1. In each of the four routes, refuse the row unless `custodyClaimFor(row) === 'light'`: add
+   `custody` to the row SELECT the route already makes and call the helper on that row. Keep
+   the token-claim check where it is (it answers a `'self'` token without a row read), and keep
+   each route's existing `upgraded_at` branch and its response unchanged, so a D row answers
+   exactly as it does today. The new refusal sits after the `upgraded_at` branch and answers
+   with the response the route already gives a non-light token claim: no new status, code or
+   message, and no write.
+2. Re-read the settings.ts State G line in both tables against the new gate, and correct the
+   `custodyClaimFor` docblock so it states the rule the routes now apply (the row's derived
+   claim, with the epoch branch answering first). Sweep `backend/src` and `backend/tests` for
+   other comments that say these routes refuse by `upgraded_at` alone or that a G row's JWTs
+   cannot carry a light claim, and report what the sweep found.
+3. Tests: for each of the four routes, a G row (username set, `custody` NULL, no
+   `upgraded_at`) presented with a `'light'`-claim JWT is refused with the non-light response,
+   and the row is unchanged afterwards (for `/upgrade`, `custody` and `upgraded_at` still
+   NULL). The existing light-row and upgraded-row cases must keep passing unchanged.
+
+## Acceptance criteria
+
+1. A G row presented with a `'light'` JWT gets the route's non-light refusal from
+   `/broadcast`, `/fresh-auth`, `/session-auth` and `/upgrade`: no proof, no session window, no
+   broadcast, no row write.
+2. A/B/C rows with a light JWT and D rows behave exactly as before (same statuses, codes and
+   messages).
+3. Every comment that describes these gates is true against the new code, including the
+   settings.ts State G line and the `custodyClaimFor` docblock.
+4. Comment-anchor conventions hold (root CLAUDE.md "Comment anchors").
+
+## Backend implementation signal (2026-10-05, commit c18d37cf)
+
+**Gate (AC 1, 2).** In `POST /api/custody/broadcast`, `/fresh-auth`, `/session-auth` and
+`/upgrade` the row SELECT now reads `custody`, and after the unchanged `upgraded_at` branch the
+route refuses the row unless `custodyClaimFor(row) === 'light'`. Each handler declares one
+`refuseNonLight` closure that both the token-claim check (still first, still before any row
+read) and the new row check call, so the two answers are identical by construction. No write
+precedes either refusal. `/broadcast` keeps its existing order: the fresh-auth proof is consumed
+before the row read, as it already was for a D row.
+
+**Tests (AC 1, 2).**
+- New `backend/tests/routes/custody-state-g-light-claim.test.ts`, mock-free. Per route: a
+  verified G row with a password and an ORCID, the same request under a `'self'` and a `'light'`
+  JWT. It asserts both answers are the route's 403 FORBIDDEN non-light envelope, byte-equal, and
+  that a row snapshot (custody, upgraded_at, password_hash, orcid, verify_token,
+  sessions_invalidated_at, updated_at, both key columns) is unchanged. `/fresh-auth` and
+  `/session-auth` also pass `expectNoSessionProof`; `/upgrade` also asserts custody and
+  upgraded_at still NULL.
+- Red before the gate (first draft, chain key set stubbed): `/broadcast` 500 "Posting key not
+  available", `/fresh-auth` 200 with a proof, `/session-auth` 200 with a window, `/upgrade` 200
+  with the row moved to custody 'self'. The committed mock-free file, probed with the four row
+  checks disabled: 500 / 200 / 200 / 401 (the live chain lookup), all four red.
+- AC 2: the 27 files that drive these routes or the helper passed (453 tests) with no assertion
+  changed. Four mocked-pool fixtures modelled a light row without the `custody` column and so now
+  derive `'self'`; they gained `custody: 'light'` (`custody.test.ts` default row,
+  `custody-idempotency.test.ts`, `custody-session-auth-argon-errors.test.ts` seed).
+- `no-custody-claim-derivation-outside-helper.test.ts` pins the helper's caller set; the four
+  routes join `ALLOWED_HELPER_CALL_SITES`. That file is also the subject of
+  `backend-custody-canary-unpinned-surfaces` in `review/`; this commit touches only the caller
+  list, its docblock, the mint-list docblock's first sentence and one assertion message.
+
+**Comments (AC 3, 4).** Rewritten: the `custodyClaimFor` docblock (the "what per-read excludes"
+paragraph and the closing paragraph now state the derived-claim rule with the epoch branch
+answering first), both settings.ts State G lines ("its" became "the row's"), and the
+`handleLogin` sentence in orcid.ts that gave the `upgraded_at` re-read as the reason a minted
+claim needs no re-check.
+
+Sweep, as asked: four read-only finders (by route path, by the epoch, by the claim, by state G)
+over `backend/src`, `backend/tests` and, report-only, `agents/docs/api-contracts/`, 228 comment
+sites judged, then two skeptics per flagged site. Nine sites upheld, two refuted.
+- Fixed in this commit:
+  - `custody.test.ts` `/upgrade` outer-catch spec: "SELECTs only `upgraded_at`" deleted (its
+    task-slug prefix went with it).
+  - `custody-upgrade.test.ts` missing-row spec: "after the SELECT shape change to just
+    `upgraded_at`" deleted (its hold ordinal went with it).
+  - `custody-session-auth-argon-errors.test.ts`: the header's column list deleted.
+  - `no-custody-claim-derivation-outside-helper.test.ts`: "The helper callers that also mint" is
+    no longer true now that `/upgrade` calls the helper and mints a literal; narrowed to "whose
+    mint binds the helper's result", and one assertion message to "mints a variable claim".
+  - `custody-non-consent-fresh-auth.test.ts` header: "State D: broadcast -> 403
+    ALREADY_UPGRADED regardless of proof" became "403 FORBIDDEN". Pre-existing and false before
+    this change (ALREADY_UPGRADED is `/upgrade`'s 409, and a missing proof answers 401 first);
+    fixed under AC 3 because it describes the `/broadcast` gate.
+- Refuted, true as written: orcid.ts "in steady state the shape reaches them only on a state C
+  row", and the `custody-fresh-auth-null-hash.test.ts` header.
+- No comment says a G row's JWTs cannot carry a light claim.
+  `orcid-state-g-unverified-email.test.ts` "Keychain-derived JWTs carry the self claim" is scoped
+  to Keychain-derived tokens and true.
+- Only the four custody routes read `req.hiveCustody` to grant anything; `POST /api/auth/session`
+  carries it forward. No other route has this defect.
+
+**[TODO Architect] ARCHITECTURE.md now describes the old behaviour** (architect zone, not
+edited):
+- § 6.2 State G: the "Intended: ... Divergence today: ... A backend task moves those gates onto
+  the row's derived claim" passage.
+- § 6.4 password fresh-auth row: "A G row is refused only through the token's claim today ...;
+  the intended gate is the row's derived claim."
+- § 6.4 upgrade row: "but today a `'light'` JWT left over from an earlier light row of the same
+  username passes the claim gate".
+
+**Verification.**
+- `npm run typecheck` clean. `npm run lint`: 0 errors, one pre-existing warning in
+  `lib/author-supersession.ts`.
+- Full backend suite, run once before the sweep and simplify edits: 20 failed / 2710 passed in
+  10 files.
+  - Seven of those files fail on clean main per earlier baselines: idempotency-real-haf,
+    papers-enrichment-parity-gate, accreditation-idempotency, profile-auth-bypass,
+    cast-hardening-author-index-weight, accreditation (the two cap specs), reviews (the two gate
+    specs).
+  - `signup-verify-orcid-binding-guard` passes alone.
+  - `fresh-auth-consent-op-burn-offline-queue` fails alone too, but its import graph (config,
+    redis, lib/fresh-auth, logger, response, body-record, hive-permlink) holds no file this
+    commit changes.
+  - `no-unresolvable-carve-out-companion-citation` was this change's (the first draft's clause
+    (c) prose); fixed by making the new file mock-free.
+- After the final edits: the 13 affected files (the new suite, the four route suites whose
+  fixtures or comments changed, the session-auth, null-hash, orcid and settings-email suites, and
+  the derivation, citation and comment-anchor canaries) pass, 230 tests. The one orcid.test.ts
+  lock-release spec that failed in that batch passes alone; the orcid.ts diff is comment-only.
+- `/ce-simplify-code` ran (reuse, quality, efficiency): 7 applied, 2 skipped (hoisting a message
+  literal that was already duplicated before this change; the two NULL asserts AC 1 names).
+- Code review: not run by backend; the architect runs `/ce-code-review` at intake.
+
 ## Pin the custody-derivation canary's unpinned surfaces (archived 2026-10-05) — two review rounds; four scope items landed with a 43-mutant record; four prose hold items fixed; one confirmed P3 and three implementer triage items filed as backend-custody-canary-docblocks-overclaim-coverage
 
 ### Architect archive note (2026-10-05)
@@ -47,204 +248,3 @@ the round-5 review rather than reasoned about:
    scan. Every other scanner in the file carries planted positives and
    negatives, and the sibling canary
    `no-session-proof-mint-outside-reauth-routes.test.ts` pins its identical
-   copy of this same pattern with three probes. Mangle `JWT_MINT_RE` here and
-   the scan finds no mints at all, which every emptiness assertion in the mint
-   test satisfies.
-2. `ALLOWED_LITERAL_CLAIM_SITES` and `ALLOWED_CLAIM_CARRY_SITES` are read only
-   through `.includes`. `ALLOWED_HELPER_CALL_SITES` in the same file gets a
-   set-equality assertion against the observed sites. The asymmetry means a
-   silently added entry, or an entry that has gone stale, is undetected in the
-   two lists that license a claim.
-3. The mint classification is a key-set membership test with no per-symbol
-   tally, so a SECOND mint inside a symbol that is already licensed adds no new
-   member and is never named. The file's own docblock states that a site which
-   mints is refused by the claim-source classification; that is true only
-   outside the allowed keys.
-4. `mintPayload` walks one line past a mint whose parens open and close on the
-   mint's own line: the `depth <= 0` break carries a positional term and is
-   evaluated after the line has already been appended. A one-line
-   `jwt.sign(...)` followed by a line carrying a custody key classifies as
-   `'literal'` or `'variable'` instead of `'none'`. Unreachable today because
-   all eight mint sites in `backend/src` open multi-line, and the direction is
-   a false positive rather than a missed violation, so this is latent, not
-   live. Nothing pins the walk's START line either: changing it to begin one
-   line lower leaves the whole file green.
-
-## Scope
-
-1. Plant positive and negative probes for `JWT_MINT_RE`, mirroring the shape
-   the sibling canary already uses for its copy. Include a non-empty assertion
-   on the mint scan so "no violations" and "no mints found" stop being the same
-   observation.
-2. Add set-equality assertions for both claim allow-lists against the sites
-   actually observed by the scan, matching how `ALLOWED_HELPER_CALL_SITES` is
-   already enforced.
-3. Make the mint classification a per-symbol tally rather than a membership
-   test, so a second mint inside an allowed symbol is a new red bar. Correct
-   the docblock sentence that states the mint-site refusal without its
-   outside-the-allowed-keys qualifier.
-4. Fix `mintPayload`'s overrun by replacing the positional break term with an
-   explicit record that a paren was opened, and plant the two probes that
-   cannot exist against the current shape: a single-line mint followed by a
-   custody-carrying line, and one that pins the walk's start line.
-
-## Acceptance criteria
-
-1. Every scanner and every budget constant in the file is pinned by at least
-   one probe that goes red when it is mutated. Demonstrate this per item by
-   mutating the shipped file and recording which assertions red; a green run on
-   the clean tree proves nothing.
-2. The mint test can distinguish an empty violation set from an empty mint set.
-3. Both claim allow-lists red on a silently added entry and on a stale one.
-4. A second mint inside an already-allowed symbol is reported by name.
-5. The `mintPayload` fix reproduces every existing probe result in the file,
-   including both cap-boundary pairs, before it is considered done.
-
-## Notes
-
-- The whole-file scan and both cap-boundary pairs landed in
-  `backend-custody-column-self-alignment` and are correct; do not disturb them.
-  Item 4's fix in particular must leave both pairs green.
-- Enumerate valid-syntax evasions before calling any item verified, and mutate
-  INSIDE an allowed symbol rather than only outside one. A guard that is green
-  on the clean tree has demonstrated nothing about what it refuses.
-- Scope boundary worth stating in the file while you are there: the scan covers
-  `.ts` under `backend/src` only. Content under `backend/scripts/`, other module
-  extensions, and build output are outside every scan in this file, and the
-  prose does not currently say so.
-
-## Backend implementation signal (2026-09-30, commits `309f9c47`, `5f30b2b2`, `87b21065`)
-
-All three commits touch one file,
-`backend/tests/eslint/no-custody-claim-derivation-outside-helper.test.ts`, and
-each is an ancestor of `main` (`git merge-base --is-ancestor` checked).
-`npx vitest run tests/eslint/` at `87b21065`: 9 files, 141 tests, exit 0.
-`npm run typecheck` and eslint on the file clean. The file holds 8 `it` blocks.
-
-**What landed, per scope item**
-
-1. `JWT_MINT_RE` is read through one helper, `mintColumns`, which both the scan
-   and the spelling probes use, so the probes pin what the scan matches with,
-   flags included. Planted positives and negatives, every unseen spelling the
-   docblock names, and a non-empty assertion on the tree scan.
-2. The literal and carry lists are compared by tally against the mints the scan
-   observed. Added, stale and duplicated entries are each red.
-3. The scan returns a list (one entry per match, so two mints on one line are
-   two), and each licence list is a tally expectation: one entry, one mint. The
-   helper callers that mint got a list of their own, `ROW_READING_MINT_SITES`,
-   because calling the helper is not a licence to mint: the two settings
-   handlers call it and issue no session. A second mint inside any licensed
-   symbol shows in the failure diff as `"<file>#<symbol>": 2`. The docblock
-   sentence on the mint-site refusal carries its qualifier.
-4. `mintPayload` counts parens from the mint's own column and ends on the line
-   where the count returns to zero after a paren was opened. Probes: a one-line
-   mint followed by a custody-carrying line in both spellings, the walk's start
-   line in both directions, a paren closed ahead of the mint, a second opener
-   after the close, and the end of walk plus both cap-boundary values on the
-   column path the tree scan takes.
-
-Scope boundary (`.ts` under `backend/src` only) is stated in the top docblock.
-
-**Deviation from the literal scope, flagged:** item 3 asked for a tally; it did
-not ask for a new list. `ROW_READING_MINT_SITES` is one. Without it the
-helper-caller half of the second-mint refusal had to live inline in the tree
-test, where the first mutation pass disabled it with the file green.
-
-**Acceptance criterion 1: mutation record at `87b21065`**
-
-Run in a scratch copy built with `git archive`, `tests/setup.ts` stubbed, one
-mutation at a time, byte-exact restore confirmed with `cmp`. 43 of 43 red, no
-parse errors. Summary by item (mutation: what went red):
-
-- Item 1. Pattern matches nothing: the tree non-empty assertion, the planted
-  scan and the cap pair through the scan. Drop `\b`, drop `\s*`, admit
-  `jsonwebtoken`, admit `sign\w*`, admit whitespace round the dot, lookbehind
-  for `\b`: one spelling probe each. `mintColumns` with `gi`, with a hardcoded
-  narrowed pattern, returning the first match only: red. Scan confined to
-  `routes/`, scan without the block-comment region, scan without the comment
-  skip: red.
-- Item 2. Literal list entry added, removed, duplicated; carry list entry
-  added, emptied, duplicated; row-reading list entry removed, settings handler
-  added: red at the matching tree tally assertion each time.
-- Item 3. `tally` always 1, saturating at 2; `keysOf` deduping; caller test by
-  prefix; literal or claimless bucket dropping helper callers; partition
-  swapped; symbol resolved one line up; site label off by one; classifier
-  precedence swapped: red.
-- Item 4. The old break shape; the `opened` flag dropped; counting from column
-  0; the column applied to every line; the column ignored; start one line
-  lower; start one line higher; cap bound `<`; no cap on the column path; cap
-  one short on the column path; `STATEMENT_SCAN_CAP` at 11 and at 13: red.
-
-Tree-side (canary untouched, `backend/src` mutated): a second literal, variable
-or claimless mint inside `POST /upgrade`, `POST /login`, `POST /session` and
-`POST /recover/verify`, after the first, on its line and on its closing line;
-a first mint in either settings handler; a removed mint at a row-reading,
-carry or literal site; a new handler minting each kind; a one-line claimless
-mint followed by a custody line: all red, offending symbol named.
-
-**Acceptance criteria 2 to 5:** 2 met twice (the non-empty assertion, and the
-tally equalities, which an empty scan also fails). 3 met, duplicates included.
-4 met. 5 met: no pre-existing probe was changed or removed, and both
-cap-boundary pairs are untouched and green.
-
-**Left alone on purpose**
-
-- `STATEMENT_JOIN_CAP` is unpinned at 1, 2, 3, 5 and 40. That is round-5 item 2
-  of `backend-custody-column-self-alignment`, still pending, same file.
-
-**For architect triage: survivors outside the four items**
-
-Found by the mutation passes on surfaces this task did not own. Not fixed, not
-filed. The first two are now stated as residuals in the scan-3 docblock; the
-third is stated there too.
-
-1. The classifier reads the text of the call's lines, not the payload object.
-   Inside a licensed symbol, a mint that drops its claim stays green when a
-   bare `custody` sits in the options argument, a nested object, a trailing
-   comment, or as another key's value.
-2. A literal licence does not check which literal. `'self'` flipped to
-   `'light'` at `POST /upgrade` is green. Whether a behavioural test catches
-   that flip was not checked.
-3. Licence keys collide for two declarations that resolve to one name in one
-   file: a second registration of the same method and path, or a nested
-   function named like a licensed one, absorbs a mint moved out of the
-   original.
-4. Term-level survivors on older patterns: `LITERAL_CLAIM_RE` (double-quote and
-   backtick styles, leading `\b`, spacing round the colon), `VARIABLE_CLAIM_RE`
-   (the `\w` half of the lookbehind), `EPOCH_TERNARY_RE` (the `light`
-   alternative: every positive probe has `self` first, so an inverted ternary
-   is unpinned), `COLUMN_DESTRUCTURE_RE` (10 of 16 mutations green, including
-   "custody must be the first member"), `COLUMN_COPY_RE` (`<>` and `$` in the
-   whitelist, bracket quote styles), `BLOCK_OPENER_RE` (over-matching is
-   green), `HELPER_CALL_RE` and `HELPER_DEFINITION_RE` (loosenings green).
-5. `HELPER_MODULE` can be pointed at any other real module, or the exemption
-   removed, with the file green: the helper's own module matches no shape
-   today, so the exemption licenses nothing.
-6. `statementFrom` re-inlining a literal 12 with the constant moved to 13 is
-   green. The mirror mutation on `mintPayload` is red.
-7. The tree test's tally assertions are sequential hard expects, so a mutation
-   that breaks two buckets names only the first.
-
-## Architect re-review (2026-10-01) — HELD PENDING FIXES:
-
-Reviewed `6522283e..87b21065` (the three commits above, one file) with
-`/ce-code-review` (correctness, adversarial, testing, maintainability,
-project-standards, learnings) plus an independent validator, which confirmed
-items 1 and 2. The review read the `87b21065` snapshot. HEAD has moved since:
-`cca00888` and `146ce7de` (other tasks) edited this file and
-`tests/support/enclosing-symbol.ts`. Make the fixes on current HEAD. The
-sentences quoted below are unchanged there.
-
-Verified and NOT held:
-- Scope items 1 to 4 and the scope-boundary sentence all landed. At
-  `87b21065` the file runs 8 tests, exit 0, and `tests/eslint/` runs 9 files
-  and 141 tests, exit 0. The testing lens reproduced the cap, partition,
-  start-line, column-path, symbol and label mutants, all eight allow-list
-  add/remove/duplicate mutants and nine tree-side second-mint and claim-flip
-  mutants. All of them went red. Both cap-boundary pairs are untouched.
-- The `ROW_READING_MINT_SITES` deviation is accepted. The helper-caller half of
-  AC4 needs it, and a non-caller entry in it reds as stale.
-- The 8 `jwt.sign(` sites under `backend/src` at `87b21065` are 3 literal,
-  1 carry and 4 row-reading, which matches the three lists.
-
-AC1 is read as the four scope items, and it is met for them. Your
