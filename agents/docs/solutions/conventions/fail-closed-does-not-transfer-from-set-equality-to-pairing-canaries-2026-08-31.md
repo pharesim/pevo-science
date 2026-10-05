@@ -11,6 +11,7 @@ applies_when:
   - "Citing the enclosing-symbol resolver's module-scope fallback as fail-closed protection for a canary whose assertion shape differs from the one that property was verified against"
   - "Extending an existing set-equality canary into a pairing assertion, or adding a pairing assertion beside one"
   - "Reviewing a canary whose satisfying set is produced by another scan rather than by a fixed allowlist"
+  - "Licensing a module-scope key (`file.ts#<module>`) in a set-equality allowlist"
 related_components:
   - development_workflow
   - authentication
@@ -38,15 +39,25 @@ resolver's fail-closed property.
 
 **Set-equality** compares the key set against a fixed allowlist of named sites. A
 `#<module>` key can never equal a named handler, so an unresolvable occurrence is a red
-bar. This is genuinely fail-closed, and the canary that uses it pins the property
-explicitly rather than assuming it.
+bar. That holds exactly as long as the allowlist names no module-scope key. The mint
+canary pins it for its caller scans (an aliased import is caught because it resolves to
+module scope, which is never an allowed key there). An allowlist that does license
+`file.ts#<module>` loses the property for that file: the key stands for every line that
+resolves to it, so a second module-scope occurrence, or one the resolver places outward
+at module scope, rides on the licensed key. The mint canary's keyspace-literal assertion
+once licensed `lib/fresh-auth.ts#<module>` and was absorbed exactly that way. It now
+skips its one admitted definition line by shape, expects no keys, and pins separately
+that exactly one such line exists and resolves to module scope. Set-equality has a second
+silent path that is not about this bucket: a wrong answer that names an allowed function
+absorbs the occurrence. `enclosing-symbol.ts`'s SET-EQUALITY bullet says which resolver
+shapes do that.
 
 **Pairing** asserts that every occurrence of X is accompanied by an occurrence of Y under
 the same key, by filtering one scan's keys against a set built from another scan:
 
 ```js
-const consumes = occurrencesOf(sources, CONSUME_CALL_RE, ...);
-const epochs = new Set(occurrencesOf(sources, EPOCH_REF_RE, isCommentLine).keys);
+const consumes = occurrencesOf(sources, CONSUME_CALL_RE, skipCommentLine);
+const epochs = new Set(occurrencesOf(sources, EPOCH_REF_RE, skipCommentedOut).keys);
 const offenders = consumes.keys.filter((key) => !epochs.has(key));
 ```
 
@@ -73,7 +84,9 @@ author who built on it. Its reasoning ("a wrong symbol is a new member of the oc
 set and therefore a red bar, never a silent pass") is airtight for a fixed allowlist and
 does not hold when the comparison set is another scan's output. That docblock now splits
 the claim in two, SET-EQUALITY and PAIRING, and states the rule every pairing scan must
-follow; the hand-ported frontend copy carries the same split.
+follow. The hand-ported frontend copy carries the same two-way split, but the two copies
+have scoped their SET-EQUALITY bullets at different times, so read each copy's own
+docblock rather than assuming they match.
 
 Never exercised live: every real occurrence in the tree resolves inside a named function or
 route handler, so no false pass ever shipped. What was a latent property of the harness is
@@ -91,9 +104,12 @@ unresolved demand-side occurrence an offender in its own right rather than somet
 can be paired away:
 
 ```js
-// `isModuleScopeKey` is exported from tests/support/enclosing-symbol.ts; do not re-derive it.
+// `isModuleScopeKey`, `isCommentedOut` and `skipCommentLine` are exported from
+// tests/support/enclosing-symbol.ts; do not re-derive them. The satisfying side skips by
+// shape (`isCommentedOut`), because there an over-match is the silent failure.
+const skipCommentedOut = (line, i, lines) => isCommentedOut(line, i, lines);
 const epochs = new Set(
-  occurrencesOf(sources, EPOCH_REF_RE, isCommentLine).keys.filter((k) => !isModuleScopeKey(k)),
+  occurrencesOf(sources, EPOCH_REF_RE, skipCommentedOut).keys.filter((k) => !isModuleScopeKey(k)),
 );
 const moduleScoped = consumes.keys.filter(isModuleScopeKey); // asserted empty in its own right
 const offenders = consumes.keys.filter((key) => !epochs.has(key));
@@ -130,7 +146,10 @@ Before trusting an existing self-test or docblock to cover a new canary, ask whi
 uses:
 
 - **Set-equality or allowlist membership** (`toEqual(ALLOWED)`): the module-scope bucket is
-  safe by construction, no extra handling needed.
+  safe only while the allowlist holds no module-scope key. If one module-scope line must be
+  admitted, do not license its key. Either skip that line by shape and pin separately how
+  many such lines exist and where they resolve, or count occurrences per key so that an
+  arrival raises a count instead of riding on the key.
 - **Pairing or co-occurrence** (`X.keys.filter(k => !Y.has(k))`, or any "every A needs a
   matching B"): the bucket must be excluded from the satisfying set and asserted against
   directly on the demand side.
