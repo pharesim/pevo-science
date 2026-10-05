@@ -123,13 +123,14 @@
  *     rebinding shape that writes neither the function's name nor the
  *     property's.
  *
- * The entry-document assertion applies the name scan and the password-state
- * scan there, with nothing licensed. Import-site tracking and the star
- * re-export ban add nothing in that file. With no specifier skip, an import
- * there that names the fetch already fails. And a star re-export in an
- * inline module script, which the bundler does make importable, still leaves
- * its importer writing the fetch's name where it binds or calls it, which
- * the name scan counts in any file the canary reads.
+ * The entry-document assertion applies the patterns of the name scan and the
+ * password-state scan there, with nothing licensed and none of the skips
+ * DETECTION describes. Import-site tracking and the star re-export ban add
+ * nothing in that file. With no specifier skip, an import there that names
+ * the fetch already fails. And a star re-export in an inline module script,
+ * which the bundler does make importable, still leaves its importer writing
+ * the fetch's name where it binds or calls it, which the name scan counts in
+ * any file the canary reads.
  *
  * Residuals, pinned in prose rather than silently absorbed. Three, and each
  * one is left to review of the diff for its own reason.
@@ -909,11 +910,11 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
   });
 
   it('the entry-document scan fires on markup, an inline script, and an HTML comment alike', () => {
-    // Planted shapes for the entry-document matcher, for the reason the walk's
-    // scans carry theirs: a matcher that returns nothing leaves the
-    // entry-document assertion green while it enforces nothing. A line naming
-    // neither identifier, and one naming a longer identifier that merely
-    // starts with the discriminator, mint no site.
+    // Planted shapes for the entry-document matcher. The entry-document
+    // assertion expects no sites, so a matcher that returns nothing leaves it
+    // green while it enforces nothing, and only these shapes go red. A line
+    // naming neither identifier, and one naming a longer identifier that
+    // merely starts with the discriminator, mint no site.
     expect(
       entryDocumentSites([
         '<div x-data x-show="$store.reauthModal.open">',
