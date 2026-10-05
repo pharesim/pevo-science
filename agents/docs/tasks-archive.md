@@ -1,3 +1,232 @@
+## Password reset gates on no account state (archived 2026-10-05) — clean first review; reset rotates an existing password and never adds one; three follow-ups filed, the test gaps dismissed
+
+### Architect archive note (2026-10-05)
+
+Review of 8bf9283a, bd5d7e28 and 1dd8776a with /ce-code-review (full: correctness, security,
+in-process adversarial, testing, project-standards, learnings; the validator batch was empty).
+Clean: no findings. Scope items 1 to 4 and AC 1 to 3 are met. The testing reviewer ran the new
+suite in a git-archive copy of 1dd8776a: 17 passed, 0 skipped. Five planted mutants (reset-request
+gate dropped, UPDATE gate dropped, rowCount refusal deleted, refusal message changed, sentinel
+burn skipped) were all killed.
+
+Triage (user: "as recommended"):
+- Filed `backend-reset-tokens-outlive-email-changes-and-recovery` (high). It covers the signal's
+  "tokens survive email changes" item, the review's residual risk that a refused token works
+  again once set-password re-adds a password, the review's residual risk that a legacy
+  unverified G row with a password still gets a reset link, and the backend half of the
+  `RESET_REQUEST_OK_MESSAGE` overclaim.
+- Filed `ui-reset-request-copy-promises-a-link` (low): the UI half of the overclaim.
+- Filed `backend-orcid-path-f-resume` (normal): the ORCID-proven resume path the user approved.
+- Dismissed: the refused-reset specs do not pin "no audit row, token untouched" (preemptive test
+  hardening). No spec covers an expired token on a passwordless row; that case also shows the
+  signal's claim that only a concurrent password drop separates a lookup-placed gate from an
+  UPDATE-placed one is wrong. No code comment carries the claim. The signal's SELECT-only
+  mutant note is dismissed with it.
+- The doc updates stay with `architect-password-reset-gate-docs`, which now notes the follow-up.
+- Compound: no.
+
+**Owner:** backend
+**Created:** 2026-10-05
+**Priority:** high
+
+Surfaced by the backend while working on the custody-column alignment (since
+archived): it was the mechanism behind a rejected stuck-recovery predicate.
+Approved for filing at that task's archive. This is an account-state defense
+divergence between the documented state machine and the code.
+
+## Why
+
+ARCHITECTURE.md § 6.3 ("Forgot password") documents reset as
+`A → A` and `B → B` only, and says "C cannot use /reset". § 6.4 lists reset's
+per-state availability as "A and B (states with email AND password)".
+
+The code gates on neither. `POST /api/auth/reset-request` selects the row by
+email alone (`SELECT id, username FROM accounts WHERE email = $1`), and
+`POST /api/auth/reset` selects by reset token alone and writes the new
+`password_hash` unconditionally. So any row carrying an email can be reset,
+whatever its state. What that reaches, as far as can be read from the code
+(measure it, do not take this list as given):
+
+- A state C row that carries an email gains a password: C → B through an edge
+  § 6.3 says does not exist.
+- A D or G row with no password gains one; a D or G row with a password has
+  it rotated.
+- A pre-finalize E or F row has its password rotated, or set on an F row from
+  the ORCID path, and gets a `sessions_invalidated_at` stamp.
+
+Reset is also the one route a confused user reaches for while locked out, so
+whatever rule lands must not strand a legitimate recovery. In particular, a
+user part-way through signup who forgot their password resumes through
+`POST /api/auth/resume-signup`, which authenticates by email and password, so
+resetting the password on an E or F email-path row is plausibly a flow that
+has to keep working.
+
+## Scope
+
+1. Measure first. For every state in § 6.1 (A, B, C, D, G, E, F, and F on the
+   ORCID path), drive `reset-request` and `reset` against real Postgres and
+   record what each does to the row today. Use route tests, not reasoning.
+2. Default rule to implement unless step 1 shows it strands a legitimate flow:
+   **reset rotates an existing password and never adds one.** Refuse a row
+   whose `password_hash` is NULL, at both ends. `reset-request` keeps its
+   uniform response and simply issues no token. `reset` refuses with its
+   existing invalid-token shape, so a token issued before the gate landed
+   cannot add a password either. This refuses C, a D or G row with no
+   password, and the ORCID-path F row, and it keeps A, B, E, the email-path F
+   row, and a D or G row that already has a password.
+3. If step 1 finds a legitimate flow the default rule would strand, do not
+   ship a different rule on your own judgment. Move this file to `blocked/`
+   with a `[BLOCKED by Architect]` note giving the per-state measurement and
+   your proposed rule. Section 6.3 moves before the code does.
+4. Do not touch the stuck-recovery lookups in `routes/signup-verify.ts`. They
+   deliberately read no revocation state; § 6.3's Option C note explains why.
+
+## Acceptance criteria
+
+1. A route test per state pins what reset does to it, both the accepted and
+   the refused states, against real Postgres.
+2. No response distinguishes a refused row from an unknown email:
+   `reset-request` returns the same status, body, and timing class either way.
+3. The completion signal lists the per-state outcome table, so the architect
+   can bring § 6.3's "Forgot password" block and § 6.4's reset row up to date
+   at review. Do not edit those sections yourself.
+
+## Architect note (2026-10-05): the set-password comment depends on this rule
+
+`routes/settings.ts`, `POST /set-password`: "Only ORCID-verified accounts can opt into password
+login" is false today, because `reset-request` and `reset` let any row with an email gain a
+password, a state G row with no ORCID included. The default rule in Scope item 2 (reset never
+adds a password) makes that sentence true, and so does the `ORCID_REQUIRED` comment in
+`tests/routes/settings-set-password.test.ts` that restates it. If step 1 sends this task to
+`blocked/` and a different rule lands, rescope both comments to that rule in the same pass:
+either limit them to this route, or name the reset path that also adds a password.
+
+## Architect note (2026-10-05), carried from the state G review
+
+Since d33792ce, `POST /api/auth/login` logs in a state G row whose email is still unverified,
+given its password: the pending block is scoped to `username IS NULL`. So a password that
+reset adds to such a row is a working login. In step 1, measure the unverified G row, with and
+without a password, as a state of its own next to the verified G row.
+
+## Backend implementation signal (2026-10-05, commits 8bf9283a, bd5d7e28, 1dd8776a)
+
+All three are on `main` (`git merge-base --is-ancestor` checked). `8bf9283a` is the gate and the
+new suite; `bd5d7e28` narrows comments the gate made false (found by the verification pass
+below); `1dd8776a` is the simplify pass. The default rule from Scope item 2 shipped. Step 1
+found one flow it closes (ORCID-path F, below); the user decided to ship the default rule and
+flag a follow-up rather than block (asked before the move, 2026-10-05).
+
+**Change.**
+- `routes/auth.ts`, `POST /reset-request`: the lookup is `WHERE email = $1 AND password_hash IS
+  NOT NULL`. A passwordless row takes the unknown-email branch itself: same status and body, the
+  same `burnSentinel` call, no token written.
+- `routes/auth.ts`, `POST /reset`: the token lookup and the expiry check are unchanged. The
+  UPDATE carries `AND password_hash IS NOT NULL`, and a write that matches no row answers 400
+  `INVALID_TOKEN` with `RESET_TOKEN_INVALID_MESSAGE`, the same constant the unknown-token branch
+  now uses. A refused reset stamps no `sessions_invalidated_at`, writes no audit row and sweeps
+  no session-proof window. ORCID recovery without a new password (`routes/recover.ts`) writes
+  `password_hash = NULL` and never touches `reset_token`, so such a leftover token is refused
+  too. An EXPIRED token on a passwordless row still takes the expiry branch first ("Reset token
+  has expired", token cleared, no password written).
+- `routes/signup-verify.ts`: the `/link` stuck-recovery rationale said reset "gates on nothing
+  about account state"; now "gates on no account state but the password". The lookup SQL is
+  byte-identical (Scope item 4). The same stale claim in `tests/routes/signup-verify-stuck-recovery.test.ts`
+  ((g) header, (g) and (h) specs) and the "any account row" claims in
+  `tests/routes/auth-log-shape.test.ts` are narrowed.
+- New suite `tests/routes/auth-reset-account-state.test.ts` (17 specs, real Postgres, no mocks,
+  rows seeded directly in their § 6.1 shapes): AC 1.
+
+**Per-state outcome table (AC 3).** Measured with a throwaway route probe against real Postgres
+before and after (probe deleted; the new suite pins the "After" column).
+
+| State | Before: reset-request | Before: reset | Before: what the new password then did | After |
+|---|---|---|---|---|
+| A | token issued | rotates, stamps `sessions_invalidated_at` | login 200 | unchanged: rotates |
+| B | token issued | rotates, stamps | login 200 | unchanged: rotates |
+| C (with an email) | token issued | ADDS a password, stamps | login 200 (C to B, an edge § 6.3 does not list) | refused |
+| D with a password | token issued | rotates, stamps | login 200 | unchanged: rotates |
+| D without a password | token issued | ADDS a password, stamps | login 200 | refused |
+| G, email verified, with a password | token issued | rotates, stamps | login 200 | unchanged: rotates |
+| G, email verified, without a password | token issued | ADDS a password, stamps | login 200, no ORCID needed (set-password requires one) | refused |
+| G, email unverified, with a password (legacy shape) | token issued | rotates, stamps | login 200 | unchanged: rotates |
+| G, email unverified, without a password | token issued | ADDS a password, stamps | login 200, against § 6.2's "may not acquire a password while unverified" | refused |
+| E | token issued | rotates, stamps | login 409 PENDING_UNVERIFIED | unchanged: rotates |
+| F, email path | token issued | rotates, stamps | `/resume-signup` 200 (the forgot-password resume flow) | unchanged: rotates, resume still works |
+| F, ORCID path (with an email) | token issued | ADDS a password, stamps | `/resume-signup` 200 | refused; login NO_PASSWORD_SET |
+
+"Refused" means: reset-request answers exactly as for an unknown email and writes no token; a
+token already on the row gets 400 `INVALID_TOKEN` identical to an unknown token's body, and the
+row is unchanged. On an accepted row the suite pins `email`, `username`, `orcid`,
+`verify_token`, `custody`, `upgraded_at` and `expires_at` unchanged. A row with no email (some C
+and ORCID-path F rows) was never reachable through reset-request and still is not.
+
+**AC 2.** Each refused state's reset-request answer is asserted deep-equal to an unknown email's
+(status and body) in the same spec, with wall time at or above `TIMING_ORACLE_FLOOR_MS` and no
+token on the row. It is the unknown-email code path itself, not an imitation of it. The
+verification pass's enumeration lens compared status, body, headers, timing, the drain-window
+and argon2-saturation branches, the rate limiter and persistent side effects, and found no
+distinguishing axis.
+
+**Decided with the user (2026-10-05): ORCID-path F loses its reset route back.** An ORCID-path F
+row with an email that lost its `auth_token` had exactly one pre-cleanup way back: reset adds a
+password, then `/resume-signup` answers 200. Every other door is shut (signup again 409 "Email
+already verified", ORCID login 404 NO_ACCOUNT, `/resume-signup` refuses passwordless rows by
+design, `signup-cleanup` reaps F rows only by `created_at` after 30 days). The default rule closes
+that route. Not judged a legitimate flow: it hands an ORCID-verified pending signup to whoever
+holds an email the ORCID path never verified. Proposed follow-up for filing: an ORCID-proven
+resume path for ORCID-path F rows, which would also help the no-email ORCID-path F rows that
+already wait out the 30 days today.
+
+**Out-of-scope findings, for triage.**
+- Outstanding reset tokens survive email changes. Only the reset routes ever write
+  `reset_token`; ORCID recovery rewrites `email` and the settings change flow swaps it, and
+  neither clears a token mailed to the previous address within its hour.
+- `RESET_REQUEST_OK_MESSAGE` ("If an account exists with that email, a reset link has been
+  sent.") and the UI copy `resetPassword.checkEmailDescription` now overclaim for a passwordless
+  account: it exists and no link comes. The task fixed the response as uniform, so not changed.
+- Mutant "gate on the token SELECT only, UPDATE unconditional" survives the suite: only a
+  password dropped concurrently between the token lookup and the UPDATE tells the placements
+  apart. A refuter judged the race theoretical, so no race spec; the comment that claimed a
+  placement guarantee was narrowed instead (`bd5d7e28`).
+
+**[TODO Architect] docs now describing the old behaviour** (architect zone, not edited):
+- § 6.3 "Forgot password": lists A and B only, and "(C cannot use /reset ...)". The rule now
+  covers every row with a password: A, B, D and G with one (G verified or not), E and email-path
+  F; it refuses C, D and G without one, and ORCID-path F.
+- § 6.3 Option C note: "`POST /api/auth/reset` gates on no account state" (the sentence the
+  `signup-verify.ts` comment carried).
+- § 6.4 reset row: "A and B (states with email AND password). C: not applicable."
+- `api-contracts/auth.md` `POST /api/auth/reset` errors: `INVALID_TOKEN` is also the answer for a
+  token whose row has no password.
+- The two comments the architect note names (`routes/settings.ts` set-password "Only
+  ORCID-verified accounts can opt into password login", and the `ORCID_REQUIRED` test comment)
+  are now true as written; not edited.
+
+**Verification.**
+- `npm run typecheck` clean; eslint clean on every changed file.
+- New suite on the parent code: 10 failed / 7 passed, exactly the refused-state specs (refusals
+  answered 200, and reset-request in 7 to 10 ms with no sentinel burn). After `8bf9283a`: 17/17.
+- Reset-touching suites: 12 files / 202 tests green after `8bf9283a`; 10 files / 163 tests green
+  after `1dd8776a` (the new suite, session-proof-invalidation, settings-email-fresh-auth,
+  auth-log-shape, auth-reset-request-shutdown, recover, auth, auth-argon-error-translation,
+  signup-verify-stuck-recovery, no-stale-comment-anchors; the first run also had
+  settings-set-password, auth-state-g-rows and the `updated_at`-writer canary).
+- Full backend suite at `bd5d7e28`: 7 failed files / 17 failed tests, 2730 passed, 10 skipped,
+  no Errors line. All seven are the files that fail on clean main per earlier baselines
+  (idempotency-real-haf, papers-enrichment-parity-gate, accreditation-idempotency,
+  profile-auth-bypass, cast-hardening-author-index-weight, accreditation's two cap specs,
+  reviews' two gate specs), with HAF connection timeouts in the log. `1dd8776a` changed one
+  message literal into a constant and one comment after that run.
+- Adversarial verification workflow (4 lenses, 1 refuter per finding, 14 agents, probes in
+  scratchpad copies): no behavioral defect. State-machine lens: no interleaving adds a password
+  (the gate is the UPDATE's WHERE), a refused reset leaves no side effect, nothing depended on
+  reset adding a password. Mutants on the gate halves, the rowCount refusal, its status and the
+  missing burn were all killed. Six distinct comment-truth defects, fixed in `bd5d7e28`.
+- `/ce-simplify-code` (reuse, quality, efficiency): 2 applied (the shared invalid-token message,
+  an overclaiming header paragraph deleted), 4 skipped (hoisting the per-spec unknown-email
+  baseline, the `seedRow` re-read, gating the token SELECT, a redundant table comment).
+- Code review: not run by backend; the architect runs `/ce-code-review` at intake.
+
 ## An expired session token reads as a wrong password, and the user is never told to sign in (archived 2026-10-05) — two review rounds; the SPA ends an expired session before sending; the hold's guarded-call unwind, widened to SESSION_INVALIDATED, and the self-custody upload unwind landed; guard.cancel() in the helper accepted; the authorship request ahead of the gate stays carved out
 
 ### Architect archive note (2026-10-05)
@@ -19,232 +248,3 @@ Triage (user: "as recommended"):
   `handleRevokeClaim` send a plain authenticated request (`claimAuthorship`,
   `approveAuthorshipClaim`, `revokeAuthorshipClaim`) before the consent-op gate. A session already
   ended at that request still shows `claims.claimFailed`, `approveFailed` or `rejectFailed` next to
-  the session message, under the plain-authenticated-calls carve-out. Item 3 applies to
-  `handleAcceptAuthorship` and `handleResignAuthorship`, whose first request is the guarded one,
-  and to the other three only when the session ends between that request and the broadcast.
-- Compound: no.
-
-**Owner:** ui
-**Created:** 2026-10-01
-**Priority:** high
-
-Routed out of the architect archive of the fresh-auth count-tally task (archived
-2026-10-01), where the implementer reported it as a behaviour outside that comment-only
-task. An architect-side check confirmed it. The user chose a client-side fix over a new
-backend error code.
-
-## Why
-
-The session JWT lives 24 hours (`SESSION_EXPIRY` in the backend auth routes). The auth
-store checks `expiresAt` only in `_restoreSession`, so a tab left open past expiry keeps
-sending the expired token. The backend's `verifyHiveSignature` cannot verify it, falls
-through to the signature branch, and answers 401 `UNAUTHORIZED` ("X-Hive-Username and
-X-Hive-Signature headers are required"). `authenticatedRequest` in `api.js` special-cases
-only `SESSION_INVALIDATED`, so the `UNAUTHORIZED` reaches the caller unchanged.
-
-On a light account the next critical action goes wrong in one of two ways:
-
-- **Password-factor memo warm:** the mint answers `UNAUTHORIZED`, which
-  `mintViaPasswordFactor` reads as a wrong password and re-prompts. The retry mint
-  answers the same, retires the memo, and the user sees "Re-authentication failed".
-- **Memo cold:** the status read also answers `UNAUTHORIZED`, so the factor is assumed.
-  The mint's `UNAUTHORIZED` becomes the ORCID fallback, whose start request fails the
-  same way and surfaces as a generic failure.
-
-Neither path tells the user that their session has ended. Every other authenticated call
-made with the expired token also fails with an unhelpful `UNAUTHORIZED`.
-
-## Scope
-
-1. Before `authenticatedRequest` sends a request, check the stored session's `expiresAt`
-   against the client clock, the same comparison `_restoreSession` makes. If it has
-   passed, do not send the request. End the session and tell the user it expired and
-   that they need to sign in again, the way `handleRevokedSession` ends a revoked one
-   (one teardown, one message, the reason still visible in the sign-in prompt if the
-   store opens one). New copy goes through the project's i18n convention for added keys.
-2. The error the caller then receives must not be mistaken for a wrong password, a
-   retryable failure, or an ORCID fallback by any caller. In-flight fresh-auth flows
-   (the session acquisition, both consent-op orchestrators, the upload surface) must
-   unwind as a session teardown: no re-prompt, no "Re-authentication failed", and no
-   ORCID round-trip.
-3. Clock skew is accepted, not corrected. `expires_at` is the server's timestamp and
-   the check reads the client clock. A fast clock ends the session early, which is
-   harmless. A slow clock leaves a gap as long as the skew, in which the server rejects
-   first and today's misreport still happens. State this in the comment next to the
-   check. Anchoring the expiry to the client clock at login is out of scope unless it
-   turns out to be trivial.
-4. A proactive timer that signs the user out at the moment of expiry is out of scope.
-   The check runs at request time.
-
-## Acceptance criteria
-
-1. With an expired `expiresAt`, an authenticated call sends no request, ends the
-   session once, and shows the expiry message.
-2. A password-mint flow started on an expired session resolves as a teardown: the user
-   sees no second prompt and no re-authentication failure, and the password-factor memo
-   is not retired because of the expiry.
-3. A session that has not expired behaves exactly as before, including the existing
-   `SESSION_INVALIDATED` handling.
-4. Each of these is pinned by unit tests that fail if the check is removed, using the
-   real auth store and fresh-auth modules where the existing suites already do.
-5. Full frontend unit suite green; `npm run build` clean.
-
-## Notes
-
-The backend alternative (a distinct 401 code for an expired JWT, handled like
-`SESSION_INVALIDATED`) was considered and not chosen. It would also cover a token the
-server rejects for reasons other than expiry, and the skew gap, at the cost of a backend
-change and an API-contract update.
-
-## Implementation notes
-
-**UI implementation signal (2026-10-05, commit `b9de6dcc`; verified ancestor of `main`):**
-
-- The auth store gained `endSessionIfExpired(sentToken)`. Past `expiresAt`
-  (client clock, through `isUnexpired`, the same comparison `_restoreSession`
-  now uses) it ends the session and returns true, and the caller does not
-  send. The api.js bearer helper throws a client-side `SESSION_EXPIRED`
-  `ApiRequestError`. The signer.js custody broadcast makes the same check
-  before its own fetch, because a session window can outlive the session.
-- The ending goes through `_endSession`, now shared with
-  `handleRevokedSession`: stale-token check, adoption of a newer live
-  session another tab stored, teardown, and the sign-in prompt with the
-  reason in it. The teardown is the new `handleSessionExpired` in
-  `lib/fresh-auth.js`, through the same `tearDownSessionWithMessage` body
-  (one toast, teardown claimed). New key `auth.sessionExpired`, stubbed in
-  fifteen locales, with a STUBS.md sweep.
-- The teardown runs synchronously before the rejection propagates, so every
-  in-flight fresh-auth flow unwinds through its teardown guard. A warm
-  password memo shows the one prompt (no request precedes it), then ends
-  silently at the mint, which is never sent. A cold one ends at the status
-  read with no prompt. No second prompt, no "Re-authentication failed", no
-  ORCID round-trip.
-- The clock-skew trade-off is stated at `endSessionIfExpired`, and the
-  api.js check points there.
-
-Decisions:
-
-- **Memo clause in AC 2 (decided with the user).** Read as "the mint's
-  second-consecutive-rejection eraser must not fire on an expiry". It
-  cannot: no mint is sent. The disconnect scrub still clears the memo, as on
-  every sign-out.
-- **Custody broadcast (decided with the user).** Covered by the same check.
-- **Adoption.** When storage holds a newer live session from another tab,
-  it is adopted instead of torn down, and the expired request is still not
-  sent. The request was built for the expired token, and the adopted
-  session may belong to another account. The caller gets `SESSION_EXPIRED`
-  for that one action. This needs a storage event still in flight, so it is
-  rare.
-- **Anchoring the expiry to the client clock at login.** Not done, because
-  it is not trivial. It changes the persisted session shape, the restore,
-  and what the cross-tab sync carries.
-
-Not covered, by decision (same shape as the revoked-session precedent):
-
-- Where the expired request is itself the guarded call (an open session
-  window, a cached consent-op proof, a self-custody or plain authenticated
-  call), the call site still gets the rejection and some sites show their
-  own generic error next to the expiry message. `set_password` is one of
-  these on the cold path too: its factor needs no status read, so the ORCID
-  start is the expired request, and that helper passes a stale start's
-  rejection back to its caller. Its inline error sits inside the
-  `isConnected` template, which the teardown has already removed.
-- The notification poll is an authenticated request, so a signed-in tab
-  left idle ends its session at the first poll after expiry and opens the
-  sign-in prompt. That follows from the request-time check. No timer was
-  added.
-- The custody-upgrade POST sends its own pinned token and is not covered. A
-  verification pass found that an expired session can reach it after the
-  irreversible `account_update`. That is recorded on
-  `ui-upgrade-401-proof-budget-auth-failure-split`, with the client-side way
-  to separate the expiry arm.
-
-For the architect: no API shape changed, and `SESSION_EXPIRED` never goes
-on the wire. If § 6.7 is reworded for the revoked-session handling, it could
-also say that the SPA ends an expired session before sending rather than on
-the server's 401.
-
-Verification:
-
-- New suite `tests/unit/session-expired.test.js`, 16 cases on the real auth
-  store, api.js, signer.js and fresh-auth flows (session acquisition, both
-  consent-op orchestrators, the upload surface, the custody broadcast). The
-  fetch stub answers an expired bearer token the way `verifyHiveSignature`
-  does (401 `UNAUTHORIZED`). Before the fix, 14 of 16 failed: requests went
-  out, and the flows re-prompted or hung on a prompt.
-- Nine mutants were each killed in a scratchpad copy: the api.js check, the
-  signer.js check, adoption removed, sending after adoption, the `>` vs `>=`
-  boundary in the check and in the restore, the revoked copy in the toast
-  and in the notice, and the error code.
-- Full frontend unit suite: 91 files, 2110 tests, exit 0. `npm run build`
-  clean (run in an isolated copy).
-- A verification workflow (two caller audits, spec conformance, teardown
-  ordering, two skeptics per finding) left 0 findings standing, 4 refuted.
-- No e2e run and no browser check: a real expired session needs a JWT past
-  its 24-hour lifetime.
-
-## Architect re-review (2026-10-05) — HELD PENDING FIXES:
-
-Reviewed `b9de6dcc` with `/ce-code-review` (correctness, security, adversarial,
-testing, project-standards, frontend races, learnings; one validator over the
-merged set, both findings confirmed). Verified independently in an isolated
-copy of `b9de6dcc`: full frontend unit suite 91 files / 2110 tests, exit 0;
-`npm run build` exit 0. Scope 1, 3 and 4 and AC 1, 3, 4 and 5 are met.
-Security, testing and project-standards returned no findings.
-
-Triage decision (user, 2026-10-05): the "Not covered, by decision" carve-out
-for call sites whose guarded call is itself the expired request is rejected on
-the surfaces Scope 2 names: the upload surface, the custody broadcast wrapper,
-and both consent-op orchestrators. Scope 2 says no caller may misread the
-error, and it names the upload surface. On those surfaces, a `SESSION_EXPIRED`
-whose teardown has already run must add nothing to the expiry message, the way
-the paths that end at the status read or the mint already behave.
-
-1. **Upload under an open window** (`lib/ipfs-upload.js`). When a session
-   window is still cached as the JWT passes `expiresAt`, the pre-flight is
-   refused client-side, `uploadFile`'s catch matches none of its branches and
-   rethrows `SESSION_EXPIRED`, and `describeUploadError` maps it to
-   `common.uploadFailed`. Publish then shows "Upload failed" and "Publishing
-   failed" after the expiry toast; the editor shows its image-upload failure
-   and does not abandon the queued images. Required: a `SESSION_EXPIRED` that
-   arrives once this flight's guard reads torn down resolves to the
-   already-reported code (`describeUploadError` returns `null`), in
-   `uploadFile`'s catch and in `retryOnce`'s catch. Keep the `guard.tornDown()`
-   condition. In the adoption branch `endSessionIfExpired` returns true with no
-   teardown and no message, so that rejection must keep reporting. Adding
-   `SESSION_EXPIRED` to `describeUploadError`'s `null` cases would silence it,
-   so the fix does not go there.
-   Measured by the architect in a copy of `b9de6dcc`: asserting
-   `describeUploadError(err)` is `null` in the case "refuses an upload under an
-   open window without retrying it" fails at `b9de6dcc` with "expected
-   'common.uploadFailed' to be null", and passes with
-   `if (err?.code === 'SESSION_EXPIRED' && guard.tornDown()) throw uploadError(UPLOAD_SESSION_TORN_DOWN);`
-   placed just before `uploadFile`'s final `throw err;`. The `retryOnce` arm
-   was not planted.
-
-2. **Custody broadcast under an open window** (`lib/fresh-auth.js`,
-   `broadcastWithFreshAuth`). Same state: `broadcastOps` tears the session
-   down and throws `SESSION_EXPIRED`, the wrapper's catch has no branch for
-   it, and the rejection reaches the caller, so `components/vote-buttons.js`
-   toasts `vote.voteFailed` and publish sets "Publishing failed" next to the
-   expiry message. On the retry leg the status-less error is wrapped as
-   `FRESH_AUTH_RETRY_FAILED`. Required: once the guard reads torn down, a
-   `SESSION_EXPIRED` on either leg returns `FRESH_AUTH_REDIRECT_PENDING`, the
-   sentinel the wrapper already returns when a teardown abandons its
-   acquisition. Same `guard.tornDown()` condition, for the same reason as
-   item 1.
-   Measured the same way: making the case "sends nothing under a window that
-   outlived the session, and ends the session once" expect a `null` resolve
-   fails at `b9de6dcc` and passes with
-   `if (err?.code === 'SESSION_EXPIRED' && guard.tornDown()) return FRESH_AUTH_REDIRECT_PENDING;`
-   placed first in the outer catch, ahead of its `FRESH_AUTH_REQUIRED` branch.
-   With items 1 and 2 planted, `session-expired.test.js` and
-   `session-revoked.test.js` pass (31 tests). The retry-leg arm was not
-   planted.
-
-3. **Consent-op guarded call** (`consentOpFreshAuthRetryGate` in
-   `lib/fresh-auth.js`, serving `withSettingsFreshAuth` and
-   `withAuthorshipFreshAuth`). When the proof in hand is spent after the
-   session expired (a cached ORCID-factor proof, or one minted just before the
-   instant), `run(proof)` meets the pre-send check and the session is torn
-   down. The gate rethrows every error other than `FRESH_AUTH_REQUIRED`, on

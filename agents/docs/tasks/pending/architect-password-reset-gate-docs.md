@@ -85,3 +85,13 @@ this task.
 1. § 6.3's "Forgot password" block and § 6.4's reset row match the outcome list under Why.
 2. No sentence in ARCHITECTURE.md or `api-contracts/auth.md` says reset gates on no account
    state, or that reset applies only to A and B.
+
+## Architect note (2026-10-05): follow-up that changes the same text
+
+At the gate task's archive the user approved `backend-reset-tokens-outlive-email-changes-and-recovery`
+(high). It refuses an unverified state G row at both reset ends, clears reset tokens on every
+write that moves `email` or drops `password_hash`, and narrows `RESET_REQUEST_OK_MESSAGE`, which
+`api-contracts/auth.md` quotes under `POST /api/auth/reset-request`. If that task lands first,
+write § 6.3, § 6.4 and the contract against its outcome list instead of the one under Why. If
+these docs land first, that task's completion signal (its acceptance criterion 4) lists what to
+change in a second pass.
