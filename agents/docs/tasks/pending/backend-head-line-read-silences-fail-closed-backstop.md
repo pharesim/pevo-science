@@ -294,3 +294,107 @@ its head delimits the read in every arm that reads from a head`:**
 table` is still in terminator terms. I left it because
 `agents/docs/solutions/conventions/new-fail-closed-outcome-must-not-reuse-an-existing-sentinel-2026-09-15.md`
 cites it verbatim. If you rename it, update that citation in the same commit.
+
+## Architect re-review (2026-10-05) — HELD PENDING FIXES:
+
+Reviewed the net diff `c922c4b9..7bcda9fe` on the canary with `/ce-code-review`
+(correctness, adversarial, testing, project-standards and learnings lenses, plus an
+independent validator that confirmed items 1 to 3 below by plant). Baselines in scratch copies:
+7bcda9fe 31 passed, exit 0; c922c4b9 30 passed, exit 0. The rest of the signal held up. The
+four moved reads and the byte-identical arm results and labels were re-measured. Each listed
+reader rule reds a fixture when removed: nine mutants by one lens, eight by another.
+Project-standards found no anchor violations. The user triaged on 2026-10-05: hold items 1
+to 4, dismiss the rest (listed at the end).
+
+1. **The fail-closed reach is bounded by the statement's own `;`, not only by its string.**
+   A `src` template that opens on the line above its first statement and holds two
+   `;`-separated statements, the second with an unreadable head assigning `updated_at`, reds
+   the fail-closed arm at c922c4b9 and passes every arm at 7bcda9fe. Measured with three
+   members, each unresolved=1 at the parent and 0 at 7bcda9fe:
+   - `` pool.query(` `` alone on its line, then `UPDATE sessions ...;`, then
+     `UPDATE "accounts" SET updated_at = NOW() ...`;
+   - the same with `UPDATE ${table}`;
+   - the ordinary `` client.query(`BEGIN; `` layout with `COMMIT;` closing it.
+
+   The same-line spelling is silent at both commits; it is the `twoStatements` pin.
+   Item 1 makes the fail-closed arm red in both layouts and flips both `twoStatements` pins.
+
+   This is not the in-string `;` the probe rounds reverted. That change ended the statement's
+   TEXT at a `;` inside the string, and misplaced `;`s truncated the text the table-first,
+   ALTER and assembled-write arms read. Bound only the reach test `targetTable` applies, and
+   leave the text every other arm reads ending at the string. A reach-only bound can only add
+   red bars. A `;` taken too early shortens reach, so the assignment lands on
+   `UNRESOLVED_TABLE`, which reds. A `;` the value tracking misses leaves reach where it is
+   at 7bcda9fe.
+
+   Two variants were measured by reviewers in scratch copies; neither was typechecked or
+   linted. Take either, or another with the same property:
+   - (a) In `targetTable`, where the head's quote is a backtick (carried or on its line,
+     not `inCode`), also take the read as if no quote enclosed it, capped at the backtick
+     read's end. Resolve only where both reach. Measured: canary green with the pins
+     flipped, and every arm result and assignment label over sources and migrations
+     identical to 7bcda9fe.
+   - (b) `statementAt` records the first `;` met under a quote delimiter, outside a value
+     and at the head's own dollar depth, on the statement. `targetTable` refuses reach past
+     it. Measured green with the pins flipped. The cap and end-of-file return paths did not
+     carry it yet.
+
+   Acceptance:
+   - The three members above and both `twoStatements` layouts red the fail-closed arm.
+   - Removing the bound reds a fixture.
+   - The clean tree stays green, the `bridge-queue.ts` lease UPDATE is accepted, and the
+     tallies are unchanged.
+   - The arm-result and label no-op is re-measured over every scanned file.
+   - Typecheck and lint are clean.
+
+   Prose: header scan 2, the dynamic-SQL entry's reach definition, the quoted-identifier
+   entry's "same quoted text" bound, the `statementAt` docblock and the `twoStatements`
+   fixture comment all say where a read ends or what it reaches. Re-audit every such
+   sentence in the file against the final code. One adjacent over-read is pre-existing and
+   is not closed by this bound, because that head finds no quote: a head in a `DO` body
+   followed by apostrophes inside interpolations. The interpolation entry names it; leave
+   that entry alone unless your change closes it.
+
+2. **The reach definition's exception list is incomplete.** The dynamic-SQL entry under
+   KNOWN LIMITS lists its exceptions as "except where statements share that string or the
+   quote found is not the head's own, which the quoted-identifier entry under KNOWN LIMITS
+   names". The `statementAt` docblock also lists a quoteless read meeting a quote inside an
+   interpolation after its head, and that case is missing from the entry. It is live: a `DO`
+   body with apostrophes in its interpolations is silent at both commits, and the control
+   without them reds. The quote-not-the-head's-own case points only at the quoted-identifier
+   entry, which names the trailing-backslash string. It does not name a migration line that
+   begins inside a multi-line value, which only the `SqlStatement` docblock records. Fix:
+   defer to the `statementAt` docblock's list by name rather than enumerate, or carry every
+   member with its right pointer. Write it against the code as item 1 leaves it.
+
+3. **"literal" where the code means "template literal".** Inside an interpolation's code only
+   a backtick opens a literal, so a head inside a `'` or `"` string there is answered as code
+   and its read gives up. Measured: `` `${light ? 'UPDATE accounts SET custody = $1' : ...}` ``
+   reds the every-statement-readable arm. Four comments say "a literal": the interpolation
+   entry ("in no literal there"), the `enclosingQuote` docblock ("only a literal opened there
+   can enclose the position"), the `statementAt` comment at the `inCode` give-up, and the
+   `inCode` fixture comment. Say "template literal". In the interpolation entry, say why a
+   `'` or `"` string there counts as code: the interpolation's comments and regex literals
+   are copied rather than blanked. The comment beside the opener test is already right.
+
+4. **The test title, from the `[TODO Architect]` above.** `a read that cannot reach its own
+   terminator resolves no table` is false now: a read that runs out of cap or of file reaches
+   no terminator and does resolve a table. Retitle it in the "gives up" terms the
+   `statementAt` docblock uses, covering what the test asserts (a read that gives up resolves
+   no table; running out of room is not giving up). Update the verbatim citation in
+   `agents/docs/solutions/conventions/new-fail-closed-outcome-must-not-reuse-an-existing-sentinel-2026-09-15.md`
+   in the same commit, with `[skip-zone-audit]` in the subject, since that file is outside the
+   backend zone.
+
+Dismissed at triage, not to be reopened on this task:
+- Opened-above heads lose catches in the table-first and ALTER arms: `.concat`, a `+`
+  behind a comment line, the `as string +` cast, and a column passed as a `format` argument.
+  The parent caught them only by reading past the backtick. The same-line spellings are
+  silent at both commits, and KNOWN LIMITS names those joins.
+- The `inCode` give-up and the `interpolated` refusal stay as they are. Both only add red bars.
+- No fixture for the `close === -1` branch of the interpolation step. The
+  every-interpolation-closes arm reds that line regardless.
+- No fixture for the opened-above `format`-argument ALTER.
+
+None of this block's wording goes into the canary: no item numbers, dates, slugs or line
+numbers. Anchor comments on the symbols named above.
