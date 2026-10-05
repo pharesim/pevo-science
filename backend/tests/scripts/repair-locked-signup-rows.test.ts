@@ -25,8 +25,7 @@
  * not resolve to the temporary table, and the connection is destroyed rather
  * than returned to the pool, so the shadow never outlives its spec. Each spec
  * runs its steps in one transaction and rolls it back, so no step's write is
- * ever committed; (c)'s second run sees the first run's deletions inside that
- * transaction.
+ * ever committed.
  *
  * Real-DB-required guard: `describe.skipIf(!dbReachable)`.
  */
@@ -105,8 +104,8 @@ const LOCKED: Seed[] = ['lockedEmailPath', 'lockedOrcidPath'];
 const KEPT: Seed[] = ['stateE', 'stateF', 'stateA', 'stateGVerified', 'stateGUnverified'];
 
 /** Opens a dedicated connection whose unqualified `accounts` is a temporary
- *  table seeded with one row per {@link SEEDS} entry, runs `body`, then
- *  destroys the connection. */
+ *  table seeded with one row per {@link SEEDS} entry, runs `body` inside a
+ *  transaction it rolls back, then destroys the connection. */
 async function shadowAccounts(
   body: (client: PoolClient, ids: Record<Seed, number>) => Promise<void>,
 ): Promise<void> {
@@ -122,19 +121,14 @@ async function shadowAccounts(
       const res = await client.query<{ id: number }>(seed.sql, [...seed.params]);
       ids[name] = res.rows[0].id;
     }
-    await body(client, ids);
+    await client.query('BEGIN');
+    try {
+      await body(client, ids);
+    } finally {
+      await client.query('ROLLBACK');
+    }
   } finally {
     client.release(true);
-  }
-}
-
-/** Runs `body` inside a transaction and rolls it back, whatever it did. */
-async function rolledBack(client: PoolClient, body: () => Promise<void>): Promise<void> {
-  await client.query('BEGIN');
-  try {
-    await body();
-  } finally {
-    await client.query('ROLLBACK');
   }
 }
 
@@ -143,12 +137,12 @@ async function rolledBack(client: PoolClient, body: () => Promise<void>): Promis
 async function runStep(
   client: PoolClient,
   sql: string,
-): Promise<{ rows: Record<string, unknown>[]; rowCount: number | null; wrote: boolean }> {
+): Promise<{ rows: Record<string, unknown>[]; wrote: boolean }> {
   const res = await client.query(sql);
   const xid = await client.query<{ xid: string | null }>(
     'SELECT txid_current_if_assigned()::text AS xid',
   );
-  return { rows: res.rows, rowCount: res.rowCount, wrote: xid.rows[0].xid !== null };
+  return { rows: res.rows, wrote: xid.rows[0].xid !== null };
 }
 
 const sortedIds = (rows: Record<string, unknown>[]): number[] =>
@@ -159,55 +153,49 @@ const idsOf = (ids: Record<Seed, number>, seeds: Seed[]): number[] =>
 describe.skipIf(!dbReachable)('repair of accounts rows with neither a token nor a username', () => {
   it('the delete step removes only the rows with neither column set', async () => {
     await shadowAccounts(async (client, ids) => {
-      await rolledBack(client, async () => {
-        const step = await runStep(client, DELETE_SQL);
-        expect(sortedIds(step.rows)).toEqual(idsOf(ids, LOCKED));
-        expect(step.wrote).toBe(true);
+      const step = await runStep(client, DELETE_SQL);
+      expect(sortedIds(step.rows)).toEqual(idsOf(ids, LOCKED));
+      expect(step.wrote).toBe(true);
 
-        const { rows } = await client.query('SELECT id FROM accounts');
-        expect(sortedIds(rows)).toEqual(idsOf(ids, KEPT));
-      });
+      const { rows } = await client.query('SELECT id FROM accounts');
+      expect(sortedIds(rows)).toEqual(idsOf(ids, KEPT));
     });
   });
 
   it('the count step lists the rows the delete step removes, and writes nothing', async () => {
     await shadowAccounts(async (client, ids) => {
-      await rolledBack(client, async () => {
-        const step = await runStep(client, COUNT_SQL);
-        expect(step.wrote).toBe(false);
-        expect(step.rows).toEqual([
-          expect.objectContaining({
-            id: ids.lockedEmailPath,
-            has_email: true,
-            has_password: true,
-            has_orcid: false,
-          }),
-          expect.objectContaining({
-            id: ids.lockedOrcidPath,
-            has_email: false,
-            has_password: false,
-            has_orcid: true,
-          }),
-        ]);
-        expect(step.rows.every((r) => r.created_at instanceof Date)).toBe(true);
+      const step = await runStep(client, COUNT_SQL);
+      expect(step.wrote).toBe(false);
+      expect(step.rows).toEqual([
+        expect.objectContaining({
+          id: ids.lockedEmailPath,
+          created_at: expect.any(Date),
+          has_email: true,
+          has_password: true,
+          has_orcid: false,
+        }),
+        expect.objectContaining({
+          id: ids.lockedOrcidPath,
+          created_at: expect.any(Date),
+          has_email: false,
+          has_password: false,
+          has_orcid: true,
+        }),
+      ]);
 
-        const { rows } = await client.query('SELECT id FROM accounts');
-        expect(sortedIds(rows)).toEqual(idsOf(ids, [...LOCKED, ...KEPT]));
-      });
+      const { rows } = await client.query('SELECT id FROM accounts');
+      expect(sortedIds(rows)).toEqual(idsOf(ids, [...LOCKED, ...KEPT]));
     });
   });
 
   it('a second run of the delete step deletes nothing', async () => {
     await shadowAccounts(async (client, ids) => {
-      await rolledBack(client, async () => {
-        await runStep(client, DELETE_SQL);
-        const second = await runStep(client, DELETE_SQL);
-        expect(second.rowCount).toBe(0);
-        expect(second.rows).toEqual([]);
+      await runStep(client, DELETE_SQL);
+      const second = await runStep(client, DELETE_SQL);
+      expect(second.rows).toEqual([]);
 
-        const { rows } = await client.query('SELECT id FROM accounts');
-        expect(sortedIds(rows)).toEqual(idsOf(ids, KEPT));
-      });
+      const { rows } = await client.query('SELECT id FROM accounts');
+      expect(sortedIds(rows)).toEqual(idsOf(ids, KEPT));
     });
   });
 });

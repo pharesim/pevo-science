@@ -674,21 +674,19 @@
  *     a write base caught and this misses to need one of those triggers, and
  *     found nesting refusing more phantoms than it widens. Neither tree spells
  *     any of them.
- *   - `backend/scripts` is a root for its `.sql` files only. Those are
- *     repairs an operator pipes into `psql` against the application
- *     database, so they reach it as statements although the image copies the
- *     tree into the build stage for the academic-domain fetch and never into
- *     the runtime stage. The rest of the tree stays out. Its one database
- *     client, the test-reset helper Playwright's global-setup runs, opens a
- *     pool on `APP_DATABASE_URL`, refuses any database whose name does not
- *     end `_test`, and runs TRUNCATE, which removes rows and stamps a marker
- *     on none. And the rest is `.js` and `.sh`, so pointing the `.ts` walker
- *     at it would scan nothing while reading as coverage — a stated exclusion
- *     is honest where an empty root is not. The boundary this buys: a script
- *     added there, other than a `.sql` file, that connects to the application
- *     database and WRITES rows is a new root, and admitting it means a walker
- *     that collects that script's own extension, not just a root list
- *     growing a directory.
+ *   - `backend/scripts` is a root for its `.sql` files only, and the rest of
+ *     the tree stays out. It does not ship: the image copies it into the
+ *     build stage for the academic-domain fetch and never into the runtime
+ *     stage. Its one database client, the test-reset helper Playwright's
+ *     global-setup runs, opens a pool on `APP_DATABASE_URL`, refuses any
+ *     database whose name does not end `_test`, and runs TRUNCATE, which
+ *     removes rows and stamps a marker on none. And the rest is `.js` and
+ *     `.sh`, so pointing the `.ts` walker at it would scan nothing while
+ *     reading as coverage — a stated exclusion is honest where an empty root
+ *     is not. The boundary this buys: a script added there, other than a
+ *     `.sql` file, that connects to the application database and WRITES rows
+ *     is a new root, and admitting it means a walker that collects that
+ *     script's own extension, not just a root list growing a directory.
  *   - `tsconfig.json` sets `resolveJsonModule`, so a `.json` under `src` that
  *     compiled code imports is emitted verbatim into the shipped `dist`, and
  *     no walker collects `.json`. A statement kept in one and handed to a
