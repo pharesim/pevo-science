@@ -68,11 +68,12 @@
  * any spelling `OWN_CARVE_OUT_RE` reads, is a violation whatever it names. The
  * marker stands in for the block stating its file's own carve-out, where the
  * declaration would read as that file's own clause (c) and a signpost
- * discharges nothing. It is a heuristic, not a parse of the carve-out, and a
- * list or a single mention trips it: any `(a)` or `(b)`, alone or in a slash
- * list, unless a word character or a closing parenthesis sits directly before
- * it (`fn(b)`, `item 5(a)`), and the word clause or clauses followed by a
- * lone `a` or `b`, either case (`clause (b)`, `clauses a/c`). That word form
+ * discharges nothing. It is a heuristic, not a parse of the carve-out. It
+ * ignores case, and a list or a single mention trips it: any `(a)` or `(b)`,
+ * alone or in a slash list, unless a word character or a closing parenthesis
+ * sits directly before it (`fn(b)`, `item 5(a)`), and the word clause or
+ * clauses followed by a lone `a` or `b` (`clause (b)`, `clauses a/c`,
+ * `clause(a)`). That word form
  * also reads an English article as a marker, after spaces, a line break, a
  * dash or an open parenthesis (`clause a planner`, `clause - a bridge
  * account` with any dash folded to `-`, `clause (a token`). The message gives
@@ -1314,7 +1315,9 @@ function proseRemainder(text: string): string {
  *  `clauses (a/b)`). Either clause is enough, so a statement that writes only
  *  its justification, or only its auth acknowledgement, still reads as one. A
  *  parenthesised letter directly after a word character or a closing
- *  parenthesis (`fn(b)`, `item 5(a)`) is not a marker. The word form also
+ *  parenthesis (`fn(b)`, `item 5(a)`) is not a marker on its own; directly
+ *  after the word clause it is the word form (`clause(a)`). Case is ignored
+ *  throughout. The word form also
  *  reads an English article `a` after the word clause as clause (a); the
  *  header records that. Carve-out WORDING is deliberately not read: a
  *  real-path suite declaring itself names the carve-out and its clause (c) as
@@ -2956,6 +2959,7 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       '(a) x', '(B) x', 'per clause (a)', 'per clause-(b)', 'clause a) x', 'see clause-b', 'per clause-\n(a)',
       'per root CLAUDE.md test carve-out, clauses a/b/c', 'carve-out clauses (a/b)',
       'the full carve-out justification (a/b/c)', 'the file header (clauses a/c)', 'clause a + clause c',
+      'per clause(a)',
     ]) {
       expect(statesOwnCarveOut(marker), JSON.stringify(marker)).toBe(true);
     }
