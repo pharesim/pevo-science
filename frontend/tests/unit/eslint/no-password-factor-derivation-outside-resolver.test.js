@@ -60,10 +60,10 @@
  * page added as a further build input, and the dependencies under
  * `node_modules`. A module in any of those places ships unscanned, so a
  * change that puts page code there extends this canary in the same change.
- * Within what is read, the scans are still blind to the three named
- * residuals (CONSTANT-WIDTH REPLACEMENT, A MATCH RIDING ON A SKIPPED LINE, A
- * NAME THAT IS NEVER SPELLED), and to the shared scan machinery's own, which
- * `enclosing-symbol.js` names.
+ * Within what is read, the scans are still blind to the four named residuals
+ * (CONSTANT-WIDTH REPLACEMENT, A MATCH RIDING ON A SKIPPED LINE, A NAME THAT
+ * IS NEVER SPELLED, AN ALIAS THE VETO DOES NOT REACH), and to the shared scan
+ * machinery's own, which `enclosing-symbol.js` names.
  *
  * GRANULARITY. The walk's occurrence assertions are over `file#symbol` pairs
  * resolved by `enclosingSymbol`, never over files: a file already on an
@@ -103,11 +103,14 @@
  * specifiers match too; they are removed by explicit skip predicates rather
  * than by the pattern's shape. The specifier skip applies only when the
  * statement's opener is an `import` (a re-export block's specifier is a new
- * road to the function and counts), and it is vetoed by an `as` anywhere in
- * the JOINED statement, so an alias split across a line wrap is still seen.
- * A namespace import (`import * as api`) writes no specifier to skip and is
- * caught at its usage sites, which cannot avoid writing the name. A
- * commented-out occurrence is not an occurrence: whole-line comments are
+ * road to the function and counts), and it is vetoed when an `as` follows the
+ * name across nothing but whitespace in the JOINED statement: the specifier
+ * line and at most the six lines below it, ending at the first line that
+ * carries `from` or `;`. So an alias split across a plain line wrap is still
+ * seen, and the aliases the veto misses are named in AN ALIAS THE VETO DOES
+ * NOT REACH. A namespace import (`import * as api`) writes no specifier to
+ * skip and is caught at its usage sites, which cannot avoid writing the name.
+ * A commented-out occurrence is not an occurrence: whole-line comments are
  * skipped, so dead code can neither trip the scan nor keep a licensed
  * member's key alive.
  *
@@ -128,11 +131,17 @@
  * DETECTION describes. Import-site tracking and the star re-export ban add
  * nothing in that file. With no specifier skip, an import there that names
  * the fetch already fails. And a star re-export in an inline module script,
- * which the bundler does make importable, still leaves its importer writing
- * the fetch's name where it binds or calls it, which the name scan counts in
- * any file the canary reads.
+ * which the bundler does make importable, still leaves the fetch's name to be
+ * written by the first module on that road that reaches for the fetch rather
+ * than relaying the whole script: where it binds the fetch under an alias or
+ * re-exports it, and otherwise where it uses it. A module that only relays
+ * the script, by a star re-export of its own, writes nothing for the name
+ * scan to count. In a `.js` file under `src` the name scan counts those
+ * sites, all but the aliased imports named in AN ALIAS THE VETO DOES NOT
+ * REACH. In the entry document the entry-document assertion counts every one
+ * of them, along with any other line there that names the fetch.
  *
- * Residuals, pinned in prose rather than silently absorbed. Three, and each
+ * Residuals, pinned in prose rather than silently absorbed. Four, and each
  * one is left to review of the diff for its own reason.
  *
  *  1. CONSTANT-WIDTH REPLACEMENT. The width pin catches every ADDED
@@ -158,6 +167,18 @@
  *     assertion alike. No textual guard closes this and none should be
  *     attempted: the defence is that such a module is conspicuous in
  *     review precisely because it went to the trouble.
+ *  4. AN ALIAS THE VETO DOES NOT REACH. A comment between the name and its
+ *     `as`, or an `as` past the joined statement's bound, can leave the
+ *     specifier looking unaliased. The skip spares it wherever it would spare
+ *     the same specifier unaliased, and every use through the alias writes
+ *     only the alias, so the name scan then counts neither the import nor its
+ *     uses. Import-site tracking still flags the module when it is not
+ *     licensed to hold one and the import matches the tracking pattern, which
+ *     a comment can also defeat: a `}` inside the braces, or any comment
+ *     between the `}` and the module string. The password-state scan still
+ *     counts every `hasPassword` the derivation spells out. The shape writes
+ *     the real name and its alias in one import clause, in plain view of a
+ *     review of the diff, which is why it is named here rather than closed.
  */
 import { describe, it, expect } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -188,10 +209,11 @@ const STATUS_FETCH_DEFINITION_RE = /function\s+fetchEmailStatus\s*\(/;
 const STATUS_FETCH_IMPORT_SPECIFIER_RE =
   /^\s*(?:import\s*\{[^}]*?)?fetchEmailStatus\s*(?:,|\}\s*from\b|$)/;
 
-/** The identifier renamed at the specifier. Its presence anywhere in the
- *  joined statement VETOES the specifier skip: an alias is the one shape that
- *  makes every later call site invisible to a name scan, so the import line
- *  itself must be the occurrence that goes red. */
+/** The identifier renamed at the specifier, with nothing but whitespace
+ *  between the name and its `as`. Its presence anywhere in the joined
+ *  statement VETOES the specifier skip: an alias is the one shape that makes
+ *  every later call site invisible to a name scan, so the import line itself
+ *  must be the occurrence that goes red. */
 const STATUS_FETCH_ALIAS_RE = /\bfetchEmailStatus\s+as\b/;
 
 /** The statement a specifier line belongs to, joined downward until its
@@ -476,14 +498,18 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
   });
 
   it('the occurrence scan fires on aliases, indirection, and re-exports, and spares imports, prose, and the definition', () => {
-    // Planted positives and negatives for the composed predicate. Without
-    // them an edit that mangles a pattern leaves every scan empty and the
-    // suite stays green while the canary enforces nothing. The canary file
-    // itself lives outside the scanned tree, so the shapes are synthetic
-    // source strings fed to the extracted matcher. The block-comment region
-    // rides along exactly as `occurrencesOf` hands it to the skip predicate,
-    // so every probe here runs the path the real scan takes rather than the
-    // shape-only reading a region-less call falls back to.
+    // Planted positives and negatives for the composed predicate. The name
+    // scan over the real tree pins an exact map of licensed sites, so a
+    // matcher that finds nothing there turns it red. What the real tree
+    // cannot catch is a sub-predicate, such as the alias veto, breaking only
+    // on a shape the tree does not contain, because no source in the tree
+    // puts that shape in front of it. These probes plant some such shapes so
+    // that a break on one of them shows. The canary file itself lives outside
+    // the scanned tree, so the shapes are synthetic source strings fed to the
+    // extracted matcher. The block-comment region rides along exactly as
+    // `occurrencesOf` hands it to the skip predicate, so every probe here
+    // runs the path the real scan takes rather than the shape-only reading a
+    // region-less call falls back to.
     const countsAt = (lines, i) =>
       STATUS_FETCH_IDENT_RE.test(lines[i]) &&
       !skipStatusFetchLine(lines[i], i, lines, blockCommentInterior(lines)[i]);
@@ -912,9 +938,10 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
   it('the entry-document scan fires on markup, an inline script, and an HTML comment alike', () => {
     // Planted shapes for the entry-document matcher. The entry-document
     // assertion expects no sites, so a matcher that returns nothing leaves it
-    // green while it enforces nothing, and only these shapes go red. A line
-    // naming neither identifier, and one naming a longer identifier that
-    // merely starts with the discriminator, mint no site.
+    // green while it enforces nothing, and of the two entry-document checks
+    // only these planted shapes go red. A line naming neither identifier, and
+    // one naming a longer identifier that merely starts with the
+    // discriminator, mint no site.
     expect(
       entryDocumentSites([
         '<div x-data x-show="$store.reauthModal.open">',
