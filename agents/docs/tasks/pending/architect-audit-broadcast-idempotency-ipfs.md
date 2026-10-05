@@ -35,10 +35,9 @@ The findings are triaged with the user, accepted ones are filed as tasks with a 
 
 ## Carried over from the accreditation and WoT audit (2026-10-05)
 
-- `backend/src/lib/idempotency.ts`: the custom_json arm of `findCustodyBroadcastByIdempotencyKey`
-  has the `ORDER BY block_num DESC LIMIT 1` shape that took 19.75 s in `findExistingAccreditation`
-  for a no-match input. It was not plan-checked.
-  `backend-latest-op-haf-lookups-walk-the-blocks-index` fences the two accreditation lookups in
-  this file, not this one.
+- `backend/src/lib/idempotency.ts`: `backend-latest-op-haf-lookups-walk-the-blocks-index` fences
+  three lookups in this file (`findExistingAccreditation`,
+  `findAccreditationBroadcastByIdempotencyKey`, and the custom_json arm of
+  `findCustodyBroadcastByIdempotencyKey`). Audit the file as that task leaves it.
 - `backend/src/hive.ts`: the `broadcastAdminCustomJson` docblock lists "WoT accreditation
   grants/revocations". No WoT path broadcasts a revoke.

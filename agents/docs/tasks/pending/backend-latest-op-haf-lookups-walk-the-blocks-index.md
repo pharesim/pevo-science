@@ -1,11 +1,12 @@
-# Three latest-op HAF lookups walk the whole blocks index when nothing matches
+# Seven latest-op HAF lookups walk the whole blocks index when nothing matches
 
 **Owner:** backend
 **Created:** 2026-10-05
 **Priority:** high
 
 Filed from the accreditation and Web of Trust audit. The learnings pass flagged the query shape;
-the architect then measured it on the HAF node with the user's permission.
+the architect then measured it on the HAF node with the user's permission. Widened the same day
+from three lookups to seven, after a plan-only `EXPLAIN` of the sibling reads (user decision).
 
 ## Why
 
@@ -17,9 +18,16 @@ account with no accredit or revoke op. The plan drives a nested loop from
 With the candidates in an `AS MATERIALIZED` CTE and the `ORDER BY ... LIMIT 1` outside it, the
 same lookup took 2.4 ms.
 
-A plan-only `EXPLAIN` shows the same backward scan of `pk_hive_blocks` for
-`findAccreditationBroadcastByIdempotencyKey` (same file) and `getLatestAccreditOp`
-(`backend/src/accreditation.ts`). Those two were not executed.
+A plan-only `EXPLAIN` shows the same backward scan of `pk_hive_blocks`, as the outer side of
+the nested loop, for six more lookups. None of the six was executed, so the 19.75 s is measured
+for the gate only:
+
+- `findAccreditationBroadcastByIdempotencyKey` (`backend/src/lib/idempotency.ts`);
+- `getLatestAccreditOp` (`backend/src/accreditation.ts`);
+- both reads in `findAccreditedAccountWithOrcid` (`backend/src/lib/orcid-binding.ts`): the latest
+  accredit op that carries the ORCID, and the account's latest accredit or revoke op;
+- `getExistingAccreditation` (`backend/src/routes/orcid.ts`);
+- the custom_json arm of `findCustodyBroadcastByIdempotencyKey` (`backend/src/lib/idempotency.ts`).
 
 What it costs today:
 
@@ -33,6 +41,12 @@ What it costs today:
   that runs past it answers 503 `ACCREDITATION_GATE_UNAVAILABLE`.
 - `PATCH /api/accreditation/metadata`. `getLatestAccreditOp` is its first HAF read. A caller with
   no accredit op takes the no-match path.
+- The ORCID flows. `findAccreditedAccountWithOrcid` runs in the ORCID accredit and link handlers
+  (`backend/src/routes/orcid.ts`) and on the ORCID signup path
+  (`backend/src/routes/signup-verify.ts`). For an ORCID no accredit op carries, its first read
+  matches nothing. `getExistingAccreditation` runs in the link handler.
+- The custody arm does not run today. `POST /api/custody/broadcast` calls the lookup only when
+  the request body carries an `idempotency_key`, and nothing in `frontend/src` sends one.
 - Each such query holds one of the HAF pool's three connections while it runs.
 
 The fix pattern is the one `loadWotThreshold` (`backend/src/wot.ts`) and `aa_params_latest`
@@ -41,10 +55,11 @@ The fix pattern is the one `loadWotThreshold` (`backend/src/wot.ts`) and `aa_par
 
 ## Scope
 
-1. In each of the three lookups, put the row match in an `AS MATERIALIZED` CTE that carries no
-   `ORDER BY` and no `LIMIT`, and order and limit outside it. Keep every predicate (`custom_id`,
-   the action filter, the subject field, `required_posting_auths ?|`) inside the CTE. Keep the
-   `(block_num, id)` descending order. Do not add a `block_num >=` floor.
+1. In each of the seven lookups, put the row match in an `AS MATERIALIZED` CTE that carries no
+   `ORDER BY` and no `LIMIT`, and order and limit outside it. Keep every predicate of that lookup
+   (`custom_id`, the action filter where there is one, the subject field,
+   `required_posting_auths ?|`) inside the CTE. Keep each lookup's existing sort order. Do not
+   add a `block_num >=` floor.
 
    The form that was measured for the gate (no-match input only):
 
@@ -66,8 +81,8 @@ The fix pattern is the one `loadWotThreshold` (`backend/src/wot.ts`) and `aa_par
 
 2. `hafsql.ts` keeps `AS MATERIALIZED` inline in its SQL literals for the
    `pevo/no-custom-id-block-num-floor` lint canary (see the comment on `aa_vouch_ranked`). Check
-   whether that rule reads these two files before you move the CTE into a shared fragment.
-3. Re-measure each of the three after the change, for a no-match input and for a matching one, and
+   whether that rule reads these files before you move the CTE into a shared fragment.
+3. Re-measure each of the seven after the change, for a no-match input and for a matching one, and
    put the numbers in the signal block. If you cannot run `EXPLAIN` against the HAF node, say so
    there and the architect measures at review.
 
@@ -75,16 +90,15 @@ The fix pattern is the one `loadWotThreshold` (`backend/src/wot.ts`) and `aa_par
 
 - The gate's semantics. `backend-verify-gate-treats-wot-enrollee-as-accredited` changes which
   rows count as a hit and lands after this task, because both edit the same query.
-- Other reads with the same `ORDER BY block_num DESC ... LIMIT 1` shape over
-  `operation_custom_json_view`. None of these was plan-checked, and none is to be changed here:
-  the custom_json arm of `findCustodyBroadcastByIdempotencyKey` (`lib/idempotency.ts`), the two
-  reads near the end of `lib/orcid-binding.ts`, one in `routes/orcid.ts`, and the
-  `update_weights` read in `reputation.ts`, which runs under a 5 s `SET LOCAL statement_timeout`.
-  The architect plan-checks them separately.
+- The comment arm of `findCustodyBroadcastByIdempotencyKey`. Its plan-only `EXPLAIN` shows an
+  index scan on the comment author with the block floor and no backward blocks scan. Leave it.
+- The `update_weights` read in `reputation.ts`. It has the same `ORDER BY block_num DESC LIMIT 1`
+  shape, runs under a 5 s `SET LOCAL statement_timeout`, and was not plan-checked. It belongs to
+  `architect-audit-reputation`.
 
 ## Acceptance criteria
 
-1. The three lookups return what they returned before, for matching and non-matching inputs. Name
+1. The seven lookups return what they returned before, for matching and non-matching inputs. Name
    the specs that cover each in the signal block.
 2. The signal block carries the measured timings, or says they could not be taken.
 3. A comment that states a timing cites only a number this task or its implementer measured, and
