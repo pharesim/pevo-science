@@ -541,7 +541,7 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
       // and it gets the not-found answer it would get a moment later.
       const cleared = await pool.query(
         `UPDATE accounts SET verify_token = NULL, expires_at = NULL
-          WHERE id = $1 AND verify_token = $2 AND username IS NOT NULL`,
+          WHERE id = $1 AND verify_token = $2`,
         [row.id, token],
       );
       if (cleared.rowCount === 0) {
@@ -556,11 +556,10 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
     // never carries one and no signup token can match here.
     const { rows: changeRows } = await pool.query<{
       id: number;
-      pending_email: string;
       pending_email_expires_at: Date | null;
       email: string;
     }>(
-      'SELECT id, pending_email, pending_email_expires_at, email FROM accounts WHERE pending_email_token = $1',
+      'SELECT id, pending_email_expires_at, email FROM accounts WHERE pending_email_token = $1',
       [token],
     );
 
@@ -571,18 +570,22 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
       }
 
       const oldEmail = row.email;
-      const newEmail = row.pending_email;
 
-      // Clicking the link proves control of the new address, which is now
-      // the row's email, so the email is verified: verify_token and
-      // expires_at are cleared with the swap. On a row whose email was
-      // already verified the token is already NULL, and expires_at holds at
-      // most a leftover signup-link expiry, which no reader consults on a
-      // row whose token is NULL. On a row that took this flow before its
+      // Keyed on the presented token as well as the row. Every write of
+      // `pending_email` or `pending_email_token` in this file writes both in
+      // the same UPDATE, so a swap matched on the token installs the address
+      // that token was mailed to. Clicking the link proves control of that
+      // address, which is now the row's email, so the email is verified:
+      // verify_token and expires_at are cleared with the swap. On a row whose
+      // email was already verified the token is already NULL, and expires_at
+      // holds at most a leftover signup-link expiry, which no reader consults
+      // on a row whose token is NULL. On a row that took this flow before its
       // first email was verified (state G with a hex token, from before
-      // unverified rows were routed to the re-issue branch) it marks the
-      // row verified.
-      await pool.query(
+      // unverified rows were routed to the re-issue branch) it marks the row
+      // verified. A change request or re-issue that lands between the lookup
+      // and this swap replaces or clears the token, so the swap matches no
+      // row and the link gets the not-found answer.
+      const swapped = await pool.query<{ email: string }>(
         `UPDATE accounts
          SET email = pending_email,
              pending_email = NULL,
@@ -590,14 +593,18 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
              pending_email_expires_at = NULL,
              verify_token = NULL,
              expires_at = NULL
-         WHERE id = $1`,
-        [row.id],
+         WHERE id = $1 AND pending_email_token = $2
+         RETURNING email`,
+        [row.id, token],
       );
+      if (swapped.rowCount === 0) {
+        return sendError(res, 400, 'INVALID_TOKEN', 'Invalid or expired verification link');
+      }
 
       // Update notification_preferences.email if it matched the old email
       await pool.query(
         'UPDATE notification_preferences SET email = $1 WHERE email = $2',
-        [newEmail, oldEmail],
+        [swapped.rows[0].email, oldEmail],
       );
 
       return sendOk(res, { verified: true });

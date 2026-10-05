@@ -193,3 +193,41 @@ Dismissed at this review (recorded so the archive keeps them):
 Filed separately: rows the base handler already left with `verify_token` NULL and
 `username` NULL are not repaired by this change. See
 `tasks/pending/backend-repair-rows-the-settings-verify-handler-locked.md`.
+
+## Backend hold-fix signal (2026-10-06)
+
+Landed in the commit that moves this file to `review/`. One file: `backend/src/routes/settings.ts`,
+in `GET /api/settings/email/verify/:token`. No spec changed.
+
+- **Item 1.** The swap is `WHERE id = $1 AND pending_email_token = $2 RETURNING email`, bound to
+  the presented token. When it matches no row it answers the generic 400 'Invalid or expired
+  verification link' and skips the `notification_preferences` UPDATE, which now takes its new
+  address from `RETURNING email`. The `newEmail` local is gone, and so is `pending_email` from the
+  change-branch SELECT, which nothing read any more. The comment states the pairing in both
+  directions ("every write of `pending_email` or `pending_email_token` in this file writes both").
+  Its last sentence says an interleaving change request or re-issue makes the swap match no row.
+  It drops "a moment later": an interleaving request whose mail fails restores the earlier token,
+  and the link then verifies again.
+- **Item 2.** The add-flow clear is `WHERE id = $1 AND verify_token = $2`. The SELECT keeps
+  `AND username IS NOT NULL`.
+- **Verification.** In scope: `tests/routes/settings-state-g-unverified-email.test.ts` plus
+  `tests/routes/settings.test.ts` 37/37, exit 0. tsc and eslint clean. Full backend suite: 19
+  failed in 9 files, exit 1: accreditation-idempotency, accreditation (cap), reviews (gate),
+  idempotency-real-haf, papers-enrichment-parity-gate, profile-auth-bypass, stats-profile-parity,
+  cast-hardening-author-index-weight, fresh-auth-consent-op-burn-offline-queue. None touches
+  `settings.ts` or this route, and several are on the known pre-existing list. They were NOT
+  re-checked against clean main in this pass.
+- **Probes** (scratchpad copies of base 342f2820 and of the fix, `pool.query` spy interleaves, not
+  committed). Both hold interleaves reproduce on base. On the fix both answer 400 deep-equal to an
+  unknown-token response, and the rows keep what the interleaving write left. Also closed: two
+  overlapping clicks of one change link gave 200/200 and `email` NULL on base, 200/400 on the fix.
+  Item 2: removing the SELECT predicate now fails all three wrong-flow specs; on base, only the
+  expired E spec. As expected, no committed spec fails with the swap's token key or rowCount guard
+  removed.
+- **Pre-existing, outside this task, awaiting the user's triage.** (1) The change branch's
+  `notification_preferences` UPDATE is keyed on email only. Another user's row holding the old
+  address picks up the newly verified address, measured on both base and fix. (2) Both recovery
+  UPDATEs in `recover.ts` leave the pending triple. A change link queued before a recovery still
+  swaps afterwards. (3) No spec pins the `notification_preferences` move. (4) Signup checks
+  `email` only, not `pending_email`, so a signup can make another row's swap hit the UNIQUE
+  constraint. Code reading only.
