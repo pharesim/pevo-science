@@ -116,6 +116,7 @@ import {
   MODULE_SCOPE,
   enclosingSymbol,
   isCommentLine,
+  isCommentedOut,
   occurrencesOf,
   skipCommentLine,
   skipCommentOr,
@@ -379,8 +380,8 @@ const ENTRY_STORE_MODULE = 'lib/fresh-auth.ts';
  *  another module is the cheapest way to reach the store from outside it, so
  *  there it is an occurrence like any other. Inside the owning module the
  *  shape skip spares every definition-shaped line wherever it sits, so
- *  {@link keyspaceDefinitionScopes} is what pins that exactly one of them
- *  carries the literal, at module scope.
+ *  {@link keyspaceDefinitionScopes} is what pins how many of them carry the
+ *  literal and where the resolver places them.
  *
  *  The result is compared to the empty set rather than to a module-scope key
  *  standing for the definition. A key stands for every line that resolves to
@@ -403,14 +404,30 @@ function strayKeyspaceLiterals(files: ScannedSource[]): { keys: string[]; sites:
   return { keys: [...owner.keys, ...elsewhere.keys].sort(), sites: [...owner.sites, ...elsewhere.sites] };
 }
 
-/** The enclosing symbol of every key-prefix definition line in `source` that
- *  carries the entry keyspace literal. {@link strayKeyspaceLiterals} skips
- *  those lines by shape, which says nothing about how many there are or where
- *  they sit; comparing this to `[MODULE_SCOPE]` refuses a second carrier, a
- *  carrier moved into a function, and a renamed namespace. */
+/** The enclosing symbol of every live key-prefix definition line in `source`
+ *  that carries the entry keyspace literal. {@link strayKeyspaceLiterals}
+ *  skips those lines by shape, which says nothing about how many there are or
+ *  where they sit. Compared to `[MODULE_SCOPE]`, this refuses a second
+ *  definition line carrying the literal, a renamed namespace (a commented-out
+ *  copy of the old line is not live, so it does not stand in), and a carrier
+ *  moved into a function the resolver names.
+ *
+ *  That last refusal is only as good as the resolver, because the comparison
+ *  licenses {@link MODULE_SCOPE} for the one line it admits. A carrier moved
+ *  into a function is absorbed wherever the resolver answers module scope for
+ *  it: an OUTWARD answer (below an inner block closing on a `*\/ }` line), or
+ *  a declaration shape it does not parse (an object method, a class member).
+ *  The shape skip narrows what rides on the module-scope answer to one line;
+ *  it does not remove the license. A second statement sharing the definition
+ *  line is spared with it, since both scans work per line. And liveness is
+ *  `isCommentedOut`'s reading, so a carrier below a line-start opener inside
+ *  a template literal, with no comment close between, reads as commented out
+ *  and drops from the count. */
 function keyspaceDefinitionScopes(source: ScannedSource): string[] {
   return source.lines.flatMap((line, i) =>
-    ENTRY_KEY_PREFIX_DEFINITION_RE.test(line) && ENTRY_KEYSPACE_LITERAL_RE.test(line)
+    ENTRY_KEY_PREFIX_DEFINITION_RE.test(line) &&
+    ENTRY_KEYSPACE_LITERAL_RE.test(line) &&
+    !isCommentedOut(line, i, source.lines)
       ? [enclosingSymbol(source.lines, i)]
       : [],
   );
@@ -667,10 +684,11 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     // owning module.
     const owner = sources.filter((s) => s.rel === ENTRY_STORE_MODULE);
     expect(owner.length, 'the guarded module was renamed or removed').toBe(1);
-    // Exactly one definition line carries the literal, at module scope.
-    // `strayKeyspaceLiterals` skips definition lines by shape, so it cannot
-    // see a second carrier or one moved into a function, and it passes
-    // vacuously when the namespace is renamed.
+    // Exactly one live definition line carries the literal, and the resolver
+    // places it at module scope. `strayKeyspaceLiterals` skips definition
+    // lines by shape, so it cannot see a second carrier or one moved into a
+    // function, and it passes vacuously when the namespace is renamed.
+    // `keyspaceDefinitionScopes` says where its own reach ends.
     expect(
       keyspaceDefinitionScopes(owner[0]),
       'exactly one key-prefix definition line must carry the entry keyspace literal, ' +
@@ -720,8 +738,9 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
 
     // The definition-shaped lines the stray scan spares, pinned by scope. The
     // carrier moved into an exported function as a column-0 shadowing const,
-    // with the module constant derived from it, passes the stray scan; its
-    // scope is what reports it. So is a second carrier beside the real one.
+    // with the module constant derived from it, passes the stray scan; the
+    // resolver names that function, and the scope pin reports it. A second
+    // carrier beside the real one is reported by count.
     expect(keyspaceDefinitionScopes(owner())).toEqual([MODULE_SCOPE]);
     const definitionInFunction: ScannedSource = {
       rel: ENTRY_STORE_MODULE,
@@ -738,6 +757,15 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     expect(keyspaceDefinitionScopes(definitionInFunction)).toEqual(['entryKeyPrefix']);
     const secondCarrier = owner('export function keyFor(token: string) {', definition, '  return KEY_PREFIX + token;', '}');
     expect(keyspaceDefinitionScopes(secondCarrier)).toEqual([MODULE_SCOPE, 'keyFor']);
+    // Two carriers that resolve to the same scope are two entries, not one.
+    expect(keyspaceDefinitionScopes(owner(definition))).toEqual([MODULE_SCOPE, MODULE_SCOPE]);
+    // A renamed namespace with the old definition kept in a block comment:
+    // the commented copy is not a carrier, so the pin sees none.
+    const renamedBesideCommentedCopy: ScannedSource = {
+      rel: ENTRY_STORE_MODULE,
+      lines: ['/*', definition, '*/', 'const KEY_PREFIX = `${config.appTag}:fresh_auth:entry:`;'],
+    };
+    expect(keyspaceDefinitionScopes(renamedBesideCommentedCopy)).toEqual([]);
   });
 
   it('the test-only seeding hook has no production caller', () => {

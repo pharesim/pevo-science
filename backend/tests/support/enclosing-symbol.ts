@@ -96,9 +96,12 @@
  *    such line exists and that it resolves to module scope, as the
  *    keyspace-literal assertion in
  *    `no-session-proof-mint-outside-reauth-routes.test.ts` does for its
- *    definition line. Or it can count occurrences per key, as the accounts
- *    canary does for the `.sql` migrations it keys at module scope, where an
- *    arrival raises a count instead of riding on the key.
+ *    definition line. That narrows what an outward answer can ride on to the
+ *    one admitted line, without removing the license: the scope pin is
+ *    itself a module-scope key, so a moved line the walk answers outward for
+ *    still passes it. Or the assertion can count occurrences per key, as the
+ *    accounts canary does for the `.sql` migrations it keys at module scope,
+ *    where an arrival raises a count instead of riding on the key.
  *
  *  - PAIRING assertions (every occurrence of X must have a Y in the same
  *    symbol) do NOT inherit that property. When both sides of a pair resolve to
