@@ -461,6 +461,25 @@ export function isUsernameMismatch(err) {
   return err?.code === 'FRESH_AUTH_REQUIRED' && err.details?.reason === 'username_mismatch';
 }
 
+// The codes a bearer request is refused with once the session itself has
+// ended: the server revoked the token (SESSION_INVALIDATED), or the auth store
+// found it past its expiry before sending (SESSION_EXPIRED). api.js and
+// signer.js hand both to the auth store before rejecting.
+const SESSION_ENDED_CODES = Object.freeze(['SESSION_EXPIRED', 'SESSION_INVALIDATED']);
+
+// Whether a guarded call's rejection is a session ending this flight must
+// unwind as, rather than report. True only when `guard` also reads torn down.
+// The caller then returns its already-reported outcome: the ending's own
+// message has gone out, and `guard.cancel()` reports a subject change that
+// went out without one. False when the store adopted a newer session of the
+// same account instead, which tears nothing down and says nothing, so the
+// caller keeps reporting the rejection.
+export function unwindIfSessionEnded(err, guard) {
+  if (!SESSION_ENDED_CODES.includes(err?.code) || !guard.tornDown()) return false;
+  guard.cancel();
+  return true;
+}
+
 // Dismiss a re-auth prompt left open across a subject teardown. Called by the
 // auth store's subject scrub alongside the cache clears; kept here because
 // this module is the modal store's only programmatic consumer, so the
@@ -717,11 +736,11 @@ export function cacheConsentOpProof(
 // entry either, on the routes whose request schema declares the proof as a
 // bounded string: the accreditation-metadata edit and the admin authority
 // actions. Those answer a non-string with a validation rejection rather than a
-// fresh-auth one, and `consentOpFreshAuthRetryGate` rethrows anything that is
-// not FRESH_AUTH_REQUIRED before it reaches its `clearProofCache` hook. So
-// without the drop here, nothing on the path of an attempt one of those routes
-// refuses this way would remove the entry, and every later attempt on the
-// entry's own target that found it would send the same value again.
+// fresh-auth one, and `consentOpFreshAuthRetryGate` rethrows such a rejection
+// before it reaches its `clearProofCache` hook. So without the drop here,
+// nothing on the path of an attempt one of those routes refuses this way would
+// remove the entry, and every later attempt on the entry's own target that
+// found it would send the same value again.
 //
 // The drop sits with the corruption checks, BEFORE the target comparison, and
 // that ordering is load-bearing in both directions. An entry whose token is not
@@ -1680,9 +1699,11 @@ export async function beginAuthorshipOrcidFreshAuth(target, isStale) {
 // through signer.js and carries one — reason-keying is the form that holds
 // on both surfaces. 401
 // wrong_mechanism and the 403 target/kind mismatches are not fixable by
-// re-minting the same factor; they fall through to freshAuthFailed. Errors
-// whose code is not FRESH_AUTH_REQUIRED rethrow untouched so callers keep
-// their own op-level handling.
+// re-minting the same factor; they fall through to freshAuthFailed. A
+// session-ended rejection the guard reads as a teardown resolves
+// `{ cancelled: true }` (`unwindIfSessionEnded`). Other errors whose code is
+// not FRESH_AUTH_REQUIRED rethrow untouched so callers keep their own
+// op-level handling.
 //
 // The hooks carry the only parts that differ per surface:
 //   guard               the caller's subject teardown guard, opened at the
@@ -1710,6 +1731,7 @@ export async function consentOpFreshAuthRetryGate(err, {
   run,
   clearProofCache,
 }) {
+  if (unwindIfSessionEnded(err, guard)) return { cancelled: true };
   if (err?.code !== 'FRESH_AUTH_REQUIRED') throw err;
 
   // The proof is consumed (success or fail) before the guarded call, so any
@@ -1747,6 +1769,7 @@ export async function consentOpFreshAuthRetryGate(err, {
         clearProofCache();
         return { ok };
       } catch (retryErr) {
+        if (unwindIfSessionEnded(retryErr, guard)) return { cancelled: true };
         // A mismatch surfacing here is the same corrupted session the
         // first-attempt branch below tears down, so it takes the same exit
         // rather than degrading into the retryable freshAuthFailed report.
@@ -1876,6 +1899,7 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
     // and rethrows). Keep this catch's branching aligned with the codes that
     // helper attaches; any new error code introduced upstream must be reflected
     // here.
+    if (unwindIfSessionEnded(err, guard)) return FRESH_AUTH_REDIRECT_PENDING;
     if (err?.code === 'FRESH_AUTH_REQUIRED') {
       // A 401 against a window proof means the server no longer honours that
       // window. That is not a spent single-use token to be re-minted behind
@@ -1921,6 +1945,7 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
           if (acquisitionAborted(reacquired)) return FRESH_AUTH_REDIRECT_PENDING;
           return await attemptOnce(reacquired);
         } catch (retryErr) {
+          if (unwindIfSessionEnded(retryErr, guard)) return FRESH_AUTH_REDIRECT_PENDING;
           // A mismatch surfacing on the retry is the same corrupted session
           // the first-attempt branch below tears down, so it takes the same
           // exit. This has to sit ahead of both the shape-preserving rethrow

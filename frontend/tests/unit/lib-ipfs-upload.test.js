@@ -51,28 +51,34 @@ const mockHandleSessionInconsistency = vi.fn();
 // real body toasts, which is out of this suite's boundary).
 let guardTornDown = false;
 const mockGuardCancel = vi.fn();
-vi.mock('../../src/lib/fresh-auth.js', async (importOriginal) => ({
-  // The outcome-key scan is pulled REAL rather than mirrored here. It is the
-  // vocabulary's single registration-point scan, and a hand-written copy in
-  // this factory would be exactly the second implementation whose drift from
-  // the canonical one the pre-flight stopped carrying — the copy would agree
-  // with the real scan only until the vocabulary next changes, and the suite
-  // would keep passing while production classified an outcome differently.
-  windowOutcomeKey: (await importOriginal()).windowOutcomeKey,
-  ensureSessionWindow: (...a) => mockEnsureSessionWindow(...a),
-  clearCachedSessionProof: (...a) => mockClearCachedSessionProof(...a),
-  slideSessionWindow: (...a) => mockSlideSessionWindow(...a),
-  handleSessionInconsistency: (...a) => mockHandleSessionInconsistency(...a),
-  subjectTeardownGuard: () => ({
-    tornDown: () => guardTornDown,
-    cancel: (...a) => mockGuardCancel(...a),
-  }),
-  REMINTABLE_REASONS: ['missing', 'expired', 'malformed'],
-  // Mirrors the real shared discriminator: the reason is the whole gate, and
-  // the ApiRequestErrors this surface sees carry no status to gate on.
-  isUsernameMismatch: (err) =>
-    err?.code === 'FRESH_AUTH_REQUIRED' && err.details?.reason === 'username_mismatch',
-}));
+vi.mock('../../src/lib/fresh-auth.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    // The outcome-key scan is pulled REAL rather than mirrored here. It is the
+    // vocabulary's single registration-point scan, and a hand-written copy in
+    // this factory would be exactly the second implementation whose drift from
+    // the canonical one the pre-flight stopped carrying — the copy would agree
+    // with the real scan only until the vocabulary next changes, and the suite
+    // would keep passing while production classified an outcome differently.
+    windowOutcomeKey: actual.windowOutcomeKey,
+    // Pulled REAL as well: it answers through the guard this factory stubs, so
+    // its code list and its guard condition are the real ones.
+    unwindIfSessionEnded: actual.unwindIfSessionEnded,
+    ensureSessionWindow: (...a) => mockEnsureSessionWindow(...a),
+    clearCachedSessionProof: (...a) => mockClearCachedSessionProof(...a),
+    slideSessionWindow: (...a) => mockSlideSessionWindow(...a),
+    handleSessionInconsistency: (...a) => mockHandleSessionInconsistency(...a),
+    subjectTeardownGuard: () => ({
+      tornDown: () => guardTornDown,
+      cancel: (...a) => mockGuardCancel(...a),
+    }),
+    REMINTABLE_REASONS: ['missing', 'expired', 'malformed'],
+    // Mirrors the real shared discriminator: the reason is the whole gate, and
+    // the ApiRequestErrors this surface sees carry no status to gate on.
+    isUsernameMismatch: (err) =>
+      err?.code === 'FRESH_AUTH_REQUIRED' && err.details?.reason === 'username_mismatch',
+  };
+});
 
 import {
   uploadFile,

@@ -61,6 +61,7 @@ import { initReauthModal } from '../../src/components/reauth-modal.js';
 import { fetchNotifications, submitEmail } from '../../src/api.js';
 import {
   broadcastWithFreshAuth,
+  cacheConsentOpProof,
   cacheSessionProof,
   clearCachedSessionProof,
   clearCachedConsentOpProof,
@@ -422,17 +423,44 @@ describe('the upload surface on an expired session', () => {
     expect(toastMessages()).toEqual([EXPIRED_COPY]);
   });
 
-  it('refuses an upload under an open window without retrying it', async () => {
+  it('refuses an upload under an open window without retrying it, adding nothing to the expiry message', async () => {
     openWindowJustBeforeExpiry();
     expire();
 
     const err = await uploadFile(pickedFile()).catch((e) => e);
 
-    expect(err).toMatchObject({ code: 'SESSION_EXPIRED' });
+    expect(describeUploadError(err)).toBeNull();
     expect(promptSpy).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(stores.auth.isConnected).toBe(false);
     expect(toastMessages()).toEqual([EXPIRED_COPY]);
+  });
+
+  it('still reports the refused upload when a newer session of the same account was adopted', async () => {
+    openWindowJustBeforeExpiry();
+    expire();
+    localStorage.setItem(SESSION_KEY, saved('new-jwt', LATER));
+
+    const err = await uploadFile(pickedFile()).catch((e) => e);
+
+    // Nothing was torn down and nothing said, so the page reports the failure.
+    expect(stores.auth.token).toBe('new-jwt');
+    expect(bearerRequests()).toEqual([]);
+    expect(toastMessages()).toEqual([]);
+    expect(describeUploadError(err)).toBe('common.uploadFailed');
+  });
+
+  it('says the session changed when another account was adopted under the upload', async () => {
+    openWindowJustBeforeExpiry();
+    expire();
+    localStorage.setItem(SESSION_KEY, saved('bob-jwt', LATER, 'bob'));
+
+    const err = await uploadFile(pickedFile()).catch((e) => e);
+
+    expect(stores.auth.username).toBe('bob');
+    expect(bearerRequests()).toEqual([]);
+    expect(toastMessages()).toEqual([enMessages.auth.reauthCancelled]);
+    expect(describeUploadError(err)).toBeNull();
   });
 });
 
@@ -442,13 +470,34 @@ describe('the custody broadcast on an expired session', () => {
     openWindowJustBeforeExpiry();
     expire();
 
-    const err = await broadcastWithFreshAuth('alice', VOTE).catch((e) => e);
+    // The clean-abort sentinel: the call site adds nothing to the expiry message.
+    expect(await broadcastWithFreshAuth('alice', VOTE)).toBeNull();
 
-    expect(err).toMatchObject({ code: 'SESSION_EXPIRED' });
     expect(requestedPaths()).toEqual([]);
     expect(stores.auth.isConnected).toBe(false);
     expect(localStorage.getItem(SESSION_KEY)).toBeNull();
     expect(promptSpy).not.toHaveBeenCalled();
+    expect(toastMessages()).toEqual([EXPIRED_COPY]);
+    expect(modal.prompt).toHaveBeenCalledWith({ notice: EXPIRED_COPY });
+  });
+});
+
+describe('a consent op on an expired session', () => {
+  it('cancels a settings action whose cached proof outlived the session', async () => {
+    const modal = mountSignInModal();
+    cacheConsentOpProof('orcid-proof', LATER, 'change_email', 'alice', '');
+    expire();
+    const run = vi.fn((proof) => submitEmail('new@uni.test', proof));
+
+    const result = await withSettingsFreshAuth('change_email', { custody: 'light', username: 'alice' }, run);
+
+    // The guarded call itself met the expiry; the action is abandoned as the
+    // teardown's own outcome, so the page adds nothing to the expiry message.
+    expect(result).toEqual({ cancelled: true });
+    expect(run).toHaveBeenCalledWith('orcid-proof');
+    expect(promptSpy).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(stores.auth.isConnected).toBe(false);
     expect(toastMessages()).toEqual([EXPIRED_COPY]);
     expect(modal.prompt).toHaveBeenCalledWith({ notice: EXPIRED_COPY });
   });

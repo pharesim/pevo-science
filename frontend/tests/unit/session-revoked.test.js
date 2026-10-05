@@ -53,14 +53,17 @@ vi.mock('../../src/keychain.js', () => ({
 import { initAuth } from '../../src/auth.js';
 import { initToast } from '../../src/toast.js';
 import { initReauthModal } from '../../src/components/reauth-modal.js';
-import { fetchNotifications } from '../../src/api.js';
+import { fetchNotifications, submitEmail } from '../../src/api.js';
 import {
   broadcastWithFreshAuth,
+  cacheConsentOpProof,
   cacheSessionProof,
   clearCachedSessionProof,
   clearPasswordFactorMemo,
   abandonInFlightAcquisitions,
 } from '../../src/lib/fresh-auth.js';
+import { withSettingsFreshAuth } from '../../src/lib/settings-fresh-auth.js';
+import { uploadFile, describeUploadError } from '../../src/lib/ipfs-upload.js';
 
 const SESSION_KEY = 'pevo_session';
 const FUTURE = '2099-01-01T00:00:00.000Z';
@@ -103,6 +106,17 @@ function mountSignInModal() {
   modalHolder.modal = { open: false, prompt: vi.fn(() => new Promise(() => {})) };
   return modalHolder.modal;
 }
+
+// Open a live session window, so the guarded request is the first to meet the
+// revoked token.
+const openWindow = () => {
+  const now = Date.now();
+  cacheSessionProof(
+    'window-proof',
+    new Date(now + 60_000).toISOString(),
+    new Date(now + 3_600_000).toISOString(),
+  );
+};
 
 let fetchSpy;
 
@@ -271,25 +285,17 @@ describe('a revoked bearer token on an authenticated api.js request', () => {
 });
 
 describe('a revoked bearer token on the custody broadcast', () => {
-  const openWindow = () => {
-    const now = Date.now();
-    cacheSessionProof(
-      'window-proof',
-      new Date(now + 60_000).toISOString(),
-      new Date(now + 3_600_000).toISOString(),
-    );
-  };
-
   it('tears down once and neither re-mints nor retries', async () => {
     const modal = mountSignInModal();
     openWindow();
 
-    const err = await broadcastWithFreshAuth('alice', [['vote', {}]]).catch((e) => e);
+    // The clean-abort sentinel: the call site adds nothing to the revoked
+    // message, where the rejection itself would draw its own failure message.
+    expect(await broadcastWithFreshAuth('alice', [['vote', {}]])).toBeNull();
 
     // One request: the broadcast itself. No status read, no mint, no retry.
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(fetchSpy.mock.calls[0][0]).toBe('/api/custody/broadcast');
-    expect(err).toMatchObject({ status: 401, code: 'SESSION_INVALIDATED' });
     expect(stores.auth.isConnected).toBe(false);
     expect(localStorage.getItem(SESSION_KEY)).toBeNull();
     // One message: the teardown's own, with no cancelled-confirmation or
@@ -356,5 +362,45 @@ describe('a revoked bearer token on the custody broadcast', () => {
 
     expect(res).toMatchObject({ data: { tx_id: 'abc' } });
     expect(stores.auth.isConnected).toBe(true);
+  });
+});
+
+describe('a revoked bearer token on the upload surface', () => {
+  // jsdom's Blob has no arrayBuffer(), which the pre-flight hash reads.
+  const pickedFile = () => {
+    const file = new File(['figure'], 'figure.png', { type: 'image/png' });
+    file.arrayBuffer = async () => new TextEncoder().encode('figure').buffer;
+    return file;
+  };
+
+  it('abandons an upload under an open window, adding nothing to the revoked message', async () => {
+    openWindow();
+
+    const err = await uploadFile(pickedFile()).catch((e) => e);
+
+    // One request: the pre-flight. No retry, no re-acquisition.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/ipfs/upload-token');
+    expect(stores.auth.isConnected).toBe(false);
+    expect(describeUploadError(err)).toBeNull();
+    expect(stores.toast.items.map((t) => t.message)).toEqual([REVOKED_COPY]);
+  });
+});
+
+describe('a revoked bearer token on a consent op', () => {
+  it('cancels a settings action whose guarded call meets the revoked token', async () => {
+    const modal = mountSignInModal();
+    cacheConsentOpProof('orcid-proof', FUTURE, 'change_email', 'alice', '');
+    const run = vi.fn((proof) => submitEmail('new@uni.test', proof));
+
+    const result = await withSettingsFreshAuth('change_email', { custody: 'light', username: 'alice' }, run);
+
+    expect(result).toEqual({ cancelled: true });
+    expect(run).toHaveBeenCalledWith('orcid-proof');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(stores.reauthModal.open).toBe(false);
+    expect(stores.auth.isConnected).toBe(false);
+    expect(stores.toast.items.map((t) => t.message)).toEqual([REVOKED_COPY]);
+    expect(modal.prompt).toHaveBeenCalledWith({ notice: REVOKED_COPY });
   });
 });

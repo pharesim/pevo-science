@@ -6,6 +6,7 @@ import {
   handleSessionInconsistency,
   isUsernameMismatch,
   subjectTeardownGuard,
+  unwindIfSessionEnded,
   windowOutcomeKey,
   REMINTABLE_REASONS,
 } from './fresh-auth.js';
@@ -18,10 +19,10 @@ export const UPLOAD_REAUTH_FAILED = 'UPLOAD_REAUTH_FAILED';
 export const UPLOAD_REAUTH_REQUIRED = 'UPLOAD_REAUTH_REQUIRED';
 export const UPLOAD_REAUTH_BUSY = 'UPLOAD_REAUTH_BUSY';
 // Already-reported outcome: a message for the session teardown has been shown
-// before this code is thrown (the re-login toast, by whichever flight detected
-// the corrupted session first), so consumers must surface nothing on top of it (mirrors FRESH_AUTH_REDIRECT_PENDING's
-// message-suppression contract on the broadcast surface). `describeUploadError`
-// maps it to null rather than an i18n key.
+// before this code is thrown, so consumers must surface nothing on top of it
+// (mirrors FRESH_AUTH_REDIRECT_PENDING's message-suppression contract on the
+// broadcast surface). `describeUploadError` maps it to null rather than an
+// i18n key.
 export const UPLOAD_SESSION_TORN_DOWN = 'UPLOAD_SESSION_TORN_DOWN';
 // Already-reported outcome for the other teardown shape: a cross-tab subject
 // change abandoned the batch. Whatever owed the user a word about that
@@ -189,9 +190,9 @@ function tornDownSession() {
 // otherwise escape raw — the page layer then stacks a generic upload failure on
 // top of a session that was never torn down.
 //
-// Only a mismatch is reclassified. `windowProof()`'s own UploadSessionErrors
-// (a dismissed prompt, a spent re-auth, a refused round-trip) are the coded
-// vocabulary every consumer already describes, so they pass straight through.
+// `windowProof()`'s own UploadSessionErrors (a dismissed prompt, a spent
+// re-auth, a refused round-trip) are the coded vocabulary every consumer
+// already describes, so they pass straight through.
 async function retryOnce(file, guard) {
   // The re-acquisition reads the store at call time: past a cross-tab subject
   // change it would prompt whoever the tab NOW represents with the generic
@@ -216,6 +217,7 @@ async function retryOnce(file, guard) {
     return await attemptOnce(file, proof, guard);
   } catch (err) {
     if (isUsernameMismatch(err)) throw tornDownSession();
+    if (unwindIfSessionEnded(err, guard)) throw uploadError(UPLOAD_SESSION_TORN_DOWN);
     throw err;
   }
 }
@@ -265,6 +267,7 @@ export async function uploadFile(file) {
     // actionable nor true. The already-reported code aborts the batch while
     // telling the page layer the teardown's toast was the whole message.
     if (isUsernameMismatch(err)) throw tornDownSession();
+    if (unwindIfSessionEnded(err, guard)) throw uploadError(UPLOAD_SESSION_TORN_DOWN);
     // UNAUTHORIZED comes from the upload leg (`/ipfs/upload`) and means the
     // single-use upload token was refused. Not because a slow transfer outlived
     // the token's TTL — every request carries a 30-second abort composed in

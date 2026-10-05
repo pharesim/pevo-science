@@ -190,8 +190,8 @@ export async function withAuthorshipFreshAuth(target, ctx, run) {
     // ASSUMED-password ORCID fallback, the username_mismatch teardown, and the
     // terminal freshAuthFailed — lives in the shared retry gate
     // (`consentOpFreshAuthRetryGate`, fresh-auth.js); only this surface's
-    // bindings differ. Errors that are not fresh-auth rethrow from the gate,
-    // so the caller keeps its op-level handling.
+    // bindings differ. Errors the gate does not handle rethrow from it, so
+    // the caller keeps its op-level handling.
     return consentOpFreshAuthRetryGate(err, {
       guard,
       resolveFactor: resolvePasswordFactor,

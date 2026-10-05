@@ -203,7 +203,7 @@ export async function withSettingsFreshAuth(action, ctx, run) {
     // (`consentOpFreshAuthRetryGate`, fresh-auth.js); only this surface's
     // bindings differ. `passwordFactorFor` keeps the set_password ORCID-only
     // exception in force on the retry, exactly as on the initial mint. Errors
-    // that are not fresh-auth rethrow from the gate, so the caller keeps its
+    // the gate does not handle rethrow from it, so the caller keeps its
     // per-action handling.
     return consentOpFreshAuthRetryGate(err, {
       guard,
