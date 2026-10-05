@@ -1,3 +1,142 @@
+## Re-anchor the eight bare positional citations left in frontend/{src,tests} (archived 2026-10-05) — first review clean at 473af3f9; leftovers the regex cannot see routed to ui-positional-anchor-residue-sweep
+
+### Architect archive note (2026-10-05)
+
+First review of 473af3f9 with /ce-code-review (focused: correctness and root CLAUDE.md
+"Comment anchors" in the architect context, plus one in-process adversarial reviewer
+reading a scratchpad copy of the reviewed tree, because sibling ui commits had moved the
+files since). No findings from either read. Every one of the eight rewrites (items 2 to 8
+plus the off-list `UPLOAD_ERROR_TEXT` site in ipfs-upload.js) names exactly one target in
+its file, and the sentence's claim about that target holds against the code. The
+hook's positional regex returns 0 at 473af3f9 and at HEAD 9f2ddf96, against 8 at the
+parent. No added line carries another rot form. Every changed line is a comment. Full
+unit suite on an isolated copy of 473af3f9: 87 files, 1975 tests, exit 0, matching the
+signal block.
+
+User decision 2026-10-05: the "not in scope, for the architect to route" leftovers
+(the line-wrapped `retryUpgradeBackend` "the guard / above just confirmed" form plus the
+plural, counted and unlisted-noun forms) went to a new ui task,
+ui-positional-anchor-residue-sweep. Widening the hook regex stays an architect decision
+after that sweep. No /ce-compound: the per-line blind spot is recorded in that task and
+in the hook's own deferred list.
+
+### Task file
+
+**Owner:** ui
+**Created:** 2026-09-06
+
+Routed out of the round-6 architect review of `ui-cross-user-session-teardown`
+(clean, archived the same day). That task retired the last bare positional anchor
+in `lib/fresh-auth.js`'s `beginOrcidFreshAuthRedirect` docblock, and its signal
+block correctly reported that the wider class was still open. This is that class,
+filed as its own task so it is not blocked behind two still-open sibling tasks.
+
+## Why
+
+`.githooks/pre-commit` gained a positional-anchor arm on 2026-09-06 (`85baa79b`).
+It is a DIFF gate: it fires only on newly-added lines, so none of the citations
+below trips it and none of them will until someone edits that line. Root
+`CLAUDE.md` defers the whole-tree-clean guarantee for these trees explicitly, and
+that deferral is why the lines survived. The cost of leaving them is that the
+`frontend/{src,tests}` trees cannot be promoted to a whole-tree-clean gate, and
+each line is live rot: an insertion between the citation and its target silently
+breaks the pointer with nothing to catch it.
+
+The governing convention is
+`agents/docs/solutions/conventions/positional-anchor-stable-named-container-carve-out-2026-05-20.md`.
+A positional citation is durable ONLY when a stable behavioral name rides along in
+the same container. All eight below are bare: the article sits directly against a
+structural noun with no name in the slot.
+
+## Scope
+
+Re-anchor these eight, enumerated from the tree on 2026-09-06 by running the
+hook's own positional regex over `frontend/src` and `frontend/tests`. Each is
+quoted by its phrase rather than only its line number, since the numbers drift:
+
+1. `tests/e2e/non-consent-fresh-auth.spec.js` - "is covered by the test above"
+2. `tests/e2e/orcid-no-password.spec.js` - "See the docblock above the real round-trip describe"
+3. `tests/unit/lib-fresh-auth-settings-orcid.test.js` - "The case above passes none"
+4. `tests/unit/lib-fresh-auth-settings-orcid.test.js` - "The control for the case above"
+5. `src/pages/settings.js` - "now that the guard above has already established"
+6. `src/lib/fresh-auth.js` - "here and the call below"
+7. `tests/unit/auth.test.js` - "The pair-partner of the test above"
+8. `tests/unit/lib-settings-fresh-auth.test.js` - "The observed-factor sibling of the case above"
+
+Item 6 deserves a judgment call rather than a reflex edit. Its full sentence is
+"nothing may be awaited between here and the call below", and `mintViaPasswordFactor`
+is named in the same comment paragraph, so a stable name arguably already rides
+along and only the gate's noun-slot heuristic (which cannot see across a sentence)
+would flag it. Decide it on the carve-out's three criteria and record the reasoning
+in the commit message either way. A defensible "left as durable" is an acceptable
+outcome for that one; the other seven are not.
+
+For items 1 and 2, check whether the cited target is even in the same container
+before rewriting. An e2e citation pointing across `describe` blocks needs the
+target restated, not renamed.
+
+## Acceptance criteria
+
+- The hook's positional regex returns zero matches over `frontend/src` and
+  `frontend/tests`, OR returns only item 6 with the carve-out reasoning recorded.
+- Every replacement is audited against the other anchor rules per
+  `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`:
+  no task slug, round ordinal, line number, SHA, or `tasks-archive` redirect
+  substituted for the position. This is the failure mode the convention exists for.
+- Each rewrite is checked for behavioral accuracy against the code it describes,
+  not just for anchor shape. A citation that is re-pointed at the wrong target is
+  worse than the bare positional form it replaced.
+- Comment-only. No production or test behavior changes, and the frontend unit
+  suite stays at its documented baseline.
+
+## Notes
+
+Five of the eight belong to tasks still open in `tasks/pending/` at filing time
+(`ui-consent-op-teardown-guard`, `ui-custody-upgrade-subject-pin`). Coordinate
+rather than racing them: if either task is mid-flight on one of these files when
+this is picked up, take the other files first and leave a note here. Items 1 and 2
+predate both and have no other owner.
+
+## Note (2026-09-14, from the light-account fresh-auth e2e task)
+
+Item 1 no longer exists: the closing note in `tests/e2e/non-consent-fresh-auth.spec.js`
+that carried "is covered by the test above" was replaced wholesale at 58ad7918, and the
+hook's positional regex returns nothing over that file, the new
+`tests/e2e/consent-op-fresh-auth.spec.js`, or `tests/e2e/fixtures/light-account.js`.
+Seven items remain.
+
+UI implementation signal (2026-09-30, commit 473af3f9):
+
+Landed in `473af3f9` (verified an ancestor of `main`). Seven files, comment-only.
+
+- The hook's positional regex returns zero matches over `frontend/src` and
+  `frontend/tests`. Item 6 is not left as a carve-out: the sentence now reads
+  "between this re-check and the `mintViaPasswordFactor` call", so no exemption
+  is needed. The reasoning is in the commit message.
+- Eight sites were re-anchored, not seven. Items 2 to 8 of the filed list, plus
+  one the enumeration predates: `src/lib/ipfs-upload.js` "the table above",
+  now `UPLOAD_ERROR_TEXT`. Item 1 was already gone per the 2026-09-14 note.
+- Item 2 stays inside one file but points across describe blocks from the file
+  header, so the target is restated by the describe's title
+  ('real-backend ORCID null-password round-trips') rather than by position.
+- Each rewrite was checked against the code by an independent read-only pass
+  told to refute it. Seven held. One did not: "the assumed-password 401 case" in
+  `lib-settings-fresh-auth.test.js` matched three cases in that file, so it now
+  reads "the assumed-password 401 that lands after a subject change". Two
+  over-long re-wraps were reflowed in the same pass.
+- Frontend unit suite: 87 files, 1975 tests, exit 0 on two consecutive runs. One
+  earlier run failed only `lib-fresh-auth-session-window` "the slide never
+  pushes past the absolute cap" by 1ms, the known boundary flake.
+
+Not in scope, for the architect to route: the zero-match result is a statement
+about the hook's regex, not about the trees. A sweep for what the per-line,
+article-adjacent regex cannot see found one listed-noun form split across a
+line wrap (`src/pages/settings.js`, retry leg, "the guard" / "above just
+confirmed") and roughly 65 plural, counted or unlisted-noun forms ("the two
+tests below", "the assertion below", "every step below", "see below"), densest
+in `src/pages/settings.js` and the e2e specs. Promoting these trees to a
+whole-tree-clean gate would need those swept and the regex widened first.
+
 ## Align the custody column with upgraded_at at upgrade and login mints (archived 2026-10-05) — five holds; archived at cca00888, one P3 folded into the custody-canary hold
 
 ### Architect archive note (2026-10-05)
@@ -109,142 +248,3 @@ item:
 1. The upgrade UPDATE writes `custody = 'self'` in the same statement as the
    key-nulling, `upgraded_at`, and the revocation epoch. `updated_at` is
    deliberately not bumped (it is the `/link` stuck-recovery recency marker
-   and that lookup matches `custody = 'self'` rows); the handler comment says
-   so.
-2. Migration `017_accounts_custody_upgraded_align.sql`: back-fill
-   (`custody = 'self' WHERE upgraded_at IS NOT NULL AND custody IS DISTINCT
-   FROM 'self'`, so a NULL column with an epoch is repaired too), then a
-   one-directional CHECK `accounts_upgraded_implies_self_custody`
-   (`upgraded_at IS NULL OR custody IS NOT DISTINCT FROM 'self'`). The
-   null-safe spelling is load-bearing: a CHECK that evaluates to NULL passes,
-   so plain `custody = 'self'` would admit an epoch on a NULL-column row,
-   which is what the `/link` finalize (starting from a pre-finalize row)
-   would produce if it dropped its column write. The DO block compares the
-   installed constraint's deparsed definition with the wanted one: a match
-   is a no-op (the re-validation lock is paid once, not on every
-   `deploy.sh migrate`), a mismatch or absence drops and re-adds it, so a
-   database that already carries the constraint under an earlier predicate
-   converges. Pinned in the migration suite (OID survives a converged
-   re-apply; a stale predicate under the same name is replaced).
-3. One derivation, `custodyClaimFor` in `src/lib/custody-claim.ts`, used by
-   the password login, the ORCID login (its SELECT now carries
-   `upgraded_at`), both recovery reissues, and the two settings handlers that
-   report or branch on custody. Rule, stated in the module docblock: `'light'`
-   only from a row with no epoch AND an explicit `'light'` column; everything
-   else is `'self'`. The epoch is what every refusing gate reads, and the
-   light claim is the one with authority attached, so the derivation fails
-   toward the claim that grants nothing. The writer sites (`/upgrade`,
-   `/confirm`, `/link`) keep their literal claims: the literal is the value
-   just written.
-4. Tests: `tests/migrations/accounts-custody-upgraded-align.test.ts`
-   (constraint shape, 23514 refusals for the light+epoch INSERT, the exact
-   old UPDATE statement, and the NULL+epoch INSERT, every enumerated shape
-   accepted, back-fill against the shipped SQL inside a rolled-back
-   transaction with `updated_at` pinned untouched, re-apply convergence);
-   `tests/routes/custody-claim-mint-parity.test.ts` (real Postgres/Redis,
-   drives the actual upgrade, then password login, ORCID login, and the
-   settings read all report `'self'` for the row the route left behind, and
-   `'light'` before); a mocked-row pin in `orcid.test.ts` that feeds the ORCID
-   mint a column/epoch-divergent row (the only way to show that mint reading
-   the epoch, since the CHECK forbids seeding the row); `tests/lib/custody-
-   claim.test.ts`; and `tests/eslint/no-custody-claim-derivation-outside-
-   helper.test.ts`, a source canary that pins the helper's caller set,
-   refuses the inline derivation shapes outside the helper, and classifies
-   every `jwt.sign` site's claim source (literal at a writer, variable at a
-   helper caller, carry-over at the token refresh). The post-upgrade row
-   shape is pinned in `custody-upgrade.test.ts` for states A/B/C; the one
-   fixture that seeded the fictional light+epoch shape (`custody-consent-
-   ops.test.ts`) now seeds state D.
-
-Acceptance criteria: (1) the back-fill plus the CHECK make the shape
-unreachable; verified by the migration suite and by a mutation run that
-dropped the column write from the upgrade SET list (the CHECK turned it into
-a loud 500 across seven tests). (2) The parity suite pins both logins on one
-real row; the canary and the mocked-row pin are what fail if either
-derivation drifts (verified by mutation: re-inlining the ternary in the
-password login and copying the raw column in the ORCID login each went red).
-(3) The upgrade suite, including the session-invalidation legs, passes.
-
-Review findings applied in round 2 (from the read-only lens/refuter pass over
-`68fc1e91`): the helper's original NULL-column fallback was `'light'`, which
-flipped `GET /api/settings/email` from `'self'` to `'light'` for a Keychain
-account that added an email (a reachable row with a username and no custody
-value; see the first architect item below); corrected to `'self'` and pinned
-at the wire in `settings.test.ts`. The CHECK's plain-equality predicate
-admitted a NULL column with an epoch; tightened as described in item 2.
-
-**[TODO Architect]** Doc and ops follow-ups on archive (none blocking):
-
-- `ARCHITECTURE.md` § 6.1: state D's row shape already reads
-  `custody = 'self'`, `upgraded_at SET`, so no table change; the field
-  rationale for `upgraded_at` names only `/api/custody/upgrade` as its writer
-  and should also name the signup-verify `/link` finalize. Worth recording
-  that the `accounts_upgraded_implies_self_custody` CHECK now enforces the
-  epoch-implies-self half of the state table at the schema layer.
-- `ARCHITECTURE.md` § 6.1, unenumerated reachable state: `POST
-  /api/settings/email`'s Keychain add-flow inserts `(username SET,
-  password_hash NULL, orcid NULL, custody NULL, upgraded_at NULL)` and the
-  verify handler only clears `verify_token`, so a pure self-custody account
-  that added an email owns a finalized row with no custody value. The two
-  settings readers and, if the user later links an ORCID, the ORCID login
-  mint all read it. `custodyClaimFor` reports it as `'self'` (the server
-  holds nothing for it). Per the account-state defense rule this needs the
-  doc updated first; the code treats it as a self-custody row.
-- `ARCHITECTURE.md` "Schema Migrations" plus `deploy.sh`
-  `destructive_pending_migrations()`: 017 is the first migration that ADDs a
-  CHECK the pre-017 backend's own writer violates (the old `/upgrade` UPDATE
-  stamps the epoch without the column). The tripwire greps only DROP/RENAME/
-  ALTER TYPE/ADD COLUMN NOT NULL, so `./deploy.sh restart` takes the live
-  path and an upgrade landing in the migrate-to-swap seconds fails 500 after
-  the client has rotated its chain keys (the SPA treats a post-broadcast 500
-  as terminal). Either add an `ADD CONSTRAINT ... CHECK` arm to the tripwire
-  (forcing the brief-stop path) or deploy 017 with the backend stopped and
-  record constraint-tightening CHECKs in the doc's unsafe-for-live list.
-- `api-contracts/orcid.md`, `mode='login'` response: `custody` is now the
-  same derived claim the password login mints, so an upgraded (state D)
-  account receives `'self'`; the example shows `'light'` with no statement
-  about state D. A state-G row reaches the identical response and also
-  resolves to `'self'`, so the doc update covers both states, not just D.
-  `api-contracts/custody.md` POST /upgrade prose may mention
-  the row is marked self-custody. `settings.md` already matches.
-- Note for § 6.3's stuck-recovery text: with the column now `'self'` after
-  upgrade, a row that upgrades inside its own `/confirm` recovery hour
-  matches the `/link` stuck-recovery lookup for the rest of that hour. Reach
-  is the key holder only (fresh Keychain signature, which after upgrade is
-  the mnemonic holder), the cascade is sanction-guarded and dedup-probed, and
-  the minted `'self'` JWT is obtainable via `/api/auth/session` anyway, so no
-  code change; recording it keeps the enumeration honest.
-- Possibly UI-relevant: state-D sessions minted by the ORCID login now take
-  the SPA's `custody === 'self'` branches (correct signer routing), which
-  lands them on the pre-existing state-D-over-JWT gap for settings critical
-  actions (the SPA sends no fresh-auth proof for `'self'`, the backend JWT
-  path requires one, and `/custody/fresh-auth` refuses upgraded rows).
-  Password-login state-D sessions were already there; routing that is the
-  architect's call.
-
-## Architect re-review (2026-09-02) — HELD PENDING FIXES:
-
-Reviewed via `/ce-code-review` over `68fc1e91`, `c5846d1a`, `9fd22a7f`. The
-implementation is sound and the review confirmed the substance independently: the
-`wanted_def` deparse string is byte-exact on the deployed PostgreSQL 16.13 (probed
-directly, and the migration suite passes 6/6), fail-toward-`'self'` is the
-restrictive direction at all four consumers of the claim, both `upgraded_at`
-writers satisfy the new CHECK, the migration test executes the shipped SQL rather
-than a retyped copy, and the mint-parity test drives both logins against one real
-row. Five items below; none of them is a defect in the shipped derivation logic.
-
-1. **The canary's shape-refusal scan misses wrapped and alternate-access
-   spellings.** `occurrencesOf` tests each pattern per line and `EPOCH_TERNARY_RE`
-   is anchored with `[^;\n]*`, so a ternary split across lines, `account?.custody`,
-   and `account['custody']` all pass. The case that matters is a NEW row-reading
-   site that derives the claim inline and mints no JWT: it adds no key to the
-   caller-set scan and no `jwt.sign` line for the mint-classification scan, so the
-   shape scan is its only guard and that guard is line-scoped. This canary is the
-   change's only durability mechanism, by its own docblock's reasoning, so the gap
-   matters more here than it would elsewhere.
-   Requirement: detection must survive ordinary authoring shapes. Mechanism is
-   yours to choose. `agents/docs/solutions/conventions/source-discipline-canary-detection-must-survive-ordinary-authoring-shapes-2026-08-31.md`
-   states the rule, and both sibling canaries already solve it — the
-   revocation-epoch canary via its value-joining helper plus a planted wrapped-line
-   self-test, and the frontend password-factor resolver canary via `joinedStatement`.
-   Whatever you pick, add the wrapped and alternate-access spellings to the planted
