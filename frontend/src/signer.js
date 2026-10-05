@@ -29,6 +29,15 @@ export async function broadcastOps(username, operations, opts = {}) {
     // Read once: the token this request carries is also what a revoked-session
     // rejection is reported against.
     const token = auth.token;
+    // A session window can outlive the session itself, so a broadcast can
+    // reach here with a live proof and an expired token. Same pre-send check
+    // as the api.js bearer helper, and the same code, so the error does not
+    // read as a 401 from the broadcast.
+    if (auth.endSessionIfExpired?.(token)) {
+      const err = new Error('Session expired');
+      err.code = 'SESSION_EXPIRED';
+      throw err;
+    }
     const res = await fetch('/api/custody/broadcast', {
       method: 'POST',
       headers: {

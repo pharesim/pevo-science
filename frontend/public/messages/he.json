@@ -1283,7 +1283,8 @@
   "auth": {
     "sessionInconsistency": "Session inconsistency detected. Please sign in again.",
     "reauthCancelled": "Your session changed, so the confirmation was cancelled.",
-    "sessionRevoked": "You were signed out because this account's sign-in details were changed. Please sign in again."
+    "sessionRevoked": "You were signed out because this account's sign-in details were changed. Please sign in again.",
+    "sessionExpired": "Your session has expired. Please sign in again."
   },
   "landing": {
     "publishPaper": "פרסום מאמר",

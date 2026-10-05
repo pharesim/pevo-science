@@ -60,6 +60,13 @@ function parseRetryAfterSeconds(res) {
 // path can receive it, so a request signed with Keychain headers never does.
 const SESSION_INVALIDATED = 'SESSION_INVALIDATED';
 
+// The code a bearer request is refused with when the session has reached its
+// own expiry before the request left (the auth store's `endSessionIfExpired`).
+// Raised here, never by the server, and distinct from `UNAUTHORIZED` on
+// purpose: the password-mint flows read that code as a rejected password, and
+// a session that ended is not one.
+const SESSION_EXPIRED = 'SESSION_EXPIRED';
+
 function getToken() {
   try {
     const store = Alpine.store('auth');
@@ -113,6 +120,13 @@ async function request(path, init) {
 async function authenticatedRequest(path, init) {
   const token = getToken();
   if (!token) throw new ApiRequestError('UNAUTHORIZED', 'Not logged in');
+  // A session past its expiry is ended here, before the request is sent,
+  // rather than left to the server's bare 401. The store compares its stored
+  // `expiresAt` against the client clock, so clock skew can move the moment
+  // either way; `endSessionIfExpired` records what each direction costs.
+  if (Alpine.store('auth')?.endSessionIfExpired?.(token)) {
+    throw new ApiRequestError(SESSION_EXPIRED, 'Session expired');
+  }
   try {
     return await request(path, {
       ...init,

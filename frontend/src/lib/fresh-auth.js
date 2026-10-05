@@ -194,8 +194,26 @@ export function sessionRevokedMessage() {
   return Alpine.store('i18n')?.messages?.auth?.sessionRevoked || SESSION_REVOKED_FALLBACK;
 }
 
-// The teardown both session-ending detections share; `handleSessionInconsistency`
-// documents the repeat-detection rules, which hold for either message.
+// Tear down a session that has reached its own expiry: the store found it past
+// `expiresAt` before sending a bearer request, so the request never left. Same
+// teardown as the revoked case, with copy that names the expiry: the server
+// would have answered that request with a bare 401 UNAUTHORIZED, which
+// `mintViaPasswordFactor` reads as a rejected password and nothing reads as a
+// session that ended. The auth store's `endSessionIfExpired` is the only
+// caller and owns the expiry comparison and the stale-token check.
+export function handleSessionExpired() {
+  tearDownSessionWithMessage('sessionExpired', SESSION_EXPIRED_FALLBACK);
+}
+
+// The expired-session copy, for the sign-in prompt the store opens after the
+// teardown, for the same reason the revoked copy rides there.
+const SESSION_EXPIRED_FALLBACK = 'Your session has expired. Please sign in again.';
+export function sessionExpiredMessage() {
+  return Alpine.store('i18n')?.messages?.auth?.sessionExpired || SESSION_EXPIRED_FALLBACK;
+}
+
+// The teardown every session-ending detection shares; `handleSessionInconsistency`
+// documents the repeat-detection rules, which hold for each message.
 function tearDownSessionWithMessage(name, fallback) {
   const auth = Alpine.store('auth');
   if (auth) {

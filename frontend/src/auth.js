@@ -11,6 +11,8 @@ import {
   dismissOpenReauthPrompt,
   handleSessionRevoked,
   sessionRevokedMessage,
+  handleSessionExpired,
+  sessionExpiredMessage,
 } from './lib/fresh-auth.js';
 // TAB_SUBJECT_KEY: the per-tab marker naming the JWT subject this tab's
 // subject-bound sessionStorage state (fresh-auth proof caches, ORCID flow
@@ -27,6 +29,14 @@ import {
 } from './lib/subject-bound-keys.js';
 
 const SESSION_KEY = 'pevo_session';
+
+// Whether a session's server-issued expiry is still ahead of the client clock.
+// The one comparison both the restore and the pre-request check make, so a
+// session a reload would refuse to restore is never sent either. A missing or
+// unparseable expiry is never ahead of anything, so it reads as expired.
+function isUnexpired(expiresAt) {
+  return new Date(expiresAt) > new Date();
+}
 
 export function initAuth() {
   Alpine.store('auth', {
@@ -220,23 +230,68 @@ export function initAuth() {
     // one home. The key-upgrade request in pages/settings.js does not: it
     // sends a token pinned before its first await and reads its own 401s.
     //
-    // Acts only when the rejected token is still the one this store holds.
     // The custody upgrade reissues a token, which reaches every tab of the
     // browser through the storage event, and a request sent just before that
-    // with the old token can be answered after the new one is adopted.
-    // Tearing down on that late rejection would remove the stored session and
-    // sign every tab out of a session the server considers valid. The same
-    // comparison makes a second rejection for the same token a no-op, because
-    // the first one cleared it. A same-subject token swap does not run the
-    // subject scrub, so a teardown guard cannot stand in for this check.
+    // with the old token can be answered after the new one is adopted. That
+    // late rejection is why `_endSession` acts only on the token this store
+    // still holds. The opposite ordering exists too: the server revokes the
+    // old token a moment before it answers the upgrade, so a rejection can
+    // arrive while this store still holds the old token. When the upgrading
+    // tab has already saved the reissued session, this tab has simply not
+    // processed the storage event yet, which is why `_endSession` reads the
+    // stored session first and adopts a newer one instead of tearing down. A
+    // rejection that lands before any tab has saved the reissued session still
+    // tears this one down.
     //
-    // The opposite ordering exists too: the server revokes the old token a
-    // moment before it answers the upgrade, so a rejection can arrive while
-    // this store still holds the old token. When the upgrading tab has
-    // already saved the reissued session, this tab has simply not processed
-    // the storage event yet, so the stored session is read first and a newer
-    // one is adopted instead of torn down. A rejection that lands before any
-    // tab has saved the reissued session still tears this one down.
+    // Returns true when this call tore the session down.
+    handleRevokedSession(sentToken) {
+      return this._endSession(sentToken, handleSessionRevoked, sessionRevokedMessage);
+    },
+
+    // A bearer request is about to leave with `sentToken`, and the session has
+    // reached its own expiry. The api.js bearer helper and the custody
+    // broadcast in signer.js ask here before every send. Past `expiresAt` the
+    // backend cannot verify the token and answers a bare 401 UNAUTHORIZED,
+    // which the password-mint flows read as a wrong password and every other
+    // caller reports as an unexplained failure. Ending the session here
+    // instead says what happened, once, and the abandoned fresh-auth flows
+    // unwind through their teardown guards, never as a rejected password.
+    //
+    // Clock skew is accepted, not corrected: `expiresAt` is the server's
+    // timestamp and `isUnexpired` reads the client clock. A client clock that
+    // runs fast ends the session early, which costs a sign-in and nothing
+    // else. One that runs slow leaves a gap as long as the skew, in which the
+    // server rejects the token first and the request still meets the bare
+    // 401 this check exists to prevent.
+    //
+    // Returns true when the session has expired, in which case the caller must
+    // not send. That holds even when a newer session another tab stored is
+    // adopted instead of torn down: the request was built for the expired
+    // token, and the adopted session may belong to a different account.
+    endSessionIfExpired(sentToken) {
+      if (isUnexpired(this.expiresAt)) return false;
+      this._endSession(sentToken, handleSessionExpired, sessionExpiredMessage);
+      return true;
+    },
+
+    // End the session `sentToken` belongs to, through `tearDown` (one of the
+    // shared fresh-auth teardowns), then offer sign-in carrying `notice()`.
+    // Shared by the revoked and expired sessions, so the two cannot drift on
+    // the stale-token check or the adoption of a newer stored session.
+    //
+    // Acts only when `sentToken` is still the one this store holds. Tearing
+    // down for a token the store has since replaced would remove the stored
+    // session and sign every tab out of a session the server considers
+    // valid. The same comparison makes a second report for the same token a
+    // no-op, because the first one cleared it. A same-subject token swap does
+    // not run the subject scrub, so a teardown guard cannot stand in for this
+    // check.
+    //
+    // Reads the stored session before tearing down, and adopts it when it
+    // carries a different live token: another tab has saved a newer session
+    // and this tab has not processed the storage event yet. Tearing down
+    // there would remove that newer session from storage and sign the other
+    // tab out with it.
     //
     // The user did not sign out, so the teardown says why the session ended
     // and then offers sign-in where they are. Staying on the page matches the
@@ -245,11 +300,11 @@ export function initAuth() {
     // the key-upgrade retry state.
     //
     // Returns true when this call tore the session down.
-    handleRevokedSession(sentToken) {
+    _endSession(sentToken, tearDown, notice) {
       if (!sentToken || sentToken !== this.token) return false;
       if (this._adoptStoredSessionOtherThan(sentToken)) return false;
-      handleSessionRevoked();
-      this._offerSignIn();
+      tearDown();
+      this._offerSignIn(notice());
       return true;
     },
 
@@ -271,19 +326,19 @@ export function initAuth() {
       return true;
     },
 
-    // Open the sign-in modal without a user gesture, carrying the reason: the
-    // teardown's message times out, and a user returning to a background tab
-    // would otherwise find a bare sign-in prompt. Fire-and-forget: the
-    // caller is an error path that must not wait on the user, so a failed
-    // sign-in is reported here the way the header's Sign in button reports it.
-    // Skipped when the modal is missing or already open, since a second
-    // prompt() would orphan the first one's pending promise.
-    _offerSignIn() {
+    // Open the sign-in modal without a user gesture, carrying the reason
+    // (`notice`): the teardown's message times out, and a user returning to a
+    // background tab would otherwise find a bare sign-in prompt.
+    // Fire-and-forget: the caller is an error path that must not wait on the
+    // user, so a failed sign-in is reported here the way the header's Sign in
+    // button reports it. Skipped when the modal is missing or already open,
+    // since a second prompt() would orphan the first one's pending promise.
+    _offerSignIn(notice) {
       const el = document.querySelector('[x-data="signInModal"]');
       const modal = el && Alpine.$data(el);
       if (!modal || modal.open) return;
-      this.connect({ notice: sessionRevokedMessage() }).catch((err) => {
-        console.warn('[auth] sign in after revoked session failed:', err);
+      this.connect({ notice }).catch((err) => {
+        console.warn('[auth] sign in after an ended session failed:', err);
         const msg = Alpine.store('i18n')?.messages?.common?.connectionFailed || 'Connection failed';
         Alpine.store('toast')?.show(msg, 'error');
       });
@@ -388,7 +443,7 @@ export function initAuth() {
       const saved = localStorage.getItem(SESSION_KEY);
       if (!saved) return;
       const { token, username, expiresAt, isAccredited, accreditation, custody } = JSON.parse(saved);
-      if (token && username && new Date(expiresAt) > new Date()) {
+      if (token && username && isUnexpired(expiresAt)) {
         // The restored subject may differ from the one this tab's
         // sessionStorage state belongs to: a login as another user in a
         // different tab lands here via the storage event, and a reload after

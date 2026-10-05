@@ -4080,3 +4080,27 @@ pt: edit.draftVersionUnchecked
 sv: edit.draftVersionUnchecked
 tr: edit.draftVersionUnchecked
 zh: edit.draftVersionUnchecked
+
+### Added 2026-10-05 (ui-expired-session-token-reads-as-wrong-password)
+
+The message a signed-in user sees when this device's session has reached
+the end of its lifetime, the next time the page talks to the server. The
+session is ended on this device and the sign-in prompt opens with this line
+in it, so the copy has to say that the session ran out, not that anything
+was changed or went wrong.
+
+ar: auth.sessionExpired
+cs: auth.sessionExpired
+da: auth.sessionExpired
+de: auth.sessionExpired
+es: auth.sessionExpired
+fa: auth.sessionExpired
+fr: auth.sessionExpired
+he: auth.sessionExpired
+it: auth.sessionExpired
+nl: auth.sessionExpired
+pl: auth.sessionExpired
+pt: auth.sessionExpired
+sv: auth.sessionExpired
+tr: auth.sessionExpired
+zh: auth.sessionExpired
