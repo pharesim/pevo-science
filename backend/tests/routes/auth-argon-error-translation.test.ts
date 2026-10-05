@@ -14,9 +14,10 @@
  * `/login` SYMMETRIC BRANCH COVERAGE (per
  * `agents/docs/solutions/conventions/timing-equalization-sub-branch-oracles-2026-04-21.md`,
  * item 1 of the architect hold block): /login has THREE argon2 sites:
- *   - Unknown account (auth.ts:710) — `burnSentinel` on the unknown-email path.
- *   - ORCID-only account (auth.ts:726) — `burnSentinel` because password_hash is null.
- *   - Known-account verify (auth.ts:738) — direct `runWithArgon2Slot(verify)`.
+ *   - Unknown account — `burnSentinel` on the unknown-email path.
+ *   - Passwordless account (the `NO_PASSWORD_SET` branch) — `burnSentinel`
+ *     because password_hash is null.
+ *   - Known-account verify — direct `runWithArgon2Slot(verify)`.
  * Under saturation/shutdown, all three branches MUST collapse to identical
  * status (503) + body (SERVICE_UNAVAILABLE) + Retry-After. Under abort, all
  * three MUST be silent. A mutation that drops the rethrow from any one site
@@ -130,12 +131,11 @@ type RouteCase = {
 // one site reopens the timing-equalization oracle.
 // ────────────────────────────────────────────────────────────────────────
 function seedLoginUnknownAccount(): void {
-  // Empty rows → unknown-account branch (auth.ts:705) → burnSentinel at :710.
+  // Empty rows → unknown-account branch → burnSentinel.
   appQueryMock.mockResolvedValueOnce({ rows: [] });
 }
 function seedLoginOrcidOnlyAccount(): void {
-  // Row with password_hash=null → ORCID-only branch (auth.ts:725) →
-  // burnSentinel at :726.
+  // Row with password_hash=null → the `NO_PASSWORD_SET` branch → burnSentinel.
   appQueryMock.mockResolvedValueOnce({
     rows: [{
       id: 1,
@@ -151,7 +151,7 @@ function seedLoginOrcidOnlyAccount(): void {
   });
 }
 function seedLoginKnownAccount(): void {
-  // Row with non-null password_hash → known-account branch (auth.ts:738) →
+  // Row with non-null password_hash → known-account branch →
   // direct runWithArgon2Slot(verify).
   appQueryMock.mockResolvedValueOnce({
     rows: [{

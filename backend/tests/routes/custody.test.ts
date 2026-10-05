@@ -588,13 +588,12 @@ describe('BE-BRIDGE-CUSTODY-BROADCAST-DISCRIMINATION — per-attempt audit log',
 //
 // Justification (per root CLAUDE.md test carve-out clauses a/b/c):
 //   (a) Real-path impracticality: each event sits behind a runtime failure
-//       (rejected fresh-auth proof, outer-catch DB throws, the documented-
-//       unreachable null-hash safety sentinel). Driving them deterministically
-//       requires per-test mocks. The carve-out scope is the same as the
-//       outer-catch + audit-log specs already in this file (decryptKey,
-//       pool.query). `verifyHiveSignature` is NOT mocked — every spec mints
-//       a real Bearer JWT signed with `config.sessionSecret` and exercises
-//       the real middleware path.
+//       (rejected fresh-auth proof, outer-catch DB throws). Driving them
+//       deterministically requires per-test mocks. The carve-out scope is
+//       the same as the outer-catch + audit-log specs already in this file
+//       (decryptKey, pool.query). `verifyHiveSignature` is NOT mocked — every
+//       spec mints a real Bearer JWT signed with `config.sessionSecret` and
+//       exercises the real middleware path.
 //   (b) Mock targets: the existing module-level mocks (getAppPool, decryptKey,
 //       broadcastSendOperationsWithTimeout, redis null) are the only mocks.
 //       The logger is spied (not mocked at the module level) so call shape

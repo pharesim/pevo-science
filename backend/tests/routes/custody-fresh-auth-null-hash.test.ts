@@ -3,10 +3,10 @@
  * `password_hash` branch in `POST /api/custody/fresh-auth`.
  *
  * The branch returns 401 UNAUTHORIZED uniformly to avoid becoming a
- * password-existence oracle for ORCID-only / hybrid accounts. Without a
- * test, mutating the branch to return 404/403 (or any status that
- * differentiates from the wrong-password 401) would not be caught,
- * exposing the oracle.
+ * password-existence oracle for passwordless light accounts (state C per
+ * ARCHITECTURE.md § 6.1). Without a test, mutating the branch to return
+ * 404/403 (or any status that differentiates from the wrong-password 401)
+ * would not be caught, exposing the oracle.
  *
  * The shape mirrors `custody-upgrade-null-hash.test.ts` (real-DB pattern):
  *   - Real argon2 (a sibling 'wrong password' branch verifies a real hash).
@@ -87,10 +87,12 @@ describe.skipIf(!dbReachable)(
         [NULL_HASH_USER, REAL_HASH_USER],
       ).catch(() => {});
 
-      // Seed the ORCID-only / hybrid shape: custody='light' but
-      // password_hash=NULL. (The production-reachable shape arrives via
-      // `verifyHiveSignature` minting `custody: 'light'` for an account
-      // that an admin rolled into light-mode without setting a password.)
+      // Seed the null-hash light shape: custody='light', password_hash=NULL.
+      // In production that row is state C (ARCHITECTURE.md § 6.1); the
+      // light-claim gate and the route's `upgraded_at` re-read keep the D and
+      // G rows that can also carry a NULL hash away from this branch in
+      // steady state. The route never reads `orcid`, so the seed leaves it
+      // NULL.
       await pool.query(
         `INSERT INTO accounts (email, username, password_hash, custody, verify_token, expires_at)
          VALUES ($1, $2, NULL, 'light', NULL, $3)`,

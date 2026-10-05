@@ -115,6 +115,7 @@ router.get('/email', readLimiter, verifyHiveSignature, async (req: Request, res:
 //   State B (password + orcid)    : 'password' OR 'orcid'
 //   State C (orcid, no password)  : 'orcid' only
 //   State D (upgraded)            : preserved password/orcid factors
+//   State G (Keychain + email)    : whichever password/orcid factors it has
 //
 // Keychain (Hive-signature) requests skip the body-proof check entirely — the
 // per-request signed canonical message IS the fresh proof and is already
@@ -509,10 +510,10 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
 //
 // This is the de-facto account-erasure / right-to-erasure path: it runs
 // `DELETE FROM accounts WHERE username = $1` plus related deletes and
-// anonymizes `custody_audit_log`, transitioning A/B/C/D to the no-row state
-// per ARCHITECTURE.md § 6.3. Erasing the account mutates/destroys an auth
-// factor, so it is a critical action per § 6.6 and the JWT alone is never
-// sufficient per § 6.4.
+// anonymizes `custody_audit_log`, taking the row to the no-row case through
+// ARCHITECTURE.md § 6.3's deletion exit. Erasing the account mutates/destroys
+// an auth factor, so it is a critical action per § 6.6 and the JWT alone is
+// never sufficient per § 6.4.
 //
 // JWT-path fresh-auth gate (mirrors the change-email branch of
 // `POST /api/settings/email`): when authenticated via Bearer JWT (the only
@@ -527,6 +528,7 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
 //   State B (password + orcid)    : 'password' OR 'orcid'
 //   State C (orcid, no password)  : 'orcid' only
 //   State D (upgraded)            : preserved password/orcid factors
+//   State G (Keychain + email)    : whichever password/orcid factors it has
 //
 // Keychain (Hive-signature) requests skip the body-proof check entirely — the
 // per-request signed canonical message IS the fresh proof and is already
@@ -731,7 +733,7 @@ router.delete('/email', writeLimiter, verifyHiveSignature, async (req: Request, 
 
 // ─────────────────────────────────────────────────────────────
 // POST /api/settings/set-password — Opt into password login (null-hash accounts only)
-// Auth: verifyHiveSignature (Keychain) or Bearer JWT for light accounts.
+// Auth: verifyHiveSignature (Keychain) or Bearer JWT.
 // This is the "set from null" operation; rotating an existing password is a
 // separate flow (not yet implemented) that must require the current password.
 //
@@ -739,13 +741,13 @@ router.delete('/email', writeLimiter, verifyHiveSignature, async (req: Request, 
 // sufficient. The request body MUST
 // carry a `fresh_auth_proof` minted via `POST /api/orcid/start { mode:
 // 'fresh_auth', action: 'set_password' }` followed by `POST
-// /api/orcid/callback`. The proof's `mechanism` MUST be `'orcid'`: a state-C
-// account (null password_hash) has no password to base a password-mechanism
-// proof on, so a password-mechanism proof on this branch is structurally
-// invalid. Closes the JWT-only escalation path described in
-// ARCHITECTURE.md § 6.5 invariant #1 (a stolen JWT would otherwise let an
-// attacker set a password they know, then chain `/custody/fresh-auth` →
-// `/custody/broadcast` for full account takeover).
+// /api/orcid/callback`. The proof's `mechanism` MUST be `'orcid'`: the
+// handler reaches the proof only for a null-hash account, which has no
+// password to base a password-mechanism proof on, so a password-mechanism
+// proof on this branch is structurally invalid. Closes the JWT-only
+// escalation path described in ARCHITECTURE.md § 6.5 invariant #1 (a stolen
+// JWT would otherwise let an attacker set a password they know, then chain
+// `/custody/fresh-auth` → `/custody/broadcast` for full account takeover).
 // ─────────────────────────────────────────────────────────────
 router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Request, res: Response) => {
   const abortSignal = requestAbortSignal(req, res);
@@ -779,11 +781,15 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
       );
     }
 
-    // Only ORCID-verified accounts can opt into password login. This keeps
-    // the "set-password on null-hash account" invariant narrow: today only
-    // the ORCID-path signup/recover leaves password_hash = NULL, and we do
-    // not want future code paths that null the hash for other reasons to
-    // silently inherit set-password eligibility.
+    // Only ORCID-verified accounts can opt into password login. A NULL hash
+    // does not imply an ORCID: per ARCHITECTURE.md § 6.1 it is also the
+    // starting shape of a self-custody row that registered an email
+    // (state G), which need not carry one. Requiring one keeps the
+    // "set-password on null-hash account" invariant narrow: eligibility
+    // follows the one factor the fresh-auth gate accepts, so a null-hash row
+    // without an ORCID, whether reached today or by a future path that nulls
+    // the hash, gets 403 here rather than inheriting eligibility from the
+    // missing hash alone.
     if (!rows[0].orcid) {
       return sendError(
         res,
@@ -796,7 +802,7 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
     // Fresh ORCID re-auth gate (see ARCHITECTURE.md § 6.4 + § 6.5
     // invariant #1). Runs AFTER eligibility checks so the rejection path
     // doesn't widen the oracle surface beyond what an attacker holding a
-    // valid JWT can already probe (state-C detection is already available
+    // valid JWT can already probe (null-hash detection is already available
     // via `GET /api/settings/email`'s `hasPassword` field for the
     // JWT-holder). The check runs BEFORE the argon2 hash so a missing /
     // bad proof short-circuits before paying argon2 wall-time.
@@ -806,8 +812,8 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
     // `agents/docs/solutions/conventions/timing-equalization-sub-branch-oracles-2026-04-21.md`.
     // The attacker must already hold a valid JWT to reach this gate (the
     // route is behind `verifyHiveSignature`), and `hasPassword` (the
-    // equivalent state-C / state-B distinction this timing oracle would
-    // leak) is already discoverable to a JWT-holder via
+    // equivalent null-hash / password-set distinction this timing oracle
+    // would leak) is already discoverable to a JWT-holder via
     // `GET /api/settings/email`'s `hasPassword` field. Burning argon2 on
     // the rejection path to equalize would double the rejection-path
     // response time and burn argon2 capacity on invalid traffic for zero
@@ -852,10 +858,10 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
         { reason: proofResult.reason },
       );
     }
-    // Closed-default per ARCHITECTURE.md § 6.4: state C has no registered
-    // password factor, so a password-mechanism proof here is structurally
-    // invalid (would only arise from misuse or a bug elsewhere). Reject
-    // 401 — the proof is consumed-but-not-honored.
+    // Closed-default per ARCHITECTURE.md § 6.4: a null-hash account has no
+    // registered password factor, so a password-mechanism proof here is
+    // structurally invalid (would only arise from misuse or a bug
+    // elsewhere). Reject 401 — the proof is consumed-but-not-honored.
     if (proofResult.mechanism !== 'orcid') {
       logger.warn(
         {

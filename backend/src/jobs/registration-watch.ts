@@ -27,15 +27,20 @@ import { queryWithStatementTimeout, HEAD_QUERY_TIMEOUT_MS } from '../reputation.
  *
  * Three event classes, two sources:
  *
- *   signup_started       app DB   a new `accounts` row appears (state E or F)
- *   registration_done    app DB   a row reaches a finalized state (A/B/C/D)
+ *   signup_started       app DB   a new `accounts` row appears (a signup's
+ *                                 E or F row, or the state G row the settings
+ *                                 email add flow creates)
+ *   registration_done    app DB   a row reaches a finalized state per
+ *                                 ARCHITECTURE.md section 6.1 (a state G row
+ *                                 only best-effort, see `collectCompleted`)
  *   accreditation_grant  HAF      an `accredit` custom_json lands on chain
  *
- * The first two are Postgres-observable because signup writes `accounts`. The
- * third is not: `POST /api/accreditation/verify` (the flow for users who already
- * have a Hive account) writes only Redis and the chain, never `accounts`. Chain
- * is the SSoT for accreditation, so that class reads from HAF and therefore also
- * covers admin-issued and non-signup grants for free.
+ * The first two are Postgres-observable because signup and the settings email
+ * add flow write `accounts`. The third is not: `POST /api/accreditation/verify`
+ * (the flow for users who already have a Hive account) writes only Redis and
+ * the chain, never `accounts`. Chain is the SSoT for accreditation, so that
+ * class reads from HAF and therefore also covers admin-issued and non-signup
+ * grants for free.
  *
  * Because a light-account finalization ALSO broadcasts an `accredit` op, classes
  * two and three would double-report the same person. Class three suppresses any

@@ -174,8 +174,9 @@ router.patch(
     try {
       const result = await broadcastAdminCustomJson(merged);
 
-      // Sync the accounts-row metadata cache (chain stays SSoT). A pure
-      // self-custody caller has no accounts row, so this UPDATE affects 0 rows.
+      // Sync the accounts-row metadata cache (chain stays SSoT). For a
+      // self-custody caller in ARCHITECTURE.md § 6.1's no-row case this UPDATE
+      // affects 0 rows; a state G caller has a row and is synced like any other.
       const appPool = getAppPool();
       if (appPool) {
         try {

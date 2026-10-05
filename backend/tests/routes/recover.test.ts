@@ -479,7 +479,7 @@ describe('SEC-004-BE: login on null-hash account', () => {
     // SEC-004-BE finding #1 mutation-kill. Without the sentinel argon2.verify
     // on the NO_PASSWORD_SET branch, this endpoint returns in ~1ms for null-
     // hash accounts vs ~100ms for accounts with a real hash — a timing oracle
-    // for enumerating ORCID-only accounts. 40ms lower bound matches the
+    // for enumerating passwordless accounts. 40ms lower bound matches the
     // SEC-LOGIN-UNKNOWN-USER-TIMING sibling — argon2.verify at these
     // ARGON2_OPTIONS runs 42-55ms on modern x86 and 50ms produces flakes
     // under parallel load. Still kills the sentinel-removal mutation
@@ -608,9 +608,9 @@ describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /recover unknown-username burns sentine
 // SEC-LOGIN-UNKNOWN-USER-TIMING hold round-2 — new specs that close oracles
 // the round-1 fix inverted or missed.
 
-// Hold #1: /resend-verification null-hash (ORCID-only) known-email must ALSO
-// burn sentinel. Round-1 closed the unknown-email branch (~50ms now) but the
-// null-hash known-email path remained at ~1ms, which made ORCID-only accounts
+// /resend-verification null-hash known-email must ALSO burn sentinel. An
+// earlier fix closed the unknown-email branch (~50ms now) but the null-hash
+// known-email path remained at ~1ms, which made passwordless accounts
 // DISTINGUISHABLE from both new accounts and password accounts. Closing the
 // inversion requires the null-hash branch to take wall-time equal to the
 // password-verify branch below it.

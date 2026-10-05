@@ -159,9 +159,11 @@ describe.skipIf(!dbReachable)('POST /api/settings/set-password', () => {
 
   it('returns 403 ORCID_REQUIRED when the null-hash account has no linked ORCID', async () => {
     // Regression guard for the ORCID_REQUIRED invariant. Only ORCID-verified
-    // accounts may opt into password login; future code paths that null
-    // password_hash for other reasons must not silently inherit set-password
-    // eligibility.
+    // accounts may opt into password login. A null hash does not imply an
+    // ORCID (ARCHITECTURE.md § 6.1: a state G row that registered only an
+    // email), so a null-hash row without one, reached today or by a future
+    // path, must not inherit set-password eligibility from the missing hash
+    // alone.
     const res = await request(app)
       .post('/api/settings/set-password')
       .set('Authorization', `Bearer ${bearer(NO_ORCID_USER)}`)

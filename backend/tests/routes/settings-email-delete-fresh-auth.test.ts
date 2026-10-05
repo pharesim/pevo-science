@@ -54,7 +54,8 @@
  *   - JWT path, wrong mechanism (state A + orcid proof) → 401 + reason
  *     'wrong_mechanism'; account NOT erased.
  *   - Keychain (real-signature) path, no body proof → 200; account erased
- *     (no regression for self-custody / state-D Keychain users).
+ *     (no regression for Keychain users, the self-custody D and G rows of
+ *     ARCHITECTURE.md § 6.1 among them).
  */
 
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
@@ -248,8 +249,8 @@ async function seedSigUser() {
   if (!dbReachable) return;
   const pool = getAppPool()!;
   await deleteUserRows(SIG_USER);
-  // Self-custody Keychain user (state D shape: password + orcid preserved is
-  // irrelevant on the signature path — no body proof is consumed).
+  // Self-custody Keychain user. Its factor columns are irrelevant on the
+  // signature path, which consumes no body proof.
   await pool.query(
     `INSERT INTO accounts (email, username, password_hash, orcid, custody, verify_token)
      VALUES ($1, $2, $3, NULL, 'self', NULL)`,
@@ -451,8 +452,8 @@ describe.skipIf(!dbReachable)('DELETE /api/settings/email — Keychain (real-sig
     // against the stubbed getAccounts key for SIG_USER. With no Bearer
     // header, req.hiveAuthMethod is 'signature' and the route's isJwtPath is
     // false, so the body-proof gate is skipped: a fresh signed request is
-    // itself the proof. This is the no-regression guard for self-custody /
-    // state-D Keychain users.
+    // itself the proof. This is the no-regression guard for Keychain users,
+    // the self-custody D and G rows among them.
     const timestamp = new Date().toISOString();
     const body = { confirm: true };
     const signature = signRequestBound(

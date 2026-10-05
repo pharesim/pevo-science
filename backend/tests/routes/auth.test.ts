@@ -555,7 +555,8 @@ describe.skipIf(!dbReachable)('POST /api/auth/signup — SignupBodySchema accept
 
     const res = await request(app).post('/api/auth/signup').send({ orcid_token: nonce, password: null });
 
-    // No longer a schema 400: the handler runs and finalizes the ORCID-only row.
+    // No longer a schema 400: the handler runs and writes the ORCID-only
+    // signup row (state F, which signup-verify later finalizes to C).
     expect(res.body.error?.code).not.toBe('VALIDATION_ERROR');
     expect(res.status).toBe(200);
 

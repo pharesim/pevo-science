@@ -1145,7 +1145,7 @@ router.post('/fresh-auth', verifyHiveSignature, validateFreshAuthBodyShape, fres
       // returns in <10ms and a JWT-holding attacker can distinguish State C
       // (password_hash IS NULL) from State A/B accounts along the latency
       // axis, reopening the same oracle the envelope-equivalence assertion
-      // closes. Mirrors the `/login` ORCID-only burn (auth.ts) and the
+      // closes. Mirrors the `/login` `NO_PASSWORD_SET` burn (auth.ts) and the
       // `/session-auth` null-hash branch (sibling site below).
       await burnSentinel(password, abortSignal);
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
@@ -1254,7 +1254,7 @@ router.post('/session-auth', verifyHiveSignature, validateSessionAuthBodyShape, 
       // attacker can distinguish State C accounts (~1ms) from State A/B
       // accounts (~50ms) along the latency axis. Same equalization the
       // sibling `/fresh-auth` route applies above, and the canonical pattern
-      // `/login` uses for its ORCID-only branch (`auth.ts`).
+      // `/login` uses for its `NO_PASSWORD_SET` branch (`auth.ts`).
       await burnSentinel(password, abortSignal);
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid password');
     }

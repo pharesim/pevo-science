@@ -259,12 +259,13 @@ export type FreshAuthMechanism = 'password' | 'orcid';
  *    `deleteAccountFreshAuthTarget`, `ipfsUploadFreshAuthTarget`).
  *    Empty `root_permlink` is collision-free against consent-op proofs
  *    because the route layer for consent ops forbids empty `root_permlink`
- *    strings. `set_password` transitions state C → state B per
- *    ARCHITECTURE.md § 6.3 and requires fresh ORCID re-auth per § 6.4;
+ *    strings. `set_password` adds a first password to a null-hash row
+ *    with an ORCID linked (C → B, while a G or D row stays in its state,
+ *    per ARCHITECTURE.md § 6.3) and requires fresh ORCID re-auth per § 6.4;
  *    `change_email` transitions the address that receives password-reset
  *    tokens (auth-adjacent factor), so the JWT-only path is closed via a
  *    body-proof check per § 6.5 invariant #1; `delete_account` erases the
- *    account row (the de-facto right-to-erasure exit, A/B/C/D → [no row] per
+ *    account row (the de-facto right-to-erasure exit to the no-row case per
  *    § 6.3) and so is likewise a critical action gated per § 6.4;
  *    `ipfs_upload` authorizes a `POST /api/ipfs/upload-token` mint (which lets
  *    the holder pin content under their account — illegal-content-liability
@@ -550,8 +551,9 @@ export function changeEmailFreshAuthTarget(username: string): FreshAuthTarget {
 /** Target-binding helper for the `delete_account` critical action.
  *  Account deletion is the de-facto right-to-erasure exit — the route runs
  *  `DELETE FROM accounts WHERE username = $1` plus related deletes and
- *  anonymizes the audit log, transitioning A/B/C/D to the no-row state. Like
- *  `change_email` it is per-user (not per-broadcast), so the proof binds to
+ *  anonymizes the audit log, taking the row to the no-row case (the
+ *  deletion transition in ARCHITECTURE.md § 6.3). Like `change_email` it is
+ *  per-user (not per-broadcast), so the proof binds to
  *  `(delete_account, <username>, '')`; `root_permlink` is empty so the
  *  target-hash domain stays collision-free against consent-op proofs (which
  *  require non-empty `root_permlink` at the route layer). The distinct

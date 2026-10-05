@@ -16,7 +16,8 @@
  *       `/link` finalize would produce if it dropped its column write, is
  *       refused the same way.
  *   (c) Every enumerated shape is still accepted: A/B/C (`light`, no epoch),
- *       D (`self`, epoch), E/F (NULL column, no epoch).
+ *       D (`self`, epoch), and the NULL column with no epoch that E/F carry
+ *       before finalize and G carries permanently.
  *   (d) The back-fill repairs pre-existing divergent rows. Run against a
  *       schema state reproduced inside a transaction (constraint dropped,
  *       divergent rows seeded), the migration body flips every epoch-bearing
@@ -216,7 +217,8 @@ describe.skipIf(!dbReachable)('migration 017 — accounts_custody_upgraded_align
         [`${EMAIL_PREFIX}d@example.com`, `${USER_PREFIX}d`],
       ),
     ).resolves.toBeDefined();
-    // E/F: column NULL before finalize, no epoch.
+    // E/F before finalize, and G permanently: column NULL, no epoch. The
+    // CHECK reads only this pair, so the one seed stands for all three.
     await expect(
       pool.query(
         `INSERT INTO accounts (email, custody, upgraded_at) VALUES ($1, NULL, NULL)`,

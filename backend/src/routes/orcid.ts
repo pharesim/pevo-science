@@ -286,13 +286,15 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
   // omits/malforms the target gets a 400, never a target-less proof.
   //
   // The `set_password`
-  // action is non-broadcast (transitions state C → state B per
+  // action is non-broadcast (it adds a first password to a null-hash row
+  // with an ORCID linked: C → B, while a G or D row stays in its state, per
   // ARCHITECTURE.md § 6.3) and has no paper. The target binds to the
   // authenticated username via `root_author`; `root_permlink` is forced
   // empty so the resulting hash cannot collide with any consent-op proof
   // (consent ops require non-empty `root_permlink` at this layer). The
-  // `delete_account` action (right-to-erasure exit, A/B/C/D → [no row] per
-  // § 6.3) is the ORCID-mechanism issuance side for state C / state B / D.
+  // `delete_account` action (the right-to-erasure exit to the no-row case per
+  // § 6.3) is the ORCID-mechanism issuance side for any account with an
+  // ORCID linked.
   //
   // The name-only-route credit ops (`claim_authorship` / `approve_authorship`
   // / `revoke_authorship`) are the broadcast-side counterpart of the consent
@@ -331,13 +333,13 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
         // the bind so a future refactor cannot re-introduce the inline literal.
         freshAuthTarget = deleteAccountFreshAuthTarget(username);
       } else if (action === 'ipfs_upload') {
-        // Non-broadcast target for the ORCID-mechanism issuance side (state C
-        // ORCID-only and state B). Binds to (ipfs_upload, <username>, ''),
+        // Non-broadcast target for the ORCID-mechanism issuance side (any
+        // account with an ORCID linked). Binds to (ipfs_upload, <username>, ''),
         // consumed at POST /api/ipfs/upload-token on the JWT path.
         freshAuthTarget = ipfsUploadFreshAuthTarget(username);
       } else if (action === 'edit_accreditation_metadata') {
         // Self-service accreditation-metadata edit (ORCID-mechanism issuance;
-        // serves state C ORCID-only + state B). Binds to
+        // serves any account with an ORCID linked). Binds to
         // (edit_accreditation_metadata, <username>, ''), consumed at
         // PATCH /api/accreditation/metadata on the JWT path.
         freshAuthTarget = editAccreditationMetadataFreshAuthTarget(username);
@@ -381,7 +383,7 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
       freshAuthTarget = creditOpFreshAuthTarget(extraction.fields);
     } else if (typeof action === 'string' && isAdminFreshAuthAction(action)) {
       // Roster-gated admin authority actions (ORCID-mechanism issuance side;
-      // serves state C ORCID-only + state B admins). Per-actor like the
+      // serves any admin account with an ORCID linked). Per-actor like the
       // non-broadcast criticals: target binds to (action, <username>, ''),
       // consumed at the /api/admin/* route by requireFreshAdminAuth on the JWT
       // path. Same username guard as the non-broadcast branch above.
@@ -744,11 +746,13 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
   // session and reaches no signing path. The row matched here is
   // finalized, which includes the state-G row whose `custody` column is NULL
   // because it never went through light signup; the helper resolves that one
-  // to `'self'`. The state-C passwordless shape (password_hash NULL) is not
-  // defended here. On the custody routes it is
-  // `POST /api/custody/fresh-auth` and `POST /api/custody/session-auth` that
-  // branch on it, each refusing a row with no `password_hash`;
-  // `POST /api/custody/upgrade` never reads that column.
+  // to `'self'`. The passwordless shape (password_hash NULL, which
+  // ARCHITECTURE.md § 6.1 allows on C, D and G rows) is not defended here.
+  // The custody routes admit only a light claim, so in steady state the
+  // shape reaches them only on a state C row: `POST /api/custody/fresh-auth`
+  // and `POST /api/custody/session-auth` branch on it, each refusing a row
+  // with no `password_hash`; `POST /api/custody/upgrade` never reads that
+  // column.
   const custody = custodyClaimFor(account);
   const token = jwt.sign(
     { sub: account.username, custody },

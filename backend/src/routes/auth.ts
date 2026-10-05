@@ -624,11 +624,13 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
 
     const account = rows[0];
 
-    // The null-hash (ORCID-only) branch must also burn sentinel. Without
-    // this, unknown-email costs ~50ms (burn above) but known-email-with-
-    // null-hash short-circuits to ~1ms, INVERTING the oracle: ~1ms now
-    // means "ORCID-only account exists here." Match both branches by
-    // running either the real verify OR a sentinel burn.
+    // The null-hash branch (any passwordless row the email lookup finds,
+    // which ARCHITECTURE.md § 6.1 allows beyond ORCID-only signups) must
+    // also burn sentinel. Without this, unknown-email costs ~50ms (burn
+    // above) but known-email-with-null-hash short-circuits to ~1ms,
+    // INVERTING the oracle: ~1ms now means "a passwordless account exists
+    // here." Match both branches by running either the real verify OR a
+    // sentinel burn.
     let passwordValid = false;
     if (account.password_hash) {
       // Canonical hoist pattern (mirrored from the `/resume-signup`
@@ -779,15 +781,19 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
 
     const account = rows[0];
 
-    // ORCID-only (or otherwise password-less) accounts cannot log in with a password.
-    // Return a distinct 403 so the UI can direct the user to sign in with ORCID or
-    // recover via seed phrase. Must NOT collapse into the generic 401 — that would
-    // make password login indistinguishable from "wrong password" and hide the
-    // correct remediation path from legitimate users.
+    // Passwordless accounts cannot log in with a password; ARCHITECTURE.md
+    // § 6.1 allows a NULL hash on more than the ORCID-only signup. Return a
+    // distinct 403 so the UI can point the user at another factor. Must NOT
+    // collapse into the generic 401 — that would make password login
+    // indistinguishable from "wrong password" and hide the correct
+    // remediation path from legitimate users. The message names ORCID
+    // sign-in and seed-phrase recovery, the factors of a light C row; a
+    // state G row with no ORCID linked has neither, and Keychain is its
+    // factor.
     //
     // Before returning, burn a sentinel argon2.verify so this branch takes the
     // same wall-time as the real verify branch. Otherwise a network attacker
-    // can enumerate ORCID-only accounts by timing the response.
+    // can enumerate passwordless accounts by timing the response.
     if (!account.password_hash) {
       await burnSentinel(password, abortSignal);
       return sendError(
