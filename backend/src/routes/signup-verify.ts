@@ -1146,7 +1146,7 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
       // the table carries no trigger, so nothing later reorders the pair.
       //
       // A revocation-presence term was written first and rejected: `POST
-      // /api/auth/reset` reads no account state but the password, so a
+      // /api/auth/reset` gates on no account state but the password, so a
       // password reset at ANY point in the life of a row with a password
       // would permanently refuse that row's recovery, and a finalized row
       // carries no `confirmed:` verify_token for `/resume-signup` to pick up

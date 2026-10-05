@@ -1235,10 +1235,9 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
     const passwordHash = await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS), { signal: abortSignal });
 
     // Update password, clear reset token, invalidate all existing sessions.
-    // `password_hash IS NOT NULL` is the never-adds-a-password gate. It sits
-    // on the write, not the token lookup, so it also refuses a token that
-    // outlived its row's password: ORCID recovery without a new password
-    // drops the hash and leaves the token in place.
+    // `password_hash IS NOT NULL` is the never-adds-a-password gate. It also
+    // refuses a token that outlived its row's password: ORCID recovery
+    // without a new password drops the hash and leaves the token in place.
     const updated = await pool.query(
       `UPDATE accounts
        SET password_hash = $1,

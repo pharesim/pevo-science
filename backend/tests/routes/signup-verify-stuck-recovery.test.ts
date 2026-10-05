@@ -25,9 +25,9 @@
  *   (g) A stuck /link row carrying a session revocation from BEFORE its
  *       finalize (a password reset earlier in the row's life) → still
  *       admitted. Guards the revocation-PRESENCE predicate that was written
- *       first and rejected: the reset handlers gate on nothing about account
- *       state, so refusing on the mere presence of a revocation would strand a
- *       real user with a finalized, permanently unaccredited account.
+ *       first and rejected: refusing on the mere presence of a revocation
+ *       would strand a real user with a finalized, permanently unaccredited
+ *       account.
  *   (h) A stuck /link row revoked AFTER its finalize → still admitted. Guards
  *       the revocation-ORDERING predicate that replaced it and was rejected in
  *       turn: a user who resets their password while locked out is the likeliest
@@ -755,13 +755,12 @@ describe.skipIf(!dbReachable)('signup-verify /link recovery and the upgrade-epoc
 
   it('(g) a stuck /link row whose password was reset before the finalize still resumes', async (ctx) => {
     if (!dbReachable) return ctx.skip(true, 'pg unreachable');
-    // The reset handlers gate on nothing about account state, so a row can
-    // carry a session-revocation epoch from any point in its life, including
-    // an abandoned signup resumed weeks later. Refusing every row that ever
-    // carried one would strand this user with a finalized, permanently
-    // unaccredited account: /resume-signup needs a `confirmed:` verify_token,
-    // which a finalized row does not have. This spec is what reds if the lookup
-    // regresses to `sessions_invalidated_at IS NULL`.
+    // A row can carry a session-revocation epoch from any point in its life,
+    // including an abandoned signup resumed weeks later. Refusing every row
+    // that ever carried one would strand this user with a finalized,
+    // permanently unaccredited account: /resume-signup needs a `confirmed:`
+    // verify_token, which a finalized row does not have. This spec is what
+    // reds if the lookup regresses to `sessions_invalidated_at IS NULL`.
     await seedStaleSelfCustodyAccount({
       username: reset,
       email: `lnkrst_${RUN_ID}@example.com`,
@@ -783,12 +782,13 @@ describe.skipIf(!dbReachable)('signup-verify /link recovery and the upgrade-epoc
     // A revocation-ordering predicate refused any row whose last revocation
     // postdated its recency marker, and `POST /api/auth/reset` stamps exactly
     // that: it selects by reset token alone, touches `updated_at` never, and
-    // gates on no account state. So the user whose finalize landed, whose
-    // accreditation broadcast failed, and who then reset their password while
-    // locked out was refused the only self-service path they had. The epoch
-    // ordering admits them because a /link finalize writes both stamps from one
-    // statement, whatever the row's revocation history. Restore the revocation
-    // term and this reds; the seeded ordering here is the one that form refused.
+    // gates on no account state but the password. So the user whose finalize
+    // landed, whose accreditation broadcast failed, and who then reset their
+    // password while locked out was refused the only self-service path they
+    // had. The epoch ordering admits them because a /link finalize writes both
+    // stamps from one statement, whatever the row's revocation history.
+    // Restore the revocation term and this reds; the seeded ordering here is
+    // the one that form refused.
     await seedStaleSelfCustodyAccount({
       username: revoked,
       email: `lnkrev_${RUN_ID}@example.com`,

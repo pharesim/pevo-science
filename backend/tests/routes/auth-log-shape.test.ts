@@ -471,11 +471,12 @@ describe('auth.signup.failed log shape', () => {
 // branch when (a) `config.smtpHost` is non-empty and (b) the email
 // corresponds to an existing account in the known-email branch — for
 // /resend-verification, an account with a hex `verify_token` (pending state)
-// AND a matching password; for /reset-request, any account row. Without the
-// matching DB row + password, /resend-verification falls into the
-// unknown-email or wrong-password branch which burns sentinel and returns
-// 200 without ever invoking sendMail. The setup mirrors `recover.test.ts`
-// BE-AUTH-SMTP-STATUS-CODE-ORACLE block.
+// AND a matching password; for /reset-request, any account row with a
+// password. Without the matching DB row + password, /resend-verification
+// falls into the unknown-email or wrong-password branch which burns sentinel
+// and returns 200 without ever invoking sendMail. The setup mirrors the
+// `recover.test.ts` block "SMTP failure must not leak known-email via status
+// code".
 
 describe('auth.resend_verification.smtp_send_failed log shape', () => {
   const RESEND_EMAIL = `${SHAPE_TEST_EMAIL_PREFIX}resend_smtp_${Date.now()}@example.com`;
@@ -566,9 +567,9 @@ describe('auth.reset_request.smtp_send_failed log shape', () => {
     if (!dbReachable) return;
     const pool = getAppPool()!;
     const passwordHash = await argon2.hash('PwdForResetSmtp1', { type: argon2.argon2id });
-    // Active account (verify_token NULL) — any account row is enough for
-    // /reset-request's known-email branch (handler doesn't require a
-    // specific lifecycle state, just a matching email).
+    // Active account (verify_token NULL) — any account row with a password is
+    // enough for /reset-request's known-email branch (handler doesn't require
+    // a specific lifecycle state, just a matching email and a password).
     try {
       await pool.query(
         `INSERT INTO accounts (email, username, password_hash, custody, verify_token)

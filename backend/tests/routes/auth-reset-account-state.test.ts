@@ -8,10 +8,11 @@
  *
  *   - `/reset-request` gives a passwordless row the unknown-email answer: the
  *     same status and body, the same sentinel argon2 burn, and no token.
- *   - `/reset` refuses a token on a passwordless row with the invalid-token
- *     answer an unknown token gets, and leaves the row unchanged. The token
- *     here is written directly, standing in for one issued before the gate
- *     existed or for a password dropped while the token was outstanding.
+ *   - `/reset` refuses an unexpired token on a passwordless row with the
+ *     invalid-token answer an unknown token gets, and leaves the row
+ *     unchanged. The token here is written directly, standing in for one
+ *     issued before the gate existed or for a password dropped while the
+ *     token was outstanding.
  *
  * Every state the table in section 6.1 enumerates is driven, in both of its
  * password shapes where it has two: A, B, C, D with and without a password, G
@@ -119,8 +120,7 @@ type AccountRow = Record<string, unknown> & {
   sessions_invalidated_at: Date | null;
 };
 
-// The columns that place a row in its section 6.1 state. Reset must leave
-// every one of them as it found it.
+// Columns reset must leave as it found them.
 const STATE_COLUMNS = ['email', 'username', 'orcid', 'verify_token', 'custody', 'upgraded_at', 'expires_at'] as const;
 
 let oldPasswordHash = '';
