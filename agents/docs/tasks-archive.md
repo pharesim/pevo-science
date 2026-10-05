@@ -1,3 +1,97 @@
+## Audit the accreditation and Web of Trust code (archived 2026-10-05) — 27 findings triaged: 14 tasks filed, the accreditation contract fixed in place, 2 dismissed
+
+### Architect archive note (2026-10-05)
+
+First audit task run. Nine reviewers on a synthetic whole-file diff of `9d4325fc`; the validator
+confirmed findings 1 to 8; finding 27 was measured on the HAF node (gate lookup 19.75 s on a
+no-match account, 2.4 ms fenced). Five high-priority defects in the trust layer went to backend
+and ui tasks, the mailbox-binding question went to an architect design task, and two tasks sit in
+`blocked/` behind the task they are sequenced after. The per-finding dispositions, the dismissals
+and the deferred `solutions/` refreshes are in the "Dispositions" section of the task below. No
+`/ce-compound`.
+
+**Owner:** architect
+**Created:** 2026-10-05
+**Priority:** normal
+
+## Why
+
+No commit since 2026-08-01 has changed these files, so no current review has looked at them. Reviews of the code that tasks do touch keep turning up pre-existing defects there, among them the signup upsert that can overwrite a finalized account row and the settings verify handler that clears `verify_token` on whatever row carries it. This task reviews the files below as they stand.
+
+The trust layer (root `CLAUDE.md` principle 3): the accreditation routes and service, email validation, and the Web of Trust.
+
+## Scope (line counts at filing)
+
+- `backend/src/routes/accreditation.ts` (1331)
+- `backend/src/accreditation.ts` (470)
+- `backend/src/routes/accreditations.ts` (188)
+- `backend/src/email-validator.ts` (123)
+- `backend/src/wot.ts` (343)
+- `backend/src/routes/wot.ts` (267)
+
+Total: 2722 lines.
+
+## Method
+
+`agents/architect/CLAUDE.md` "Audit tasks (existing code, no diff)". Audit the files at the HEAD current at pickup; a file that changed since filing is still audited whole.
+
+## Done when
+
+The findings are triaged with the user, accepted ones are filed as tasks with a priority or folded into an open task that covers them, the dispositions are recorded in this file, and the file is archived.
+
+## Dispositions (2026-10-05)
+
+Audited at `9d4325fc` with `/ce-code-review` on a synthetic whole-file diff, all reviewers on
+Fable 5.1 at the user's request: correctness, security, in-process adversarial,
+project-standards, reliability, performance, api-contract, maintainability, learnings. 65 raw
+findings merged into 26 (5 P1, 4 P2, 17 P3). The validator confirmed findings 1 to 8 from the
+code; 9 to 26 were not in its batch. Reviewers ran no tests and no database, Redis or network
+access, so no finding has measured incidence. Finding 27 came from an `EXPLAIN ANALYZE` the architect
+ran on the HAF node with the user's permission. Triage: user, "as recommended", with decisions on
+findings 1, 3, 4 and 27.
+
+| Finding | What | Disposition |
+|---|---|---|
+| 1 | `/verify` confirms a WoT enrollee below the threshold and broadcasts nothing | `backend-verify-gate-treats-wot-enrollee-as-accredited` (high). Decision: an email verification pins any WoT enrollee |
+| 2, 8 | Both limiters refund requests that already did their work | `backend-accreditation-limiters-refund-work-already-done` (high) |
+| 3 | One mailbox can accredit any number of accounts | `architect-accreditation-mailbox-binding-design` (high). Decision: design task, not accepted for beta |
+| 4 | The verify link accredits the requester's account for whoever opens it | Decision: `/verify` requires the account's session. `backend-accreditation-mail-names-the-account` (high), `ui-accreditation-verify-page-signs-in-first` (high), then `backend-accreditation-verify-requires-the-account-session` (high, in `blocked/` behind the ui task) |
+| 5, 20 | WoT auto-accredit reads a stale membership cache; unused pool fetch | `backend-wot-auto-accredit-reads-stale-membership` (high), which also validates `vouchee` as an account name (from the residual list) |
+| 6, 25 | The cap keeps a refused claim; comments say otherwise | `backend-verify-cap-keeps-a-refused-claim` (low) |
+| 7 | `/request` stores an ORCID and a `created_at` nothing reads | `backend-accreditation-request-stores-unread-fields` (low), `ui-accreditation-email-form-orcid-input` (low) |
+| 9 | WoT enrollment has one trigger | `backend-wot-enrollment-has-a-single-trigger` (normal, in `blocked/` behind the stale-membership task) |
+| 10, 15, 18 | Contract doc: emdashes, an error code `/verify` cannot emit, a null the route returns | Fixed in place in `api-contracts/accreditation.md`. `architect-api-contracts-emdash-sweep` (low) covers the other contract docs |
+| 11, 12, 13, 14, 16, 17, 19, 21, 22, 23 | False or stale comments, one unused export | `backend-accreditation-wot-comment-and-dead-code-pass` (deferred until the other backend tasks from this audit are archived) |
+| 24 | The per-token idempotency branch is shadowed by the account gate | Dismissed: harmless redundancy on a chain-write path |
+| 26 | `VouchStatus.accreditation_method` has no reader | Dismissed: a documented response field |
+| 27 | Three latest-op HAF lookups walk the blocks index on a no-match input (gate lookup measured at 19.75 s, 2.4 ms when fenced) | `backend-latest-op-haf-lookups-walk-the-blocks-index` (high) |
+
+Also changed in `api-contracts/accreditation.md` while fixing 10, 15 and 18: "WoT-revoke" became
+"revoke" in the grace-period paragraph (finding 16's contract part); the
+`BROADCAST_ATTEMPT_LIMIT_EXCEEDED` entry lost its "after which the user can retry the same token"
+clause (finding 6); the `BROADCAST_TIMEOUT` entry now says a retry normally answers
+`already_accredited`, because the account gate runs ahead of the per-token lookup (finding 24).
+
+Dismissed from the residual list: the seconds-wide window between a sanction landing and HAF
+indexing it; the abused-domain exclusion and the TLD-suffix arm of `isInstitutionalEmail` (not
+measurable without the generated data file's source lists); the WoT threshold default cached
+after a failed read; a seed throw after a landed WoT op reported as `chain_error`; the listing
+total of 0 past the last page; `req.body` undefined on a non-JSON `/vouch`.
+
+Carried into other pending audits as notes: `architect-audit-frontend-security-surface`,
+`architect-audit-broadcast-idempotency-ipfs`, `architect-audit-hafsql-and-chain-walkers`,
+`architect-audit-reputation`.
+
+Not plan-checked: the sibling reads with the same `ORDER BY block_num DESC LIMIT 1` shape, listed
+in the latest-op task's "Out of scope".
+
+Learnings: no `/ce-compound`. Three `solutions/` entries are stale. Two describe code that tasks
+from this audit change, so their refresh is a `[TODO Architect]` on those tasks
+(`accreditation-state-read-latest-action-wins` on the gate task, the `skipFailedRequests`
+carve-out on the limiter task). The third, a note in
+`hive-primitive-aware-design-rules-for-pevo-custom-json-ops` that `getAccreditedSet` and the list
+endpoint inline `accred_ranked`, waits for the next `/ce-compound-refresh` pass.
+
 ## Password reset gates on no account state (archived 2026-10-05) — clean first review; reset rotates an existing password and never adds one; three follow-ups filed, the test gaps dismissed
 
 ### Architect archive note (2026-10-05)
@@ -154,97 +248,3 @@ before and after (probe deleted; the new suite pins the "After" column).
 | F, email path | token issued | rotates, stamps | `/resume-signup` 200 (the forgot-password resume flow) | unchanged: rotates, resume still works |
 | F, ORCID path (with an email) | token issued | ADDS a password, stamps | `/resume-signup` 200 | refused; login NO_PASSWORD_SET |
 
-"Refused" means: reset-request answers exactly as for an unknown email and writes no token; a
-token already on the row gets 400 `INVALID_TOKEN` identical to an unknown token's body, and the
-row is unchanged. On an accepted row the suite pins `email`, `username`, `orcid`,
-`verify_token`, `custody`, `upgraded_at` and `expires_at` unchanged. A row with no email (some C
-and ORCID-path F rows) was never reachable through reset-request and still is not.
-
-**AC 2.** Each refused state's reset-request answer is asserted deep-equal to an unknown email's
-(status and body) in the same spec, with wall time at or above `TIMING_ORACLE_FLOOR_MS` and no
-token on the row. It is the unknown-email code path itself, not an imitation of it. The
-verification pass's enumeration lens compared status, body, headers, timing, the drain-window
-and argon2-saturation branches, the rate limiter and persistent side effects, and found no
-distinguishing axis.
-
-**Decided with the user (2026-10-05): ORCID-path F loses its reset route back.** An ORCID-path F
-row with an email that lost its `auth_token` had exactly one pre-cleanup way back: reset adds a
-password, then `/resume-signup` answers 200. Every other door is shut (signup again 409 "Email
-already verified", ORCID login 404 NO_ACCOUNT, `/resume-signup` refuses passwordless rows by
-design, `signup-cleanup` reaps F rows only by `created_at` after 30 days). The default rule closes
-that route. Not judged a legitimate flow: it hands an ORCID-verified pending signup to whoever
-holds an email the ORCID path never verified. Proposed follow-up for filing: an ORCID-proven
-resume path for ORCID-path F rows, which would also help the no-email ORCID-path F rows that
-already wait out the 30 days today.
-
-**Out-of-scope findings, for triage.**
-- Outstanding reset tokens survive email changes. Only the reset routes ever write
-  `reset_token`; ORCID recovery rewrites `email` and the settings change flow swaps it, and
-  neither clears a token mailed to the previous address within its hour.
-- `RESET_REQUEST_OK_MESSAGE` ("If an account exists with that email, a reset link has been
-  sent.") and the UI copy `resetPassword.checkEmailDescription` now overclaim for a passwordless
-  account: it exists and no link comes. The task fixed the response as uniform, so not changed.
-- Mutant "gate on the token SELECT only, UPDATE unconditional" survives the suite: only a
-  password dropped concurrently between the token lookup and the UPDATE tells the placements
-  apart. A refuter judged the race theoretical, so no race spec; the comment that claimed a
-  placement guarantee was narrowed instead (`bd5d7e28`).
-
-**[TODO Architect] docs now describing the old behaviour** (architect zone, not edited):
-- § 6.3 "Forgot password": lists A and B only, and "(C cannot use /reset ...)". The rule now
-  covers every row with a password: A, B, D and G with one (G verified or not), E and email-path
-  F; it refuses C, D and G without one, and ORCID-path F.
-- § 6.3 Option C note: "`POST /api/auth/reset` gates on no account state" (the sentence the
-  `signup-verify.ts` comment carried).
-- § 6.4 reset row: "A and B (states with email AND password). C: not applicable."
-- `api-contracts/auth.md` `POST /api/auth/reset` errors: `INVALID_TOKEN` is also the answer for a
-  token whose row has no password.
-- The two comments the architect note names (`routes/settings.ts` set-password "Only
-  ORCID-verified accounts can opt into password login", and the `ORCID_REQUIRED` test comment)
-  are now true as written; not edited.
-
-**Verification.**
-- `npm run typecheck` clean; eslint clean on every changed file.
-- New suite on the parent code: 10 failed / 7 passed, exactly the refused-state specs (refusals
-  answered 200, and reset-request in 7 to 10 ms with no sentinel burn). After `8bf9283a`: 17/17.
-- Reset-touching suites: 12 files / 202 tests green after `8bf9283a`; 10 files / 163 tests green
-  after `1dd8776a` (the new suite, session-proof-invalidation, settings-email-fresh-auth,
-  auth-log-shape, auth-reset-request-shutdown, recover, auth, auth-argon-error-translation,
-  signup-verify-stuck-recovery, no-stale-comment-anchors; the first run also had
-  settings-set-password, auth-state-g-rows and the `updated_at`-writer canary).
-- Full backend suite at `bd5d7e28`: 7 failed files / 17 failed tests, 2730 passed, 10 skipped,
-  no Errors line. All seven are the files that fail on clean main per earlier baselines
-  (idempotency-real-haf, papers-enrichment-parity-gate, accreditation-idempotency,
-  profile-auth-bypass, cast-hardening-author-index-weight, accreditation's two cap specs,
-  reviews' two gate specs), with HAF connection timeouts in the log. `1dd8776a` changed one
-  message literal into a constant and one comment after that run.
-- Adversarial verification workflow (4 lenses, 1 refuter per finding, 14 agents, probes in
-  scratchpad copies): no behavioral defect. State-machine lens: no interleaving adds a password
-  (the gate is the UPDATE's WHERE), a refused reset leaves no side effect, nothing depended on
-  reset adding a password. Mutants on the gate halves, the rowCount refusal, its status and the
-  missing burn were all killed. Six distinct comment-truth defects, fixed in `bd5d7e28`.
-- `/ce-simplify-code` (reuse, quality, efficiency): 2 applied (the shared invalid-token message,
-  an overclaiming header paragraph deleted), 4 skipped (hoisting the per-spec unknown-email
-  baseline, the `seedRow` re-read, gating the token SELECT, a redundant table comment).
-- Code review: not run by backend; the architect runs `/ce-code-review` at intake.
-
-## An expired session token reads as a wrong password, and the user is never told to sign in (archived 2026-10-05) — two review rounds; the SPA ends an expired session before sending; the hold's guarded-call unwind, widened to SESSION_INVALIDATED, and the self-custody upload unwind landed; guard.cancel() in the helper accepted; the authorship request ahead of the gate stays carved out
-
-### Architect archive note (2026-10-05)
-
-Re-review of 5dc0772b, 729a9134 and 4db65971 with /ce-code-review (full: correctness, security,
-in-process adversarial, testing, project-standards, frontend races, learnings; the validator batch
-was empty). Clean: no findings. Hold items 1 to 4 as amended to SESSION_INVALIDATED, the scope
-limits, and the addendum's self-custody upload unwind are met at 4db65971. Orchestrator run on a
-git-archive copy of 4db65971: full frontend unit suite 91 files / 2141 tests, exit 0; npm run build
-exit 0. The testing reviewer planted the signal's eight mutants, each in its own copy: all killed.
-Project-standards checked every added or edited comment against the code: none false.
-
-Triage (user: "as recommended"):
-- Accepted: `guard.cancel()` in `unwindIfSessionEnded`, the addition beyond the hold's literal
-  form. It speaks only where the guard reads torn down and no message went out (the states the
-  addendum names: another-account adoption at `_endSession`, and a late SESSION_INVALIDATED after
-  a cross-tab sign-out or account switch). Without it those actions end with no message.
-- Recorded, no action: on paper-detail, `handleClaimSlot`, `handleApproveClaim` and
-  `handleRevokeClaim` send a plain authenticated request (`claimAuthorship`,
-  `approveAuthorshipClaim`, `revokeAuthorshipClaim`) before the consent-op gate. A session already
-  ended at that request still shows `claims.claimFailed`, `approveFailed` or `rejectFailed` next to

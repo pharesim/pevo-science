@@ -25,3 +25,13 @@ Total: 3035 lines.
 ## Done when
 
 The findings are triaged with the user, accepted ones are filed as tasks with a priority or folded into an open task that covers them, the dispositions are recorded in this file, and the file is archived.
+
+## Carried over from the accreditation and WoT audit (2026-10-05)
+
+- `seedAccreditationBonus`: the comment in its catch says a rethrown error becomes
+  "502 POST_BROADCAST_FAILED". Both `/verify` wrap sites pass severity `permanent`, which
+  `handleBroadcastError` answers as `POST_BROADCAST_OPERATOR_REQUIRED`. Check the other callers
+  before deciding what the comment should say.
+- The `update_weights` read has the `ORDER BY block_num DESC LIMIT 1` shape that took 19.75 s in
+  `findExistingAccreditation` for a no-match input. It runs after an existence check and under a
+  5 s `SET LOCAL statement_timeout`. It was not plan-checked.

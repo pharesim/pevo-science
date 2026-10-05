@@ -24,3 +24,9 @@ Total: 3463 lines.
 ## Done when
 
 The findings are triaged with the user, accepted ones are filed as tasks with a priority or folded into an open task that covers them, the dispositions are recorded in this file, and the file is archived.
+
+## Carried over from the accreditation and WoT audit (2026-10-05)
+
+- `activeAccreditationsCteBody` docblock: it says an account is sanctioned iff its most-recent
+  sanction block is "at-or-after" its most-recent authority accredit block. The SQL in
+  `accred_pinned` compares `(block_num, op_id)` pairs, so a same-block pair resolves by op id.
