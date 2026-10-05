@@ -68,12 +68,15 @@
  * any spelling `OWN_CARVE_OUT_RE` reads, is a violation whatever it names. The
  * marker stands in for the block stating its file's own carve-out, where the
  * declaration would read as that file's own clause (c) and a signpost
- * discharges nothing. It is a heuristic, not a parse of the carve-out: any
- * `(a)` or `(b)` in the block trips it, a list or a single mention such as
- * `clause (b)`, and so does an article `a` straight after the word clause and
- * a dash or an open parenthesis (`clause - a bridge account`, any dash folded
- * to `-`; `clause (a token, a semicolon)`). The message gives the way
- * through. Without that arm, two suites mocking the same surface
+ * discharges nothing. It is a heuristic, not a parse of the carve-out, and a
+ * list or a single mention trips it: any `(a)` or `(b)`, alone or in a slash
+ * list, unless a word character or a closing parenthesis sits directly before
+ * it (`fn(b)`, `item 5(a)`), and the word clause or clauses followed by a
+ * lone `a` or `b`, either case (`clause (b)`, `clauses a/c`). That word form
+ * also reads an English article as a marker, after spaces, a line break, a
+ * dash or an open parenthesis (`clause a planner`, `clause - a bridge
+ * account` with any dash folded to `-`, `clause (a token`). The message gives
+ * the way through. Without that arm, two suites mocking the same surface
  * discharge each other: one writes the reverse form, the other a forward
  * citation of a token the first spells in code, and every other arm holds.
  *
@@ -85,7 +88,7 @@
  * among them suites that call no `vi.mock`, `vi.doMock` or `vi.spyOn` at all,
  * and converted in place to the reverse form each of those goes red. The rest
  * declare themselves in a block with no marker, a header that takes no
- * carve-out or a comment above one spec, and this arm lets them convert in
+ * carve-out or a comment at one spec, and this arm lets them convert in
  * place. So in place the block key refuses every one of these suites the
  * module key would, plus those that mock nothing but declare themselves
  * inside a header carrying a marker. What it gains over the module key is the
@@ -1303,12 +1306,12 @@ function proseRemainder(text: string): string {
  *  plural before a slash list of any length (`clauses a/c`, `clauses a/b/c`,
  *  `clauses (a/b)`). Either clause is enough, so a statement that writes only
  *  its justification, or only its auth acknowledgement, still reads as one. A
- *  parenthesised letter directly after an identifier (`fn(b)`) is a call, not
- *  a marker. The word form also reads an article `a` after a dash or an open
- *  parenthesis as clause (a); the header records that. Carve-out WORDING is
- *  deliberately not read: a real-path suite declaring itself names the
- *  carve-out and its clause (c) as naturally as a mocked suite writes its
- *  justification. */
+ *  parenthesised letter directly after a word character or a closing
+ *  parenthesis (`fn(b)`, `item 5(a)`) is not a marker. The word form also
+ *  reads an English article `a` after the word clause as clause (a); the
+ *  header records that. Carve-out WORDING is deliberately not read: a
+ *  real-path suite declaring itself names the carve-out and its clause (c) as
+ *  naturally as a mocked suite writes its justification. */
 const OWN_CARVE_OUT_RE = /(?<![\w)])\([ab](?:\/[a-c])*\)|\bclauses?[\s-]*\(?[ab]\b/i;
 
 /** Does this block carry a clause-(a) or clause-(b) marker? The marker stands
@@ -2946,8 +2949,12 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       expect(statesOwnCarveOut(marker), JSON.stringify(marker)).toBe(true);
     }
     // The over-read the header records, pinned so closing it is a visible
-    // edit: an article after the word clause and a dash or an open paren.
-    for (const article of ['an `OR` clause \u2014 a bridge account', 'ends the import clause (a `from`, a semicolon)']) {
+    // edit: an article after the word clause and spaces, a dash or an open
+    // paren.
+    for (const article of [
+      'the WHERE clause a planner can use', 'an `OR` clause \u2014 a bridge account',
+      'ends the import clause (a `from`, a semicolon)',
+    ]) {
       expect(statesOwnCarveOut(normalizeCommentText(article)), JSON.stringify(article)).toBe(true);
     }
     for (const prose of [
