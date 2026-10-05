@@ -229,3 +229,26 @@ Not held here (triaged with the user 2026-10-05):
   exception list.
 - registration-watch announcing G rows as "Signup started / Email + password", with their email
   sent to the operator Discord: filed as a new backend task.
+
+## Backend re-review signal (2026-10-05, commit 49aa2c65)
+
+49aa2c65 verified as an ancestor of HEAD with `git merge-base --is-ancestor`. It is comment-only:
+a TypeScript token-stream comparison of both files at 49aa2c65^ and 49aa2c65 is identical.
+
+1. **`settings.ts`, both factor tables (POST /email and DELETE /email headers).** Each line now
+   says what the row can present on the JWT path.
+   - The D line: "'orcid' when linked. The password issuer refuses a non-light claim; a
+     password proof minted while the row was still light stays consumable until it expires
+     (the upgrade sweeps session proofs only)".
+   - The G line: "'orcid' when linked (the password issuer refuses its non-light claim)".
+   - Why the D-line clause holds: the upgrade calls `invalidateSessionFreshAuthTokens`, which
+     sweeps only the session-kind index, and stamps `sessions_invalidated_at`, which revokes
+     JWTs but is not read by the consent-kind consume. A D row keeps its password, so a
+     `change_email` or `delete_account` password proof minted just before the upgrade passes
+     the settings mechanism check within its 5-minute TTL, given a JWT issued after the
+     upgrade. The user triaged this residual as note only.
+2. **`tests/routes/auth.test.ts`.** The ORCID-only signup comment now says F finalizes to C
+   through `/confirm` or to D through `/link`.
+
+d33792ce, committed alongside under the state-G lifecycle task, edits other parts of
+`settings.ts` but neither of these tables.

@@ -88,3 +88,39 @@ availability and account-state defect, not a binding bypass.
 - The `accounts.updated_at` canary's docblock names this clearer as the third
   statement that clears the token. That sentence stays true whichever way this
   task lands; do not edit the canary from here.
+
+## Backend implementation signal (2026-10-05, commit d33792ce)
+
+d33792ce verified as an ancestor of HEAD with `git merge-base --is-ancestor`. It landed in the
+same pass as `backend-state-g-unverified-row-lifecycle`, at the user's request. That task's
+signal block holds the shared verification run.
+
+- **Scope 1.** The add-flow lookup is now `WHERE verify_token = $1 AND username IS NOT NULL`. I
+  verified the separation from the code: the settings add-flow INSERT always names the
+  username, both signup INSERTs in `routes/auth.ts` leave it NULL, and both finalizes clear the
+  token in the same UPDATE that sets the username. The clear is also keyed on the presented
+  token (`WHERE id = $1 AND verify_token = $2 AND username IS NOT NULL`). The new re-issue
+  branch can replace a G row's token between the lookup and the clear, and a link for the
+  earlier address must not verify the later one. A clear that matches no row gets the same
+  generic 400.
+- **Scope 2.** Wrong-flow tokens (E hex, expired E, F `confirmed:`) get the not-found 400
+  'Invalid or expired verification link', identical to an unknown token. That includes an
+  expired E token, which used to draw the distinct "has expired" message.
+- **Scope 3, the change branch.** Not narrowed. A non-NULL `pending_email_token` is written
+  only by the settings `POST /email` handler, on a row it found by username, so no signup
+  token can match. A code comment says so. Separately, under the lifecycle task's item 8b, the
+  change branch now also clears `verify_token` and `expires_at` with the swap.
+- **AC1-AC4.** Specs in `tests/routes/settings-state-g-unverified-email.test.ts`:
+  - "answers a state E row's hex token with the unknown-token 400 and keeps the row's token"
+  - "answers an expired state E row's token with the same unknown-token 400"
+  - "answers a state F row's confirmed: token with the unknown-token 400 and keeps the row's
+    token"
+  - "verifies the settings add flow's own token through the mailed link", which drives the
+    real path.
+
+  The first three each failed against the base code. The responses are asserted identical to
+  the unknown-token answer.
+- **The `updated_at` canary.** The Notes said not to edit it from here. The lifecycle task's
+  changes made several of its sentences false: the re-issue writes `verify_token` on an
+  existing row, and the change branch now clears the token. So it was rewritten in d33792ce
+  under that task, and the clearer it names is described with its new scope.

@@ -60,3 +60,42 @@ work it does not do.
 - Do not reach for `updated_at` as part of the fix. That column carries a
   separate invariant with its own standing guard, and adding a writer to this
   path is exactly what that guard refuses.
+
+## Backend implementation signal (2026-10-05, commit d33792ce)
+
+d33792ce verified as an ancestor of HEAD with `git merge-base --is-ancestor`. It landed in the
+same pass as `backend-state-g-unverified-row-lifecycle`, at the user's request. That task's
+signal block holds the shared verification run and the contract TODOs.
+
+- **Scope 1, the pre-check.** It now also reads `username` and whether the row carries a
+  password or an ORCID. I checked § 6.1 state by state:
+  - A NULL token answers 409. That covers A, B, C, D and a verified G row.
+  - A `confirmed:` token answers 409. That covers F.
+  - A row with `username` set that carries a password or an ORCID answers 409, with the same
+    argon2.hash burn as the sibling branches. That covers a legacy G row with a factor.
+  - E is the one row left for the upsert's `DO UPDATE`.
+- **User decision (2026-10-05).** For one row the 409 gives way to an eviction. A factor-less
+  unverified G row holds nothing but the email claim, and holding it with a 409 let its owner
+  block signup for that address indefinitely (re-adding restarts the expiry). So a signup that
+  gets past the accreditation gate deletes that row and writes its own. The DELETE is
+  conditional, keyed on the state the pre-check read, and runs in one transaction with the
+  upsert. The G row's fields are never rewritten, so AC1 holds.
+- **AC1, made structural.** Both upserts' `DO UPDATE` carry `WHERE accounts.username IS NULL AND
+  accounts.verify_token NOT LIKE 'confirmed:%'`, and an upsert that writes no row answers 409
+  DUPLICATE. A row written for the address after the pre-check is left untouched. The realistic
+  case is the caller's own settings add-flow INSERT landing while argon2.hash runs, which would
+  otherwise turn a claim that can be evicted into one that is permanent.
+- **AC2, timing.** The new 409 burns argon2.hash like the existing ones. The eviction path and
+  the post-gate 409 both come after the happy path's argon2.hash, so they cost the same.
+- **AC3, tests.** In `tests/routes/auth-state-g-rows.test.ts`; every G row is created through
+  the real settings registration path:
+  - "answers 409 DUPLICATE for a G row carrying a factor, pays the argon2.hash burn, and leaves
+    the row unchanged". Against the base code: 200, and the upsert overwrote the row.
+  - "leaves a G row that appears after the duplicate pre-check untouched and answers 409
+    DUPLICATE". Before the `DO UPDATE` guard: 200, and the row overwritten.
+  - The eviction specs: email path, ORCID path, the 422 gate keeping the row, and
+    ORCID_ALREADY_LINKED rolling the DELETE back.
+- **`updated_at`.** Not touched. The canary docblock now describes both guards and the eviction.
+  It says the guards bound which rows reach the branch and say nothing about what the branch
+  writes.
+- **Considered, not built.** A deterministic test for the eviction DELETE matching 0 rows.
