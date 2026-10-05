@@ -1643,6 +1643,7 @@ export function initEditPage() {
         // other targets so _finishLanded reads nothing from `this.paper`.
         const canonicalAuthor = this.paper.canonical_author || this.paper.author;
         const canonicalPermlink = this.paper.canonical_permlink || this.paper.permlink;
+
         const targetContinues = targetOwnContinues(
           this.paper.versions,
           { author: canonicalAuthor, permlink: canonicalPermlink },
