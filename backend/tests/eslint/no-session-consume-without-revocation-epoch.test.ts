@@ -87,8 +87,9 @@ import {
  *  line-start opener refused by an inverted template-parity count). The
  *  shape test in `isCommentedOut` keeps out each line of that prose that
  *  begins with `*`, `//` or `/*`; a continuation written with no prefix,
- *  inside a comment opened after code on its line, still reads as live, a
- *  residual the shared module names at `skipCommentLine`.
+ *  inside a comment opened after other text on its line (code, or another
+ *  comment's close, as in `/* a *\/ /* the epoch note`), still reads as
+ *  live, a residual the shared module names at `skipCommentLine`.
  *
  *  A second residual needs no under-reported region. `isCommentedOut`
  *  answers about whole lines, so an epoch named in a comment that shares a
@@ -96,9 +97,11 @@ import {
  *  (`return consumeSessionFreshAuthToken(token, username, undefined); // TODO hiveSessionsInvalidatedAt`),
  *  and the value seam tests the whole value text, so
  *  `sessionsInvalidatedAtMs: /* hiveSessionsInvalidatedAt *\/ undefined,`
- *  counts as an epoch reference. Closing either means telling a comment from
- *  the same characters inside a string, the lexer the shared module
- *  declines. */
+ *  counts as an epoch reference. The trailing form needs a comment told
+ *  apart from the same characters inside a string, the lexer the shared
+ *  module declines. The value-seam form is a same-line value that BEGINS
+ *  with a comment, which a shape test could refuse the way the wrapped
+ *  lookup in `valueTextAfterKey` does; it is recorded here, not closed. */
 const skipCommentedOut = (line: string, lineIndex: number, lines: string[]): boolean =>
   isCommentedOut(line, lineIndex, lines);
 
@@ -179,26 +182,36 @@ function fieldlessSurfaces(files: ScannedSource[]) {
 
 /** The text a key's value occupies: the remainder of the line after the first
  *  colon following `name`, or, when the key is wrapped (colon at end of line),
- *  the first non-blank line below it. Returns null when `name` is written in
- *  shorthand position (no colon), which for the epoch field means a
- *  pass-through of the same-named binding.
+ *  the first line below it that is neither blank nor comment and nothing
+ *  else, read as `''` when that line mixes comment and code. Returns null
+ *  when `name` is written in shorthand position (no colon), which for the
+ *  epoch field means a pass-through of the same-named binding.
  *
  *  The wrapped lookup steps past a line only when it is comment and nothing
- *  else: `isCommentedOut` reads it as commented out AND the no-region
- *  `isCommentLine` reads it as prose (a `//` line, a docblock opener or star
- *  continuation, a comment whose close has nothing live after it). Neither
- *  test is enough alone. By shape, `/* wired later *\/ undefined,` is
- *  commented out though the code after its close is the real value, and
- *  stepping past it makes the NEXT property's line the value, which vouches
- *  for the surface when that line names the epoch. Without a region,
- *  ` * hiveSessionsInvalidatedAt belongs here *\/ undefined,` is live, and
- *  its prose becomes a value naming the epoch.
+ *  else: `isCommentedOut` reads it as commented out AND `isCommentLine`,
+ *  answering as if a region were open, reads it as prose (a docblock opener
+ *  or star continuation, a `//` line with no close on it, a comment whose
+ *  close has nothing live after it). Neither test is enough alone. By shape,
+ *  `/* wired later *\/ undefined,` is commented out though the code after
+ *  its close is the real value, and stepping past it makes the NEXT
+ *  property's line the value, which vouches for the surface when that line
+ *  names the epoch. To `isCommentLine` alone, ` * hiveSessionsInvalidatedAt
+ *  belongs here *\/ undefined,` is live, and its prose becomes a value
+ *  naming the epoch. The open region is what makes a `//` line answer by its
+ *  close search: inside a block comment the two slashes are comment text, so
+ *  `// wired later *\/ undefined,` closing a comment opened above carries
+ *  the value too. A real line comment carrying a close with text after it
+ *  reads the same way and returns `''`, which is loud.
  *
- *  A line the two tests disagree on (code after a close, or a line with no
- *  prefix inside a block comment) is returned as `''`, never as its text.
- *  `''` carries neither an epoch reference nor a literal, so for the epoch
- *  field an accepting surface is an offender. For the `acceptSession` value
- *  it reads as accepting, which can only turn a demand on, a red bar. */
+ *  A line the two tests disagree on is returned as `''`, never as its text:
+ *  code after a close, or a line with no prefix inside a block comment that
+ *  `isCommentedOut` sees, one opened at the start of a line. A no-prefix line
+ *  inside a comment opened after other text on its line (code, or another
+ *  comment's close) reads as live to both tests and is returned as text,
+ *  the residual `skipCommentedOut` names. `literalEpochSurfaces` counts a
+ *  `''` epoch value as unresolved, an offender; for the `acceptSession`
+ *  value `''` reads as accepting, which can only turn a demand on, a red
+ *  bar. */
 function valueTextAfterKey(lines: string[], lineIndex: number, name: string): string | null {
   const line = lines[lineIndex];
   const m = line.match(new RegExp(`(?<!\\.)\\b${name}\\b\\s*(:)?`));
@@ -208,7 +221,7 @@ function valueTextAfterKey(lines: string[], lineIndex: number, name: string): st
   for (let j = lineIndex + 1; j < lines.length; j++) {
     if (lines[j].trim() === '') continue;
     if (!isCommentedOut(lines[j], j, lines)) return lines[j];
-    if (!isCommentLine(lines[j])) return '';
+    if (!isCommentLine(lines[j], true)) return '';
   }
   return '';
 }
@@ -225,7 +238,11 @@ function valueTextAfterKey(lines: string[], lineIndex: number, name: string): st
  *     pass-through of the same-named required parameter) or with a value that
  *     names the request epoch (`hiveSessionsInvalidatedAt`).
  *   - literal-valued: the symbol writes the epoch field with a value opening as
- *     `undefined`, `null`, a number, or a string.
+ *     `undefined`, `null`, a number, or a string, or with a wrapped value
+ *     `valueTextAfterKey` could not read (`''`). An unread value is counted
+ *     here rather than left as a write that vouches for nothing, because
+ *     the facts are per symbol: another write in the same function that
+ *     names the epoch would otherwise cover it.
  *
  *  A session-accepting surface symbol that is literal-valued or not
  *  epoch-referencing is an offender. `acceptSession: false` beside
@@ -266,10 +283,10 @@ function literalEpochSurfaces(files: ScannedSource[]) {
         if (value === null || EPOCH_REF_RE.test(value)) {
           // Satisfying-side, so read by shape like the epoch pairing: a
           // write behind a comment close, or on a star line the region pass
-          // left live, does not vouch for the surface. A wrapped value is
-          // read by shape inside valueTextAfterKey for the same reason.
+          // left live, does not vouch for the surface. valueTextAfterKey
+          // keeps comment text out of a wrapped value for the same reason.
           if (!isCommentedOut(line, i, lines)) f.epochRef = true;
-        } else if (LITERAL_VALUE_RE.test(value)) {
+        } else if (value === '' || LITERAL_VALUE_RE.test(value)) {
           f.literal = true;
           f.lines.push(`${rel}:${i + 1} — ${line.trim()}`);
         }
@@ -600,6 +617,52 @@ describe('every session-window consume carries the account revocation epoch', ()
       ],
     };
     expect(literalEpochSurfaces([valueBehindProseClose]).offenders).toHaveLength(1);
+
+    // A `//` leading the close line of a block comment is comment text, so
+    // the code after the close is the value here too, and the next
+    // property's line must not stand in for it.
+    const slashLedClose: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'async function consumeValueBehindSlashLedClose(req: Request, token: string) {',
+        '  return consumeFreshAuthTokenForSurface(token, {',
+        '    acceptSession: true,',
+        '    sessionsInvalidatedAtMs:',
+        '      /* the epoch note',
+        '      // wired later */ undefined,',
+        '    note: req.hiveSessionsInvalidatedAt,',
+        '  });',
+        '}',
+      ],
+    };
+    expect(literalEpochSurfaces([slashLedClose]).offenders).toHaveLength(1);
+
+    // A value the lookup cannot read is an offender whatever else the
+    // function writes. Classification is per function, so a value that only
+    // failed to vouch would be covered by the other surface's epoch write,
+    // and the literal behind the comment would pass.
+    const unreadBesideEpochWrite: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'async function consumeTwoSurfaces(req: Request, token: string) {',
+        '  if (req.fast) {',
+        '    return consumeFreshAuthTokenForSurface(token, {',
+        '      acceptSession: true,',
+        '      sessionsInvalidatedAtMs: req.hiveSessionsInvalidatedAt,',
+        '    });',
+        '  }',
+        '  return consumeFreshAuthTokenForSurface(token, {',
+        '    acceptSession: true,',
+        '    sessionsInvalidatedAtMs:',
+        '      /*',
+        '      not wired yet',
+        '      */',
+        '      undefined,',
+        '  });',
+        '}',
+      ],
+    };
+    expect(literalEpochSurfaces([unreadBesideEpochWrite]).offenders).toHaveLength(1);
 
     // Control: a comment that is nothing but comment IS stepped past, so the
     // request epoch written after a docblock is still the field's value.
