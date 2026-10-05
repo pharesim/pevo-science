@@ -225,7 +225,7 @@ test('original-author edit broadcasts in-place comment with same parent_permlink
   await waitForEditorsMounted(page);
   await setEditorContent(page, { abstract: NEW_ABSTRACT, body: NEW_BODY });
 
-  await page.locator('form button[type="submit"]').click();
+  await page.locator('[x-data="editPage"] form button[type="submit"]').click();
 
   await expect
     .poll(() => page.evaluate(() => window.__pevoBroadcastCalls?.length || 0), {
@@ -305,7 +305,7 @@ test('accredited non-author (not co-author, no claim) cannot reach the edit form
   // Gating panel renders, edit form does not.
   await expect(page.locator('text=Who can edit this paper?').first()).toBeVisible();
   await expect(page.locator('input#edit-title')).toHaveCount(0);
-  await expect(page.locator('form button[type="submit"]')).toHaveCount(0);
+  await expect(page.locator('[x-data="editPage"] form button[type="submit"]')).toHaveCount(0);
 
   // Three explanatory bullet points list the legitimate paths.
   await expect(page.locator('text=original author').first()).toBeVisible();
@@ -364,7 +364,7 @@ test('unaccredited non-author cannot reach the edit form; gating panel and back-
   // form's submit button being absent. Submit is impossible because no
   // form is present.
   await expect(page.locator('input#edit-title')).toHaveCount(0);
-  await expect(page.locator('form button[type="submit"]')).toHaveCount(0);
+  await expect(page.locator('[x-data="editPage"] form button[type="submit"]')).toHaveCount(0);
 });
 
 test('review-addressing surface renders before submit when paper has prior reviews', async ({
@@ -438,7 +438,7 @@ test('review-addressing surface renders before submit when paper has prior revie
   // Tick the first review so addresses_reviews lands in the broadcast.
   await reviewCheckboxes.first().check();
 
-  await page.locator('form button[type="submit"]').click();
+  await page.locator('[x-data="editPage"] form button[type="submit"]').click();
 
   await expect
     .poll(() => page.evaluate(() => window.__pevoBroadcastCalls?.length || 0), {
@@ -521,7 +521,7 @@ test('accepted-claimer (accredited, not author, not co-author) reaches the edit 
   // prior authors[], so the broadcaster is an addition, _primaryIndex -1).
   await page.locator('input#edit-author-name').fill('Accepted Claimer');
 
-  await page.locator('form button[type="submit"]').click();
+  await page.locator('[x-data="editPage"] form button[type="submit"]').click();
 
   await expect
     .poll(() => page.evaluate(() => window.__pevoBroadcastCalls?.length || 0), {
@@ -609,7 +609,7 @@ test('no-changes guard blocks the broadcast and surfaces an error step', async (
   await setEditorContent(page, { abstract: prefilledAbstract, body: prefilledBody });
 
   // Submit without modifying ANYTHING.
-  await page.locator('form button[type="submit"]').click();
+  await page.locator('[x-data="editPage"] form button[type="submit"]').click();
 
   // The step state machine should land on 'error' and the broadcast stub
   // should never have been called. Poll the step value to allow the
@@ -714,7 +714,7 @@ test('non-head edit target (own post no longer chain head) broadcasts full body,
   await waitForEditorsMounted(page);
   await setEditorContent(page, { abstract: NEW_ABSTRACT, body: NEW_BODY });
 
-  await page.locator('form button[type="submit"]').click();
+  await page.locator('[x-data="editPage"] form button[type="submit"]').click();
 
   await expect
     .poll(() => page.evaluate(() => window.__pevoBroadcastCalls?.length || 0), {
