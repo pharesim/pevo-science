@@ -38,6 +38,19 @@ Be thorough, double check all assumptions. After `/ce-code-review` returns, bran
 
 **Re-review cycle on held-pending-fixes tasks.** The file location itself is the signal. Held tasks live in `tasks/pending/` while the implementer addresses them. When the implementer has landed the fixes, they `git mv` the file back to `tasks/review/`. Every file in `tasks/review/` with your role prefix is therefore actionable — either a first review or a re-review after a prior hold. At re-review time, read the HELD PENDING FIXES block to see what was asked for, run `/ce-code-review` on the new diff scoped to the commits since the hold block was written (not the whole task's history — the earlier commits were already reviewed), then either archive, update the hold block (e.g., "All N items held on <date> are FIXED") and archive, or append a new hold block and `git mv` back to `pending/`. See root `CLAUDE.md` rule #8.
 
+**Audit tasks (existing code, no diff).** `architect-audit-*` tasks in `tasks/pending/` review a set of files as they stand, code no recent task has touched. `/ce-code-review` only reviews diffs, so give it one in which the files are new:
+
+```bash
+H=$(git rev-parse HEAD)
+export GIT_INDEX_FILE=<run-dir>/audit.index   # throwaway index, never the shared one
+git read-tree $H && git update-index --force-remove <files>
+B=$(echo "audit base" | git commit-tree $(git write-tree) -p $H); unset GIT_INDEX_FILE
+C=$(echo "audit head" | git commit-tree $(git rev-parse "$H^{tree}") -p $B)
+python3 <ce-code-review skill dir>/scripts/review-scope.py --base $B --head $C --docs-root agents/docs
+```
+
+`B` is HEAD without the files and `C` is HEAD's tree on top of `B`, so `git diff $B $C` adds each file in full. Both commits live only in the object store: no ref moves and the shared index is untouched. Passing HEAD itself as the head reports no changed files, because the helper diffs from the merge base, which is then HEAD. Run the review as branch-remote with `diff_a` = `B` and `diff_b` = `C`. Tell the personas the change is an audit of existing code, have them read `git show $H:<path>` copies in the scratchpad, and have them cite `$H`, never `B` or `C`. Before triage, drop findings an open task already covers (grep `agents/docs/tasks/`), and apply the usual bars: a finding that does not fire today defaults to dismiss, and a new canary is warranted only where the code cannot be tested for real and review would likely miss a violation. Triage as for any review; accepted findings become tasks with a priority, or fold into an open task that covers them. Record the dispositions in the audit task file, then archive it.
+
 Before archiving, ask yourself: did this review or the resolution of a `[BLOCKED]` entry surface a non-obvious learning (a recurring implementer mistake, a cross-cutting architectural constraint, a rationale a future agent could not reconstruct from the code or docs)? If yes, invoke `/ce-compound`. If no, skip it. Err on the side of skipping.
 
 ## Working Directory
