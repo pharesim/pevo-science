@@ -277,8 +277,9 @@
  * than infers. Scanned: every `.ts`, `.mts`, `.cts` and `.tsx` module under
  * `backend/src`, recursively (the shared `sourcesUnder` collects the first
  * spelling, {@link moduleResourcesUnder} the other three), every `.sql`
- * resource under the same tree ({@link sqlResourcesUnder}, read as SQL), and
- * every `.sql` file at the top of `backend/migrations`. Every TypeScript
+ * resource under the same tree ({@link sqlResourcesUnder}, read as SQL),
+ * every `.sql` file at the top of `backend/migrations`, and every `.sql` file
+ * under `backend/scripts`, collected the same way. Every TypeScript
  * module the build can compile into the `dist` the image runs is in that
  * set: `tsconfig.json` includes the whole of `src` and sets no `allowJs`, so
  * a `.js` placed there is neither compiled nor shipped, and is not scanned
@@ -297,11 +298,10 @@
  * `backend/tests` and the maintenance code under `backend/scripts` do not
  * ship; `backend/data`, the built frontend under `backend/public` and the
  * production `node_modules` do, as files the application reads or serves
- * rather than as SQL it runs. Only the modules under `backend/src` and the
- * files under `backend/migrations` reach the database as executable
- * statements. `backend/scripts` is the tree that LOOKS like a scan
- * candidate and is not, and the `backend/scripts` entry under KNOWN LIMITS
- * records why, and what re-opens the question.
+ * rather than as SQL it runs. The `.sql` files under `backend/scripts` are
+ * scanned although they do not ship, because an operator runs them against
+ * the application database; the `backend/scripts` entry under KNOWN LIMITS
+ * records why the rest of that tree is not, and what re-opens the question.
  *
  * A RED BAR MAY BE THE READER'S, NOT A THIRD WRITER'S, and so may a green one
  * or a slow run. What is recorded about this reader elsewhere, none of it
@@ -674,21 +674,21 @@
  *     a write base caught and this misses to need one of those triggers, and
  *     found nesting refusing more phantoms than it widens. Neither tree spells
  *     any of them.
- *   - `backend/scripts` is outside every root, on purpose. The tree is
- *     database-adjacent, which is what makes it look like a missing root: its
- *     one client, the test-reset helper Playwright's global-setup runs, opens
- *     a pool on `APP_DATABASE_URL`. Three facts keep it out. It does not
- *     ship: the image copies it into the build stage for the academic-domain
- *     fetch and never into the runtime stage, so nothing the deployed
- *     application executes lives there. Its one client refuses any database
- *     whose name does not end `_test`, and what it then runs is TRUNCATE,
- *     which removes rows and stamps a marker on none. And the tree is `.js`
- *     and `.sh` today, so pointing the `.ts` walker at it would scan nothing
- *     while reading as coverage — a stated exclusion is honest where an
- *     empty root is not. The boundary this buys: a script added there that
- *     connects to the application database and WRITES rows is a new root,
- *     and admitting it means a walker that collects that script's own
- *     extension, not just a root list growing a directory.
+ *   - `backend/scripts` is a root for its `.sql` files only. Those are
+ *     repairs an operator pipes into `psql` against the application
+ *     database, so they reach it as statements although the image copies the
+ *     tree into the build stage for the academic-domain fetch and never into
+ *     the runtime stage. The rest of the tree stays out. Its one database
+ *     client, the test-reset helper Playwright's global-setup runs, opens a
+ *     pool on `APP_DATABASE_URL`, refuses any database whose name does not
+ *     end `_test`, and runs TRUNCATE, which removes rows and stamps a marker
+ *     on none. And the rest is `.js` and `.sh`, so pointing the `.ts` walker
+ *     at it would scan nothing while reading as coverage — a stated exclusion
+ *     is honest where an empty root is not. The boundary this buys: a script
+ *     added there, other than a `.sql` file, that connects to the application
+ *     database and WRITES rows is a new root, and admitting it means a walker
+ *     that collects that script's own extension, not just a root list
+ *     growing a directory.
  *   - `tsconfig.json` sets `resolveJsonModule`, so a `.json` under `src` that
  *     compiled code imports is emitted verbatim into the shipped `dist`, and
  *     no walker collects `.json`. A statement kept in one and handed to a
@@ -709,11 +709,12 @@
  *     link exists under `backend/src` today. The re-open condition: a linked
  *     module or directory under `src`, at which point the local walkers
  *     follow links the way the shared one does.
- *   - The routine arm walks the SQL files only (the migrations and any `.sql`
- *     resource under `src`), so its refusal of a trigger or rule bound to
- *     `accounts` does not reach one installed at runtime from a MODULE's
- *     SQL string. Most DDL a module could spell is still read by the arms
- *     that span `sources`: an `ALTER TABLE accounts` naming the column reds
+ *   - The routine arm walks the SQL files only (the migrations, any `.sql`
+ *     resource under `src` and the `.sql` files under `backend/scripts`), so
+ *     its refusal of a trigger or rule bound to `accounts` does not reach one
+ *     installed at runtime from a MODULE's SQL string. Most DDL a module
+ *     could spell is still read by the arms that span `sources`: an
+ *     `ALTER TABLE accounts` naming the column reds
  *     the ALTER arm, and a routine body spelling `UPDATE accounts SET
  *     updated_at = ...` reds the writer arms like any other statement text.
  *     A rule whose action spells that statement is read the same way, the
@@ -3030,8 +3031,7 @@ function migrationSources(root: string): ScannedSource[] {
  *  wrong for a scan of statements: a query kept as a `.sql` resource beside
  *  the code that runs it is inside the scanned tree and reaches the same
  *  database, and an extension filter is not a reason to stop looking at it.
- *  None exists today, which is why this returns an empty list and why the
- *  writer set is unchanged by it. */
+ *  None exists under `src` today. */
 function sqlResourcesUnder(root: string): ScannedSource[] {
   const out: ScannedSource[] = [];
   const walk = (dir: string): void => {
@@ -3100,6 +3100,7 @@ const sources = readable(codeSourcesUnder(srcRoot));
 const migrations = readable([
   ...migrationSources(path.resolve(__dirname, '..', '..', 'migrations')),
   ...sqlResourcesUnder(srcRoot),
+  ...sqlResourcesUnder(path.resolve(__dirname, '..', '..', 'scripts')),
 ]);
 
 /** The blanked view every scan reads, for fixtures written as source lines.
