@@ -322,3 +322,107 @@ shape as items 1 to 3: prose only, no new probe wanted.
    beside it. Do not change the cap, the pair, or any pattern. Measure the
    sentence you write against the patterns before landing it, the same way
    items 1 to 3 ask.
+
+## Backend re-review signal (2026-10-05, commit `ab6fe37b`)
+
+One commit, `ab6fe37b`, touching only
+`backend/tests/eslint/no-custody-claim-derivation-outside-helper.test.ts`, and
+an ancestor of `main` (`git merge-base --is-ancestor` checked). Prose and one
+failure-message string only: no pattern, cap, probe or assertion changed. Run in
+a scratch copy with `tests/setup.ts` stubbed, `tests/eslint/` gives 9 files and
+146 tests, exit 0. `npm run typecheck` and eslint on the file are clean.
+
+Every new sentence was measured in scratch copies by two adversarial
+verification passes: 7 lenses on the first draft, then 3 on the narrowed text.
+Then tree plants were re-run against the final file. Several first-draft
+sentences were refuted and narrowed, and what landed is the measured form.
+
+**Per hold item**
+
+1. The residual now reads: while the helper's caller set stays as pinned, the
+   residual includes these shapes where their value never reaches a mint's
+   claim, whether or not their symbol mints, and where they feed the variable
+   claim at the four row-reading mints or at the token refresh.
+   - Measured green: POST /session deriving its claim through a local; POST
+     /login deriving through a local beside its kept helper call; POST /upgrade
+     deriving into `sendOk` with its literal kept; settings GET /email beside
+     its helper call; a new non-minting reader.
+   - Measured red controls: a direct ternary, and a new unlicensed mint with a
+     derived claim.
+   - The caller-set condition is there because a derivation REPLACING a helper
+     call, or a new reader that also calls it, is red in scan 1.
+   - "includes" replaces "is" because no exhaustive form measured true. Mint
+     spellings `JWT_MINT_RE` misses, twin licence keys and the text reading
+     each leave more green cases.
+   - Other edits in the paragraph so that "these shapes" holds:
+     - The refusal sentence is scoped to "a mint `JWT_MINT_RE` matches, in a
+       symbol that holds no licence of its own". Its colon clause ("the claim
+       binds from a variable...") is deleted: a control-flow derivation reaches
+       the claim as a literal, and `custody: x` reaches it unclassified.
+     - The list example "an `upgraded_at` local" became `upgradedAt`. A local
+       literally named `upgraded_at` is caught by scan 2.
+     - "one whose destination carries a DIFFERENT NAME" became "a property read
+       of the column into a DIFFERENT NAME". A ternary into another name, and a
+       destructure renaming `custody`, are both caught.
+2. The message now reads "... reads as self at the middleware, and the
+   classifier found no claim in these mints. It reads a `custody:` key followed
+   by a quoted self or light, and a bare `custody` ahead of a comma or a closing
+   brace:".
+   - The either/or ("omits the claim or writes it in a shape...") is gone. A
+     claim in a read shape but past `STATEMENT_SCAN_CAP`, or behind a stray `)`
+     on the mint line, is unclassified too.
+   - Measured true: `verifyHiveSignature` sets `payload.custody || 'self'`.
+3. The comment skip spares quoted call text only on a line it reads as comment
+   from start to end. On any other line, including one where the text trails
+   live code in a comment or a string, it is one more mint at that line's
+   symbol.
+   - The reflowed first clause is narrowed to "Prose naming the mint with no
+     open paren after it". `jwt.sign (the mint)` matches.
+4. Every shape `statementOccurrences` matches can escape once its two halves sit
+   more than four joined lines apart: the ternary, the copy and the destructure
+   pairs.
+   - Measured for each family: caught at joined line 4, escapes at 5, caught at
+     5 with the cap at 40.
+   - "can" because a nearer restart still catches some layouts: a cast's own
+     `custody:` key, or a second epoch mention.
+   - "ternary", not "derivation": the file uses "derivation" for all three
+     families.
+   - The pinning sentence is scoped to "The ternary's boundary", because the
+     joined-count pair plants only the ternary.
+
+**Also fixed, user-approved before this move.** These are pre-existing
+sentences, measured false, in the paragraph item 1 restates and in the docblock
+item 4's sentence relies on:
+
+- Deleted "Reading through any of them needs taint analysis, not a textual
+  scan." A one-alternation pattern reads the assignment destructure, with no
+  false positive in the tree.
+- Deleted "so prose inside a statement costs nothing while prose between two
+  statements cannot bridge them." The walk cap refutes it, so does no-star
+  block prose being joined, and so does an unterminated statement bridging
+  fewer than twelve comment lines.
+- In the `statementFrom` docblock:
+  - "Comment lines inside the run" became "Lines inside the run that
+    `isCommentLine` reads as comment". A block-comment line with no leading
+    star is joined and spends join budget.
+  - "no budget" became "no join budget".
+  - The trailing "the cap that ends the run counts the lines JOINED" is
+    deleted. The walk cap can end the run too.
+
+**For architect triage (measured, not fixed, by user decision)**
+
+- `COLUMN_DESTRUCTURE_RE` docblock: "The refusal is absolute for a declaration
+  destructure naming the column" misses a typed destructure,
+  `const { custody }: AccountRow = row;`.
+- `EPOCH_TERNARY_RE` misses parenthesised or cast branches
+  (`row.upgraded_at ? ('self') : ('light')`, `('self' as const)`),
+  `(row.upgraded_at && 'self') || 'light'`, named-constant branches, and a
+  lookup table. Each stays green at a non-minting reader and beside a kept
+  helper call. This would be a pattern change, outside a prose hold.
+- `statementFrom`'s walk-cap cost "split by twelve or more consecutive comment
+  lines" under-claims. The walk counts every line, so 6 comment lines, 1 code
+  line and 5 comment lines escapes.
+- Over-matches in the scan-2 list, in the safe direction and with none in the
+  tree today: an intermediate binding with no `;` between read and ternary (a
+  multi-declarator or ASI), and a control-flow branch carrying `?? 'self'`, are
+  both caught.
