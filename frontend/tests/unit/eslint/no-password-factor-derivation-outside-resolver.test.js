@@ -62,8 +62,8 @@
  * change that puts page code there extends this canary in the same change.
  * Within what is read, the scans are still blind to the three named
  * residuals (CONSTANT-WIDTH REPLACEMENT, A MATCH RIDING ON A SKIPPED LINE, A
- * NAME THAT IS NEVER SPELLED), and to the shared scan machinery's own,
- * which `enclosing-symbol.js` names.
+ * NAME THAT IS NEVER SPELLED), and to the shared scan machinery's own, which
+ * `enclosing-symbol.js` names.
  *
  * GRANULARITY. The walk's occurrence assertions are over `file#symbol` pairs
  * resolved by `enclosingSymbol`, never over files: a file already on an
@@ -127,9 +127,9 @@
  * scan there, with nothing licensed. Import-site tracking and the star
  * re-export ban add nothing in that file. With no specifier skip, an import
  * there that names the fetch already fails. And a star re-export in an
- * inline module script, which the bundler does make importable, still
- * leaves its importer writing the fetch's name where it binds or calls it,
- * which the name scan counts in any file the canary reads.
+ * inline module script, which the bundler does make importable, still leaves
+ * its importer writing the fetch's name where it binds or calls it, which
+ * the name scan counts in any file the canary reads.
  *
  * Residuals, pinned in prose rather than silently absorbed. Three, and each
  * one is left to review of the diff for its own reason.
@@ -374,8 +374,9 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
     // The walk is the floor every scan over the walked sources stands on. A
     // walker that skipped a subdirectory, silently dropped a module in an
     // extension it does not read, or dropped one reached through a link,
-    // would pass every scan vacuously for that file. The fixture is a
-    // throwaway tree so the probe owns exactly what it walks.
+    // would leave that file unread by every scan over the walked sources,
+    // which notice its loss only when it is a licensed module. The fixture
+    // is a throwaway tree so the probe owns exactly what it walks.
     const root = mkdtempSync(path.join(os.tmpdir(), 'pevo-factor-canary-walk-'));
     try {
       mkdirSync(path.join(root, 'lib', 'deep'), { recursive: true });
