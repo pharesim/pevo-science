@@ -1,250 +1,250 @@
-## Handle a server-revoked session (401 SESSION_INVALIDATED) in the SPA (archived 2026-10-05) — revoked-surface fixes moved to the expired-session hold; § 6.7 and contracts corrected; four items dismissed
+## A composer draft is bound to its account and, on the edit page, to the head it was written against (archived 2026-10-05) — clean re-review of the four held items; two older composer gaps filed; two residuals dismissed; e2e locator task left open
 
 ### Architect archive note (2026-10-05)
 
-Review of b3d52627 and 7247ff5b with /ce-code-review (full: correctness, security,
-adversarial in-process, testing, project-standards, julik-frontend-races, learnings).
-Reviewers read git-show snapshots at 7247ff5b, because b9de6dcc and 8594733d later
-reshaped api.js, auth.js, lib/fresh-auth.js and signer.js (handleRevokedSession now
-ends the session through _endSession). No P0 or P1. Scope 1-5 and AC 1, 2, 4, 5, 6
-met. AC 4 holds on the upload surface, the custody broadcast and the consent-op gate:
-every gate keys on the error code, so nothing re-mints, retries or re-prompts. Full
-unit suite at 7247ff5b in an isolated copy: 88 files, 1995 tests, exit 0; npm run
-build exit 0.
+Re-review of 4ca874dc, 03aceaf5, 18951b4a and e3bf84f4 with /ce-code-review (full:
+correctness, project-standards, testing, maintainability, julik-frontend-races,
+adversarial in-process, learnings). Scoped to the five files those commits touch,
+through a synthetic head, because sibling commits in e4e7eed2..e3bf84f4 touch other
+files. No primary finding: the two maintainability candidates asked for the shared
+draft-machinery extraction declined on 2026-10-05. All four held items are fixed and
+pinned. The markdown-mode source view serialises from the editor (turndown(getHTML()))
+instead of the given text, a measured deviation from the hold's wording, accepted.
+Full unit suite at e3bf84f4 in an isolated copy: 91 files, 2125 tests, exit 0; build
+exit 0. 10 of the 29 claimed revert probes re-run in isolated copies, all RED (control
+50/50 green); the testing lens reverted the landed check on both pages, RED.
 
 Triage (user approved as recommended):
-- Carve-out rejected: the generic error SESSION_INVALIDATED adds next to the revoked
-  message on the upload surface, broadcastWithFreshAuth's callers and the consent-op
-  gate gets the SESSION_EXPIRED treatment. Landed as an amendment widening hold items
-  1-4 of `ui-expired-session-token-reads-as-wrong-password` to both codes (same
-  guard.tornDown() condition), not as a hold here.
-- AC 6 doc side landed: ARCHITECTURE.md § 6.7 and the common.md SESSION_INVALIDATED
-  row now say the SPA signs the user out in place and opens the sign-in prompt;
-  custody.md says other devices are signed out and same-browser tabs take up the
-  reissued token.
-- Narrowed implementer claim: "a cold light-account acquisition ends silently instead
-  of asking for a password" holds only while the tab's password-factor memo is empty.
-  With it set, the re-auth password prompt opens before any request, the mint meets
-  the revoked token, then one teardown and a null result, no retry. Not a credential
-  exposure. No change.
-- Dismissed: no test on the real sign-in modal's notice set/reset (P2, validator
-  confirmed a surviving mutant; works today); on the adoption branch the call site's
-  generic error is the only message (P3, same as the expired-session dismissal);
-  stale "You were signed out" notice in a tab after signing in from another tab;
-  adoption-path polling-restart mutant (no consequence); warm-memo test case.
-- Deferred again: /ce-compound-refresh of
-  solutions/conventions/guard-report-dedupes-per-event-not-per-holder-2026-09-02.md
-  (deferred at the session-inconsistency archive until this review). Run it once the
-  expired-session hold lands, since that hold adds the call-site quieting for both
-  codes.
+- Filed `ui-composer-merge-saves-at-once-and-choice-discard-prefill`: a merge removes
+  the citation collection and its entries wait on the 2 s debounce, which destroy()
+  clears without writing (already in 2b1603ec); and the /publish choice card's Discard
+  applies no prefill when the accreditation arrived while the card stood (the
+  implementer's item for architect triage).
+- Dismissed: merged citations protected for one Discard only (after it they are draft
+  content, and the hold scoped the fix to the entries this instance merged); a merged
+  citation edited and then removed coming back on Discard (narrow path).
+- Refuted residuals: stale accreditation on an email-sign-in re-adoption
+  (sign-in-modal.js passes accreditation: null); _mergedCitations not reset on
+  re-adoption (no merge can precede a standing choice card).
+- Open, not filed: the e2e submit locators also match the re-auth modal's Confirm
+  button, so 9 composer specs fail on it as committed (set aside in the first signal).
 
 ### Task file
 
 **Owner:** ui
-**Created:** 2026-09-02
+**Created:** 2026-10-01
+
+Implements the draft-binding half of `agents/docs/ARCHITECTURE.md` § 8 ("Composer Drafts"):
+the paragraphs "Shape", "A draft holds user work only", "Restore is bound to the account and, on
+the edit page, to the head" and "The instance is bound to the account and the paper it loaded
+for". Read them first; they are the contract this task is reviewed against. The retry state that
+§ 8 also puts into the draft belongs to a later task, filed in `blocked/` behind this one; build
+the draft shape so that state can be added without another key change.
 
 ## Why
 
-The backend revokes every previously issued bearer JWT whenever an account's
-credentials rotate. Four routes do it today: `POST /api/auth/reset`, both
-recovery phases in `routes/recover.ts`, and `POST /api/custody/upgrade`. Each
-stamps `accounts.sessions_invalidated_at`, and `verifyHiveSignature` then
-refuses any bearer token minted at or before that instant with
-`401 SESSION_INVALIDATED`.
+All measured with the real page modules (whole app booted under jsdom, the real tiptap editor)
+on 2026-10-01, against main after the landing barrier was archived.
 
-Nothing in the SPA handles that code. A search of `frontend/src` and
-`frontend/tests` returns zero references to `SESSION_INVALIDATED`. The core
-`request` helper in `api.js` throws an `ApiRequestError` carrying the server's
-error code and leaves interpretation to each call site, and no call site
-recognizes this one. There is no central place that clears a session the server
-has already destroyed.
-
-Same-browser tabs are NOT the gap. The auth store's storage-event handler keys
-on the session localStorage entry, so a rotation performed in one tab
-propagates its reissued token to the other tabs of that browser, and a cleared
-entry disconnects them. What has no path is a session on **another browser or
-another device**: it holds a token the server has revoked, learns nothing until
-its next authenticated request, and then receives an error code no handler
-recognizes. The user sees whatever that particular call site does with an
-unexpected code, while the stored session stays on disk and continues to look
-valid to `_restoreSession` until its own `expiresAt` passes.
-
-This is pre-existing and general to all four writers rather than fallout of any
-one of them. A password reset already strands other devices this way today. It
-is filed now because the custody upgrade made it materially more reachable: the
-upgrade is a deliberate in-app action a user takes while plausibly signed in
-elsewhere, and it revokes on success rather than on a forgotten-password detour.
-
-`ARCHITECTURE.md` § 6.7 currently asserts the behavior as if it existed: "the
-SPA treats it as session expiry and redirects to login". That sentence is not
-implemented. Resolving this task means either making it true or correcting it.
-`ARCHITECTURE.md` is architect-owned, so do not edit it. Say which way it went
-and the architect will land the doc side.
+- **Every edit-page load writes a draft about two seconds later with nothing typed**, also for
+  signed-out visitors and accounts that cannot edit the paper. The stale-draft population is
+  therefore every paper whose edit page this browser ever had open.
+- **The edit page restores silently over whatever the paper is now.** `_restoreDraft` checks only
+  `typeof draft.title === 'string'`, shows nothing, and offers no discard. Measured: an author who
+  typed nothing returns after a co-author's change, Save broadcasts the old text (as a reverting
+  patch on the native arm) and drops the head's citations (`if (draft.citations)` treats an empty
+  array as present). The restoring instance then re-stamps `savedAt`, so the stale text looks
+  fresh on the next visit.
+- **Drafts are not bound to an account.** The keys are `pevo-draft-publish` and
+  `pevo-draft-edit-<author>-<permlink>`. Both drafts carry `authorName`, `authorAffiliation` and
+  `authorOrcid`, and restore them into the next account's form in the same browser (on the edit
+  page, between co-authors). They survive `auth.disconnect()` and account deletion.
+- **The instance is not bound to an account.** A mounted composer outlives a sign-out and a
+  sign-in as another account, and nothing in it is recomputed. Measured: bob's Save on a form
+  alice had loaded broadcast authors `[{"name":"Alice A","hive":"bob","orcid":<alice's>}]`,
+  dropping alice from the author list.
+- **The edit key is read live from the router params.** After a history jump between two edit
+  entries the mounted instance writes one paper's form under the other paper's key (measured,
+  also over a non-adjacent `history.go(-2)`). This is the residual the blocked surfaces task
+  carries; this task closes the key half of it and the remount closes the rest.
+- **Remounting is not possible today.** `page-mount.js` re-renders only when the router's route
+  name changes, and an in-place `loadPaperData` leaves the form without editors
+  (`_mountEditors` returns early on `_editorsInitialized`, which only `destroy()` releases).
+  Measured: signing out and in again on a mounted edit page, or using the page's own sign-in
+  call to action, re-renders the form with no editor at all and, for the call to action, blank
+  author fields.
 
 ## Scope
 
-1. Recognize `SESSION_INVALIDATED` centrally rather than per call site. The
-   natural seam is the shared `request` helper in `api.js` or a thin wrapper
-   around it, so every authenticated route inherits the behavior instead of each
-   caller opting in.
-2. On that code, clear the stored session through the auth store's existing
-   disconnect path rather than a bespoke scrub. That path already exists for
-   explicit sign-out and already scrubs subject-bound state; reusing it keeps
-   the revoked-session teardown from drifting away from the sign-out teardown.
-   Confirm it also clears the session localStorage entry, so the storage event
-   propagates the sign-out to sibling tabs for free.
-3. Decide and implement what the user sees. A silent redirect to an anonymous
-   view is not obviously right: the user did not sign out, and telling them
-   nothing invites a bug report. Prefer surfacing that the session ended because
-   the account's credentials changed elsewhere, then routing to sign-in.
-4. Do not treat this as retriable. It is terminal for the held token, unlike the
-   `503` retry path the SPA already distinguishes. Make sure the handling cannot
-   be reached by the fresh-auth retry gate, which re-mints proofs on some 401s.
-   A revoked bearer token is not remintable and must not be retried into a loop.
-5. Check the interaction with the pending session-teardown work in flight on the
-   ui track. If a shared teardown helper is emerging there, route this through
-   it rather than adding a second teardown surface.
+Both pages unless stated.
+
+1. **Keys.** `pevo-draft-publish:<account>` and
+   `pevo-draft-edit:<account>:<canonical author>:<canonical permlink>`. Capture the account and
+   (edit page) the loaded paper's canonical pair once the load completes, and use only the
+   captured values in every reader, writer, the landing clear and the restore. No getter that
+   reads the auth store or the router params may name a draft key.
+2. **Baseline.** Writes are refused until the instance has a baseline. Take the editor fields'
+   baseline after both editors have mounted and an explicit
+   `editor.view.dispatch(editor.state.tr)` has run on each (the list re-serialisation comes from
+   an append-transaction that runs on the first dispatched transaction; the dispatch that happens
+   to run today is incidental), and the other fields once the prefill is done. `_writeDraft`
+   writes only when the form differs from the baseline. A form back at its baseline drops the
+   stored text fields; an entry with no other state is removed. An instance with no captured
+   account writes nothing, and on the edit page neither do accounts that cannot edit the paper.
+   A signed-in account that is not yet accredited keeps drafting on the publish page (it can
+   reach the form, and its "Get accredited" link navigates away). Expose whether the editors
+   still hold their baseline (the later retry task composes the native edit's body from the
+   served text while they do).
+3. **Head binding (edit page).** The draft records the head marker of the paper the form was
+   loaded against: `<head_author>/<head_permlink>/<versions.length>/<block_num of the last
+   versions[] entry>`, null when `versions` is the one-entry stub (`block_num: 0`) a failed or
+   empty replay leaves. Use the payload's `head_marker` field instead once the backend ships it;
+   it is defined as the same string, with the same null rule (§ 2 "Body, edits and versions").
+   On load, restore silently only when the draft's marker equals the loaded paper's and neither
+   is null. When they differ, restore nothing yet and show a card: the paper has a newer version
+   than the draft (possibly from the user's own earlier save), with Restore and Discard. When
+   either is null, the same card says the page could not check whether the paper changed. Restore
+   replaces the form with the draft and re-binds the draft to the current marker; the card's copy
+   says that it replaces the newer version. Until the user picks one, the form is read-only and
+   `_writeDraft` refuses.
+4. **The edit page's restore card.** A silent restore shows the publish page's "draft restored"
+   card (reuse `publish.draftRestored`, `common.discard` and the `time.*` keys; move
+   `relativeTime` out of `publish.js` into a shared module). After Restore on the newer-version
+   card, the same "draft restored" card replaces it. Its Discard re-runs the prefill, empties
+   `newCoAuthors` and `addressedReviews`, sets both editors' content, re-takes the baseline and
+   removes the captured key. Gate Discard on `_landed` on both pages (the publish page's
+   `discardDraft` has no such gate today) and hide the card on landing.
+5. **Legacy entries.** Entries under the old keys (`pevo-draft-publish`, `pevo-draft-edit-*`)
+   carry no account and cannot be told apart from load-time copies; they also hold author name,
+   affiliation and ORCID. Do not restore them. The first composer load with a captured account
+   deletes them.
+6. **Account deletion** (`frontend/src/pages/settings.js`, after the deletion succeeds) removes
+   that account's draft keys: `pevo-draft-publish:<account>` exactly, and edit keys by the prefix
+   `pevo-draft-edit:<account>:` including the trailing colon, so deleting `bob` never touches
+   `bobby`'s drafts. Explicit sign-out keeps them, as § 8 says.
+7. **Account and paper changes under a mounted composer.** Add a generation counter to the
+   router store that `page-mount.js` also keys on, so a page can be remounted without a
+   route-name change. Remount when an account signs in that differs from the captured non-null
+   account, and when the edit route's params name another paper; flush the pending debounce
+   under the captured key first. On the publish page, a sign-in under an instance that captured
+   no account adopts that instance instead of remounting: capture the new account, keep the form,
+   write under that account's key from then on, apply the accreditation prefill only to empty
+   author fields, and if the key already holds a draft show the "draft restored" card so the user
+   picks. A change to no account (sign-out, the session teardowns that deliberately keep the
+   composer mounted) does not remount, keeps attached files, and keeps drafting under the
+   captured key, so work typed after a teardown survives the trip to the sign-in page. A custody
+   upgrade keeps the username and is not a subject change. Bind the editors' lifecycle to the
+   form's `x-if` rather than `_editorsInitialized`, so a re-render brings the editors back; that
+   also fixes the editor loss described in Why. A remount during a submit waits for the submit to
+   settle: a subject change between submit legs is `pending/ui-upload-batch-teardown-guard.md`'s
+   batch guard's job. Coordinate with that task (same `handleSubmit` legs); whichever lands
+   second says so in its signal block.
+
+## Out of scope
+
+- Retry state in the draft (minted permlink, attempt marker), the head check before a submit,
+  the landing's wait for the index, the diff base. The later ui tasks.
+- `sessionStorage` for drafts: decided against (2026-10-01); drafts stay in `localStorage`.
+- The round-trip stash on the review, comment and vouch surfaces
+  (`tasks/blocked/ui-composer-surfaces-navigate-over-undrafted-work.md`), which uses a
+  `sessionStorage` slot in `SUBJECT_BOUND_STORAGE_KEYS`. The two mechanisms stay separate.
+
+## Copy
+
+New keys in all 16 locale files (English stubs plus `STUBS.md` lines, per the i18n convention),
+owned by this task:
+
+- the newer-version card message, stating that Restore replaces the newer version with the draft;
+- the could-not-check variant of the same card, for a null marker;
+- a Restore label (`en.json` has `common.discard` and no restore key).
+
+The head-check refusal and its reload, the could-not-confirm message, and the already-published
+message belong to the later retry tasks and are not added here. No emdashes.
 
 ## Acceptance criteria
 
-1. An authenticated request answered with `401 SESSION_INVALIDATED` clears the
-   stored session and routes the user to sign-in, from any page, without the
-   call site needing its own handler.
-2. The stored session entry is gone afterward, so a reload does not restore a
-   session the server has already revoked.
-3. The user is told the session ended because the account's credentials changed,
-   not shown a bare error or a silent anonymous page.
-4. The fresh-auth retry gate does not re-mint or retry against this code. A test
-   pins that a revoked bearer token produces one teardown and no retry loop.
-5. A test drives the real code path rather than asserting on a hand-built error
-   object, so a future change to how `request` surfaces error codes fails it.
-6. State in the task whether § 6.7's "redirects to login" sentence is now true or
-   still needs correcting, for the architect to land.
+1. A load with nothing typed writes no draft, including when an editor re-serialises the loaded
+   content (stage a body with a list in the form the editor rewrites), for a signed-out visitor,
+   and for a non-author on the edit page. A signed-in unaccredited account still drafts on
+   `/publish`.
+2. A draft written by one account is not restored for another, on either page, and a mounted
+   composer remounts when a different account signs in. The case that broadcast alice's author
+   entry under bob no longer reaches a broadcast.
+3. On `/publish`, text typed while signed out survives an in-page sign-in and is then drafted
+   under the new account; with a stored draft already under that key, the card offers the choice.
+4. After a session teardown, text typed under the mounted composer is still drafted under the
+   captured key.
+5. After a history jump between two edit entries, no write lands under the other paper's key.
+6. Edit page: equal markers restore silently and show the restored card; different markers show
+   the newer-version card, and a null marker shows the could-not-check card; the form is
+   read-only and writes are refused until a choice; Restore re-binds the marker; Discard returns
+   the form to the loaded paper.
+7. Old-key entries are never restored and are deleted on the first load with a captured account;
+   account deletion removes exactly that account's drafts; sign-out keeps them; the ORCID
+   round-trip of a passwordless account still restores its draft.
+8. The landing barrier's behaviour is unchanged (its specs stay green), and Discard is refused
+   once landed on both pages.
+9. Every assertion is probed by reverting its own site; list probe and spec in the signal block.
+   The unit harnesses mock `$watch` and set `_initialLoadDone` by hand, so the load-time write
+   and the baseline need a spec that boots the real editors (the jsdom harness that measured
+   this task's Why did it); say which spec does.
+10. The 31 literal draft-key strings in the six test files move to the new key shape.
+11. New comments follow root `CLAUDE.md` "Comment anchors".
 
-## Notes
+## UI implementation signal (2026-10-01, commits 4882cd42, 5b4ee3cd, 943263dd, 78dff15c, 301be0a8, e4e7eed2)
 
-Do not chase the same-browser multi-tab case as if it were broken; verify the
-storage-event path still covers it and leave it alone.
+All six commits are on main (`git merge-base --is-ancestor <sha> main` checked for each) and each carries the
+Co-Authored-By trailer. 4882cd42 is the implementation; 5b4ee3cd, 943263dd, 78dff15c and 301be0a8 are fixes and
+pins from a self-verification pass and the mutation probes; e4e7eed2 is the simplify pass (one docblock).
 
-The four writers are named here as context for why the code exists, not as a
-list to enumerate in code. Anchor any comment on the behavior (a revoked bearer
-token tears the session down) rather than on the roster of routes that can cause
-it, which will grow.
+### What landed, by Scope item
 
-## Implementation notes
+1. **Keys.** `pevo-draft-publish:<account>` and `pevo-draft-edit:<account>:<canonical author>:<canonical permlink>`,
+   built only from captured values: the publish page captures at init (or at adoption), the edit page when its
+   first load lands (`_captureDraftTarget`). The edit page's `draftKey` getter is gone; `handleSubmit`, the landing
+   clear, the restore and every writer use `_draftKey`. Shared storage helpers live in
+   `frontend/src/lib/composer-drafts.js`; `relativeTime` moved to `frontend/src/lib/relative-time.js`.
+2. **Baseline.** Plain fields once the prefill is done; editor fields after both editors mount and
+   `PevoEditor.normalize()` (an explicit `editor.view.dispatch(editor.state.tr)`) has run on each. `_writeDraft`
+   writes nothing without a captured key, before the baseline, while a choice card stands, or after landing; a
+   form back at its baseline drops the stored text (`composeDraftEntry` keeps any other state and removes an
+   entry left with none). `savedAt` moves only when the text changes. `editorsAtBaseline` is exposed on both
+   pages. An unaccredited signed-in account drafts on /publish.
+3. **Head binding.** `headMarkerOf(paper)` takes the payload's `head_marker` whenever the payload carries one,
+   and otherwise computes `<head_author>/<head_permlink>/<versions.length>/<block_num of the last entry>`, null for
+   the one-entry block-0 stub. A silent restore needs equal non-null markers. Otherwise the choice card shows:
+   `edit.draftNewerVersion`, or `edit.draftVersionUnchecked` when either marker is null. The form is read-only
+   (the fieldset is disabled and both editors `setEditable(false)`, also after a re-render) and `_writeDraft`
+   refuses. Restore applies the draft and stores it bound to the loaded marker; Discard removes it.
+4. **Edit page restored card**, reusing `publish.draftRestored`, `common.discard` and `time.*`. Its Discard
+   re-runs the prefill, empties `newCoAuthors` and `addressedReviews`, reloads the editors, re-takes the baseline
+   and removes the key. Discard is refused once landed on both pages, and the card hides on landing.
+5. **Legacy entries** are never restored, and go on the first composer load with a captured account (both pages,
+   adoption included).
+6. **Account deletion** (`settings.js`, after the deletion succeeds) removes `pevo-draft-publish:<account>` and
+   every `pevo-draft-edit:<account>:` key, trailing colon included. A sign-out keeps them.
+7. **Remount.** The router store has `generation` and `remount()`, and pageMount re-renders on either the route or
+   the generation. The page remounts when a different account signs in or the edit route names another paper. It
+   flushes the pending save under the captured key first, and waits for a submit in flight to settle (a `step`
+   watcher). Publish adoption keeps the form and attached files, captures the account, fills only empty author
+   fields from the accreditation prefill (the baseline moves with them, so a sign-in with nothing typed drafts
+   nothing), restores a stored draft silently over an untouched form, offers the choice card otherwise, merges the
+   citation collection after that, and drafts under the new key. A change to no account does not remount and
+   keeps drafting. The edit editors are bound to the form's x-if (`x-init` on the form root), so a re-render
+   rebuilds them.
 
-**UI implementation signal (2026-09-30, commits `b3d52627`, `7247ff5b`; both verified ancestors of `main`):**
+### Decisions and departures to check
 
-- `b3d52627` lands the central handling: the api.js bearer helper and the
-  custody broadcast in signer.js report `401 SESSION_INVALIDATED` to the auth
-  store's `handleRevokedSession`, which reuses `disconnect()` and the shared
-  fresh-auth teardown (`handleSessionRevoked`, a sibling of
-  `handleSessionInconsistency` over one shared body). New key
-  `auth.sessionRevoked`, stubbed in fifteen locales.
-- `7247ff5b` lands three items from the user's triage of a pre-handoff review:
-  the sign-in modal shows the reason while it is open, the copy no longer
-  names a cause, and a different unexpired session found in storage is adopted
-  instead of torn down.
-
-Decisions the task left open:
-
-- **Where the user lands (scope 3, criterion 1).** Decided with the user: the
-  SPA does not navigate. It signs out, shows the message, and opens the
-  existing sign-in modal on the current page. `/login` has no extension path
-  and no return path, and a route change destroys review and comment text,
-  attached files, and the key-upgrade retry state.
-- **§ 6.7 (criterion 6).** "Redirects to login" is still not literally true
-  and needs correcting, in `ARCHITECTURE.md` § 6.7 and in the
-  `SESSION_INVALIDATED` row of `api-contracts/common.md`: the SPA signs the
-  user out, says the account's sign-in details changed, and opens the sign-in
-  prompt in place. `api-contracts/custody.md` says other tabs are signed out
-  after an upgrade; same-browser tabs adopt the reissued token instead.
-- **Stale token.** The store acts only when the rejected token is still its
-  own, so a late rejection of an old token cannot sign out a reissued session.
-- **Retry gate (scope 4, criterion 4).** No gate matched this code before and
-  none does now. With the teardown running before the rejection propagates, a
-  cold light-account acquisition ends silently instead of asking for a
-  password on a dead session. Pinned in `session-revoked.test.js`.
-- **Shared teardown (scope 5).** Routed through the helper the
-  session-inconsistency task reshaped. If that task is held and the helper
-  moves, `handleSessionRevoked` moves with it.
-- **Same-browser tabs.** Left alone; `disconnect()` removes the stored entry,
-  so the storage event signs sibling tabs out.
-
-Not covered, by decision:
-
-- The upgrade POST in `pages/settings.js` is not hooked. It sends a pinned
-  token and belongs to `ui-upgrade-401-proof-budget-auth-failure-split`, which
-  now carries a note on the remaining race.
-- Call sites still receive the rejection, so some show their own generic error
-  next to the central message.
-
-Follow-ups filed from the triage: `ui-sign-in-modal-has-no-orcid-path`,
-`ui-recover-and-reset-leave-a-revoked-session-signed-in`,
-`ui-revoked-session-e2e-real-path`.
-
-Verification: full frontend unit suite green at `7247ff5b` (88 files, 1995
-tests, exit 0). Not checked in a browser and no e2e run.
-
-**Architect note (2026-10-05), for this task's review:** the review of
-`ui-expired-session-token-reads-as-wrong-password` rejected the "call sites
-still show their own generic error next to the central message" carve-out for
-`SESSION_EXPIRED` on the upload surface, the custody broadcast wrapper and the
-consent-op retry gate, and held that task for it. This task carries the same
-carve-out for `SESSION_INVALIDATED` on the same surfaces. Decide at review
-whether the revoked rejection gets the same treatment.
-
-## Decide whether a second concurrent session-inconsistency detection should speak (archived 2026-10-05) — clean review at 790eee0e; silent-sign-out message accepted; implementer's successor-teardown item already filed
-
-### Architect archive note (2026-10-05)
-
-Review of 790eee0e with /ce-code-review (full: correctness, project-standards,
-testing, adversarial in-process, julik-frontend-races, learnings). Reviewers read
-git-show snapshots at 790eee0e, because five later sibling commits (590d211a,
-b3d52627, 7247ff5b, 8594733d, b9de6dcc) had reshaped fresh-auth.js, moving the handler
-body into tearDownSessionWithMessage. No finding at the reporting threshold. All four
-ACs met. Full unit suite at 790eee0e re-run in an isolated copy: 87 files, 1980 tests,
-exit 0. Mutation probes in isolated copies: dropping the isConnected gate fails 3 pins;
-a bare return in the disconnected branch fails the silent-sign-out pin; claiming
-before disconnect fails 4 tests. The project-standards pass was shallow (it did not
-open the cited convention docs).
-
-Triage (user approved as recommended):
-- Accepted, no change: a mismatch after a silent sign-out shows the session-changed
-  message instead of the re-login message (unrequested behavior rule; reasoned in the
-  docblock and pinned).
-- Folded into `ui-fresh-auth-and-upload-comments-that-overclaim` (item 4, new bullet):
-  the `UPLOAD_SESSION_TORN_DOWN` comment in lib/ipfs-upload.js names only the re-login
-  toast (correctness + adversarial, still present at HEAD). The matching
-  broadcastWithFreshAuth "runs the same scrub again" sentence was already gone at HEAD.
-- Implementer's "For architect triage" item (mismatch arms do not consult their
-  teardown guard, so a session established mid-flight is torn down): already filed as
-  `ui-upload-mismatch-teardown-after-subject-change`, which covers the upload leg and
-  asks for a check of the broadcast and consent-op arms. Not worsened by this diff
-  (adversarial S3 probe).
-- Dismissed: no upload-plus-broadcast cross-surface pin (same handler, probe correct
-  today); AC3 fixture flips unobserved in the settings and authorship suites; the gate's
-  dependency on disconnect() being the sole isConnected=false writer (holds at HEAD).
-- Deferred: /ce-compound-refresh of
-  solutions/conventions/guard-report-dedupes-per-event-not-per-holder-2026-09-02.md,
-  whose code sample predates the liveness gate and reportTeardownOnce. Run it after
-  `ui-session-invalidated-global-handling` is reviewed, since that task reshaped the
-  same handler.
-
-### Task file
-
-**Owner:** ui
-**Created:** 2026-09-02
-
-Routed out of the architect round-3 review of `ui-consent-op-teardown-guard`
-(`69686a16`). Not held there: three reviewers raised it independently and the adversarial
-pass reproduced it, but the validator established the behaviour as pre-existing and
-unaffected by that commit, and the obvious fix carries a behaviour decision the round-3
-hold should not absorb.
-
-## Why
-
-`handleSessionInconsistency()` in `lib/fresh-auth.js` disconnects the auth store, claims
-the teardown report, and toasts. The disconnect and the claim now sit inside an
-`if (auth)` branch, so the claim is only stamped when there was a real teardown to claim,
-but nothing gates the sequence against a SECOND caller detecting the same fault. It is
+- **Publish adoption with typed work and a stored draft** (user decision, 2026-10-01). The typed form is kept, the
+  stored draft is not loaded, and a choice card ("You have a saved draft from {time}. Restore replaces what you
+  typed here.") offers Restore and Discard, read-only until a pick. This adds `publish.draftSavedChoice`, one key
+  beyond the Copy list. A form holding nothing typed gets the silent restore.
+- **Edit page, a signed-out load followed by a sign-in, remounts.** § 8 makes adoption publish-only. That is what
+  fixes the Why's call-to-action bullet (editors and author fields come back).
+- **Both forms take no input until the baseline exists** (`formLocked`). The self-check found that the edit restore,
+  which now waits for the editor import, silently replaced text typed during that wait. A dragged citation row,
+  which the fieldset cannot disable, is refused while locked.
+- **`editor.js` marks the tiptap Editor `__v_skip`.** Pre-existing defect: any `setContent()` or dispatch a page
+  made through Alpine's reactive proxy threw "Applying a mismatched transaction". The publish page's existing
+  Discard could not reset its editors. `tests/e2e/edit-paper.spec.js` documented this as a race, and that comment
+  is corrected.
