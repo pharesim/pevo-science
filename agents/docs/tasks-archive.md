@@ -1,3 +1,143 @@
+## The publish spec never pins the $nextTick mount routing or the template x-ref names (archived 2026-10-05) — clean review at afa2237b; edit-spec observation moot at HEAD
+
+### Architect archive note (2026-10-05)
+
+Review of afa2237b with /ce-code-review (full: correctness, project-standards, testing,
+adversarial in-process, julik-frontend-races, learnings). Reviewers read git-show copies
+of the reviewed tree, because five later ui(drafts) commits rewrote publish.js and
+extended the spec after afa2237b. Zero findings at any severity. The architect
+re-measured every signal-block claim in isolated copies at afa2237b: spec 81 passed /
+exit 0 / no Errors line; full unit suite 87 files / 1977 tests / exit 0; the $nextTick
+unwrap fails `builds one editor per ref present when init runs` with "expected spy to
+be called 1 times, but got 0 times", and each x-ref rename fails `declares the x-ref
+names _mountEditors reads in the template`. At HEAD c3e921ff the spec runs 99 passed,
+the unwrap mutant is still killed, and publish.js still holds exactly one $nextTick
+call site and both x-refs, so the count comment's invariant still holds.
+
+Residual, accepted and not filed: the count pins the number of dispatches, not what
+runs inside the callback (an inline mount beside an unrelated $nextTick stays green).
+The implementer disclosed this survivor class, the comment claims only the count, and
+the mount reads $refs after its dynamic import, so production impact is nil.
+
+The implementer's observation about the edit spec's "refs assigned afterwards are inert"
+sentence is moot: 4882cd42 replaced edit.js's _editorsInitialized latch with a
+mount-generation counter and removed that sentence along with its describe (now `the
+form mounts the editors on every render`). Nothing filed. No /ce-compound.
+
+### Task file
+
+**Owner:** ui
+**Created:** 2026-09-28
+
+Measured during the architect re-review of the edit-spec mount-coverage
+task, by probes in isolated copies (pages-publish spec baseline 76 passed /
+exit 0):
+
+- `frontend/src/pages/publish.js` holds exactly one `$nextTick(` call site,
+  which schedules `_mountEditors()`, and its template carries the same
+  `x-ref="abstractEditor"` / `x-ref="bodyEditor"` pair `_mountEditors`
+  reads.
+- Unwrapping that `$nextTick` block to a bare `this._mountEditors()`
+  SURVIVED the publish spec: 76 passed, exit 0.
+- Renaming the template's `x-ref="abstractEditor"` likewise SURVIVED.
+
+This is the twin of the two pins the edit spec now carries in its
+`a successful load mounts the editors` describe: the exact-count `$nextTick`
+routing assertion and the template `toContain` case over both x-ref names.
+`pages-publish.test.js` already has the `_mountEditors teardown-during-init
+guard` describe and the mocked `createEditor` harness, but nothing drives
+the real mount-scheduling path and nothing reads the template. Mirror the
+edit spec's two pins, adapted to publish.js's own structure:
+
+1. A case on the real mount-scheduling path asserting the mount effect
+   (`createEditor` once per present ref, `_editorsInitialized` true) AND the
+   `$nextTick` routing. Before pinning an exact call count, verify
+   publish.js's `$nextTick` call-site inventory on the tested path, and
+   state the invariant the count rests on in the comment, no broader than
+   what the assertion enforces.
+2. A template case asserting the publish page's exported template carries
+   both `x-ref` names `_mountEditors` reads.
+
+## Constraints
+
+- `frontend/tests/unit/pages-publish.test.js` only; nothing under
+  `frontend/src/`.
+- Check the publish spec's harness first: if its component factory does not
+  already mock `$nextTick` as a synchronous spy the way the edit spec's
+  `createComponent` does, mirror that harness shape; the mock stays
+  synchronous either way.
+- Comment anchors on stable symbols (`_mountEditors`, `$nextTick`, the
+  template export name), never task slugs, hold ordinals, line numbers or
+  SHAs; the pre-commit anchor gate refuses otherwise.
+- Proof-first in isolated scratchpad copies, never the shared checkout: show
+  both mutants surviving before the change and killed after, one fresh copy
+  per probe.
+
+## Acceptance criteria
+
+1. Unwrapping the `$nextTick` mount-scheduling block in a scratchpad copy of
+   `publish.js` fails at least one test; cite the failing case name and
+   message in the signal block.
+2. Renaming either template `x-ref` in a scratchpad copy of `publish.js`
+   fails the template case.
+3. `npx vitest run tests/unit/pages-publish.test.js` reports no Errors line
+   and exits 0, with no existing test removed or weakened.
+4. The full frontend unit suite exits 0 in an isolated two-level copy.
+
+UI implementation signal (2026-09-30, commit afa2237b):
+
+Landed in `afa2237b` (`frontend/tests/unit/pages-publish.test.js` only; an
+ancestor of main, verified with `git merge-base --is-ancestor`). A new
+`init mounts the editors` describe holds both pins.
+
+Harness check: the publish spec's `createComponent` already mocks
+`$nextTick` as a synchronous spy (`vi.fn((fn) => fn && fn())`), the same
+shape as the edit spec's, so the harness is unchanged.
+
+`$nextTick` inventory on the tested path: `init` holds publish.js's only
+`$nextTick` call site, and nothing init reaches (`createTimerGuard`,
+`_mergeCitationCollection`, `_loadAccreditedDirectory`) calls it. The only
+other `nextTick` hits under `frontend/src` are in `edit.js` and the
+`getting-started.js` template. The comment on the count states only that
+init dispatches through `$nextTick` exactly once.
+
+Probes, one fresh scratchpad copy each. The baseline spec at HEAD before
+the change ran 79 cases (not the 76 measured when this task was filed; no
+case was removed or weakened, the diff is additive plus one import).
+
+- AC 1, `$nextTick` block unwrapped to a bare `this._mountEditors()`:
+  before 79 passed / exit 0 (survived); after exit 1, failing case
+  `publishPage > init mounts the editors > builds one editor per ref
+  present when init runs`, message `AssertionError: expected "spy" to be
+  called 1 times, but got 0 times`.
+- AC 2, `x-ref="abstractEditor"` renamed: before survived; after exit 1,
+  failing case `publishPage > init mounts the editors > declares the x-ref
+  names _mountEditors reads in the template`, message `expected '…' to
+  contain 'x-ref="abstractEditor"'`. `x-ref="bodyEditor"` renamed: same
+  case, same shape of message for `bodyEditor`.
+- AC 3, `npx vitest run tests/unit/pages-publish.test.js`: 81 passed,
+  exit 0, no Errors line (also five consecutive runs, all exit 0).
+- AC 4, full unit suite in an isolated two-level copy: 87 files / 1977
+  tests passed, exit 0, no Errors line.
+
+Further mutants killed by the init case: deleting the block, duplicating
+it, adding a second empty `$nextTick`, swapping which ref feeds which
+editor, renaming either code-side `$refs` read. One known survivor, outside
+the acceptance criteria: replacing the block with an empty
+`this.$nextTick(() => {})` beside an inline `this._mountEditors()`. The
+count assertion pins the number of dispatches, not what runs inside the
+callback, and the comment is worded to claim no more than that.
+
+Observation for the architect, not acted on (edit spec is out of this
+task's scope): the edit spec's `a successful load mounts the editors`
+comment says refs assigned after the load are inert because of the
+`_editorsInitialized` latch. In publish.js the equivalent claim is false:
+`_mountEditors` reads `$refs` only after its dynamic import resolves, so
+refs assigned right after `init()` are still picked up (probe: moving the
+`$refs` assignment after `comp.init()` stayed green). The publish comment
+therefore does not carry that sentence. Whether the edit spec's sentence
+holds for `loadPaperData` was not measured here.
+
 ## Add a reciprocal port pointer to backend/tests/support/enclosing-symbol.ts (archived 2026-10-05) — clean re-review at 2f27df71; declared deviation accepted; two HEAD-drift follow-ups filed
 
 ### Architect archive note (2026-10-05)
@@ -107,144 +247,3 @@ already carries the corrected wording. The sentence now reads "in the canaries
 that consume it". It is the same false-citation class the new pointer exists to
 warn about, and the correction demonstrably failed to travel back across the
 port, so it was fixed in the same edit rather than deferred.
-
-The `{@link isCommentedOut}` divergence clause was re-checked against the
-frontend copy after ui commit 7aa6a31e added `blockCommentInterior` there. That
-function is not a renamed equivalent: it filters less where `isCommentedOut`
-filters more (its `insideRegion` argument only disambiguates a leading `*`,
-behind a shape gate that already returned false for a block-toggled live line),
-and the frontend's own `isCommentLine` docblock states a commented-out walk is
-absent there and "needs a commented-out walk of its own, re-derived, not
-inherited". The clause is accurate as written.
-
-Verification: `npm run typecheck` (src + tests) clean; `npm run lint` clean
-apart from a pre-existing unrelated warning in `src/lib/author-supersession.ts`;
-`tests/eslint/` plus `tests/routes/session-proof-invalidation.test.ts` green (9
-files, 124 tests); the `.githooks/pre-commit` anchor gate exits 0 against the
-staged diff. Docblock-only, no code change, so no test was added; the added
-lines are prose and the canaries that exercise the module are the replacement
-verification. The frontend file was not touched.
-
----
-
-**Architect note (2026-09-08):** the `{@link isCommentedOut}` divergence re-check above was done
-against ui commit `7aa6a31e`. The frontend canary's round-3 tail commit `72dbaa69` subsequently
-added the template-literal-state and close-follows guards to `blockCommentInterior` and a
-mid-line-close re-read to the brace walk, and a round-4 hold now adds a `//`-arm fix and
-per-branch probes on the same module. Re-confirm the clause against the frontend file at its
-then-HEAD at this task's review intake; the divergence itself (backend filters more, frontend
-filters less) is expected to stand.
-
-## Architect re-review (2026-09-08) — HELD PENDING FIXES:
-
-Reviewed via `/ce-code-review` on `ffc2d476` (correctness, adversarial, project-standards,
-testing, learnings). The correction half is a strict improvement and is accepted: planted
-positive AND negative probes really do live in the consuming canaries, so
-"in the canaries that consume it" is accurate where "in its own test file" was not.
-Project-standards came back clean: no anchor-rot class in the added lines, and the
-pre-commit anchor gate passes.
-
-The new "Hand-ported sibling." paragraph is held. It describes a synchronization state that
-was already false when it was written, which is the same defect class the paragraph exists to
-warn about. Both items below are one paragraph and one rewrite; decide the shape once.
-
-1. **The pointer aims outbound while the drift is inbound.** The closing sentence says a change
-   to the walk *here* is a prompt to read the other copy. The frontend walk carries
-   block-comment-region state (`inBlockComment`, seeded from `blockCommentInterior`) that this
-   walk has no equivalent of: `enclosingSymbol` here skips any line whose trimmed text starts
-   with `*` or `//`. Run both on a `*/` that shares its line with the real closing brace and
-   they disagree, with this copy returning the inner symbol where the frontend returns the
-   correct outer one. That miss resolves INWARD, the direction this file's own fail-closed
-   argument says set-equality cannot catch. The frontend hardening landed before `ffc2d476`, so
-   the sentence was inaccurate on arrival. Make it bidirectional and name the frontend copy as
-   currently ahead on the comment walk.
-
-2. **The divergence enumeration understates the split, and one verb is wrong.** All four stated
-   facts are individually true, but the frontend also exports `blockCommentInterior`, takes an
-   `insideRegion` argument on `isCommentLine`, counts template-literal backticks inside the
-   brace walk, and returns `{ sources, foreign }` from `sourcesUnder` where this module returns
-   a bare array. Read as an exhaustive list, the paragraph tells a maintainer the walk is in
-   sync and that this copy is the more comment-aware one. Neither is true.
-
-   **Preferred shape: replace the per-feature inventory with the shared invariant plus an
-   explicit "the sibling's walk has already grown guards this one has not."** Per
-   `agents/docs/solutions/conventions/comment-sweep-expansion-must-audit-added-clause-behavioral-accuracy-2026-05-20.md`,
-   an enumerated clause is a stale-by-default anchor: nothing fails when a future edit to
-   either file makes one listed fact false, and no mechanical gate screens for that drift.
-   Extending the list instead is acceptable if you would rather keep the detail, but then it
-   has to name the region pass and the `foreign` census, and it inherits the re-verify cost on
-   every future edit to either file.
-
-   Separately, fix the verb regardless of which shape you pick: `git log -S 'isCommentedOut'`
-   on the frontend path returns no commits, so that copy never carried it and then removed it.
-   "which that copy dropped" should read "which that copy has no equivalent of".
-
-Anchor the rewritten paragraph on the sibling's path and on exported symbol names. No commit
-SHAs, no task slugs, no round numbers, and no line numbers in the docblock text itself.
-
-**Dismissed, do not action:** a probe asserting the cited sibling path still resolves on disk
-(anchor 50, theoretical; the frontend's own suite imports that exact path and would break
-first). **Out of scope, ui-zone:** the frontend docblock cites "the backend port" with no path,
-so the reciprocity is still asymmetric. That is a ui-slug edit and is not required for this
-task to archive.
-
-**Routed out, not yours to fix here:** the review surfaced a live detection hole in
-`isCommentLine` and a reachable counterexample to the SET-EQUALITY fail-closed argument. Both
-are pre-existing and are filed separately as `backend-comment-predicate-region-awareness`. Do
-not widen this task to cover them.
-
----
-
-**Architect note (2026-09-08, second pass):** the round-4 work the earlier note anticipated has
-landed on the frontend at `7bf49a6e`, so the re-confirm it asks for now has a concrete then-HEAD
-to read. Two decisions moved, not one. First, the frontend predicate's `//` arm is no longer
-unconditional: inside an open block-comment region it is searched for a close and what follows is
-inspected, while the backend copy still answers on the prefix alone. Second, the frontend walk's
-link resolution is no longer guarded, so a directory it cannot resolve throws where the backend
-copy still returns quietly. Both widen the divergence the back-reference clause describes, in the
-same direction it already claims (backend filters more, frontend filters less), so the clause is
-expected to stand and this is a re-confirm rather than a rewrite. The frontend's `//`-arm change
-does not close its own template-axis residual, which is held on the ui task as documentation
-only; do not port a fix for it here.
-
-## Backend re-review signal (2026-09-30, commit `2f27df71`)
-
-Both hold items and the verb fix landed in one rewrite of the "Hand-ported sibling."
-text at the tail of the file docblock in `backend/tests/support/enclosing-symbol.ts`.
-Docblock only, no code change. `git merge-base --is-ancestor 2f27df71 HEAD` passes.
-
-Shape taken: the preferred one. The per-feature inventory is gone. The text names the
-shared algorithm by exported symbol (`enclosingSymbol`'s upward scan and closing-brace
-test, `blockCommentInterior`, `isCommentLine`), says neither copy is a subset of the
-other, and says `isCommentedOut` "has no equivalent in that copy". The obligation now
-runs both ways ("in EITHER file").
-
-**One deliberate deviation from the hold, for the architect to rule on.** Item 1 asks
-the text to name the frontend copy as currently ahead on the comment walk, and the
-preferred shape asks for "the sibling's walk has already grown guards this one has
-not". Both were true when the hold was written and are false at HEAD: `a8000291`
-(2026-09-29, the port filed as `backend-comment-predicate-region-awareness`, in
-`review/`) carried the region handling across. A comment-stripped comparison of
-`opensUnterminatedBlock`, `aCommentCloseFollows`, `blockCommentInterior`, `isCommentLine`
-and the brace walk inside `enclosingSymbol` shows them statement-identical in both
-copies apart from TS annotations; the only difference inside `enclosingSymbol` is the
-frontend's template-literal declaration branch, which is dialect machinery and not the
-shared walk. Writing "the frontend is ahead" would have put a false sync state into the
-paragraph the hold exists to correct. The text instead records the durable fact (the
-copies have drifted before: a hardening of the comment handling landed there first and
-was ported here by hand) and sends the reader to the sibling to learn which copy is
-ahead. If `a8000291` is held and reverted at its own review, this sentence stays true
-and the "ahead" question reopens there, not here.
-
-The second-pass note's two re-confirms: the frontend's in-region `//` arm is now present
-in the backend predicate (same port), so that divergence closed rather than widened. The
-unguarded link resolution in the frontend `sourcesUnder` still differs from the guarded
-one here; it is outside the shared walk and the rewritten text no longer enumerates it.
-
-Verification: `npm run typecheck` clean (src + tests); `npm run lint` 0 errors (the one
-pre-existing warning in `src/lib/author-supersession.ts`); `tests/eslint`, `tests/support`
-and `tests/routes/session-proof-invalidation.test.ts` green, 12 files, 167 tests, exit 0;
-pre-commit anchor gate passed on the commit. A three-lens read-only verification
-(behavioral accuracy against both files and their history, hold compliance, comment-anchor
-conventions) returned no findings. No test added: the change is prose.
-
