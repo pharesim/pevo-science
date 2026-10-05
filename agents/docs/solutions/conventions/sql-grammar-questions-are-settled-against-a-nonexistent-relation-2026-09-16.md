@@ -89,9 +89,9 @@ for. A long, obviously-synthetic suffix is the whole guard.
 
 **3. When the question genuinely needs a real relation, use a temp table inside a
 transaction you roll back.** Relation-kind questions cannot be answered against a
-non-existent relation, because the relkind check happens after name resolution. `CREATE TEMP
-TABLE` is session-local and reaches no real object, and wrapping it in `BEGIN; ... ROLLBACK;`
-bounds it further. That is how `ALTER MATERIALIZED VIEW <ordinary table> RENAME COLUMN`
+non-existent relation, because the relkind check happens after name resolution. A temp table
+with its own column list, created inside `BEGIN; ... ROLLBACK;`, reaches no real object and
+is gone at the rollback. That is how `ALTER MATERIALIZED VIEW <ordinary table> RENAME COLUMN`
 was shown to succeed while its `DROP COLUMN` form is refused for the wrong relkind.
 
 **4. State in the brief which database is off limits, by name.** A subagent told only "do
@@ -212,6 +212,10 @@ ordinary table, and it is exactly the form that moves another column onto the gu
 - `backtracking-probe-terminator-must-defeat-the-pattern-tail-2026-09-16.md` is the
   measurement rung for that same respelling: it is what establishes that the flat reading
   of the committed spelling was a real measurement rather than a probe that never engaged.
+- `table-wide-sql-is-tested-on-a-temp-table-shadow-where-read-only-pins-no-writes.md` covers
+  the temp tables rule 3 leaves out: one built `LIKE` a real table copies its defaults, so a
+  SERIAL column draws on the real sequence, and one created outside the transaction outlives
+  the rollback.
 
 The technique has been applied once more since, on the same head. The word boundary in
 `ONLY\b` is what keeps `ALTER TABLE onlyaccounts` and `ALTER TABLE onlypublic.accounts`
