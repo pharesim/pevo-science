@@ -192,3 +192,40 @@ Test data:
 - § 6.2 has no G entry, and its no-row "no PEvO-server session is involved" is contradicted by
   `POST /api/auth/session` (item 9).
 - If unverified-G expiry (item 2) is intended housekeeping, § 6.3 needs that transition.
+
+## Architect re-review (2026-10-05) — HELD PENDING FIXES:
+
+`/ce-code-review` on d475f59c (correctness, project-standards, testing, security, adversarial,
+learnings; one validator batch). AC2 and AC3 hold. Two comment lines this diff wrote close a set
+the code leaves open, and one of them is AC1's remaining miss. Both are comment-only; AC2 still
+binds the fix.
+
+1. **`settings.ts`, both fresh-auth factor tables (the POST /email header and the DELETE /email
+   header): the new State G line promises a password leg no route can mint.** "whichever
+   password/orcid factors it has" is true only of the consume-side mechanism check. On the JWT
+   path a G row cannot obtain a password-mechanism proof: `custodyClaimFor` resolves its NULL
+   `custody` to `'self'`, and `POST /api/custody/fresh-auth`, the only password-mechanism issuer,
+   answers 403 to any non-light claim. Its one JWT-path factor is ORCID, when linked (ORCID
+   issuance in `routes/orcid.ts` has no custody gate). The pre-existing State D line in both tables
+   ("preserved password/orcid factors") overstates the same leg for the same reason (a D row's
+   claim is `'self'` too). Fix both lines in both tables so each says what the row can present on
+   the JWT path: ORCID when linked, because the password issuer refuses a non-light claim. If you
+   find a password proof minted while the row was still light can be consumed after the upgrade,
+   say so on the D line; otherwise leave it out.
+2. **`tests/routes/auth.test.ts`, the ORCID-only signup comment: "(state F, which signup-verify
+   later finalizes to C)" closes F's finalize set.** An F row also finalizes to D through
+   `POST /api/auth/link` (§ 6.3's signup-verify(self) line; the `/link` lookup is by
+   `verify_token` alone). Name both: C through `/confirm`, D through `/link`.
+
+Not held here (triaged with the user 2026-10-05):
+- The set-password comment ("Only ORCID-verified accounts can opt into password login") is false
+  today because `POST /api/auth/reset` writes a password onto any row with an email, a G row with
+  no ORCID included. The pending password-reset gating task's default rule (reset never adds a
+  password) makes it true; a note there covers the comment if that rule changes.
+- The signal block's [TODO Architect] notes: the architect is correcting ARCHITECTURE.md § 6.1 to
+  § 6.4 in a separate commit.
+- The signal block's "Needs triage" items 1-11: filed by the user as the state-G unverified-row
+  lifecycle task, plus a note on its item 10 about the `NO_PASSWORD_SET` comment's
+  exception list.
+- registration-watch announcing G rows as "Signup started / Email + password", with their email
+  sent to the operator Discord: filed as a new backend task.
