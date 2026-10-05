@@ -107,13 +107,15 @@ function authHeader(username: string): string {
 }
 
 // Seeds: middleware session-invalidation lookup, then the route's own
-// SELECT. The set-password row needs `password_hash = NULL` AND `orcid`
-// non-null so both eligibility guards (settings.ts:365 and :379) pass and
-// the handler reaches runWithArgon2Slot.
+// SELECT. The set-password row needs `password_hash = NULL`, `orcid`
+// non-null and `verify_token = NULL` (a verified email) so every eligibility
+// guard in the set-password handler (PASSWORD_ALREADY_SET,
+// PENDING_UNVERIFIED, ORCID_REQUIRED) passes and the handler reaches
+// runWithArgon2Slot.
 function seedSetPasswordAccount() {
   appQueryMock.mockResolvedValueOnce({ rows: [{ sessions_invalidated_at: null }] });
   appQueryMock.mockResolvedValueOnce({
-    rows: [{ id: 1, password_hash: null, orcid: '0000-0000-0000-0000' }],
+    rows: [{ id: 1, password_hash: null, orcid: '0000-0000-0000-0000', verify_token: null }],
   });
 }
 

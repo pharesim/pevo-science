@@ -249,11 +249,13 @@ async function seedSigUser() {
   if (!dbReachable) return;
   const pool = getAppPool()!;
   await deleteUserRows(SIG_USER);
-  // Self-custody Keychain user. Its factor columns are irrelevant on the
-  // signature path, which consumes no body proof.
+  // State D (ARCHITECTURE.md § 6.1): an A row upgraded to self-custody, so
+  // `custody = 'self'` with the `upgraded_at` epoch the upgrade stamps in the
+  // same UPDATE, and the password preserved. Its factor columns are irrelevant
+  // on the signature path, which consumes no body proof.
   await pool.query(
-    `INSERT INTO accounts (email, username, password_hash, orcid, custody, verify_token)
-     VALUES ($1, $2, $3, NULL, 'self', NULL)`,
+    `INSERT INTO accounts (email, username, password_hash, orcid, custody, upgraded_at, verify_token)
+     VALUES ($1, $2, $3, NULL, 'self', NOW(), NULL)`,
     [SIG_EMAIL, SIG_USER, FAKE_PASSWORD_HASH],
   );
 }

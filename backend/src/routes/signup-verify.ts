@@ -542,12 +542,26 @@ router.post('/verify', verifyLimiter, async (req: Request, res: Response) => {
   }
 
   try {
+    // Matches only the random hex token the signup mail carries, on a signup
+    // row. Signup rows always carry `username` NULL (states E and F,
+    // ARCHITECTURE.md § 6.1). A state G row carries the same random hex
+    // token shape while its settings-registered email is unverified, but
+    // that token belongs to `GET /api/settings/email/verify/:token`. A state
+    // F row's `confirmed:` token is the signup `auth_token` (this handler is
+    // one of the routes that hands it out), not an emailed token. The
+    // session binding this handler mints on success (`mintBinding`) exists
+    // so that a leaked `auth_token` cannot finalize the signup, and
+    // re-confirming on it here would mint whoever presents it a fresh
+    // binding. Both find no row, so they get exactly the answer an unknown
+    // token gets, and the row is neither confirmed, rebound, nor deleted by
+    // the expiry branch.
     const { rows } = await pool.query<{
       id: number;
       email: string;
       expires_at: Date;
     }>(
-      'SELECT id, email, expires_at FROM accounts WHERE verify_token = $1',
+      `SELECT id, email, expires_at FROM accounts
+        WHERE verify_token = $1 AND username IS NULL AND verify_token NOT LIKE 'confirmed:%'`,
       [token],
     );
 

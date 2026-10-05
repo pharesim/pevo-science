@@ -25,7 +25,13 @@
  *  - Keychain path (no Authorization header) → no body proof required,
  *    change-email succeeds.
  *  - Add-flow no-row branch via Keychain path → INSERT new row, no proof
- *    required (no-row-before-JWT invariant regression guard).
+ *    required (regression guard for the signature-path half of the add
+ *    flow).
+ *  - Add-flow no-row branch via JWT path → 401 UNAUTHORIZED 'Session is no
+ *    longer valid', no row created (the route's add-flow JWT-rejection
+ *    guard; `POST /api/auth/session` mints a JWT for a row-less Keychain
+ *    caller and account deletion leaves earlier JWTs live, so a JWT does
+ *    reach this branch).
  *
  * Mocks (per root CLAUDE.md "Carve-out for deterministic edge-case coverage"):
  *
@@ -493,6 +499,30 @@ describe.skipIf(!dbReachable)('POST /api/settings/email — JWT-path fresh-auth 
     expect(second.status).toBe(401);
     expect(second.body.error.details?.reason).toBe('expired');
   });
+
+  it('Add-flow no-row branch via JWT path → 401 UNAUTHORIZED, no row created', async () => {
+    // A JWT can exist for a username with no row (`POST /api/auth/session`
+    // mints one for any Keychain-signed caller, and account deletion leaves
+    // earlier JWTs live). The add-flow JWT-rejection guard refuses it, since
+    // a row-less caller has no registered factor a body proof could match.
+    const pool = getAppPool()!;
+    await pool.query('DELETE FROM accounts WHERE username = $1', [NO_ROW_USER]);
+
+    const res = await request(app)
+      .post('/api/settings/email')
+      .set('Authorization', bearerFor(NO_ROW_USER, 'self'))
+      .set('X-Hive-Username', NO_ROW_USER)
+      .send({ email: NEW_EMAIL_NOROW });
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(res.body.error.message).toBe('Session is no longer valid');
+
+    const { rows } = await pool.query<{ id: number }>(
+      'SELECT id FROM accounts WHERE username = $1 OR email = $2',
+      [NO_ROW_USER, NEW_EMAIL_NOROW],
+    );
+    expect(rows.length).toBe(0);
+  });
 });
 
 describe.skipIf(!dbReachable)('POST /api/settings/email — Keychain path skips body-proof', () => {
@@ -543,8 +573,9 @@ describe.skipIf(!dbReachable)('POST /api/settings/email — Keychain path skips 
   it('Keychain path: Add-flow no-row branch → INSERT new row, no proof required', async () => {
     // Regression guard for the Keychain Add-flow no-row branch: INSERT a
     // new row for a Keychain user with no accounts row yet. No Bearer +
-    // no row → INSERT path, no body proof required. The no-row-before-JWT
-    // invariant means this path is unreachable on the JWT discriminator.
+    // no row → INSERT path, no body proof required. The same request on
+    // the JWT discriminator is reachable (a JWT can exist with no row) and
+    // is refused by the route's add-flow JWT-rejection guard instead.
     const res = await request(app)
       .post('/api/settings/email')
       .set('X-Hive-Username', NO_ROW_USER)

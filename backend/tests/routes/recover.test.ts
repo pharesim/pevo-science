@@ -836,13 +836,18 @@ describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /reset-request unknown-email burns sent
   });
 });
 
-// /resend-verification must emit a uniform message body across the three
-// post-auth-success branches (!verify_token, verify_token starts with
-// 'confirmed:', hex verify_token — pending). Distinct messages were a
-// privacy-leaking oracle: any password-holder could probe other emails and
-// read back the account's lifecycle state. Timing equalization does not
-// collapse the message-body axis; this test enforces that the bodies
-// match across the three branches.
+// /resend-verification must emit a uniform message body across its
+// post-auth-success branches. This describe drives three of them:
+// !verify_token, a signup row F (verify_token starts with 'confirmed:'), and
+// a signup row E (hex verify_token, username NULL — pending). A row with
+// `username` set and a hex verify_token, a state G row whose
+// settings-registered email is unverified, takes the same uniform answer
+// with no token rewrite and no mail; auth-state-g-rows.test.ts pins that
+// branch. Distinct messages were a privacy-leaking oracle: any
+// password-holder could probe other emails and read back the account's
+// lifecycle state. Timing equalization does not collapse the message-body
+// axis; this test enforces that the bodies match across the branches it
+// drives.
 describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /resend-verification message body is uniform', () => {
   const ACTIVE_EMAIL = `resend_uniform_active_${Date.now()}@example.com`;
   const CONFIRMED_EMAIL = `resend_uniform_confirmed_${Date.now()}@example.com`;
@@ -859,25 +864,25 @@ describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /resend-verification message body is un
        VALUES ($1, $2, $3, 'light', NULL)`,
       [ACTIVE_EMAIL, `resend_uniform_active_${Date.now()}`, passwordHash],
     );
-    // Confirmed: verify_token starts with 'confirmed:'
+    // Confirmed: signup row F, verify_token starts with 'confirmed:'. Signup
+    // rows carry no username; a row with one is finalized and takes the
+    // already-active branch instead.
     await pool.query(
-      `INSERT INTO accounts (email, username, password_hash, custody, verify_token, expires_at)
-       VALUES ($1, $2, $3, 'light', $4, $5)`,
+      `INSERT INTO accounts (email, password_hash, verify_token, expires_at)
+       VALUES ($1, $2, $3, $4)`,
       [
         CONFIRMED_EMAIL,
-        `resend_uniform_confirmed_${Date.now()}`,
         passwordHash,
         'confirmed:testtokenconfirmedtoken',
         new Date(Date.now() + 24 * 60 * 60 * 1000),
       ],
     );
-    // Pending: hex verify_token
+    // Pending: signup row E, hex verify_token and no username.
     await pool.query(
-      `INSERT INTO accounts (email, username, password_hash, custody, verify_token, expires_at)
-       VALUES ($1, $2, $3, 'light', $4, $5)`,
+      `INSERT INTO accounts (email, password_hash, verify_token, expires_at)
+       VALUES ($1, $2, $3, $4)`,
       [
         PENDING_EMAIL,
-        `resend_uniform_pending_${Date.now()}`,
         passwordHash,
         'abcdef0123456789abcdef0123456789',
         new Date(Date.now() + 24 * 60 * 60 * 1000),
@@ -929,17 +934,24 @@ describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /resend-verification message body is un
 
 // /signup 4-way timing matrix. Per round-2 hold #2+#3: the 409-vs-happy-path
 // timing signature must not distinguish which verify_token state the
-// already-registered email is in. The four relevant paths all need to land
-// in the ≥floor band (none in the ~1-5ms no-argon2 band):
+// already-registered email is in. The four paths this matrix drives all need
+// to land in the ≥floor band (none in the ~1-5ms no-argon2 band):
 //   (a) unknown email + password: happy-path, runs argon2.hash (~100ms).
 //   (b) known email + verify_token NULL + password: 409, runs argon2.hash
 //       burn (~100ms).
 //   (c) known email + verify_token starts with 'confirmed:' + password: 409,
 //       runs argon2.hash burn (~100ms).
-//   (d) known email + hex verify_token (pending) + password: fall-through
-//       to upsert, runs argon2.hash naturally (~100ms).
+//   (d) known email held by a signup row E (hex verify_token, username NULL,
+//       pending) + password: fall-through to upsert, runs argon2.hash
+//       naturally (~100ms).
 // SMTP-not-configured in the test env means (a) and (d) return 500 after
 // argon2.hash has run — the wall-time assertion still holds.
+// A hex verify_token on a row with `username` set is a state G row whose
+// settings-registered email is unverified, and it takes neither (d) nor the
+// upsert's DO UPDATE: a G row carrying a password or an ORCID answers 409
+// with the argon2.hash burn, and a factor-less one is evicted by a signup
+// that clears the accreditation gate. auth-state-g-rows.test.ts pins those
+// paths.
 describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /signup 4-way timing matrix', () => {
   const NULL_TOKEN_EMAIL = `signup_matrix_null_${Date.now()}@mit.edu`;
   const CONFIRMED_TOKEN_EMAIL = `signup_matrix_conf_${Date.now()}@mit.edu`;
@@ -955,26 +967,25 @@ describe('SEC-LOGIN-UNKNOWN-USER-TIMING: /signup 4-way timing matrix', () => {
        VALUES ($1, $2, $3, 'Test', 'Uni', 'CS', 'light', NULL)`,
       [NULL_TOKEN_EMAIL, `signup_matrix_null_${Date.now()}`, passwordHash],
     );
-    // 'confirmed:' verify_token
+    // 'confirmed:' verify_token: signup row F, no username.
     await pool.query(
-      `INSERT INTO accounts (email, username, password_hash, full_name, institution, field, custody, verify_token, expires_at)
-       VALUES ($1, $2, $3, 'Test', 'Uni', 'CS', 'light', $4, $5)`,
+      `INSERT INTO accounts (email, password_hash, full_name, institution, field, verify_token, expires_at)
+       VALUES ($1, $2, 'Test', 'Uni', 'CS', $3, $4)`,
       [
         CONFIRMED_TOKEN_EMAIL,
-        `signup_matrix_conf_${Date.now()}`,
         passwordHash,
         'confirmed:matrixconfirmedtoken',
         new Date(Date.now() + 24 * 60 * 60 * 1000),
       ],
     );
-    // hex verify_token (pending unverified — exercises the fall-through
-    // upsert path, not a 409).
+    // hex verify_token: signup row E, no username (pending unverified —
+    // exercises the fall-through upsert path, not a 409; a row with a
+    // username is a state G row and never reaches the upsert's DO UPDATE).
     await pool.query(
-      `INSERT INTO accounts (email, username, password_hash, full_name, institution, field, custody, verify_token, expires_at)
-       VALUES ($1, $2, $3, 'Test', 'Uni', 'CS', 'light', $4, $5)`,
+      `INSERT INTO accounts (email, password_hash, full_name, institution, field, verify_token, expires_at)
+       VALUES ($1, $2, 'Test', 'Uni', 'CS', $3, $4)`,
       [
         PENDING_TOKEN_EMAIL,
-        `signup_matrix_pend_${Date.now()}`,
         passwordHash,
         'abcdef0123456789abcdef0123456789',
         new Date(Date.now() + 24 * 60 * 60 * 1000),
@@ -1275,13 +1286,13 @@ describe('BE-AUTH-SMTP-STATUS-CODE-ORACLE: SMTP failure must not leak known-emai
        VALUES ($1, $2, $3, 'light', NULL)`,
       [RESET_EMAIL, `smtp_fail_reset_${Date.now()}`, passwordHash],
     );
-    // Pending account for /resend-verification (hex verify_token).
+    // Pending signup row E for /resend-verification: hex verify_token and no
+    // username (a row with a username is finalized and is never resent).
     await pool.query(
-      `INSERT INTO accounts (email, username, password_hash, custody, verify_token, expires_at)
-       VALUES ($1, $2, $3, 'light', $4, $5)`,
+      `INSERT INTO accounts (email, password_hash, verify_token, expires_at)
+       VALUES ($1, $2, $3, $4)`,
       [
         RESEND_EMAIL,
-        `smtp_fail_resend_${Date.now()}`,
         passwordHash,
         'abcdef0123456789abcdef0123456789',
         new Date(Date.now() + 24 * 60 * 60 * 1000),

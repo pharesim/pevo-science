@@ -42,53 +42,83 @@
  * a red bar recognises their own edit: the signup upserts in `routes/auth.ts`
  * refresh `created_at` in their `ON CONFLICT ... DO UPDATE` branches and leave
  * `updated_at` alone, which reads like an oversight to be tidied up. It is not,
- * and the reason is NOT the duplicate-email pre-check in `POST /signup`. That
- * check answers 409 for exactly two token shapes, NULL and a `confirmed:`
- * prefix, so every row carrying a random hex token falls through to the
- * `DO UPDATE` branch: state E, which is the branch's intended target, and state
- * G, which is not — a self-custody account that acquired a row by registering
- * an email through settings, username set and `custody` NULL, carrying a hex
- * token while that email is unverified (ARCHITECTURE.md section 6.1).
+ * and the reason is NOT the guards that keep the branch off a finalized row.
+ * There are two. The duplicate-email pre-check in `POST /signup` answers 409
+ * for a NULL token and a `confirmed:` prefix, and keeps the branch off any row
+ * whose `username` is set. And both upserts confine the `DO UPDATE` branch
+ * itself to `accounts.username IS NULL AND accounts.verify_token NOT LIKE
+ * 'confirmed:%'`, so a row written for the address between the check and the
+ * upsert is declined rather than rewritten. Together they leave state E, the
+ * branch's intended target, as the one row it reaches. State G, a self-custody
+ * account that acquired a row by registering an email through settings,
+ * carries the same random hex token as E while that email is unverified, and
+ * only its set username keeps it out (ARCHITECTURE.md section 6.1). The route
+ * answers 409 for such a row, or, for one that carries no password and no
+ * ORCID, may DELETE it so that the INSERT which follows creates a fresh signup
+ * row in its place (E on the email path, F on the ORCID path): that DELETE
+ * removes a row and writes no marker, and the row the INSERT creates is a
+ * signup row like any other. But both guards bound which rows reach the
+ * branch; neither says anything about what the branch writes when one does.
  *
- * Two things make that overwrite inert for this invariant. The branch's own
- * column list does not name the marker, so it is not moved. And the branch
- * WRITES a non-NULL `verify_token`, while both recovery lookups require
- * `verify_token IS NULL`, so a row the branch has touched is invisible to both
- * until some later statement clears the token.
+ * Two things make the branch inert for this invariant, whichever row it
+ * reaches. Its own column list does not name the marker, so it is not moved.
+ * And the branch WRITES a non-NULL `verify_token`, while both recovery lookups
+ * require `verify_token IS NULL`, so a row the branch has touched is invisible
+ * to both until some later statement clears the token.
  *
  * That second one is a delay, not a barrier, and the difference matters because
- * the barrier reading names the wrong term as load-bearing. THREE statements
- * clear the token, not two: the two finalizes, and the settings email-verify
- * route in `routes/settings.ts`, which clears it on whatever row carries the
- * link's token with no custody, username or marker in its own SET list. So a
- * row can leave the branch's hiding place without a finalize ever running on
- * it. What keeps such a row out of the two lookups is `custody`, and `custody`
- * alone. Both statements key on a random hex `verify_token`, which is state E
- * and state G and nothing else (ARCHITECTURE.md section 6.1: a finalized row
- * carries NULL, a verify-clicked one a `confirmed:` prefix), and both of those
- * carry `custody` NULL, since no INSERT in the tree names the column. A row
- * that never reached a finalize fails `= 'light'` and `= 'self'` alike.
+ * the barrier reading names the wrong term as load-bearing. More than the two
+ * finalizes clear the token. The settings email-verify route in
+ * `routes/settings.ts` clears it in both of its branches, neither naming
+ * custody or the marker in its own SET list: the add-flow branch on a row with
+ * a username whose `verify_token` is the link's token, and the change branch,
+ * with the email swap, on a row whose `pending_email_token` is. Neither reaches
+ * the row the pre-check lets through, state E, whose username is NULL and which
+ * never carries a `pending_email_token` (only the settings `POST /email`
+ * handler writes one, on a row it found by username). So an E row leaves the
+ * branch's hiding place only through a finalize. The delay is real for a G row
+ * the branch reaches anyway, through a regression of both username terms, the
+ * pre-check's and the branch's own: the overwritten row keeps its username,
+ * the add-flow clearer can
+ * clear the token the branch wrote, and the row is out of hiding with no
+ * finalize having run on it. What keeps such a row out of the two lookups is
+ * `custody`, and `custody` alone. A row the pre-check lets through, or that
+ * the add-flow clearer reaches, is state E or state G (ARCHITECTURE.md section
+ * 6.1). The pre-check passes only a random hex token, and a hex token is E or
+ * G: a finalized row carries NULL, a verify-clicked one a `confirmed:` prefix.
+ * The clearer selects by the token on a row with a username, and a row with
+ * both is G, since signup rows E and F carry a NULL username. Both carry
+ * `custody` NULL, since no INSERT in the tree names the column and neither the
+ * branch nor either clearer writes it. A row that never reached a finalize
+ * fails `= 'light'` and `= 'self'` alike, whichever clearer emptied its token.
  *
- * The clearer cannot reach a FINALIZED light row at all, which is worth
- * spelling out because the reverse reads plausible. Such a row carries
+ * The add-flow clearer cannot reach a FINALIZED light row at all, which is
+ * worth spelling out because the reverse reads plausible. Such a row carries
  * `verify_token` NULL, so the clearer's own lookup, which selects BY the token,
- * never finds it. The settings add flow that writes a token INSERTs only where
- * the username has no row, so an account that already has one takes the change
- * flow instead, and that flow writes `pending_email_token` and never names
- * `verify_token`. And nothing puts a hex token back afterwards: the signup
- * upsert answers 409 on a NULL token, the resend route returns before its
- * UPDATE, and the verify-link handler selects by a token the row must already
- * hold. State G is the row the third clearer reaches.
+ * never finds it. The settings add flow writes a token only on a row with no
+ * verified email: it INSERTs where the username has no row, and re-issues on
+ * an existing row only while that row's token is still non-NULL. A finalized
+ * light row reads NULL there and takes the change flow, which writes
+ * `pending_email_token`; its verify branch clears a `verify_token` that is
+ * already NULL. And nothing puts a hex token back on such a row afterwards:
+ * `POST /signup` answers 409 for a row whose token is NULL, the resend route
+ * returns before its UPDATE for a row with a username, and the verify-link
+ * handler selects by a token the row must already hold. State G is the row the
+ * add-flow clearer reaches.
  *
  * The marker is what bounds the rows `custody` DOES let through, which are the
- * finalized light and upgraded rows the two finalizes stamped and nothing else
- * touches. Leaving `updated_at` out of the upsert branch, and out of the
- * settings clearer, is what keeps both of them out of that writer set, so that
- * neither can move a marker if either is later rescoped to a row `custody`
- * admits. Symmetrising either of them to touch every column is the shape this
- * canary exists to stop. That the upsert can overwrite a finalized state G row
- * at all is a separate defect in `POST /signup`, tracked on its own; it is not
- * what this scan guards.
+ * finalized light and upgraded rows, whose marker, after the INSERT's default
+ * stamp, only the two finalizes move. Leaving `updated_at` out of the upsert
+ * branch and out of both settings clearers is what keeps all three out of that
+ * writer set. For the upsert branch and the add-flow clearer, that is what
+ * stops a later rescope to a row `custody` admits from moving a marker. The
+ * change-branch clearer needs no rescope: it already reaches the finalized
+ * light and upgraded rows that carry a pending email change, and its SET list
+ * leaving out the marker is the only thing that keeps it inert for this
+ * invariant. Symmetrising any of the three to touch every column is the shape
+ * this canary exists to stop. The pre-check that keeps the upsert off the
+ * finalized rows it reads, state G included, is a separate guard in
+ * `POST /signup` with its own route test; it is not what this scan guards.
  *
  * WHY A SOURCE SCAN. A CHECK of the same family as the custody-alignment
  * constraint, `upgraded_at IS NULL OR upgraded_at >= updated_at`, would pin the

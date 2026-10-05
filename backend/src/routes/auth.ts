@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import argon2 from 'argon2';
 import { z } from 'zod';
+import type pg from 'pg';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { sendOk, sendError } from '../response.js';
 import { config } from '../config.js';
@@ -280,6 +281,69 @@ router.post('/session', verifyHiveSignature, sessionLimiter, (req: Request, res:
   sendOk(res, { token, expires_at: expiresAt, custody });
 });
 
+/** A factor-less unverified state G row the `/signup` duplicate-email
+ *  pre-check found, as it read it: the row's id and its hex verify_token. */
+interface EvictableClaim {
+  id: number;
+  verifyToken: string;
+}
+
+/**
+ * Write the `/signup` row through the given upsert, first deleting the
+ * factor-less unverified state G claim the duplicate-email pre-check found,
+ * when it found one. The DELETE is keyed on the state the pre-check read and
+ * runs in one transaction with the upsert, so the claim goes only together
+ * with the signup's own row: an upsert that throws, such as one tripping the
+ * ORCID unique index, rolls the DELETE back and the error propagates. A
+ * verification mail that fails after the commit deletes the signup's row and
+ * does not bring the claim back.
+ * `'claim_changed'` means nothing was written: the DELETE matched no row,
+ * because the G row no longer has the state the pre-check read, or the
+ * upsert's conflict branch declined the row that now holds the address. Both
+ * upserts confine `DO UPDATE` to a pending signup row E (`username` NULL and a
+ * token that is not `confirmed:`), the one row the duplicate pre-check lets
+ * through, so a row written for the address after that check (a G row the
+ * settings add flow INSERTs while argon2.hash runs, say) is left as it is
+ * rather than taking the signup's password, ORCID and token.
+ */
+async function writeSignupRow(
+  pool: pg.Pool,
+  claim: EvictableClaim | null,
+  upsertSql: string,
+  upsertParams: unknown[],
+): Promise<'written' | 'claim_changed'> {
+  if (!claim) {
+    const upserted = await pool.query(upsertSql, upsertParams);
+    return upserted.rowCount === 0 ? 'claim_changed' : 'written';
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rowCount } = await client.query(
+      `DELETE FROM accounts
+       WHERE id = $1 AND username IS NOT NULL AND verify_token = $2
+         AND password_hash IS NULL AND orcid IS NULL`,
+      [claim.id, claim.verifyToken],
+    );
+    if (rowCount !== 1) {
+      await client.query('ROLLBACK');
+      return 'claim_changed';
+    }
+    const upserted = await client.query(upsertSql, upsertParams);
+    if (upserted.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return 'claim_changed';
+    }
+    await client.query('COMMIT');
+    return 'written';
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 // ─────────────────────────────────────────────────────────────
 // POST /api/auth/signup — Light account signup (LA6)
 // ─────────────────────────────────────────────────────────────
@@ -383,9 +447,21 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     // saturated case; saturation does not widen the leak, only changes the
     // registered-side status code. The unaccredited-domain registration-
     // status signal remains out-of-scope per the rationale above.
+    // A factor-less unverified state G claim (see the `username` branch
+    // inside this check) does not answer as a duplicate: it falls through
+    // the way an unregistered address does, so on an unaccredited domain it
+    // gets the same fast 422.
+    let evictableClaim: EvictableClaim | null = null;
     if (normalizedEmail) {
-      const { rows: existingRows } = await pool.query<{ verify_token: string | null }>(
-        'SELECT verify_token FROM accounts WHERE email = $1',
+      const { rows: existingRows } = await pool.query<{
+        id: number;
+        verify_token: string | null;
+        username: string | null;
+        factorless: boolean;
+      }>(
+        `SELECT id, verify_token, username,
+                (password_hash IS NULL AND orcid IS NULL) AS factorless
+         FROM accounts WHERE email = $1`,
         [normalizedEmail],
       );
       if (existingRows.length > 0) {
@@ -402,8 +478,10 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         // ORCID+email signup with no password (both 409 and happy-path are
         // ~1ms there, no oracle to close). The truthy-narrow also gives TS
         // `password: string` for the `argon2.hash` call below without an
-        // `as string` cast. The hex-pending fall-through path below runs
-        // argon2.hash + upsert naturally, so no burn is needed there.
+        // `as string` cast. A row that falls through (a pending signup row E,
+        // or a factor-less unverified state G row the signup may evict) pays
+        // argon2.hash + the upsert on the happy path itself, so no burn is
+        // needed for it.
         if (existingRows[0].verify_token === null) {
           if (password) await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS), { signal: abortSignal }).catch((err) => {
             // Structural collapse, behavior unchanged: the pre-refactor
@@ -434,7 +512,48 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
           });
           return sendError(res, 409, 'DUPLICATE', 'Email already verified. Please log in to continue.');
         }
-        // Unverified — allow overwrite via ON CONFLICT below
+        // A row with `username` set is finalized whatever its token says. A
+        // state G row (ARCHITECTURE.md § 6.1) carries a random hex
+        // verify_token while its settings-registered email is unverified,
+        // the same shape as a pending signup row E, and only `username`
+        // tells the two apart: signup rows E and F always carry it NULL. A
+        // G row this check finds never reaches the upsert's DO UPDATE
+        // branch, whose rewrite would hand the row's password_hash, orcid
+        // and verify_token to anyone who knows the address.
+        //
+        // A G row with no password and no ORCID holds nothing but its claim
+        // on an address it has not verified, and that claim yields to a
+        // signup that will proceed. Its id and token are remembered here,
+        // and `writeSignupRow` deletes the row, keyed on the state read
+        // here, only after the accreditation gate passes and in one
+        // transaction with the upsert. A signup that fails that gate never
+        // evicts it. If the row changed or went away in between, the DELETE
+        // matches nothing and the signup answers the same 409 as a G row
+        // carrying a factor; the happy path's argon2.hash (when a password
+        // was sent) has run by then, so the timing matches.
+        // A G row carrying a password or an ORCID answers 409 here, with the
+        // same argon2.hash burn as the `verify_token === null` branch so
+        // this 409 is timing-indistinguishable from the others.
+        if (existingRows[0].username !== null) {
+          if (existingRows[0].factorless) {
+            evictableClaim = { id: existingRows[0].id, verifyToken: existingRows[0].verify_token };
+          } else {
+            if (password) await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS), { signal: abortSignal }).catch((err) => {
+              // Semaphore errors rethrow for the reason given in the matching
+              // `verify_token === null` branch.
+              if (isArgonSemaphoreError(err)) throw err;
+              logger.warn(
+                { event: 'auth.signup.dup_burn_failed', route: 'auth.signup', err },
+                'argon2 signup-dup burn failed — timing oracle may be open',
+              );
+            });
+            return sendError(res, 409, 'DUPLICATE', 'Email already registered');
+          }
+        }
+        // Otherwise the row is a pending signup row E (hex verify_token,
+        // username NULL), the one row the upsert's ON CONFLICT DO UPDATE
+        // branch is meant for: a signup retry re-issues it with a fresh token
+        // and expiry.
       }
     }
 
@@ -444,7 +563,9 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     // email state) rather than 422 ACCREDITATION_NOT_FOUND (which would
     // leak registration status to anyone probing accredited-domain
     // addresses). See the check-order note at the duplicate-email check
-    // for the full rationale.
+    // for the full rationale. A factor-less unverified state G claim that
+    // check found is evicted only past this gate, by `writeSignupRow`, so a
+    // signup refused here leaves it in place.
     if (!isInstitutional && !verifiedOrcid) {
       return sendError(res, 422, 'VALIDATION_ERROR', 'Either an institutional email or ORCID verification is required');
     }
@@ -469,7 +590,9 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
 
       if (normalizedEmail) {
         // ORCID + email: upsert with ON CONFLICT
-        await pool.query(
+        const written = await writeSignupRow(
+          pool,
+          evictableClaim,
           `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at, signup_binding_hash)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
            ON CONFLICT (email) DO UPDATE SET
@@ -481,9 +604,13 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
              verify_token = EXCLUDED.verify_token,
              expires_at = EXCLUDED.expires_at,
              signup_binding_hash = EXCLUDED.signup_binding_hash,
-             created_at = NOW()`,
+             created_at = NOW()
+           WHERE accounts.username IS NULL AND accounts.verify_token NOT LIKE 'confirmed:%'`,
           [normalizedEmail, passwordHash, resolvedName, resolvedInstitution, resolvedField, verifiedOrcid, confirmed, expiresAt, binding.hash],
         );
+        if (written === 'claim_changed') {
+          return sendError(res, 409, 'DUPLICATE', 'Email already registered');
+        }
       } else {
         // ORCID-only (no email): plain insert
         await pool.query(
@@ -505,7 +632,9 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     // Standard email signup — send verification email
     const verifyToken = crypto.randomBytes(32).toString('hex');
 
-    await pool.query(
+    const written = await writeSignupRow(
+      pool,
+      evictableClaim,
       `INSERT INTO accounts (email, password_hash, full_name, institution, field, orcid, verify_token, expires_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (email) DO UPDATE SET
@@ -516,9 +645,13 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
          orcid = EXCLUDED.orcid,
          verify_token = EXCLUDED.verify_token,
          expires_at = EXCLUDED.expires_at,
-         created_at = NOW()`,
+         created_at = NOW()
+       WHERE accounts.username IS NULL AND accounts.verify_token NOT LIKE 'confirmed:%'`,
       [normalizedEmail, passwordHash, resolvedName, resolvedInstitution, resolvedField, null, verifyToken, expiresAt],
     );
+    if (written === 'claim_changed') {
+      return sendError(res, 409, 'DUPLICATE', 'Email already registered');
+    }
 
     // Send verification email
     if (config.smtpHost) {
@@ -606,10 +739,11 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
   try {
     const { rows } = await pool.query<{
       id: number;
+      username: string | null;
       password_hash: string | null;
       verify_token: string | null;
     }>(
-      'SELECT id, password_hash, verify_token FROM accounts WHERE email = $1',
+      'SELECT id, username, password_hash, verify_token FROM accounts WHERE email = $1',
       [normalizedEmail],
     );
 
@@ -656,7 +790,16 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
     // distinct messages were a privacy-leaking oracle: any password-holder
     // could probe other emails and learn whether those accounts exist and
     // what lifecycle state they're in.
-    if (!account.verify_token) {
+    //
+    // A row with `username` set is finalized whatever its token says, so it
+    // takes the already-active answer too. A state G row (ARCHITECTURE.md
+    // § 6.1) carries a random hex verify_token while its settings-registered
+    // email is unverified; that email's link belongs to the settings verify
+    // flow, and this signup resend must neither rewrite the token nor mail a
+    // signup link for it. Signup rows E and F always carry `username` NULL.
+    // Like the other already-active returns, this one sits after the argon2
+    // verify, so it costs what a wrong-password answer costs.
+    if (!account.verify_token || account.username !== null) {
       return sendOk(res, { message: 'If that email has a pending signup, a new verification link has been sent.' });
     }
     if (account.verify_token.startsWith('confirmed:')) {
@@ -675,8 +818,9 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
     // this known-email branch MUST NOT return 500 when sendMail throws. If it
     // did, an attacker inducing an SMTP outage would observe 500 = "pending
     // signup exists for this email + matches this password" vs 200 = any other
-    // shape (unknown email, wrong password, already-active, already-confirmed)
-    // — a status-code oracle that bypasses the wall-time equalization work.
+    // shape (unknown email, wrong password, a finalized row, state G included,
+    // already-confirmed) — a status-code oracle that bypasses the wall-time
+    // equalization work.
     // See `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`.
     if (config.smtpHost) {
       try {
@@ -782,14 +926,18 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     const account = rows[0];
 
     // Passwordless accounts cannot log in with a password; ARCHITECTURE.md
-    // § 6.1 allows a NULL hash on more than the ORCID-only signup. Return a
-    // distinct 403 so the UI can point the user at another factor. Must NOT
-    // collapse into the generic 401 — that would make password login
-    // indistinguishable from "wrong password" and hide the correct
-    // remediation path from legitimate users. The message names ORCID
-    // sign-in and seed-phrase recovery, the factors of a light C row; a
-    // state G row with no ORCID linked has neither, and Keychain is its
-    // factor.
+    // § 6.1 allows a NULL hash on more than the ORCID-only signup, and this
+    // check runs before the pending-signup checks, so it answers pending
+    // signup rows as well as finalized ones. Return a distinct 403 so the UI
+    // can point the user at another factor. Must NOT collapse into the
+    // generic 401 — that would make password login indistinguishable from
+    // "wrong password" and hide the correct remediation path from legitimate
+    // users. The message is one string for every passwordless row, because
+    // this branch is unauthenticated and a per-row message would read the
+    // row's state back to whoever typed the address. It sends the user to
+    // another sign-in method and names examples only ("such as"), so it
+    // claims neither that a given row has those methods nor that they are
+    // the only ones.
     //
     // Before returning, burn a sentinel argon2.verify so this branch takes the
     // same wall-time as the real verify branch. Otherwise a network attacker
@@ -800,7 +948,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
         res,
         403,
         'NO_PASSWORD_SET',
-        'Account has no password; sign in with ORCID or recover via seed phrase',
+        'This account has no password. Use another sign-in method, such as ORCID or Hive Keychain.',
       );
     }
 
@@ -826,8 +974,13 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
       return sendError(res, 401, 'UNAUTHORIZED', 'Invalid credentials');
     }
 
-    // Account not yet active — handle pending states
-    if (account.verify_token !== null) {
+    // Signup row not yet finalized: handle the pending states E (hex
+    // verify_token) and F (`confirmed:` prefix). Signup rows always carry
+    // `username` NULL, and the block is scoped to them. A state G row
+    // (ARCHITECTURE.md § 6.1) carries a hex verify_token too while its
+    // settings-registered email is unverified, but it is finalized: it skips
+    // this block, logs in normally, and this route never deletes it.
+    if (account.username === null && account.verify_token !== null) {
       if (account.verify_token.startsWith('confirmed:')) {
         // Email verified but signup not completed. The SPA must direct the
         // user back to /signup/verify (via /resume-signup) where a fresh
@@ -845,7 +998,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
           data: { email: account.email },
         });
       }
-      // Unverified — check expiry
+      // State E, email not yet verified — check expiry
       if (account.expires_at && new Date() > new Date(account.expires_at)) {
         await pool.query('DELETE FROM accounts WHERE id = $1', [account.id]);
         return sendError(res, 410, 'SIGNUP_EXPIRED', 'Your signup has expired. Please sign up again.');

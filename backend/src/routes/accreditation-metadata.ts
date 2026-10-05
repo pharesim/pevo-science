@@ -126,9 +126,13 @@ router.patch(
       return sendError(res, 403, 'ACCREDITATION_SANCTIONED', SANCTIONED_ACCREDIT_MESSAGE);
     }
 
-    // Fresh re-auth gate (NOT JWT-only). Self-custody/Keychain (signature) is
-    // fresh at the middleware; the JWT path demands a single-use proof bound to
-    // (edit_accreditation_metadata, <username>, ''). consumeFreshAuthProof is
+    // Fresh re-auth gate (NOT JWT-only), keyed on the request's auth mechanism,
+    // not the account's custody. The signature path is fresh at the middleware
+    // whatever the custody. The JWT path, whose callers include light A/B/C
+    // rows, the self-custody D and G rows that log in by password or ORCID, and
+    // any Keychain account, row or not, using the `POST /api/auth/session` JWT,
+    // demands a single-use proof bound to (edit_accreditation_metadata,
+    // <username>, ''). consumeFreshAuthProof is
     // called INLINE here (not as the requireFreshAuth middleware) so it runs only
     // after the eligibility checks above — an ineligible caller never burns a
     // valid proof. The binding-aware reason->status mapping lives once inside it.

@@ -22,10 +22,16 @@
  * `requireAdminLevel` resolves the tier of the verified caller and is
  * necessary-but-not-sufficient for a critical action: per ARCHITECTURE.md §6.4 /
  * §6.5 invariant #1, an authority endpoint must ALSO carry a fresh re-auth proof
- * appropriate to the caller's auth mechanism (a per-request Hive signature for
- * self-custody, a fresh-auth token for light accounts) — never a bare JWT. The
- * tier middleware is composed with that proof check at the route, not folded
- * into it here, so the same resolver serves both auth mechanisms.
+ * appropriate to the request's auth mechanism (`req.hiveAuthMethod`), never a
+ * bare JWT: on the signature path the per-request Hive signature is the proof,
+ * on the JWT path a fresh-auth token in the body. The mechanism decides, not the
+ * account's custody. JWT holders include light A/B/C rows, the self-custody D
+ * and G rows of §6.1 that log in by password or ORCID, and any Keychain
+ * account, row or not, that holds the session JWT `POST /api/auth/session`
+ * mints. A request signed with an account's posting key takes the signature
+ * path whatever its custody. The tier middleware is composed with that proof
+ * check at the route, not folded into it here, so the same resolver serves
+ * both auth mechanisms.
  */
 import type { Request, Response, NextFunction } from 'express';
 import { getPool } from './db.js';
@@ -189,8 +195,10 @@ export function levelMeets(level: AdminLevel | null, min: AdminLevel): boolean {
 
 /**
  * Express middleware: require the verified caller to hold at least `min` tier.
- * Must run AFTER `verifyHiveSignature` (it keys off `req.hiveUsername`, the
- * cryptographically verified account, never a JWT claim). On success it stashes
+ * Must run AFTER `verifyHiveSignature` (it keys off `req.hiveUsername`: the
+ * signature-recovered account on the signature path, the verified JWT's `sub`
+ * on the JWT path; the tier itself is resolved from the roster, never read
+ * from a token claim). On success it stashes
  * `req.adminLevel` for the handler (issued_by attribution, audit). See the
  * module docstring: this gates WHO may act; the route must separately require a
  * fresh re-auth proof per §6.4.
@@ -219,11 +227,17 @@ export function requireAdminLevel(min: AdminLevel) {
  * and `requireAdminLevel`, and AFTER `validate(...)` so a malformed body 400s
  * without burning the caller's single-use proof.
  *
- * - Self-custody / Keychain caller (`hiveAuthMethod === 'signature'`): the
- *   per-request Hive signature verified upstream IS the fresh proof; pass.
- * - Light-account caller (`hiveAuthMethod === 'jwt'`): a replayable bearer JWT
- *   is never sufficient for a critical action (§6.5 invariant #1). Demand a
- *   single-use, target-bound `fresh_auth_proof` in the body, consumed against
+ * The gate keys on the request's auth mechanism, not the account's custody:
+ *
+ * - Signature path (`hiveAuthMethod === 'signature'`): the per-request Hive
+ *   signature verified upstream IS the fresh proof, whatever the caller's
+ *   custody; pass.
+ * - JWT path (`hiveAuthMethod === 'jwt'`): a replayable bearer JWT is never
+ *   sufficient for a critical action (§6.5 invariant #1), whoever holds it,
+ *   including light A/B/C rows, the self-custody D and G rows that log in by
+ *   password or ORCID, and any Keychain account, row or not, using the
+ *   `POST /api/auth/session` JWT (§6.2). Demand a single-use, target-bound
+ *   `fresh_auth_proof` in the body, consumed against
  *   `(action, <caller-username>, '')`. The distinct `action` in the target hash
  *   stops a proof minted for one admin action being redirected to another, and
  *   the username binding stops a proof minted by admin A authorizing admin B.

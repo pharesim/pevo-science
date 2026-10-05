@@ -318,16 +318,20 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
     }
 
     // ── Method B: ORCID recovery ──
-    // ORCID recovery is severed once the account has upgraded to self-custody.
-    // Post-upgrade the account is under on-chain (Keychain) control and the
-    // platform holds no keys; allowing the original ORCID link to still
-    // trigger a server-side email/password rebind would let an attacker
-    // holding that ORCID link recover an account no longer under platform
-    // custody. Gate on `upgraded_at IS NULL` (state D is excluded). The 401 +
-    // generic message matches the no-ORCID branch so the route does not become
-    // an upgrade-state oracle.
+    // ORCID recovery serves light accounts only (ARCHITECTURE.md § 6.4: states
+    // B and C). A self-custody account is under on-chain (Keychain) control
+    // and the platform holds no keys for it; letting an ORCID link trigger a
+    // server-side email/password rebind there would let whoever holds that
+    // link take over an account the platform does not hold. Two self-custody
+    // shapes carry an ORCID and pass the `verify_token IS NULL` account
+    // lookup: state D (upgraded, `upgraded_at` set) and a verified state G row
+    // (a Keychain account that registered an email through settings, `custody`
+    // NULL). Gate on the derived claim rather than on the epoch alone, since G
+    // never had one: `custodyClaimFor` answers `'light'` only for an explicit
+    // `'light'` column with no epoch. The 401 + generic message matches the
+    // no-ORCID branch so the route does not become a custody-state oracle.
     if (orcid_token) {
-      if (account.upgraded_at || !account.orcid) {
+      if (custodyClaimFor(account) !== 'light' || !account.orcid) {
         if (account.upgraded_at) {
           logger.warn(
             {

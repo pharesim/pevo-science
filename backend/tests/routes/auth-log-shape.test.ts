@@ -486,15 +486,15 @@ describe('auth.resend_verification.smtp_send_failed log shape', () => {
     if (!dbReachable) return;
     const pool = getAppPool()!;
     const passwordHash = await argon2.hash(RESEND_PASSWORD, { type: argon2.argon2id });
-    // Pending account: hex verify_token (NOT prefixed with `confirmed:`) so
-    // the handler enters the sendMail branch (lines 631-685 of auth.ts).
+    // Pending signup row E: hex verify_token (NOT prefixed with `confirmed:`)
+    // and no username, so the handler enters the sendMail branch. A row with
+    // a username is finalized and returns before the resend.
     try {
       await pool.query(
-        `INSERT INTO accounts (email, username, password_hash, custody, verify_token, expires_at)
-         VALUES ($1, $2, $3, 'light', $4, $5)`,
+        `INSERT INTO accounts (email, password_hash, verify_token, expires_at)
+         VALUES ($1, $2, $3, $4)`,
         [
           RESEND_EMAIL,
-          `log_shape_resend_smtp_${Date.now()}`,
           passwordHash,
           'abcdef0123456789abcdef0123456789',
           new Date(Date.now() + 24 * 60 * 60 * 1000),

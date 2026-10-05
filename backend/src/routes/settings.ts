@@ -104,12 +104,13 @@ router.get('/email', readLimiter, verifyHiveSignature, async (req: Request, res:
 // POST /api/settings/email — Add or change email
 // ─────────────────────────────────────────────────────────────
 //
-// The change-email branch (existing row) is a critical action per
-// ARCHITECTURE.md § 6.5 invariant #1 — a stolen JWT must not be a one-step
-// takeover vector. When authenticated via Bearer
-// JWT (the only auth path that can be replayed without a fresh signature),
-// the request body MUST carry a `fresh_auth_proof` whose mechanism matches
-// what the account has registered:
+// The change-email branch (existing row, including the re-issue branch an
+// unverified state G row takes) is a critical action per ARCHITECTURE.md
+// § 6.5 invariant #1 — a stolen JWT must not be a one-step takeover vector.
+// When authenticated via Bearer JWT (the only auth path that can be replayed
+// without a fresh signature), the request body MUST carry a
+// `fresh_auth_proof` whose mechanism matches what the account has
+// registered:
 //
 //   State A (password, no orcid)  : 'password' only
 //   State B (password + orcid)    : 'password' OR 'orcid'
@@ -128,32 +129,45 @@ router.get('/email', readLimiter, verifyHiveSignature, async (req: Request, res:
 // timestamp + replay-bounded by `verifyHiveSignature`.
 //
 // The Add-flow no-row branch (Keychain user with no `accounts` row yet) is
-// only reachable on the Hive-signature path (no JWT can exist before a row
-// exists), so the no-row INSERT path remains gated by the Hive-signature
-// freshness alone. The discriminator below reads `req.hiveAuthMethod` set by
-// the unified `verifyHiveSignature` middleware: the JWT-success branch sets
-// it to `'jwt'`, the signature-success branch sets it to `'signature'`.
+// kept on the Hive-signature path by an explicit JWT rejection, not by the
+// absence of a JWT: `POST /api/auth/session` mints a JWT for any
+// Keychain-signed caller whether or not a row exists, and account deletion
+// leaves earlier JWTs live. A row-less caller has no registered factor a
+// body proof could match, so on the signature path the no-row INSERT is
+// gated by the Hive-signature freshness alone. The discriminator below reads
+// `req.hiveAuthMethod` set by the unified `verifyHiveSignature` middleware:
+// the JWT-success branch sets it to `'jwt'`, the signature-success branch
+// sets it to `'signature'`.
 //
 // Handler order (load-bearing — closes the 401-vs-409 enumeration oracle):
 //   (1) Body validation (400 on shape error; no state disclosure).
-//   (2) SELECT existing row by username (drives Add vs Change discrimination
-//       and supplies the snapshot used by the SMTP-fail restore path).
-//   (3) On Change branch + JWT path: consume fresh-auth proof + mechanism
-//       check. MUST fire BEFORE the duplicate-email SELECT below; without
-//       this ordering, a JWT-only attacker (no proof) could probe candidate
-//       emails and read registration state from the 409-vs-401 differential.
-//   (4) On Add branch: reject JWT auth (the no-row-before-JWT invariant).
+//   (2) SELECT existing row by username (drives Add vs re-issue vs Change
+//       discrimination and supplies the snapshot used by the SMTP-fail
+//       restore path).
+//   (3) On an existing row (Change or re-issue) + JWT path: consume
+//       fresh-auth proof + mechanism check. MUST fire BEFORE the
+//       duplicate-email SELECT below; without this ordering, a JWT-only
+//       attacker (no proof) could probe candidate emails and read
+//       registration state from the 409-vs-401 differential.
+//   (4) On Add branch: reject JWT auth. This guard is what keeps the no-row
+//       INSERT on the Hive-signature path: `POST /api/auth/session` mints a
+//       JWT for a row-less Keychain caller, and account deletion leaves
+//       earlier JWTs live.
 //   (5) Duplicate-email SELECTs (409 on hit) — only reached on valid proof
 //       or via the Keychain path.
-//   (6) INSERT (Add) or UPDATE (Change) the pending_email triple.
+//   (6) INSERT (Add); on an existing row whose email is still unverified
+//       (state G with a hex verify_token), re-issue the add-flow
+//       verification by UPDATE of email, verify_token and expires_at with
+//       the pending_email triple cleared; otherwise UPDATE (Change) the
+//       pending_email triple.
 //   (7) Send verification email. SMTP failure follows the catch-warn-200
 //       status-code-oracle convention (`agents/docs/solutions/conventions/
 //       timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`): catch,
 //       log warn, return uniform 200. DB write rolls back: DELETE on Add;
-//       snapshot-restore scoped by the just-written token on Change (the
-//       scope guards against a concurrent request having already overwritten
-//       the row — restore no-ops in that case rather than clobbering its
-//       in-flight state).
+//       snapshot-restore scoped by the just-written token on re-issue and
+//       on Change (the scope guards against a concurrent request having
+//       already overwritten the row — restore no-ops in that case rather
+//       than clobbering its in-flight state).
 router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, res: Response) => {
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
@@ -171,36 +185,45 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
   const isJwtPath = req.hiveAuthMethod === 'jwt';
 
   try {
-    // Read existing row first: drives Add vs Change discrimination, supplies
-    // the mechanism check in the fresh-auth gate, and snapshots the prior
-    // pending_email triple for the SMTP-fail restore path. Reading before
-    // the duplicate-email SELECTs below is required so the fresh-auth gate
-    // can fire before the dupe check on the JWT path (item (3) in the
-    // handler-order block above).
+    // Read existing row first: drives Add vs re-issue vs Change
+    // discrimination, supplies the mechanism check in the fresh-auth gate,
+    // and snapshots the prior pending_email triple (plus email, verify_token
+    // and expires_at for the re-issue branch) for the SMTP-fail restore
+    // path. Reading before the duplicate-email SELECTs below is required so
+    // the fresh-auth gate can fire before the dupe check on the JWT path
+    // (item (3) in the handler-order block above).
     const { rows: existing } = await pool.query<{
       id: number;
+      email: string;
+      verify_token: string | null;
+      expires_at: Date | null;
       password_hash: string | null;
       orcid: string | null;
       pending_email: string | null;
       pending_email_token: string | null;
       pending_email_expires_at: Date | null;
     }>(
-      'SELECT id, password_hash, orcid, pending_email, pending_email_token, pending_email_expires_at FROM accounts WHERE username = $1',
+      `SELECT id, email, verify_token, expires_at, password_hash, orcid,
+              pending_email, pending_email_token, pending_email_expires_at
+         FROM accounts WHERE username = $1`,
       [username],
     );
 
     if (existing.length === 0) {
-      // Add-flow JWT-rejection guard (defense-in-depth). The no-row branch
-      // is only reachable on the Hive-signature path under the JWT-mint
-      // invariant (no jwt.sign call mints before INSERT). The local guard
-      // makes the invariant load-bearing here so a future feature minting
-      // a transient JWT before INSERT cannot silently bypass the gate.
+      // Add-flow JWT-rejection guard. A JWT does reach this branch:
+      // `POST /api/auth/session` mints one for any Keychain-signed caller
+      // whether or not a row exists, and deleting the row leaves earlier
+      // JWTs live. A row-less caller has no registered factor a fresh-auth
+      // proof could match, so this guard is what keeps the no-row INSERT on
+      // the Hive-signature path, where the per-request signature is the
+      // fresh proof.
       if (isJwtPath) {
         return sendError(res, 401, 'UNAUTHORIZED', 'Session is no longer valid');
       }
     } else if (isJwtPath) {
-      // Change-flow JWT-path fresh-auth gate — MUST run before the
-      // duplicate-email SELECT below (see handler-order item (3)).
+      // Existing-row JWT-path fresh-auth gate (change and re-issue alike) —
+      // MUST run before the duplicate-email SELECT below (see handler-order
+      // item (3)).
       const proof = (req.body as { fresh_auth_proof?: unknown })?.fresh_auth_proof;
       const proofToken = typeof proof === 'string' ? proof : undefined;
       const expectedTargetHash = computeFreshAuthTargetHash(
@@ -280,9 +303,15 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
 
     // Duplicate-email checks run AFTER the fresh-auth gate above so a
     // JWT-only attacker without a proof cannot enumerate registered emails
-    // via the 409-vs-401 status-code differential.
+    // via the 409-vs-401 status-code differential. `IS DISTINCT FROM` rather
+    // than `!=` so a row whose `username` is NULL, such as a pending signup
+    // row (states E and F, ARCHITECTURE.md § 6.1), counts as another
+    // account. `NULL != $2` is NULL, which would skip that row, and writing
+    // its address anyway collides with the `accounts.email` UNIQUE
+    // constraint: here as a 500 on Add and re-issue, and at the link's swap
+    // on Change.
     const { rows: dupeRows } = await pool.query<{ id: number }>(
-      'SELECT id FROM accounts WHERE email = $1 AND username != $2',
+      'SELECT id FROM accounts WHERE email = $1 AND username IS DISTINCT FROM $2',
       [email, username],
     );
     if (dupeRows.length > 0) {
@@ -290,7 +319,7 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
     }
 
     const { rows: pendingDupeRows } = await pool.query<{ id: number }>(
-      'SELECT id FROM accounts WHERE pending_email = $1 AND username != $2',
+      'SELECT id FROM accounts WHERE pending_email = $1 AND username IS DISTINCT FROM $2',
       [email, username],
     );
     if (pendingDupeRows.length > 0) {
@@ -300,12 +329,35 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + EMAIL_TOKEN_EXPIRY_MS);
 
+    // A row found by username with a non-NULL verify_token is a state G row
+    // whose email is still unverified (ARCHITECTURE.md § 6.1: signup rows
+    // carry no username, and both signup finalizes clear the token in the
+    // same UPDATE that sets the username).
+    const reissue = existing.length > 0 && existing[0].verify_token !== null;
+
     if (existing.length === 0) {
       // Add flow: INSERT new row (Keychain user, no password).
       await pool.query(
         `INSERT INTO accounts (email, username, verify_token, expires_at)
          VALUES ($1, $2, $3, $4)`,
         [email, username, token, expiresAt],
+      );
+    } else if (reissue) {
+      // Unverified state G row: re-issue the add-flow verification for the
+      // new address rather than queueing a change behind an email that was
+      // never proven. The new token replaces the old one, so the earlier
+      // link stops working, and any pending change the row picked up while
+      // unverified is dropped with it.
+      await pool.query(
+        `UPDATE accounts
+         SET email = $1,
+             verify_token = $2,
+             expires_at = $3,
+             pending_email = NULL,
+             pending_email_token = NULL,
+             pending_email_expires_at = NULL
+         WHERE username = $4`,
+        [email, token, expiresAt, username],
       );
     } else {
       // Change flow: set pending_email fields.
@@ -339,14 +391,16 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
         },
         'SMTP send failed',
       );
-      // Roll back the DB write this request made so the row doesn't carry
-      // pending-email state that the user has no verify link for. On Add,
-      // DELETE the just-INSERTed row. On Change, restore the snapshotted
-      // pending_email triple — but only if THIS request's UPDATE is still
-      // the row's current state (scoped by the just-written token). A
-      // concurrent change-email request that already overwrote the row
-      // sees the restore no-op here, intended: don't clobber its in-flight
-      // state.
+      // Roll back the DB write this request made so the row doesn't carry a
+      // token that the user has no verify link for. On Add, DELETE the
+      // just-INSERTed row. On re-issue, restore the snapshotted email,
+      // verify_token and expires_at together with the pending_email triple,
+      // which puts the earlier link back in force. On Change, restore the
+      // snapshotted pending_email triple. Each restore applies only if THIS
+      // request's UPDATE is still the row's current state, scoped by the
+      // just-written token in the column that UPDATE wrote it to. A
+      // concurrent email request that already overwrote the row sees the
+      // restore no-op here, intended: don't clobber its in-flight state.
       //
       // The rollback query is itself wrapped in an inner try/catch: if the
       // rollback throws (Postgres deadlock, statement timeout, transient
@@ -364,20 +418,36 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
           await pool.query('DELETE FROM accounts WHERE username = $1 AND verify_token = $2', [username, token]);
         } else {
           const prior = existing[0];
-          const restoreResult = await pool.query(
-            `UPDATE accounts
-               SET pending_email = $1,
-                   pending_email_token = $2,
-                   pending_email_expires_at = $3
-               WHERE username = $4 AND pending_email_token = $5`,
-            [prior.pending_email, prior.pending_email_token, prior.pending_email_expires_at, username, token],
-          );
+          const restoreResult = reissue
+            ? await pool.query(
+                `UPDATE accounts
+                   SET email = $1,
+                       verify_token = $2,
+                       expires_at = $3,
+                       pending_email = $4,
+                       pending_email_token = $5,
+                       pending_email_expires_at = $6
+                   WHERE username = $7 AND verify_token = $8`,
+                [
+                  prior.email, prior.verify_token, prior.expires_at,
+                  prior.pending_email, prior.pending_email_token, prior.pending_email_expires_at,
+                  username, token,
+                ],
+              )
+            : await pool.query(
+                `UPDATE accounts
+                   SET pending_email = $1,
+                       pending_email_token = $2,
+                       pending_email_expires_at = $3
+                   WHERE username = $4 AND pending_email_token = $5`,
+                [prior.pending_email, prior.pending_email_token, prior.pending_email_expires_at, username, token],
+              );
           // Observability: distinguish "rolled back successfully" from
-          // "raced — a concurrent change-email request already overwrote the
-          // row so this restore's token-scoped WHERE no-op'd." Operators
-          // responding to an SMTP-outage incident otherwise can't tell the
-          // two cases apart from the single smtp_send_failed warn above.
-          // Fires only on the race path — normal SMTP-fail emits one warn.
+          // "raced — a concurrent email request already overwrote the row so
+          // this restore's token-scoped WHERE no-op'd." Operators responding
+          // to an SMTP-outage incident otherwise can't tell the two cases
+          // apart from the single smtp_send_failed warn above. Fires only on
+          // the race path — normal SMTP-fail emits one warn.
           if (restoreResult.rowCount === 0) {
             logger.warn(
               {
@@ -386,16 +456,19 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
                 email_hash: hashEmailForLogs(email),
                 username,
               },
-              'SMTP-fail restore skipped — concurrent change-email request already overwrote pending_email',
+              'SMTP-fail restore skipped — a concurrent email request already overwrote the row',
             );
           }
         }
       } catch (rollbackErr) {
         // Rollback itself failed. Swallow it so the SMTP-fail path stays
         // uniform 200 (see the inner-try rationale above); emit a distinct
-        // discriminator so an operator can see the row was left carrying
-        // pending-email state with no deliverable verify link. Mirrors the
-        // sibling smtp_send_failed warn's field shape.
+        // discriminator so an operator can see the row may be left carrying
+        // the token this request wrote with no deliverable verify link: on
+        // Add, the just-INSERTed row; on re-issue, the replaced email with
+        // its re-issued verify_token and expires_at (the pending_email
+        // triple already cleared); on Change, the pending_email triple.
+        // Mirrors the sibling smtp_send_failed warn's field shape.
         logger.warn(
           {
             event: 'settings.email_post.smtp_fail_rollback_failed',
@@ -439,12 +512,20 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
   }
 
   try {
-    // Check add flow first (verify_token match)
+    // Add flow first (verify_token match), scoped to rows the add flow could
+    // have created. Its INSERT always names the username. The signup INSERTs
+    // in `routes/auth.ts` leave the username NULL, and signup rows keep it
+    // NULL until a finalize sets it in the same UPDATE that clears the token,
+    // while carrying their own tokens in the same column (random hex in state
+    // E, `confirmed:` in state F, ARCHITECTURE.md § 6.1). A signup token
+    // therefore finds no row here and falls through to the not-found 400
+    // below, the same answer an unknown token gets, expired or not: telling
+    // the two apart would be a signup-state oracle.
     const { rows: addRows } = await pool.query<{
       id: number;
       expires_at: Date | null;
     }>(
-      'SELECT id, expires_at FROM accounts WHERE verify_token = $1',
+      'SELECT id, expires_at FROM accounts WHERE verify_token = $1 AND username IS NOT NULL',
       [token],
     );
 
@@ -453,14 +534,26 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
       if (row.expires_at && new Date() > new Date(row.expires_at)) {
         return sendError(res, 400, 'INVALID_TOKEN', 'Verification link has expired. Please request a new one.');
       }
-      await pool.query(
-        'UPDATE accounts SET verify_token = NULL, expires_at = NULL WHERE id = $1',
-        [row.id],
+      // Keyed on the presented token as well as the row: re-adding an email
+      // on an unverified row replaces its token, and a link for the earlier
+      // address must not verify the later one if that write lands between
+      // the lookup and this clear. When it does, the link's token is gone
+      // and it gets the not-found answer it would get a moment later.
+      const cleared = await pool.query(
+        `UPDATE accounts SET verify_token = NULL, expires_at = NULL
+          WHERE id = $1 AND verify_token = $2 AND username IS NOT NULL`,
+        [row.id, token],
       );
+      if (cleared.rowCount === 0) {
+        return sendError(res, 400, 'INVALID_TOKEN', 'Invalid or expired verification link');
+      }
       return sendOk(res, { verified: true });
     }
 
-    // Check change flow (pending_email_token match)
+    // Change flow (pending_email_token match). Not narrowed like the add
+    // flow: a non-NULL `pending_email_token` is written only by this file's
+    // `POST /email` handler, on a row found by username, so a signup row
+    // never carries one and no signup token can match here.
     const { rows: changeRows } = await pool.query<{
       id: number;
       pending_email: string;
@@ -480,12 +573,23 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
       const oldEmail = row.email;
       const newEmail = row.pending_email;
 
+      // Clicking the link proves control of the new address, which is now
+      // the row's email, so the email is verified: verify_token and
+      // expires_at are cleared with the swap. On a row whose email was
+      // already verified the token is already NULL, and expires_at holds at
+      // most a leftover signup-link expiry, which no reader consults on a
+      // row whose token is NULL. On a row that took this flow before its
+      // first email was verified (state G with a hex token, from before
+      // unverified rows were routed to the re-issue branch) it marks the
+      // row verified.
       await pool.query(
         `UPDATE accounts
          SET email = pending_email,
              pending_email = NULL,
              pending_email_token = NULL,
-             pending_email_expires_at = NULL
+             pending_email_expires_at = NULL,
+             verify_token = NULL,
+             expires_at = NULL
          WHERE id = $1`,
         [row.id],
       );
@@ -774,8 +878,13 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
   }
 
   try {
-    const { rows } = await pool.query<{ id: number; password_hash: string | null; orcid: string | null }>(
-      'SELECT id, password_hash, orcid FROM accounts WHERE username = $1',
+    const { rows } = await pool.query<{
+      id: number;
+      password_hash: string | null;
+      orcid: string | null;
+      verify_token: string | null;
+    }>(
+      'SELECT id, password_hash, orcid, verify_token FROM accounts WHERE username = $1',
       [username],
     );
 
@@ -790,6 +899,28 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
         409,
         'PASSWORD_ALREADY_SET',
         'A password is already set for this account; use change-password (with the current password) to rotate it.',
+      );
+    }
+
+    // A row found by username with a non-NULL verify_token is a state G row
+    // (ARCHITECTURE.md § 6.1) whose settings-registered email is still
+    // unverified: signup rows carry no username, and both signup finalizes
+    // clear the token in the same UPDATE that sets the username. This route
+    // refuses such a row a password until the email is verified, as the
+    // ORCID callback's link and accredit modes refuse it an ORCID
+    // (`refuseUnverifiedEmailRow` in `routes/orcid.ts`), so neither route
+    // gives a factor to an unverified row that has none. The hourly signup
+    // cleanup (`ABANDONED_ACCOUNT_ROWS`) deletes an unverified G row whose
+    // link has expired only while it carries no password and no ORCID,
+    // releasing the address. Runs before the ORCID requirement and the proof
+    // consume, so a row with an ORCID linked is refused here without
+    // spending its proof.
+    if (rows[0].verify_token !== null) {
+      return sendError(
+        res,
+        409,
+        'PENDING_UNVERIFIED',
+        'Verify your email before setting a password.',
       );
     }
 
@@ -814,10 +945,11 @@ router.post('/set-password', writeLimiter, verifyHiveSignature, async (req: Requ
     // Fresh ORCID re-auth gate (see ARCHITECTURE.md § 6.4 + § 6.5
     // invariant #1). Runs AFTER eligibility checks so the rejection path
     // doesn't widen the oracle surface beyond what an attacker holding a
-    // valid JWT can already probe (null-hash detection is already available
-    // via `GET /api/settings/email`'s `hasPassword` field for the
-    // JWT-holder). The check runs BEFORE the argon2 hash so a missing /
-    // bad proof short-circuits before paying argon2 wall-time.
+    // valid JWT can already probe (null-hash and unverified-email detection
+    // are already available via `GET /api/settings/email`'s `hasPassword`
+    // and `verified` fields for the JWT-holder). The check runs BEFORE the
+    // argon2 hash so a missing / bad proof short-circuits before paying
+    // argon2 wall-time.
     //
     // Why no sentinel burn: the bad-proof / good-proof timing differential
     // is an accepted residual per

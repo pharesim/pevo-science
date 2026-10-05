@@ -15,9 +15,9 @@ export const accreditationRequestSchema = z.object({
 // Self-service accreditation-metadata edit (PATCH /api/accreditation/metadata).
 // Reuses accreditationRequestSchema's per-field bounds via pick/partial (no
 // literal duplication); all three fields optional, at least one required. The
-// fresh_auth_proof is consumed on the JWT path (mirrors the admin schemas'
-// proof shape); self-custody callers satisfy the gate via the per-request Hive
-// signature so it is optional here.
+// fresh_auth_proof is consumed on the JWT path whatever the caller's custody
+// (mirrors the admin schemas' proof shape); on the signature path the
+// per-request Hive signature satisfies the gate, so it is optional here.
 export const accreditationMetadataEditSchema = accreditationRequestSchema
   .pick({ full_name: true, institution: true, field: true })
   .partial()
@@ -55,11 +55,11 @@ export const contactSchema = z.object({
 // Body shapes for the roster-gated `/api/admin/*` endpoints, matching the
 // admin-console SPA client (`frontend/src/api.js`). Every action also passes
 // requireAdminLevel(tier) and requireFreshAdminAuth(action). The optional
-// fresh_auth_proof is consumed on the JWT path; self-custody callers satisfy the
-// §6.4 fresh-proof gate via the per-request Hive signature, so it is optional
-// here and the gate enforces presence per auth mechanism. Hive account names are
-// lowercased to match the chain-stored, always-lowercase form the roster read
-// and verifyHiveSignature produce.
+// fresh_auth_proof is consumed on the JWT path whatever the caller's custody; on
+// the signature path the per-request Hive signature satisfies the §6.4
+// fresh-proof gate, so it is optional here and the gate enforces presence per
+// auth mechanism. Hive account names are lowercased to match the chain-stored,
+// always-lowercase form the roster read and verifyHiveSignature produce.
 const adminFreshAuthProof = z.string().min(1).max(512).optional();
 const hiveAccount = z.string().min(1).max(50).transform((s) => s.toLowerCase());
 const hivePermlink = z.string().min(1).max(256);

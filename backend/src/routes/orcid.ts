@@ -255,6 +255,41 @@ async function authenticateRequest(req: Request, res: Response): Promise<string 
   return username;
 }
 
+const UNVERIFIED_EMAIL_ORCID_MESSAGE =
+  'Verify the email you registered in settings, or remove it, before linking an ORCID.';
+
+/**
+ * Verify-first gate for the two modes that write `accounts.orcid` (`link` and
+ * `accredit`). ARCHITECTURE.md § 6.1 state G is a self-custody Keychain
+ * account whose row exists only because it registered an email through
+ * `POST /api/settings/email`'s add flow, and its `verify_token` stays random
+ * hex until the mailed link is clicked. While it does, neither mode may give
+ * the row an ORCID: § 6.3 refuses both with `PENDING_UNVERIFIED`. The signup
+ * cleanup reaps an expired unverified G row only while it carries no ORCID
+ * and no password, so an ORCID written here would also keep that row from
+ * being reaped.
+ *
+ * The row is read by username, and any non-NULL `verify_token` refuses: the
+ * signup-pending states E and F carry a NULL username, so a row found by
+ * username with a token is a state G row with an unverified email. A caller
+ * with no row (pure Keychain) or with a verified row passes. With no app pool
+ * there is no `accounts` table and so no row to refuse.
+ *
+ * Sends 409 `PENDING_UNVERIFIED` and returns true when it refuses; the caller
+ * must then return without writing anything else.
+ */
+async function refuseUnverifiedEmailRow(res: Response, username: string): Promise<boolean> {
+  const pool = getAppPool();
+  if (!pool) return false;
+  const { rows } = await pool.query(
+    'SELECT 1 FROM accounts WHERE username = $1 AND verify_token IS NOT NULL LIMIT 1',
+    [username],
+  );
+  if (rows.length === 0) return false;
+  sendError(res, 409, 'PENDING_UNVERIFIED', UNVERIFIED_EMAIL_ORCID_MESSAGE);
+  return true;
+}
+
 // ─────────────────────────────────────────────────────────────
 // POST /api/orcid/start — Initiate ORCID OAuth for any mode
 // ─────────────────────────────────────────────────────────────
@@ -279,6 +314,15 @@ router.post('/start', startLimiter, async (req: Request, res: Response) => {
     const authed = await authenticateRequest(req, res);
     if (!authed) return;
     username = authed;
+  }
+
+  // Early run of the verify-first gate (`refuseUnverifiedEmailRow`) for the
+  // two modes that write `accounts.orcid`, so a caller whose settings email is
+  // still unverified is not sent through the OAuth round trip only to be
+  // refused at the callback. The callback handlers hold the authoritative
+  // check, because the email can be registered after this request passes.
+  if ((mode === 'link' || mode === 'accredit') && username && await refuseUnverifiedEmailRow(res, username)) {
+    return;
   }
 
   // When mode === 'fresh_auth', the request body must
@@ -705,9 +749,13 @@ async function handleLogin(res: Response, orcidId: string): Promise<void> {
   // call site per the wrapping-primitive convention, not a hypothetical the
   // filter already excludes. The filter also reads neither `verify_token` nor
   // `expires_at`, so a state-G row matches whether or not its
-  // settings-registered email is verified; nothing here depends on that,
-  // because the ORCID round-trip is the authentication and the binding it
-  // presents was proven by OAuth when the link was written.
+  // settings-registered email is verified. While it is unverified, no ORCID
+  // reaches the row through this file (`refuseUnverifiedEmailRow` refuses
+  // `link` and `accredit`, and `updateAccountOrcid` writes only onto a row
+  // whose token is NULL), but an unverified row that already carries one
+  // still matches here. Nothing here depends on the email either way, because
+  // the ORCID round-trip is the authentication and the binding it presents
+  // was proven by OAuth when the link was written.
   // `custodyClaimFor` below is what resolves the column: anything that is not
   // an explicit `'light'` with no epoch becomes `'self'`, the right answer for
   // a row the server holds no keys for. `upgraded_at` rides along because that
@@ -781,6 +829,12 @@ async function handleAccredit(
     sendError(res, 400, 'BAD_REQUEST', 'Invalid ORCID iD format');
     return;
   }
+
+  // Authoritative verify-first gate: accredit writes the same `accounts.orcid`
+  // factor link does, so a state G row with an unverified email is refused
+  // here, before the HAF reads, the broadcast, the binding-cache write and the
+  // row UPDATE. See `refuseUnverifiedEmailRow`.
+  if (await refuseUnverifiedEmailRow(res, username)) return;
 
   // Check if already accredited
   const { getAccreditedSet, hasUnliftedSanction, SANCTIONED_ACCREDIT_MESSAGE } = await import('../accreditation.js');
@@ -981,9 +1035,12 @@ async function handleAccredit(
       await cacheOrcidBinding(orcidId, username);
       currentStep = 'account_update';
 
-      // Update the orcid column on the account row, if the user has one. A
-      // pure Keychain user has no row at all; one that registered an email
-      // through settings does (§ 6.1 state G), and it is not a light account.
+      // Update the orcid column on the account row, if the user has one and
+      // it is not a state G row whose settings-registered email is still
+      // unverified (`updateAccountOrcid` writes only where `verify_token` is
+      // NULL). A pure Keychain user has no row at all; one that registered
+      // an email through settings does (§ 6.1 state G), and it is not a
+      // light account.
       // Routed through __test_seams so a unit spec can spy on this call
       // (replaces the fragile getAppPool() Once-stack).
       await __test_seams.updateAccountOrcid(username, orcidId);
@@ -1035,6 +1092,10 @@ async function handleLink(
     sendError(res, 400, 'BAD_REQUEST', 'Invalid ORCID iD format');
     return;
   }
+
+  // Authoritative verify-first gate, before the HAF reads, the broadcast, the
+  // binding-cache write and the row UPDATE. See `refuseUnverifiedEmailRow`.
+  if (await refuseUnverifiedEmailRow(res, username)) return;
 
   // Fetch existing accreditation to preserve fields
   const existing = await getExistingAccreditation(username);
@@ -1150,9 +1211,12 @@ async function handleLink(
       await cacheOrcidBinding(orcidId, username);
       currentStep = 'account_update';
 
-      // Update the orcid column on the account row, if the user has one. A
-      // pure Keychain user has no row at all; one that registered an email
-      // through settings does (§ 6.1 state G), and it is not a light account.
+      // Update the orcid column on the account row, if the user has one and
+      // it is not a state G row whose settings-registered email is still
+      // unverified (`updateAccountOrcid` writes only where `verify_token` is
+      // NULL). A pure Keychain user has no row at all; one that registered
+      // an email through settings does (§ 6.1 state G), and it is not a
+      // light account.
       // Routed through __test_seams so a unit spec can spy on this call
       // (replaces the fragile getAppPool() Once-stack).
       await __test_seams.updateAccountOrcid(username, orcidId);
@@ -1466,8 +1530,16 @@ async function updateAccountOrcid(username: string, orcidId: string): Promise<vo
     throw new AppPoolNotInitialisedError('App pool not initialised. accounts.orcid update unavailable');
   }
   try {
+    // `verify_token IS NULL` keeps the write off a state G row whose
+    // settings-registered email is unverified (ARCHITECTURE.md § 6.3: such a
+    // row is refused an ORCID while it stays so). `refuseUnverifiedEmailRow`
+    // refuses that caller before the broadcast, but the email can be
+    // registered while the broadcast runs; this predicate covers that
+    // interleaving. The chain
+    // record still carries the binding, so the user can re-link once the
+    // email is verified.
     await pool.query(
-      `UPDATE accounts SET orcid = $1 WHERE username = $2`,
+      `UPDATE accounts SET orcid = $1 WHERE username = $2 AND verify_token IS NULL`,
       [orcidId, username],
     );
   } catch (err) {

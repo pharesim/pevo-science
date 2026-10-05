@@ -200,7 +200,7 @@ describe.skipIf(!dbReachable)('migration 017 — accounts_custody_upgraded_align
     expect(after.rows[0]).toEqual({ custody: 'light', upgraded_at: null });
   });
 
-  it('accepts every enumerated shape: A/B/C, D, and the pre-finalize NULL column', async () => {
+  it('accepts every enumerated shape: A/B/C, D, and the NULL column of E/F and G', async () => {
     const pool = getAppPool()!;
     // A/B/C: light, no epoch.
     await expect(
