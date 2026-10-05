@@ -307,3 +307,33 @@ Dismissed in triage, no action:
   behaviour, which this task did not ask for.
 
 Keep AC 5 as it stands. Anchor any new comment on stable symbols only.
+
+## Backend re-review signal (2026-10-05, commit 0330bef4)
+
+0330bef4 is on main (`git merge-base --is-ancestor`, checked).
+
+Item 1, the `normalizeCommentText` docblock. Fixed by deleting and
+narrowing, per the root CLAUDE.md comment rule; no new sentence was added.
+- The "so a look-alike character cannot make the label or a path read one
+  way and match another" clause is deleted. So is the "as a reader sees it"
+  lead, which the same two residuals contradict (a long `s` folds to `s`, a
+  spacing mark is deleted).
+- The LETTERS sentence and its pointer to the header's residual list stay,
+  narrowed to what was measured: "Look-alike LETTERS of a script other than
+  Latin and Common are not folded to a Latin letter". Unqualified, "not
+  folded" measures false. NFKC folds the lunate sigmas to Greek sigmas, and
+  687 Common-script letters (mathematical letters, the script small l) to
+  Latin. Of 143,180 letters of any other script, none folds to a Latin
+  letter.
+- Every remaining sentence was checked against the five residuals and
+  measured over all code points on an isolated copy: Cf 170/170 and M
+  2543/2543 dropped, Zs 17/17 to a space, Pd 27/27 and U+2212 to `-`, and
+  every pattern consumer reads the normalised block text.
+
+Decided with the user before this move: "every dash" stays, in the docblock
+and in the header. U+2053 SWUNG DASH has the Dash property and is not
+mapped, but it is Po, renders as a tilde, and opens no hiding path.
+
+AC 5: comment-only diff, 8 lines inside the docblock. `LANDING_*`, both
+deferred maps and `LANDING_DIGEST` are untouched. Canary 12/12, exit 0, on
+an isolated copy of 0330bef4's backend tree. `typecheck:tests` is clean.
