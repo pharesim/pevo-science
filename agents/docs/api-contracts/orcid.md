@@ -148,6 +148,8 @@ No min works check on login.
 }
 ```
 
+`custody` is derived exactly as `POST /api/auth/login` derives it: `"light"` only for an account still in light custody (stored custody `light` and no upgrade recorded), `"self"` for every other account. An account upgraded through `POST /api/custody/upgrade` (ARCHITECTURE.md § 6.1 state D) and a self-custody Keychain account that registered an email in settings and later linked this ORCID (state G) both receive `"self"`.
+
 **Response error (no account):**
 
 ```json

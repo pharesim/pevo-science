@@ -188,7 +188,7 @@ A window that has closed reports 401 `FRESH_AUTH_REQUIRED` with `details.reason:
 
 ### POST /api/custody/upgrade
 
-Notify the backend that the user has completed a client-side key upgrade to self-custody. The backend verifies a seed-phrase-derived-pubkey proof, deletes stored encrypted keys, and issues a new JWT. Per ARCHITECTURE.md § 6.4 the upgrade action's required re-auth is the seed-phrase-derived pubkey (not password); per § 6.5 invariant #6 the seed phrase is the upgrade proof, not a session-auth factor.
+Notify the backend that the user has completed a client-side key upgrade to self-custody. The backend verifies a seed-phrase-derived-pubkey proof, deletes stored encrypted keys, marks the account self-custody, and issues a new JWT. The key deletion, the custody change, and the upgrade timestamp land in one database write, so from then on every login path (`POST /api/auth/login`, ORCID login) mints `custody: "self"` for the account. Per ARCHITECTURE.md § 6.4 the upgrade action's required re-auth is the seed-phrase-derived pubkey (not password); per § 6.5 invariant #6 the seed phrase is the upgrade proof, not a session-auth factor.
 
 A successful upgrade also revokes every session the account had open. It stamps the session-revocation epoch (ARCHITECTURE.md § 6.7), so every previously issued bearer JWT is rejected with `401 SESSION_INVALIDATED`, and it closes every open session-kind fresh-auth proof window. The token in the response is the only surviving session. Clients should expect other tabs and devices to be signed out on their next request.
 

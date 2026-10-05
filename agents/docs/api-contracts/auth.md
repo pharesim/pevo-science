@@ -209,6 +209,8 @@ Create a new Hive account and complete the signup. The client generates a BIP39 
 
 **Requires cookie:** the `pevo_signup_session` binding cookie minted by `/api/auth/verify` or `/api/auth/resume-signup`. The request is rejected without it. The `auth_token` is the row-lookup credential, not the authorization proof, so it is not sufficient on its own. The SPA sends the cookie via `credentials: 'same-origin'`.
 
+**Stuck-account recovery (the one path that needs no cookie):** when no row matches the `auth_token` because a prior `/confirm` attempt already finalized the row (which clears the token) but its accreditation broadcast failed, the handler falls back to a lookup keyed by `username`. That lookup bypasses the binding cookie and is gated instead on the submitted `posting_private` matching an authorized posting key of the on-chain account. It admits only a light row finalized within the last hour: `verify_token` cleared, `custody` `light`, encrypted keys stored. On a match the request continues with the accreditation step, idempotently if the earlier broadcast already landed. Otherwise it returns `BAD_REQUEST`.
+
 **Response `data`:**
 
 ```json
@@ -252,6 +254,8 @@ Link an existing Hive account to a verified PEvO signup. Requires Keychain signa
 The Hive username is extracted from the Keychain signature headers, not from the body.
 
 **Requires cookie:** the `pevo_signup_session` binding cookie minted by `/api/auth/verify` or `/api/auth/resume-signup`. The request is rejected without it. The `auth_token` is the row-lookup credential, not the authorization proof, so it is not sufficient on its own. This is in addition to the Keychain signature headers. The SPA sends the cookie via `credentials: 'same-origin'`.
+
+**Stuck-account recovery (the one path that needs no cookie):** when no row matches the `auth_token` because a prior `/link` attempt already finalized the row (which clears the token) but its accreditation broadcast failed, a request authenticated by a fresh Keychain signature falls back to a lookup keyed by the signing username. That lookup bypasses the binding cookie; the fresh signature is the ownership proof. A request authenticated by a Bearer JWT never reaches it and gets `BAD_REQUEST`. The lookup admits only a row the `/link` finalize itself produced within the last hour: `verify_token` cleared, `custody` `self`, and `upgraded_at` no later than `updated_at` (the finalize writes both in one statement, so they are equal). An account that reached self-custody through `POST /api/custody/upgrade` never matches, even within the hour, and neither does a `self` row with no `upgraded_at`. A password reset made after the finalize does not block this recovery. On a match the request continues with the accreditation step, idempotently if the earlier broadcast already landed.
 
 **Response `data`:**
 
