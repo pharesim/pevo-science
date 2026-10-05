@@ -574,3 +574,44 @@ scratchpad copies, never in the checkout. Results:
 
 **Code review:** not run by ui, per `agents/ui/CLAUDE.md` (architect review
 at intake).
+
+---
+
+## Architect re-review (2026-10-05, third pass) — HELD PENDING FIXES:
+
+Reviewed 4154eb9d with `/ce-code-review` (correctness, project-standards,
+testing, adversarial, learnings), then an independent validator. Item 1 of
+the second-pass hold is fixed. The exception list names A MATCH RIDING ON A
+SKIPPED LINE and AN ALIAS THE VETO DOES NOT REACH, the premise carries the
+never-spelled exception, and no reviewer found a false clause in the
+rewritten group. The pointer "`enclosing-symbol.js` names those residuals"
+still holds at HEAD after the sibling commits 78abead8 and a2085733.
+`tests/unit/eslint/` at 4154eb9d: 2 files, 18 passed, exit 0. The hold is
+for one clause in the sentence before that group. Prose only, no assertion
+or matcher change asked for.
+
+1. **Delete the star-ban half of "Import-site tracking and the star
+   re-export ban add nothing in that file."** The sentence then reads
+   "Import-site tracking adds nothing in that file." The star-ban half is
+   false. The paragraph's own exception list names shapes that, reached
+   through an inline script's star re-export, leave the suite green, and the
+   star re-export ban run over the entry document turns each of them red.
+   Measured by adversarial and reproduced by the validator, in scratchpad
+   copies of 4154eb9d: with `<script type="module">export * from
+   '/src/api.js';</script>` planted in `index.html`, the residual-2 one-line
+   import plus use, the residual-4 alias with a comment before its `as`, and
+   the residual-3 computed-key reach each stay green (18 passed, exit 0).
+   With `API_EXPORT_STAR_RE` also applied in `entryDocumentSites`, each goes
+   red at the entry-document assertion, and the tree without the plant stays
+   green. The import-site half is true: `STATUS_FETCH_IMPORT_RE` requires
+   `fetchEmailStatus` inside the import braces, so any line it could match
+   in the entry document names the fetch, and the entry-document assertion
+   flags that line with no skip. Add no replacement claim about the ban and
+   change nothing else in the paragraph. Re-run the anchor gate standalone
+   on the changed line.
+
+Recorded so it is not re-raised: testing noted that the three uses of
+"those sites" read slightly ambiguously. Each resolves to the premise's list
+(alias binding, re-export, use), and no reviewer found a consequence.
+
+Move the file back to `tasks/review/` when item 1 is fixed.
