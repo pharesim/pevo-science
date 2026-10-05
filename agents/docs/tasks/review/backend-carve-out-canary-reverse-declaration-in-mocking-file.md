@@ -291,3 +291,26 @@ For triage, outside this task:
 `tests/routes/wot-retract-cascaderevocation.test.ts`. That file was deleted
 in 11039c47. The citation is unchecked free prose in a `DEFERRED_FREE_PROSE`
 block.
+
+## Backend re-review signal addendum (2026-10-05, commits b463e328 and 02213e90)
+
+Two more rounds of prose-truth verification ran after the move to review.
+Both commits are prose and probes only; arm behaviour is unchanged. Both are
+on main.
+
+- b463e328 corrects the recorded over-read. The word form reads a lone `a`
+  or `b` after the word clause or clauses following spaces or a line break as
+  well, not only after a dash or an open parenthesis (`clause a planner`).
+  The header now states what the lookbehind skips (a word character or a
+  closing parenthesis directly before, as in `item 5(a)`), and the docblock
+  matches. The whitespace article is pinned. "A comment above one spec" is
+  now "at one spec": two of the no-marker self-declarations in
+  `lib/fresh-auth.test.ts` sit inside `it()` bodies.
+- 02213e90 makes two more statements explicit: the whole pattern ignores
+  case, so `(A)` trips it, and a letter glued to the word clause
+  (`clause(a)`) is the word form even though the lookbehind skips one glued
+  to any other word character. `clause(a)` is now a probe.
+
+The third pass found nothing else false in this prose. The canary is 12/12,
+exit 0, at 40459854, `typecheck:tests` is clean, and the protected maps and
+`LANDING_DIGEST` are byte-identical to c7c52859.
