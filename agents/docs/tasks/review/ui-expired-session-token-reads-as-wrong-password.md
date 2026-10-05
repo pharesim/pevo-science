@@ -375,3 +375,74 @@ Verification:
   the diff's files), a shared `pickedFile` fixture, and folding the two upload
   checks into one.
 - No `/ce-code-review`, per the UI agent rule. No e2e run.
+
+**UI addendum (2026-10-05, commits `729a9134` and `4db65971`; both verified ancestors of `main`):**
+
+After the signal, a review of `5dc0772b` ran with seven lenses: spec and
+signal accuracy, callers, teardown races, site placement, tests, comment
+truth, and adversarial. Each finding went to three refuters, followed by a
+completeness critic (50 agents in all). It confirmed every hold item, the
+scope limits, and the signal's measured claims. The user triaged its findings
+as follows.
+
+Fixed:
+
+- Self-custody upload. `uploadFile`'s first-attempt self-custody branch sat
+  outside the catch. A Keychain account's pre-flight is Keychain-signed, so
+  an expired or revoked session is first met at the bearer transfer leg
+  (`/ipfs/upload`). The page then added "Upload failed" and "Publishing
+  failed" to the teardown message, while the retry leg's twin branch was
+  already covered. The branch now has its own catch with the same unwind
+  (`UPLOAD_SESSION_TORN_DOWN`). Every other self-custody error keeps its
+  identity, and no retry was added. A new self-custody case in
+  `session-expired.test.js` pins it and was red before the fix. The gap
+  predates `5dc0772b`, but it is on the upload surface Scope 2 names, and the
+  user put it in scope.
+- Prose the unwind made false:
+  - the two orchestrator docblocks: "Non-fresh-auth errors ... propagate"
+    became "Other errors";
+  - three orchestrator test titles, narrowed to the code each drives;
+  - the `lib-ipfs-upload.test.js` retry case title, and its "reclassifies
+    exactly one thing" sentence;
+  - two comments in `lib-fresh-auth-consent-op-eviction.test.js`;
+  - the settings retry-ladder intro.
+  `4db65971` also narrows two comments the self-custody fix made stale: the
+  session-expired suite's mocking list now names the whole Keychain module,
+  not only its probe, and retryOnce's docblock no longer calls `uploadFile`'s
+  catch single.
+
+Correction to the signal: it names one state where `guard.cancel()` in
+`unwindIfSessionEnded` is the only message, another-account adoption at
+`_endSession`. There are two more. A late `SESSION_INVALIDATED` can arrive
+after a cross-tab sign-out, or after a cross-tab switch to another account.
+In both the store no longer holds the sent token, so `handleRevokedSession`
+does nothing, and the scrub said nothing. Probes showed all three states go
+silent without the call. The adoption case pins it.
+
+Dismissed, recorded for follow-up filing if wanted:
+
+- A second broadcast flight that resumes after another flight's expiry
+  teardown finds `custody` null and takes the Keychain branch in `signer.js`.
+  The user then sees "Vote failed" or "Publishing failed" next to the expiry
+  message. If the extension is installed, a light account gets a Keychain
+  vote popup instead. This predates `5dc0772b` and needs both flights to
+  resume in the same microtask drain.
+- An ORCID start that meets a session ending during the acquisition or
+  `resolveProof`, before the guarded call, still rejects to the caller.
+- The retry-leg unwinds have no tests; the hold did not require them. Probes
+  showed each is reachable, and each probe failed when its leg was removed.
+- From the follow-up check of `729a9134`: a self-custody upload whose
+  cross-tab sign-out or account switch lands inside the Keychain prompt still
+  reports "Upload failed". This predates `5dc0772b` and involves neither of
+  the two codes.
+
+Verification:
+
+- Full frontend unit suite at `729a9134`: 91 files, 2141 tests, exit 0.
+  `npm run build` was clean, run in an isolated copy.
+- `4db65971` changes comments only; the three touched suites pass (105
+  tests).
+- A second adversarial check of `729a9134` (three lenses, three refuters per
+  finding, 21 agents) confirmed the self-custody fix: the removal mutant is
+  killed and every other error is unchanged. It found the three prose items
+  `4db65971` fixes, and nothing else.
