@@ -69,24 +69,28 @@
  * marker stands in for the block stating its file's own carve-out, where the
  * declaration would read as that file's own clause (c) and a signpost
  * discharges nothing. It is a heuristic, not a parse of the carve-out: any
- * `(a)` or `(b)` enumeration in the block trips it, and the message gives the
- * way through. Without that arm, two suites mocking the same surface
+ * `(a)` or `(b)` in the block trips it, a list or a single mention such as
+ * `clause (b)`, and so does an article `a` straight after the word clause and
+ * a dash or an open parenthesis (`clause - a bridge account`, any dash folded
+ * to `-`; `clause (a token, a semicolon)`). The message gives the way
+ * through. Without that arm, two suites mocking the same surface
  * discharge each other: one writes the reverse form, the other a forward
  * citation of a token the first spells in code, and every other arm holds.
  *
- * The cost, as measured: a suite whose header lists (a)/(b) clauses writes its
- * reverse self-declaration in a comment separated from that list by code.
- * Comments separated only by blank lines are one block here, so a second
- * docblock under the header is not enough. Most suites that declare
+ * The cost, as measured: a suite whose header carries such a marker writes
+ * its reverse self-declaration in a comment separated from that marker by
+ * code. Comments separated only by blank lines are one block here, so a
+ * second docblock under the header is not enough. Most suites that declare
  * themselves a real-path companion in prose today do so inside such a header,
  * among them suites that call no `vi.mock`, `vi.doMock` or `vi.spyOn` at all,
  * and converted in place to the reverse form each of those goes red. The rest
- * declare themselves in a block with no (a)/(b) marker, a header that takes no
- * carve-out or a comment above one spec, and convert in place. So in place the
- * block key refuses every one of these suites the module key would, plus
- * those that mock nothing but declare themselves inside an (a)/(b) header.
- * What it gains over the module key is the way through by placement, open to
- * the suites that mock a module too, where the module key left none.
+ * declare themselves in a block with no marker, a header that takes no
+ * carve-out or a comment above one spec, and this arm lets them convert in
+ * place. So in place the block key refuses every one of these suites the
+ * module key would, plus those that mock nothing but declare themselves
+ * inside a header carrying a marker. What it gains over the module key is the
+ * way through by placement, open to the suites that mock a module too, where
+ * the module key left none.
  *
  * What that link does NOT establish: that the two files stand in a mocked /
  * real-path relationship at all. The block arm refuses the reverse form only
@@ -1289,20 +1293,23 @@ function proseRemainder(text: string): string {
 
 /** A clause-(a) or clause-(b) marker, in every spelling the corpus writes one:
  *  `(a)`, the slash lists `(a/b)` and `(a/b/c)`, `clause (a)`, `clause-(a)`,
- *  `clause a)`, `clause-a`, and the plurals `clauses a/b/c` and
- *  `clauses (a/b)`. Either clause is enough, so a statement that writes only
+ *  `clause a)`, `clause-a`, a bare `clause a` (`clause a + clause c`), and the
+ *  plural before a slash list of any length (`clauses a/c`, `clauses a/b/c`,
+ *  `clauses (a/b)`). Either clause is enough, so a statement that writes only
  *  its justification, or only its auth acknowledgement, still reads as one. A
  *  parenthesised letter directly after an identifier (`fn(b)`) is a call, not
- *  a marker. Carve-out WORDING is deliberately not read: a real-path suite
- *  declaring itself names the carve-out and its clause (c) as naturally as a
- *  mocked suite writes its justification. */
+ *  a marker. The word form also reads an article `a` after a dash or an open
+ *  parenthesis as clause (a); the header records that. Carve-out WORDING is
+ *  deliberately not read: a real-path suite declaring itself names the
+ *  carve-out and its clause (c) as naturally as a mocked suite writes its
+ *  justification. */
 const OWN_CARVE_OUT_RE = /(?<![\w)])\([ab](?:\/[a-c])*\)|\bclauses?[\s-]*\(?[ab]\b/i;
 
 /** Does this block carry a clause-(a) or clause-(b) marker? The marker stands
  *  in for the block stating its own file's carve-out, where a reverse
  *  declaration would read as that file's own clause (c), which a signpost
  *  cannot discharge. It is all the arm reads: a self-declaring real-path suite
- *  whose header lists (a)/(b) clauses trips it too. See the header on the
+ *  whose header carries such a marker trips it too. See the header on the
  *  reverse form. */
 export function statesOwnCarveOut(text: string): boolean {
   return OWN_CARVE_OUT_RE.test(rejoined(text));
@@ -1313,9 +1320,9 @@ const REVERSE_IN_OWN_CARVE_OUT =
   'clause-(a) or clause-(b) marker, where it reads as this file\'s own clause (c), and a ' +
   'signpost discharges nothing. If this file takes the carve-out, cite its real-path ' +
   `companion in the forward form: ${STRUCTURED_FORM}. ` +
-  'If it is the real-path suite declaring itself, move the declaration into a comment ' +
-  'of its own, separated from that (a)/(b) list by code (comments separated only by ' +
-  'blank lines are one block)';
+  'If it is the real-path suite declaring itself, move the declaration out of this ' +
+  'block, into a comment separated from the marker by code (comments separated only ' +
+  'by blank lines are one block)';
 
 // --- validation --------------------------------------------------------------
 
@@ -2851,6 +2858,7 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     expect(pair).toHaveLength(1);
     expect(pair[0]).toMatch(/^backend\/tests\/routes\/pair-a\.test\.ts \(comment block opening at line \d+\) — a reverse declaration/);
     expect(pair[0]).toContain('carries a clause-(a) or clause-(b) marker');
+    expect(pair[0]).toContain('into a comment separated from the marker by code');
     // And per citation, the pair is clean, which is why the arm sits where
     // the block is visible rather than inside `citationViolations`.
     const readPair = (p: string): string | null => [a, b].find((s) => repoPathOf(s.rel) === p)?.lines.join('\n') ?? null;
@@ -2901,8 +2909,8 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
       'const HONEST_TOKEN = 2;',
     ] };
     expect(validate([noMock, mocked])).toEqual([expect.stringContaining('carries a clause-(a) or clause-(b) marker')]);
-    // A reverse declaration with no carve-out statement beside it, in a file
-    // that mocks the cited surface, is NOT seen. Recorded in the header as a
+    // A reverse declaration in a block with no clause-(a) or clause-(b)
+    // marker, in a file that mocks the cited surface, is NOT seen. Recorded in the header as a
     // review judgement; pinned so closing it later is a visible probe edit.
     const bareA: ScannedSource = { rel: a.rel, lines: [
       '// Real-path companion for: `backend/tests/routes/pair-b.test.ts`', poolMock, 'const PAIR_TOKEN = 1;',
@@ -2915,9 +2923,14 @@ describe('carve-out clause-(c) companion citations resolve and are witnessed', (
     for (const marker of [
       '(a) x', '(B) x', 'per clause (a)', 'per clause-(b)', 'clause a) x', 'see clause-b', 'per clause-\n(a)',
       'per root CLAUDE.md test carve-out, clauses a/b/c', 'carve-out clauses (a/b)',
-      'the full carve-out justification (a/b/c)',
+      'the full carve-out justification (a/b/c)', 'the file header (clauses a/c)', 'clause a + clause c',
     ]) {
       expect(statesOwnCarveOut(marker), JSON.stringify(marker)).toBe(true);
+    }
+    // The over-read the header records, pinned so closing it is a visible
+    // edit: an article after the word clause and a dash or an open paren.
+    for (const article of ['an `OR` clause \u2014 a bridge account', 'ends the import clause (a `from`, a semicolon)']) {
+      expect(statesOwnCarveOut(normalizeCommentText(article)), JSON.stringify(article)).toBe(true);
     }
     for (const prose of [
       'This is the carve-out clause-(c) real-path companion for the sibling',
