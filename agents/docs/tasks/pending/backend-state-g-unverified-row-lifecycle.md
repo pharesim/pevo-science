@@ -78,3 +78,14 @@ is reaped (at most the 24h link expiry plus the hourly cleanup).
    touched (login, resend, signup, recover).
 4. No new writer of `accounts.updated_at`.
 5. Comment-anchor conventions hold in everything written.
+
+## Architect note (2026-10-05): item 10 and its comment
+
+The `/login` `NO_PASSWORD_SET` comment in `routes/auth.ts` currently names one row whose
+remedies the message misses: a state G row with no ORCID. That list is incomplete. A null-hash D
+row (upgraded from C, or an ORCID-path `/link` D) cannot recover by seed phrase either (no
+`memo_key_enc`) and is past ORCID recovery once `upgraded_at` is set. A pending ORCID-path F
+row also reaches this branch, because the null-hash check runs before the pending checks. When
+item 10 makes the message uniform, rewrite that comment so it lists no closed set of
+exceptions. The architect updates the 403-versus-401 rationale in `api-contracts/auth.md` at
+review. Say in the signal block what the final message is.

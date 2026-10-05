@@ -64,3 +64,13 @@ has to keep working.
 3. The completion signal lists the per-state outcome table, so the architect
    can bring § 6.3's "Forgot password" block and § 6.4's reset row up to date
    at review. Do not edit those sections yourself.
+
+## Architect note (2026-10-05): the set-password comment depends on this rule
+
+`routes/settings.ts`, `POST /set-password`: "Only ORCID-verified accounts can opt into password
+login" is false today, because `reset-request` and `reset` let any row with an email gain a
+password, a state G row with no ORCID included. The default rule in Scope item 2 (reset never
+adds a password) makes that sentence true, and so does the `ORCID_REQUIRED` comment in
+`tests/routes/settings-set-password.test.ts` that restates it. If step 1 sends this task to
+`blocked/` and a different rule lands, rescope both comments to that rule in the same pass:
+either limit them to this route, or name the reset path that also adds a password.
