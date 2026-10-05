@@ -279,7 +279,7 @@
  * spelling, {@link moduleResourcesUnder} the other three), every `.sql`
  * resource under the same tree ({@link sqlResourcesUnder}, read as SQL),
  * every `.sql` file at the top of `backend/migrations`, and every `.sql` file
- * under `backend/scripts`, collected the same way. Every TypeScript
+ * under `backend/scripts`, recursively. Every TypeScript
  * module the build can compile into the `dist` the image runs is in that
  * set: `tsconfig.json` includes the whole of `src` and sets no `allowJs`, so
  * a `.js` placed there is neither compiled nor shipped, and is not scanned
@@ -708,15 +708,17 @@
  *     follows links, would read the same file spelled `.ts`. No symbolic
  *     link exists under `backend/src` today. The re-open condition: a linked
  *     module or directory under `src`, at which point the local walkers
- *     follow links the way the shared one does.
+ *     follow links the way the shared one does. The same holds under
+ *     `backend/scripts`: a linked `.sql` file or directory there is skipped,
+ *     none exists today, and one re-opens this entry.
  *   - The routine arm walks the SQL files only (the migrations, any `.sql`
  *     resource under `src` and the `.sql` files under `backend/scripts`), so
  *     its refusal of a trigger or rule bound to `accounts` does not reach one
  *     installed at runtime from a MODULE's SQL string. Most DDL a module
  *     could spell is still read by the arms that span `sources`: an
- *     `ALTER TABLE accounts` naming the column reds
- *     the ALTER arm, and a routine body spelling `UPDATE accounts SET
- *     updated_at = ...` reds the writer arms like any other statement text.
+ *     `ALTER TABLE accounts` naming the column reds the ALTER arm, and a
+ *     routine body spelling `UPDATE accounts SET updated_at = ...` reds the
+ *     writer arms like any other statement text.
  *     A rule whose action spells that statement is read the same way, the
  *     statement sitting in the rule's text. What is left to no arm, the
  *     unread spellings the other entries of this list record aside, is a
@@ -3089,8 +3091,9 @@ function moduleResourcesUnder(root: string): ScannedSource[] {
  *  is a function of its own so the walker-fixture spec can hand it a planted
  *  tree and see what it collects. That spec pins the union, not the call
  *  that builds `sources` from it: pointing `sources` back at `sourcesUnder`
- *  alone stays green on today's tree, as does dropping `sqlResourcesUnder`
- *  from `migrations`, and those two call sites are held by reading them. */
+ *  alone stays green on today's tree, as does dropping either
+ *  `sqlResourcesUnder` entry from `migrations`, and those call sites are held
+ *  by reading them. */
 function codeSourcesUnder(root: string): ScannedSource[] {
   return [...sourcesUnder(root), ...moduleResourcesUnder(root)];
 }
@@ -3100,7 +3103,10 @@ const sources = readable(codeSourcesUnder(srcRoot));
 const migrations = readable([
   ...migrationSources(path.resolve(__dirname, '..', '..', 'migrations')),
   ...sqlResourcesUnder(srcRoot),
-  ...sqlResourcesUnder(path.resolve(__dirname, '..', '..', 'scripts')),
+  ...sqlResourcesUnder(path.resolve(__dirname, '..', '..', 'scripts')).map((s) => ({
+    ...s,
+    rel: `scripts/${s.rel}`,
+  })),
 ]);
 
 /** The blanked view every scan reads, for fixtures written as source lines.
