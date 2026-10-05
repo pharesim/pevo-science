@@ -199,3 +199,95 @@ carve-out listed without (a)/(b) markers.
 
 Keep AC 5 as it stands. Anchor any new comment on stable symbols only. The mixed-script task is
 also held on this file; land the two one at a time.
+
+## Backend re-review signal (2026-10-05, commits 05573a43 and 0e120d20)
+
+Both commits are on main (`git merge-base --is-ancestor`, checked). The arm's
+behaviour is unchanged. 0e120d20 fixes what a four-lens adversarial
+verification of 05573a43 found (neuters, marker census, prose truth, in-place
+plants).
+
+Item 1, reach and cost wording:
+- `REVERSE_IN_OWN_CARVE_OUT`, the WHAT IS CHECKED sentence, the
+  `statesOwnCarveOut` and `validationViolations` docblocks and the probe
+  comments now say the block carries a clause-(a) or clause-(b) marker.
+- Deviation from the hold's literal wording. The move advice reads
+  "separated from the marker by code", not "from that (a)/(b) list".
+  Measured: `routes/app-ssr-discipline-real-path.test.ts` declares itself in
+  a header whose only marker is the single mention `clause (b)`. There is no
+  list there to separate from. The header says the arm fires on a list or a
+  single mention.
+- Deviation from the hold's census. "Every self-declaring suite, including
+  two that mock nothing" measures false. 13 suites declare themselves, in a
+  comment, the real-path companion of another named suite:
+  - 9 declare in a block with a marker: hafsql-btrim-charset-real-postgres,
+    wot-vouch-status-select-real-postgres, app-ssr-discipline-real-path,
+    verifyHiveSignature-authmethod, -reissuedat-roundtrip,
+    -reissuedat-orcid-roundtrip, admin-fresh-auth-real-path-verifyhivesignature,
+    ipfs-upload-real-path-verifyhivesignature and
+    papers-retract-real-path-verifyhivesignature. The first three call no
+    `vi.mock`, `vi.doMock` or `vi.spyOn` in code.
+  - 4 declare in a block with no marker: the reviews-real-haf,
+    consent-ops-real-haf and lib/idempotency-real-haf headers (each takes no
+    carve-out and mocks nothing), and the comment above the
+    refundStatusCodes Redis-path spec in middleware/rateLimit.test.ts.
+
+  The header states this without counts. "Most" declare inside a
+  marker-carrying header, among them suites that mock nothing, and each of
+  those goes red converted in place. For the rest, "this arm lets them
+  convert in place". That sentence is scoped to the arm on purpose:
+  reviews-real-haf converted in place stays silent on the arm but trips the
+  leaky-prose check on its sibling-coverage list.
+- The placement gain over the module key is stated. A new `noMock` probe
+  pins the cost for a suite that mocks nothing. A mutant that ANDs the arm
+  with the module key goes red only through it.
+- Found in verification, now recorded in the header and the docblock and
+  pinned: the word form reads an article `a` after a dash or an open paren
+  as clause (a). Corpus instances are "clause — a bridge account" in
+  reputation-active-authors-accredited-filter-canary and "clause (a `from`"
+  in no-session-proof-mint-outside-reauth-routes. The singular form predates
+  this round; item 2's plural extends it. There is no verdict effect, since
+  the corpus holds no reverse citation.
+
+Item 2, marker spellings:
+- `OWN_CARVE_OUT_RE` is now
+  `/(?<![\w)])\([ab](?:\/[a-c])*\)|\bclauses?[\s-]*\(?[ab]\b/i`. It takes the
+  plural as held, plus the slash list `(a/b/c)`, which
+  `signup-verify-resume-argon-error-translation.test.ts` writes alone in its
+  header.
+- Positive probes: the hold's two strings, plus `(a/b/c)`, `clauses a/c` and
+  a bare `clause a + clause c`. `clauses a/c` is the one plural spelling that
+  changes a block today: the comment above the notifications edit/revote
+  dedup canaries. The bare form is in custody-audit-retention-sweep. The
+  docblock lists all of them. One negative was added: 'clauses are read'.
+- Corpus: 207 blocks carry a marker, 205 at the parent. The two blocks that
+  flip are that notifications comment and the signup-verify-resume header.
+  Neither holds a reverse citation, so no verdict changes.
+
+AC 3 neuters, each run alone on an isolated copy:
+- Of 05573a43, each of these goes red: plural dropped; slash list dropped;
+  `statesOwnCarveOut` forced false; message reverted; push guarded by
+  `false &&`; lookbehind removed; arm ANDed with the module key (red via
+  `noMock` only).
+- Of 0e120d20, the move advice reverted goes red.
+
+AC 5: canary 12/12, exit 0, at 0e120d20. `typecheck:tests` is clean.
+`LANDING_*`, the deferred maps and `LANDING_DIGEST` are untouched.
+
+Considered and not done:
+- Renaming `statesOwnCarveOut`, `OWN_CARVE_OUT_RE` and
+  `REVERSE_IN_OWN_CARVE_OUT` to marker names. The hold names them, and the
+  docblock now says the marker stands in for a carve-out statement.
+- Tightening the regex to drop the article over-read. A measured candidate
+  drops only the two article blocks, but arm behaviour was to stay as it is,
+  so the over-read is documented instead.
+- Pinning the slash list's `[a-c]` bound and the `)` member of the
+  lookbehind. Both failure modes are theoretical, and the second predates
+  this task.
+
+For triage, outside this task:
+`wot-vouch-status-select-real-postgres.test.ts` clause (c), and a comment in
+`routes/wot-vouch-broadcast-outcomes.test.ts`, name
+`tests/routes/wot-retract-cascaderevocation.test.ts`. That file was deleted
+in 11039c47. The citation is unchecked free prose in a `DEFERRED_FREE_PROSE`
+block.
