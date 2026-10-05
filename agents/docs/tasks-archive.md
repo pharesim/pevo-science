@@ -1,250 +1,250 @@
-## Re-anchor the eight bare positional citations left in frontend/{src,tests} (archived 2026-10-05) — first review clean at 473af3f9; leftovers the regex cannot see routed to ui-positional-anchor-residue-sweep
+## Two mocked suites can discharge each other's clause (c) through the reverse citation form (archived 2026-10-05) — re-review clean at 0e120d20; both hold items fixed
 
 ### Architect archive note (2026-10-05)
 
-First review of 473af3f9 with /ce-code-review (focused: correctness and root CLAUDE.md
-"Comment anchors" in the architect context, plus one in-process adversarial reviewer
-reading a scratchpad copy of the reviewed tree, because sibling ui commits had moved the
-files since). No findings from either read. Every one of the eight rewrites (items 2 to 8
-plus the off-list `UPLOAD_ERROR_TEXT` site in ipfs-upload.js) names exactly one target in
-its file, and the sentence's claim about that target holds against the code. The
-hook's positional regex returns 0 at 473af3f9 and at HEAD 9f2ddf96, against 8 at the
-parent. No added line carries another rot form. Every changed line is a comment. Full
-unit suite on an isolated copy of 473af3f9: 87 files, 1975 tests, exit 0, matching the
-signal block.
+Re-review of 05573a43 and 0e120d20 with /ce-code-review (focused: correctness and root
+CLAUDE.md comment anchors in the architect context, plus one in-process adversarial
+reviewer on isolated copies of the reviewed commits; sibling 9a853710 on the same file was
+excluded). No actionable findings. Both items of the 2026-10-05 hold are FIXED.
 
-User decision 2026-10-05: the "not in scope, for the architect to route" leftovers
-(the line-wrapped `retryUpgradeBackend` "the guard / above just confirmed" form plus the
-plural, counted and unlisted-noun forms) went to a new ui task,
-ui-positional-anchor-residue-sweep. Widening the hook regex stays an architect decision
-after that sweep. No /ce-compound: the per-line blind spot is recorded in that task and
-in the hook's own deferred list.
+Item 1: the failure message, the WHAT IS CHECKED sentence, the docblocks and the probe
+titles say the block carries a clause-(a) or clause-(b) marker. The cost paragraph holds
+against the corpus: 13 self-declaring suites, 9 declaring in a marker block (3 of them mock
+nothing), 4 in an unmarked block, none of which replaces a module in code. Both deviations
+from the hold's literal wording are accepted: the move advice names the marker, since
+app-ssr-discipline-real-path's only marker is a single `clause (b)`, and the hold's own
+census ("every self-declaring suite") was wrong. Item 2: OWN_CARVE_OUT_RE takes the plural
+and the slash list. Marker blocks went from 205 to 207, neither flipped block holds a
+reverse citation, and no corpus verdict changes. Canary 12/12, exit 0, at base and head.
+Every neuter of the new alternatives and of the noMock pin went red. A planted
+pool-mocking suite writing only `clauses a/b/c` goes red at head and stays green at base,
+with an absent-token control red.
 
-### Task file
-
-**Owner:** ui
-**Created:** 2026-09-06
-
-Routed out of the round-6 architect review of `ui-cross-user-session-teardown`
-(clean, archived the same day). That task retired the last bare positional anchor
-in `lib/fresh-auth.js`'s `beginOrcidFreshAuthRedirect` docblock, and its signal
-block correctly reported that the wider class was still open. This is that class,
-filed as its own task so it is not blocked behind two still-open sibling tasks.
-
-## Why
-
-`.githooks/pre-commit` gained a positional-anchor arm on 2026-09-06 (`85baa79b`).
-It is a DIFF gate: it fires only on newly-added lines, so none of the citations
-below trips it and none of them will until someone edits that line. Root
-`CLAUDE.md` defers the whole-tree-clean guarantee for these trees explicitly, and
-that deferral is why the lines survived. The cost of leaving them is that the
-`frontend/{src,tests}` trees cannot be promoted to a whole-tree-clean gate, and
-each line is live rot: an insertion between the citation and its target silently
-breaks the pointer with nothing to catch it.
-
-The governing convention is
-`agents/docs/solutions/conventions/positional-anchor-stable-named-container-carve-out-2026-05-20.md`.
-A positional citation is durable ONLY when a stable behavioral name rides along in
-the same container. All eight below are bare: the article sits directly against a
-structural noun with no name in the slot.
-
-## Scope
-
-Re-anchor these eight, enumerated from the tree on 2026-09-06 by running the
-hook's own positional regex over `frontend/src` and `frontend/tests`. Each is
-quoted by its phrase rather than only its line number, since the numbers drift:
-
-1. `tests/e2e/non-consent-fresh-auth.spec.js` - "is covered by the test above"
-2. `tests/e2e/orcid-no-password.spec.js` - "See the docblock above the real round-trip describe"
-3. `tests/unit/lib-fresh-auth-settings-orcid.test.js` - "The case above passes none"
-4. `tests/unit/lib-fresh-auth-settings-orcid.test.js` - "The control for the case above"
-5. `src/pages/settings.js` - "now that the guard above has already established"
-6. `src/lib/fresh-auth.js` - "here and the call below"
-7. `tests/unit/auth.test.js` - "The pair-partner of the test above"
-8. `tests/unit/lib-settings-fresh-auth.test.js` - "The observed-factor sibling of the case above"
-
-Item 6 deserves a judgment call rather than a reflex edit. Its full sentence is
-"nothing may be awaited between here and the call below", and `mintViaPasswordFactor`
-is named in the same comment paragraph, so a stable name arguably already rides
-along and only the gate's noun-slot heuristic (which cannot see across a sentence)
-would flag it. Decide it on the carve-out's three criteria and record the reasoning
-in the commit message either way. A defensible "left as durable" is an acceptable
-outcome for that one; the other seven are not.
-
-For items 1 and 2, check whether the cited target is even in the same container
-before rewriting. An e2e citation pointing across `describe` blocks needs the
-target restated, not renamed.
-
-## Acceptance criteria
-
-- The hook's positional regex returns zero matches over `frontend/src` and
-  `frontend/tests`, OR returns only item 6 with the carve-out reasoning recorded.
-- Every replacement is audited against the other anchor rules per
-  `agents/docs/solutions/conventions/convention-enforcing-fix-must-audit-its-own-new-code-2026-05-17.md`:
-  no task slug, round ordinal, line number, SHA, or `tasks-archive` redirect
-  substituted for the position. This is the failure mode the convention exists for.
-- Each rewrite is checked for behavioral accuracy against the code it describes,
-  not just for anchor shape. A citation that is re-pointed at the wrong target is
-  worse than the bare positional form it replaced.
-- Comment-only. No production or test behavior changes, and the frontend unit
-  suite stays at its documented baseline.
-
-## Notes
-
-Five of the eight belong to tasks still open in `tasks/pending/` at filing time
-(`ui-consent-op-teardown-guard`, `ui-custody-upgrade-subject-pin`). Coordinate
-rather than racing them: if either task is mid-flight on one of these files when
-this is picked up, take the other files first and leave a note here. Items 1 and 2
-predate both and have no other owner.
-
-## Note (2026-09-14, from the light-account fresh-auth e2e task)
-
-Item 1 no longer exists: the closing note in `tests/e2e/non-consent-fresh-auth.spec.js`
-that carried "is covered by the test above" was replaced wholesale at 58ad7918, and the
-hook's positional regex returns nothing over that file, the new
-`tests/e2e/consent-op-fresh-auth.spec.js`, or `tests/e2e/fixtures/light-account.js`.
-Seven items remain.
-
-UI implementation signal (2026-09-30, commit 473af3f9):
-
-Landed in `473af3f9` (verified an ancestor of `main`). Seven files, comment-only.
-
-- The hook's positional regex returns zero matches over `frontend/src` and
-  `frontend/tests`. Item 6 is not left as a carve-out: the sentence now reads
-  "between this re-check and the `mintViaPasswordFactor` call", so no exemption
-  is needed. The reasoning is in the commit message.
-- Eight sites were re-anchored, not seven. Items 2 to 8 of the filed list, plus
-  one the enumeration predates: `src/lib/ipfs-upload.js` "the table above",
-  now `UPLOAD_ERROR_TEXT`. Item 1 was already gone per the 2026-09-14 note.
-- Item 2 stays inside one file but points across describe blocks from the file
-  header, so the target is restated by the describe's title
-  ('real-backend ORCID null-password round-trips') rather than by position.
-- Each rewrite was checked against the code by an independent read-only pass
-  told to refute it. Seven held. One did not: "the assumed-password 401 case" in
-  `lib-settings-fresh-auth.test.js` matched three cases in that file, so it now
-  reads "the assumed-password 401 that lands after a subject change". Two
-  over-long re-wraps were reflowed in the same pass.
-- Frontend unit suite: 87 files, 1975 tests, exit 0 on two consecutive runs. One
-  earlier run failed only `lib-fresh-auth-session-window` "the slide never
-  pushes past the absolute cap" by 1ms, the known boundary flake.
-
-Not in scope, for the architect to route: the zero-match result is a statement
-about the hook's regex, not about the trees. A sweep for what the per-line,
-article-adjacent regex cannot see found one listed-noun form split across a
-line wrap (`src/pages/settings.js`, retry leg, "the guard" / "above just
-confirmed") and roughly 65 plural, counted or unlisted-noun forms ("the two
-tests below", "the assertion below", "every step below", "see below"), densest
-in `src/pages/settings.js` and the e2e specs. Promoting these trees to a
-whole-tree-clean gate would need those swept and the regex widened first.
-
-## Align the custody column with upgraded_at at upgrade and login mints (archived 2026-10-05) — five holds; archived at cca00888, one P3 folded into the custody-canary hold
-
-### Architect archive note (2026-10-05)
-
-Round-6 re-review of cca00888 alone with /ce-code-review (full: correctness, adversarial
-in-process, testing, project-standards on root CLAUDE.md, learnings) plus an independent
-validator. Both round-5 items are met. The handleLogin state-C sentence is true clause by
-clause: `/custody/fresh-auth` and `/custody/session-auth` each refuse a NULL `password_hash`,
-and `/custody/upgrade` reads only `upgraded_at`. The STATEMENT_JOIN_CAP pair pins the value
-in both directions, reproduced independently by two lenses: cap 3 reds the fourth-joined
-assertion, caps 5 and 12 red the fifth, deleting the join term reds the fifth; baseline 8/8.
-
-One finding (P3, confirmed by the validator): the JOIN docblock's cost sentence names only
-the epoch derivation, but the cap also bounds the column copy and destructure scans (a
-one-per-line destructure with three or more members before `custody` escapes at cap 4). User
-decision 2026-10-05: folded into the backend-custody-canary-unpinned-surfaces hold as item 4
-(c6ce08ce) instead of a sixth hold here. A learnings note on a possible off-by-one in "more
-than four joined lines apart" was measured and not admitted.
-
-Items surfaced in earlier backend signals that no hold had taken up were triaged with the
-user ("approved", 2026-10-05): section 6.3 gained the state-G transitions here, and the
-stale A/B/C/D code comments plus the set-password NULL-hash comment went to
-backend-account-state-comments-name-state-g; /reset gating on no account state went to
-backend-password-reset-gates-on-account-state; the state-D JWT settings question went to
-ui-state-d-session-settings-critical-actions (reproduce first); the registration-watch
-state-G webhook item was dismissed as already recorded in the collectCompleted docblock.
-All three filed at 94975a70.
-
-[TODO Architect] doc items discharged at 89d896ce. The canonical epoch-ordering statement
-lives in section 6.3's new "Option C lookup predicates" note, not 6.7 as the round-4 block
-said, because the discriminator moved off the revocation epoch onto
-`upgraded_at <= updated_at`; 6.7 got a pointer bullet. Also: 6.1 states the CHECK is
-one-directional and the (self, NULL epoch) shape is fictional and refused; 6.4's
-set-password and Link ORCID rows match the handlers; auth.md documents the /confirm and
-/link cookie-free stuck-recovery branches; orcid.md states the derived login custody for D
-and G; custody.md says /upgrade marks the row self-custody. The deploy-tripwire ADD
-CONSTRAINT arm, state G in 6.1, and the state-F anchor fix landed during earlier rounds.
-No /ce-compound: the finding is an instance of the existing
-a-readers-bound-restated-at-n-sites-reads-as-sufficient-at-each convention.
-Implementation commits: 68fc1e91, c5846d1a, 9fd22a7f, 65ab1c74, f0effeb1, a24aae5a, cca00888.
+User decisions 2026-10-05: one P3 dismissed (the header's article over-read sentence names
+a dash or an open paren but not a space-only `clause a <word>`; no corpus instance, and the
+docblock already reads a bare `clause a` as a marker). The implementer's out-of-task item,
+two WoT comments citing the deleted wot-retract-cascaderevocation suite, went to a new
+task, backend-wot-comments-cite-deleted-retract-suite. No /ce-compound.
 
 ### Task file
 
 **Owner:** backend
-**Created:** 2026-09-01
-
-Routed out of the architect review of the custody-upgrade session-invalidation
-work. Pre-existing: the shape predates that task and was not widened by it.
+**Created:** 2026-10-01
 
 ## Why
 
-`POST /api/custody/upgrade` nulls the encrypted keys and sets `upgraded_at`
-but never writes `custody = 'self'`, so every upgraded account sits in the row
-shape `(custody = 'light', upgraded_at NOT NULL)` — a combination
-ARCHITECTURE.md § 6.1 does not enumerate. The two login mints then disagree
-about what that row means: `auth.ts` login derives the JWT custody claim from
-`upgraded_at` (correct), while the ORCID login mint reads the column raw and
-re-mints a stale `custody: 'light'` claim for an account the server can no
-longer sign for.
+The carve-out companion-citation canary
+(`backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`)
+accepts a reverse declaration, `Real-path companion for: <path>`, as the
+structured citation that satisfies a block's label. The header justifies
+exempting that form from a risk-class token: "A reverse declaration discharges
+no clause of its own: the file writing it mocks nothing, so it is a signpost
+rather than a justification". The canary never checks that premise.
 
-Impact is contained today: the broadcast and session-auth routes refuse on
-`upgraded_at` before acting, so the stale claim is a divergence of claim
-rather than a live hole. But per the account-state defense rule, an
-unenumerated reachable state means the code and § 6.1 must be reconciled, and
-two mint sites deriving the same claim differently is exactly the kind of
-split that turns into a hole when a third consumer trusts the claim.
+Reproduced on 2026-10-01 against an isolated copy of HEAD, by planting two
+files under `tests/routes/`. Both carry `vi.mock` of the pool module, so
+neither runs a real path:
+
+- File A's clause-(c) line is a reverse declaration naming B. A also spells a
+  unique token in code, outside any mocking call.
+- File B's clause-(c) line is a forward citation of A with that token.
+
+The canary stays green at 11 of 11. The control, B citing a token A does not
+contain, goes red naming the planted citation, so the planted files were
+scanned. A's carve-out obligation is discharged by a signpost, and B's by a
+file that mocks the same surface. That is the shape the clause-(c) convention
+exists to stop, and nothing goes red.
+
+The header's "What that link does NOT establish" paragraph discloses a weaker
+case: two files citing each other while neither mocks anything. It does not
+cover a mocking suite discharging its own clause (c) through the reverse form.
+
+The previous implementation round recorded the obvious fix as too blunt:
+"a reverse citation in a file containing any mocking call does not satisfy a
+label". `vi.fn` and `vi.spyOn` are in `MOCK_CALL_RE` and occur in nearly
+every suite, including real-path companions.
 
 ## Scope
 
-1. Write `custody = 'self'` in the upgrade UPDATE's SET list (mirroring the
-   signup-verify `/link` finalize), so the transition lands atomically with
-   the key-nulling and the epoch stamp.
-2. Backfill existing rows: `custody = 'self'` where `upgraded_at IS NOT NULL
-   AND custody = 'light'` (SQL migration).
-3. Unify the login-mint derivation: either both mints derive from
-   `upgraded_at` the way `auth.ts` does, or both read the now-correct column —
-   pick one shape and state why in the code. The pair must be incapable of
-   disagreeing for the same row.
-4. Tests: an upgraded account logging in via ORCID receives a `custody:
-   'self'` claim; the post-upgrade row shape is pinned; the backfill is
-   covered by a migration-level assertion or an equivalent test.
+1. Decide how the canary recognises a file that owes clause (c) itself, and
+   refuse the reverse form as the discharge of that file's own clause-(c)
+   label. Candidate directions, to be measured against the corpus before
+   choosing:
+   - Key on the block. A reverse declaration does not count toward the label
+     of a block that is its file's own carve-out statement, identified by
+     clause (a) and (b) markers or the carve-out wording beside it. A
+     real-path suite then writes its self-declaration outside any carve-out
+     block of its own.
+   - Key on module replacement. Count only the calls that replace a module
+     (`vi.mock`, `vi.doMock`) rather than every member of `MOCK_CALL_RE`.
+     Measure how many genuine real-path companions also replace an unrelated
+     module (logger, mailer), since each of those becomes a false accusation.
+
+   If the corpus measurement shows the choice needs architect input, move
+   this task to `blocked/` with a `[BLOCKED by Architect]` note stating the
+   measured options instead of guessing.
+2. Before choosing, check whether any structured reverse citation exists in
+   the corpus today. The 2026-09-06 implementation round found none, so a
+   change then migrated nothing. Re-measure rather than rely on that.
+3. Update the header's reverse-form paragraphs and the "What that link does
+   NOT establish" paragraph to state what the check now establishes and what
+   stays a review judgement.
 
 ## Acceptance criteria
 
-1. No reachable row shape `(custody = 'light', upgraded_at NOT NULL)` after
-   the migration runs.
-2. Both login paths mint identical custody claims for the same account row,
-   pinned by a test that would fail if either derivation drifts.
-3. The upgrade route's own suite still passes, including the
-   session-invalidation legs.
+1. The planted pair described above fails the canary, pinned by a probe that
+   drives `auditSources` or `citationViolations` with synthetic sources.
+2. A real-path suite that declares itself the companion through the reverse
+   form, answered by a mocked suite's forward citation, still passes. The
+   existing reverse-form probes stay green.
+3. The new arm has a probe that goes red when the arm alone is neutered.
+4. Every header and docblock sentence about the reverse form describes
+   measured behaviour.
+5. The canary is green. `LANDING_FREE_PROSE`, `LANDING_FILELESS`, both
+   deferred maps and `LANDING_DIGEST` are untouched.
 
 ## Notes
 
-- **[TODO Architect]** § 6.1's state D row shape (and any state-table text
-  that describes the custody column post-upgrade) is architect-owned and will
-  be updated at archive to match whichever shape lands.
-- Sequencing: CLEARED (2026-09-02, architect). This asked to land after a
-  one-line comment fix the custody-upgrade session-invalidation work held in
-  the same file area (`verifyHiveSignature.ts` / `routes/custody.ts`). That
-  fix landed and its task is archived, so nothing remains to sequence behind
-  and the five held items below can be picked up directly.
+This task and two sibling tasks edit the same canary file:
+`backend-carve-out-canary-mixed-script-confusable-set` and
+`backend-carve-out-canary-loose-claim-accuses-docblock-example`. Land them one
+at a time. Anchor any comment you write on stable symbols, never on line
+numbers, task slugs or round numbers.
 
-## Backend completion notes (2026-09-02)
+Plant files only in an isolated probe copy, never in the shared checkout. Use
+the backend probe recipe: `git archive HEAD backend`, symlinked
+`node_modules` and `.env`, and `tests/setup.ts` replaced by `export {};`.
 
-Landed in `68fc1e91` (implementation), `c5846d1a` (review fixes, task to
-review/), and `9fd22a7f` (simplification pass on the migration). Per scope
-item:
+## Backend implementation signal (2026-10-01, commit 65a86fc4)
 
-1. The upgrade UPDATE writes `custody = 'self'` in the same statement as the
-   key-nulling, `upgraded_at`, and the revocation epoch. `updated_at` is
-   deliberately not bumped (it is the `/link` stuck-recovery recency marker
+Decision: key on the BLOCK. Two designs were measured on isolated copies;
+two judges both chose the block key.
+
+Scope 2, re-measured: `citationsIn` over every comment block finds exactly
+one structured reverse citation, the canary's own self-excluded header
+example. Five files write prose "Real-path companion for the ...", none of
+which parses as the reverse form. Nothing migrates.
+
+Why not module replacement: all 4 live forward-cited companions
+(`verifyHiveSignature-authmethod`, `-reissuedat-roundtrip`,
+`-reissuedat-orcid-roundtrip`, `custody-upgrade`) call `vi.mock` (on
+`hive.js`, `redis.js` or `app-db.js`) and carry their own (a)/(b) header;
+`admin-fresh-auth-real-path-verifyhivesignature` mocks `app-db.js` like
+the planted attacker. Module keying accused 5 of 5 and no narrowing (pool
+modules only) separated them from the plant.
+
+Landed in `backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`:
+- `OWN_CARVE_OUT_RE` / `statesOwnCarveOut`: clause-(a)/(b) marker in every
+  corpus spelling (`(a)`, `clause (a)`, `clause-(a)`, `clause a)`,
+  `clause-a`), rejoined view, not a call like `fn(b)`. Carve-out wording is
+  deliberately not read (124 of 127 labelled blocks use it, and an honest
+  self-declaration does too).
+- `validationViolations` pushes `REVERSE_IN_OWN_CARVE_OUT` for a reverse
+  citation in such a block; the message names both ways through.
+- Header: drops the premise "the file writing it mocks nothing", states the
+  block arm, records module keying as measured and declined, says the marker
+  test is a heuristic, and "What that link does NOT establish" lists the
+  residual review judgements (no marker, a comment of its own, `vi.spyOn`
+  of the risk-class function), the no-marker case pinned by `bareA`.
+
+AC 1: synthetic pair-a/pair-b through `auditSources` + `validationViolations`
+yields exactly one violation, on pair-a's block, while `citationViolations`
+is clean per citation. On disk (designer's copy): planted escape green at
+base, red under the arm; absent-token control red both times.
+AC 2: honest pairing (self-declaration in a comment separated by code)
+clean; every existing reverse probe green. The cost is pinned: the same
+declaration inside its own (a)/(b) header goes red (`inHeader`).
+AC 3: neuters re-run on an isolated copy of the integrated file:
+`statesOwnCarveOut` forced false, red (1 failed); push guarded by `false &&`,
+red (1 failed); `kind === 'reverse'` guard dropped, red (2 failed, incl. the
+whole-tree validation spec); unmodified, 12/12 exit 0.
+AC 5: canary green 12/12 exit 0, `typecheck:tests` clean; `LANDING_*`,
+deferred maps and `LANDING_DIGEST` untouched.
+
+Cost for architect to accept: a real-path suite that takes a carve-out of
+its own must write a reverse self-declaration outside that header block,
+separated by code (a blank line alone does not split blocks).
+
+## Architect re-review (2026-10-05) — HELD PENDING FIXES:
+
+Reviewed `65a86fc4` via `/ce-code-review` (focused: orchestrator correctness, standards and
+requirements read plus one independent in-process adversarial read). Verified on an isolated
+copy of `65a86fc4`: canary 12/12, exit 0. Your three neuters reproduce exactly. The corpus
+counts in your signal hold: one structured reverse citation (the canary's self-excluded header
+example), 127 labelled blocks, 124 with carve-out wording, and the 4 forward-cited companions
+all call `vi.mock` and carry an (a)/(b) header. AC 1, 2, 3 and 5 are met. The block key and its
+cost are accepted (user, 2026-10-05), with the cost stated as measured in item 1. Two items
+remain under AC 4, both in `backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`.
+
+1. **The header's cost and the failure message describe a narrower reach than the arm has.**
+   `statesOwnCarveOut` fires on any block carrying a clause-(a) or clause-(b) marker. Measured in
+   review: the four suites whose header declares the file itself the real-path companion in
+   prose (`hafsql-btrim-charset-real-postgres.test.ts`,
+   `wot-vouch-status-select-real-postgres.test.ts`,
+   `middleware/verifyHiveSignature-reissuedat-roundtrip.test.ts`,
+   `routes/admin-fresh-auth-real-path-verifyhivesignature.test.ts`) all write that declaration in
+   a block where `statesOwnCarveOut` is true. Two of them, the hafsql-btrim and wot-vouch suites,
+   contain no `vi.mock`, `vi.doMock` or `vi.spyOn` call, and both are entries in
+   `DEFERRED_FREE_PROSE`, which the header tells authors to convert. Converted in place to the
+   reverse form, either goes red, and the message says its block "states this file's own
+   carve-out". Meanwhile the header confines the cost to "A real-path suite that also takes a
+   carve-out of its own". The module-key paragraph ("so that key refused the reverse form in the
+   very suites it exists for") is true of the module key. But in context it reads as if the
+   block key refuses fewer. In place it refuses all four self-declarations, including the two in
+   files the module key would admit. What it adds over the module key is the way through by
+   placement.
+   Fix: in `REVERSE_IN_OWN_CARVE_OUT` and in the header's WHAT IS CHECKED sentence about
+   `statesOwnCarveOut`, say the block carries a clause-(a) or clause-(b) marker, not that it
+   states the file's own carve-out. Word the move advice as separation from that (a)/(b) list by
+   code. In the header's reverse-form paragraph, state the cost as measured: a suite whose
+   header lists (a)/(b) clauses writes its reverse self-declaration in a comment separated from
+   that list by code. Today that is every self-declaring suite, including two that mock
+   nothing. Also state that this placement way through is what the block key gains over the
+   module key. Arm behaviour stays as it is.
+
+2. **`OWN_CARVE_OUT_RE` misses two marker spellings the corpus writes.** Its docblock says it
+   reads a marker "in every spelling the corpus writes one", and the marker probe's comment says
+   the same. The corpus also writes "clauses a/b/c" (`ipfs-cleanup-backend-dispatch.test.ts`,
+   `routes/auth-log-shape.test.ts`, twice in `routes/accreditation.test.ts`) and "clauses (a/b)"
+   (`routes/auth-smtp-transporter.test.ts`). The pattern reads neither, because `\bclause[\s-]*`
+   stops at the `s` and `(a/b)` is not `\([ab]\)`. No block is missed today, since each of those
+   blocks also carries a separate (a) or (b) item. Measured in review: a pool-mocking suite that
+   writes only the house spelling, with a reverse declaration as its clause (c), answered by a
+   forward citation, stays green.
+   Fix: accept the plural (`clauses?`), and add `'per root CLAUDE.md test carve-out, clauses a/b/c'`
+   and `'carve-out clauses (a/b)'` to the positive marker list. Checked in review with node:
+   every existing negative probe string, and `clauses are`, stays false under `clauses?`. If you
+   take a different form, the bar is the same: every marker spelling the corpus writes matches,
+   and the docblock's claim is true.
+
+Dismissed (user, 2026-10-05): the wrapped-marker probe input `'per clause-\n(a)'` is matched by
+the bare `(a)` alternative, so `rejoined` inside `statesOwnCarveOut` is unpinned (replacing it
+with the raw text stays green). No failure follows from it.
+
+No action, already disclosed by the header and measured in review: the same mutual discharge
+through two forward citations; a reverse declaration relocated into a comment of its own; a
+carve-out listed without (a)/(b) markers.
+
+Keep AC 5 as it stands. Anchor any new comment on stable symbols only. The mixed-script task is
+also held on this file; land the two one at a time.
+
+## Backend re-review signal (2026-10-05, commits 05573a43 and 0e120d20)
+
+Both commits are on main (`git merge-base --is-ancestor`, checked). The arm's
+behaviour is unchanged. 0e120d20 fixes what a four-lens adversarial
+verification of 05573a43 found (neuters, marker census, prose truth, in-place
+plants).
+
+Item 1, reach and cost wording:
+- `REVERSE_IN_OWN_CARVE_OUT`, the WHAT IS CHECKED sentence, the
+  `statesOwnCarveOut` and `validationViolations` docblocks and the probe
+  comments now say the block carries a clause-(a) or clause-(b) marker.
+- Deviation from the hold's literal wording. The move advice reads
+  "separated from the marker by code", not "from that (a)/(b) list".
+  Measured: `routes/app-ssr-discipline-real-path.test.ts` declares itself in
+  a header whose only marker is the single mention `clause (b)`. There is no
+  list there to separate from. The header says the arm fires on a list or a
+  single mention.
+- Deviation from the hold's census. "Every self-declaring suite, including
+  two that mock nothing" measures false. 13 suites declare themselves, in a
+  comment, the real-path companion of another named suite:
