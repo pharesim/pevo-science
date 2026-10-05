@@ -114,8 +114,14 @@ router.get('/email', readLimiter, verifyHiveSignature, async (req: Request, res:
 //   State A (password, no orcid)  : 'password' only
 //   State B (password + orcid)    : 'password' OR 'orcid'
 //   State C (orcid, no password)  : 'orcid' only
-//   State D (upgraded)            : preserved password/orcid factors
-//   State G (Keychain + email)    : whichever password/orcid factors it has
+//   State D (upgraded)            : 'orcid' when linked. The password
+//                                   issuer refuses a non-light claim; a
+//                                   password proof minted while the row was
+//                                   still light stays consumable until it
+//                                   expires (the upgrade sweeps session
+//                                   proofs only)
+//   State G (Keychain + email)    : 'orcid' when linked (the password issuer
+//                                   refuses its non-light claim)
 //
 // Keychain (Hive-signature) requests skip the body-proof check entirely — the
 // per-request signed canonical message IS the fresh proof and is already
@@ -527,8 +533,14 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
 //   State A (password, no orcid)  : 'password' only
 //   State B (password + orcid)    : 'password' OR 'orcid'
 //   State C (orcid, no password)  : 'orcid' only
-//   State D (upgraded)            : preserved password/orcid factors
-//   State G (Keychain + email)    : whichever password/orcid factors it has
+//   State D (upgraded)            : 'orcid' when linked. The password
+//                                   issuer refuses a non-light claim; a
+//                                   password proof minted while the row was
+//                                   still light stays consumable until it
+//                                   expires (the upgrade sweeps session
+//                                   proofs only)
+//   State G (Keychain + email)    : 'orcid' when linked (the password issuer
+//                                   refuses its non-light claim)
 //
 // Keychain (Hive-signature) requests skip the body-proof check entirely — the
 // per-request signed canonical message IS the fresh proof and is already
