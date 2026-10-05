@@ -380,3 +380,74 @@ Code review: owned by the architect at review intake (`agents/ui/CLAUDE.md`: the
 third, a missing signal block at the reviewed commit, is answered by this block). A simplify pass followed:
 1 change applied, 5 skipped (`editorsAtBaseline` is required by Scope 2; the serialisation savings are bounded
 by the debounce).
+
+## Architect re-review (2026-10-05) — HELD PENDING FIXES:
+
+Reviewed the frontend diff 2b1603ec..e4e7eed2 with `/ce-code-review` (correctness, project standards, testing,
+maintainability, frontend races, learnings, adversarial in-process) and an independent validator. The suite and
+build claims hold: at e4e7eed2 in an isolated copy, `npx vitest run` gave 90 files, 2092 tests, exit 0, and
+`npm run build` exited 0. Project standards came back clean: anchors, emdashes, and the four keys in all 16
+locales. The validator reproduced each item below in the real app at e4e7eed2 (jsdom, real Alpine and tiptap).
+Items 1 to 3 apply to both pages, item 4 to /publish only. Each fix gets a pin in
+`composer-drafts-real-editors.test.js` that goes red when its own site is reverted; list probe and spec in the
+signal block, as AC 9 asks.
+
+1. **Restore and Discard read stale text back from an editor in markdown mode.** `PevoEditor.setContent` updates
+   only the tiptap document. While `markdownMode` is on, `getMarkdown()` returns `markdownSource`, which
+   `setContent` never sets, so `_loadEditorsFromFields` reads back whatever the textarea held. Measured on
+   /publish: body editor in markdown mode with typed text, sign in to an account with a stored draft, the choice
+   card's Restore leaves the draft's title with the typed body, and the restore's write stores that mix over the
+   stored draft, so the stored body is lost. Measured on /edit: the restored card's Discard in markdown mode keeps
+   the draft body, re-takes the baseline over it (`editorsAtBaseline` reads true) and removes the key. Fix: while
+   `markdownMode` is on, `setContent` also sets `markdownSource` to the markdown it was given (`''` for none), the
+   textarea's value, `charCount` and the counter. Plant-tested in a copy of e4e7eed2: both markdown-mode
+   reproductions pass, the Discard leaves the served body in the form with `editorsAtBaseline` true, and
+   `composer-drafts-real-editors`, `pages-publish` and `pages-edit` stay green. Pin: the body editor toggled into
+   markdown mode before the choice card's Restore on /publish and before the restored card's Discard on /edit.
+
+2. **The restored card's Discard drops the citations the collection merge added.** `_mergeCitationCollection`
+   appends the collection to `citations` and removes `pevo-citation-collection` from storage; its docblock says
+   the merged citations then count as user work that neither a restore nor the choice can replace. `discardDraft`
+   then resets `citations` (`_prefillForm` on /edit, `citations = []` on /publish) and removes the draft key, so
+   the merged entries are left in neither the form, the draft nor the collection. Measured on /edit with an edit
+   draft at the loaded head and a one-entry collection. The /publish reset predates this task and loses them the
+   same way; fix both. Required: after Discard, the entries this instance merged from the collection are still in
+   `citations`, and the re-taken baseline does not hold them, so they are drafted as work. One way is to record
+   what `_mergeCitationCollection` appended and append it again after the reset, skipping entries already
+   present; that mechanism is a suggestion and was not plant-tested. Pin on both pages.
+
+3. **A remount requested during a submit runs after the landing and cancels the navigation.** `isSubmitting` is
+   false once `step` is `success`, so the `step` watcher runs a deferred remount right after a landing, and the
+   replaced instance's `destroy()` clears the navigate timer. The user stays on a fresh form with no success
+   notice, and may publish again. Measured on /publish: another account signs in while the broadcast is in
+   flight, and 3 s after the landing the route was still `publish`. Section 8 now says a landed instance is never
+   replaced. Fix: `_remountWhenSettled` returns once `_landed` is set and clears `_remountRequested`, ahead of the
+   `isSubmitting` check. Plant-tested with `if (this._landed) { this._remountRequested = false; return; }` as the
+   first line on both pages: the /publish reproduction navigates to the paper, and the three suites stay green.
+   The reproduction ran on /publish only. Pin on both pages: a remount requested while the broadcast is in
+   flight, the broadcast resolves, the success step shows and the navigation fires.
+
+4. **An account switch under the publish choice card loses the typed work.** While the choice card stands
+   `_writeDraft` refuses, and `_onAccountChange` remounts for any account other than the captured one, so the
+   remount's flush stores nothing and the typed work (attached files included) is gone. Measured: type while
+   signed out, sign in as eve (stored draft, the card shows), sign out, sign in as bob. Decided 2026-10-05 and now
+   in section 8: an adoption whose choice card still stands is provisional, so another account that signs in
+   before the user picks clears the card and adopts the instance instead of remounting. Required with it: the
+   author fields the provisional adoption's prefill filled are emptied, value and baseline, before the new account
+   is adopted. Plant-tested both forms: `_clearDraftChoice(); _adoptAccount(next)` alone leaves eve's name and
+   affiliation in bob's form and drafts them under `pevo-draft-publish:bob`, because the prefill fills only empty
+   fields. With the prefilled fields emptied first, bob's form shows bob's name and affiliation, the typed title
+   is drafted under bob's key, eve's stored draft is untouched, and the three suites stay green. Pin that
+   sequence: bob's author fields, both drafts, and no remount.
+
+Not held (triaged 2026-10-05):
+
+- The form refusing input until the baseline exists, and a signed-out /publish form leaving the citation
+  collection alone: accepted as intended. Section 8 now states the first.
+- The draft machinery duplicated across `publish.js` and `edit.js`: not now. The blocked retry tasks rework the
+  same members.
+- A restored /publish draft re-dated when the accredited directory fills a co-author's ORCID late: cosmetic.
+- The explicit normalise in the edit page's `_onEditorsMounted`, pinned only in about 1 of 6 probe runs: the
+  redundancy is documented, no change.
+- Discard clicked while a submit is in flight: the form was never disabled during a submit; no change.
+- An account deleted in one tab while another tab's composer stays mounted: a section 8 Limits line now states it.
