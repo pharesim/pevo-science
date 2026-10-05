@@ -48,11 +48,11 @@
  * foreign file, and reading it would mean teaching the walk HTML, whose
  * comments the scans' skip predicates do not parse. That root would also
  * take in the test tree, `public`, `node_modules`, report output and the
- * package files, each needing an exclusion or a license. The
- * entry-document assertion needs no skip at all, because it licenses no
- * site: any occurrence there of the status fetch's name or of the
- * discriminator fails, one inside an HTML comment included. It reads one
- * named file, so a wrong path throws rather than passing vacuously.
+ * package files, each needing an exclusion or a license. The entry-document
+ * assertion needs no skip at all, because it licenses no site: any
+ * occurrence there of the status fetch's name or of the discriminator fails,
+ * one inside an HTML comment included. It reads one named file, so a wrong
+ * path throws rather than passing vacuously.
  *
  * COVERAGE. Read: every `.js` file under `src`, and the entry document. Not
  * read, because nothing here follows an import or a script tag: a module
@@ -62,19 +62,20 @@
  * change that puts page code there extends this canary in the same change.
  * Within what is read, the scans are still blind to the three named
  * residuals (CONSTANT-WIDTH REPLACEMENT, A MATCH RIDING ON A SKIPPED LINE, A
- * NAME THAT IS NEVER SPELLED).
+ * NAME THAT IS NEVER SPELLED), and to the shared scan machinery's own,
+ * which `enclosing-symbol.js` names.
  *
  * GRANULARITY. The walk's occurrence assertions are over `file#symbol` pairs
  * resolved by `enclosingSymbol`, never over files: a file already on an
  * allowed list would absorb a second, different occurrence silently. The
  * entry-document assertion licenses nothing, so it lists lines rather than
- * symbols: there is no member for a file to absorb. The licensed sites
- * are named individually, including the rendering-only read in
- * `pages/settings.js`, which is a legitimate member rather than a
- * pattern-excluded one so that a DIFFERENT offending shape in the same file
- * is still caught. Every assertion here is equality against a fixed allowed
- * map, the shape under which an unresolvable or wrongly resolved symbol
- * fails closed as an unexpected member.
+ * symbols: there is no licensed member for a second occurrence to hide
+ * under. The licensed sites are named individually, including the
+ * rendering-only read in `pages/settings.js`, which is a legitimate member
+ * rather than a pattern-excluded one so that a DIFFERENT offending shape in
+ * the same file is still caught. Every assertion here is equality against a
+ * fixed allowed map, the shape under which an unresolvable or wrongly
+ * resolved symbol fails closed as an unexpected member.
  *
  * WIDTH. Each licensed key is additionally pinned to its exact occurrence
  * count, because a key-level set inherits the file-level absorption one
@@ -127,8 +128,8 @@
  * re-export ban add nothing in that file. With no specifier skip, an import
  * there that names the fetch already fails. And a star re-export in an
  * inline module script, which the bundler does make importable, still
- * leaves its importer writing the fetch's name at the call, which the name
- * scan counts in any file the canary reads.
+ * leaves its importer writing the fetch's name where it binds or calls it,
+ * which the name scan counts in any file the canary reads.
  *
  * Residuals, pinned in prose rather than silently absorbed. Three, and each
  * one is left to review of the diff for its own reason.
@@ -354,8 +355,9 @@ const entryDocumentLines = readFileSync(path.resolve(here, '..', '..', '..', 'in
 
 describe('single password-factor resolver: no second fetchEmailStatus-derived decision', () => {
   it('walks a plausible number of source files and finds nothing script-shaped it cannot read', () => {
-    // Without this, a walker that returned nothing would make every scan over
-    // the walked sources vacuously true.
+    // A walk that silently lost files would leave every scan over the walked
+    // sources green for the files it lost (the exact-map scans notice only a
+    // lost licensed module), so the count itself carries a floor.
     expect(sources.length).toBeGreaterThan(40);
     const rels = sources.map((s) => s.rel);
     expect(rels).toContain('api.js');
@@ -369,11 +371,11 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
   });
 
   it('the walker reads every .js file recursively, follows links, and reports every other file it passed over', () => {
-    // The walk is the floor every scan in this suite stands on. A walker that
-    // skipped a subdirectory, silently dropped a module in an extension it
-    // does not read, or dropped one reached through a link, would pass every
-    // scan vacuously for that file. The fixture is a throwaway tree so the
-    // probe owns exactly what it walks.
+    // The walk is the floor every scan over the walked sources stands on. A
+    // walker that skipped a subdirectory, silently dropped a module in an
+    // extension it does not read, or dropped one reached through a link,
+    // would pass every scan vacuously for that file. The fixture is a
+    // throwaway tree so the probe owns exactly what it walks.
     const root = mkdtempSync(path.join(os.tmpdir(), 'pevo-factor-canary-walk-'));
     try {
       mkdirSync(path.join(root, 'lib', 'deep'), { recursive: true });
