@@ -74,8 +74,8 @@
  * rendering-only read in `pages/settings.js`, which is a legitimate member
  * rather than a pattern-excluded one so that a DIFFERENT offending shape in
  * the same file is still caught. Every assertion here is equality against a
- * fixed allowed map, the shape under which an unresolvable or wrongly
- * resolved symbol fails closed as an unexpected member.
+ * fixed allowed map, the shape under which an unresolvable symbol fails
+ * closed as an unexpected member.
  *
  * WIDTH. Each licensed key is additionally pinned to its exact occurrence
  * count, because a key-level set inherits the file-level absorption one
