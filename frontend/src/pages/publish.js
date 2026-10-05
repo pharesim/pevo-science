@@ -708,11 +708,13 @@ export function initPublishPage() {
 
     // The draft replaces the form. An author field the draft holds empty
     // takes the accreditation prefill, as a load does, never what the form
-    // held before. The form as restored is stored at once under the draft's
-    // own time: what the restore itself fills in (the prefill, an accredited
-    // co-author's ORCID) is not new work, and must not make old text look new.
+    // held before, and the baseline moves with it: the prefill is not work,
+    // even when the accreditation arrived after the baseline was taken or the
+    // field held typed text then. The form as restored is stored at once
+    // under the draft's own time: what the restore itself fills in (the
+    // prefill, an accredited co-author's ORCID) is not new work, and must not
+    // make old text look new.
     _applyDraft(draft) {
-      const acc = this.accreditation;
       this.title = draft.title;
       this.abstract = draft.abstract || '';
       this.body = draft.body || '';
@@ -720,9 +722,10 @@ export function initPublishPage() {
       this.keywordsText = draft.keywordsText || '';
       this.coAuthors = draft.coAuthors || [];
       this.citations = draft.citations || [];
-      this.authorName = draft.authorName || acc?.name || '';
-      this.authorAffiliation = draft.authorAffiliation || acc?.institution || '';
+      this.authorName = draft.authorName || '';
+      this.authorAffiliation = draft.authorAffiliation || '';
       this.authorOrcid = draft.authorOrcid || '';
+      this._prefillEmptyAuthorFields();
       applyAccreditedPrefill(this.coAuthors, this.accreditedDirectory);
       this._loadEditorsFromFields();
       this.draftSavedAt = draft.savedAt ?? null;

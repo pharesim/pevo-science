@@ -599,6 +599,37 @@ describe('composer drafts in the real app', () => {
       expect(drafts()).toEqual({});
     });
 
+    it("the choice card's Restore moves the baseline with the prefill it gives the draft's empty author fields, so the prefill alone is not work", async () => {
+      localStorage.setItem('pevo-draft-publish:eve', JSON.stringify({
+        title: 'Stored earlier', abstract: '', body: '', authorName: '', authorAffiliation: '', savedAt: Date.now() - 60_000,
+      }));
+      const comp = await visit('/publish', 'publishPage');
+      await editorsReady('publishPage');
+      type('#paper-title', 'Signed-out work');
+      await settle();
+      // The modal's email path: the accreditation arrives while the card
+      // stands, too late for the adoption's prefill.
+      auth.loginFromResponse({
+        token: 'token-eve', expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        username: 'eve', custody: 'light', is_accredited: false, accreditation: null,
+      });
+      await settle();
+      expect(comp.draftChoice).toBe('saved');
+      await vi.waitFor(() => expect(auth.accreditation).not.toBeNull(), WAIT);
+      await settle();
+      expect(comp.authorName).toBe('');
+
+      document.querySelector('[data-testid="draft-choice-card"] .btn-primary').click();
+      await settle();
+      expect(comp.title).toBe('Stored earlier');
+      expect(comp.authorName).toBe('Eve E');
+      expect(comp.authorAffiliation).toBe('Uni E');
+      // With the restored title gone, the form is back at its baseline.
+      type('#paper-title', '');
+      await pastDebounce();
+      expect(drafts()).toEqual({});
+    });
+
     it('a sign-in under a signed-out form that holds nothing restores the stored draft as a load would', async () => {
       localStorage.setItem('pevo-draft-publish:eve', JSON.stringify({ title: 'Stored earlier', abstract: '', body: '', savedAt: Date.now() - 60_000 }));
       const comp = await visit('/publish', 'publishPage');
