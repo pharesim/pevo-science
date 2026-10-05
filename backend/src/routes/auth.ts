@@ -113,6 +113,10 @@ const MAX_LOGIN_FAILURES = 20;
 // known-email DB-update-then-200 path must use this constant.
 export const RESET_REQUEST_OK_MESSAGE = 'If an account exists with that email, a reset link has been sent.';
 
+// /reset answer for an unknown token and for a token whose row has no
+// password. One string, so the refusal reads exactly like an unknown token.
+const RESET_TOKEN_INVALID_MESSAGE = 'Invalid or expired reset token';
+
 // Sentinel argon2id hash for timing-equalization at every "cheap" early-return
 // that would otherwise distinguish a known-account branch from an unknown one
 // (login unknown-account, NO_PASSWORD_SET null-hash,
@@ -1216,7 +1220,7 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
     );
 
     if (rows.length === 0) {
-      return sendError(res, 400, 'INVALID_TOKEN', 'Invalid or expired reset token');
+      return sendError(res, 400, 'INVALID_TOKEN', RESET_TOKEN_INVALID_MESSAGE);
     }
 
     const account = rows[0];
@@ -1248,7 +1252,7 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
       [passwordHash, account.id],
     );
     if (updated.rowCount === 0) {
-      return sendError(res, 400, 'INVALID_TOKEN', 'Invalid or expired reset token');
+      return sendError(res, 400, 'INVALID_TOKEN', RESET_TOKEN_INVALID_MESSAGE);
     }
 
     if (account.username) {

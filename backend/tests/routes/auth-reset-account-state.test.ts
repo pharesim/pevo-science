@@ -14,13 +14,6 @@
  *     issued before the gate existed or for a password dropped while the
  *     token was outstanding.
  *
- * Every state the table in section 6.1 enumerates is driven, in both of its
- * password shapes where it has two: A, B, C, D with and without a password, G
- * (email verified and unverified) with and without a password, E, F on the
- * email path, and F on the ORCID path. A row that carries a password has it
- * rotated, a passwordless row is refused, and nothing but the password, the
- * reset token and the revocation stamp changes on an accepted row.
- *
  * Rows are written directly in their section 6.1 shapes: these specs are about
  * what reset does to each shape, not about the routes that produce it. No
  * module is mocked. Postgres, Redis, argon2 and both routes run real; the
