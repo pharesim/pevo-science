@@ -4104,3 +4104,57 @@ pt: auth.sessionExpired
 sv: auth.sessionExpired
 tr: auth.sessionExpired
 zh: auth.sessionExpired
+
+### Added 2026-10-05 (ui-recover-and-reset-leave-a-revoked-session-signed-in)
+
+The done screen after an account recovery through ORCID. The recovery leaves
+the account without a password. When this browser was signed out or signed in
+to the same account, it is now signed in to the recovered account and the
+button opens Settings. When it is signed in to a different account, that
+account stays signed in, and the copy says how to switch.
+
+ar: recover.orcidDoneSignedIn
+cs: recover.orcidDoneSignedIn
+da: recover.orcidDoneSignedIn
+de: recover.orcidDoneSignedIn
+es: recover.orcidDoneSignedIn
+fa: recover.orcidDoneSignedIn
+fr: recover.orcidDoneSignedIn
+he: recover.orcidDoneSignedIn
+it: recover.orcidDoneSignedIn
+nl: recover.orcidDoneSignedIn
+pl: recover.orcidDoneSignedIn
+pt: recover.orcidDoneSignedIn
+sv: recover.orcidDoneSignedIn
+tr: recover.orcidDoneSignedIn
+zh: recover.orcidDoneSignedIn
+ar: recover.orcidDoneOtherAccount
+cs: recover.orcidDoneOtherAccount
+da: recover.orcidDoneOtherAccount
+de: recover.orcidDoneOtherAccount
+es: recover.orcidDoneOtherAccount
+fa: recover.orcidDoneOtherAccount
+fr: recover.orcidDoneOtherAccount
+he: recover.orcidDoneOtherAccount
+it: recover.orcidDoneOtherAccount
+nl: recover.orcidDoneOtherAccount
+pl: recover.orcidDoneOtherAccount
+pt: recover.orcidDoneOtherAccount
+sv: recover.orcidDoneOtherAccount
+tr: recover.orcidDoneOtherAccount
+zh: recover.orcidDoneOtherAccount
+ar: recover.goToSettings
+cs: recover.goToSettings
+da: recover.goToSettings
+de: recover.goToSettings
+es: recover.goToSettings
+fa: recover.goToSettings
+fr: recover.goToSettings
+he: recover.goToSettings
+it: recover.goToSettings
+nl: recover.goToSettings
+pl: recover.goToSettings
+pt: recover.goToSettings
+sv: recover.goToSettings
+tr: recover.goToSettings
+zh: recover.goToSettings

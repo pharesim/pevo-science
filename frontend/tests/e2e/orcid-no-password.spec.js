@@ -615,7 +615,21 @@ test.describe('real-backend ORCID null-password round-trips', () => {
       (resp) => resp.url().endsWith('/api/auth/recover') && resp.request().method() === 'POST',
     );
     await page.locator('[x-data="recoverPage"] form button[type="submit"]').click();
-    expect((await recoverResponse).status()).toBe(200);
+    const recovered = await recoverResponse;
+    expect(recovered.status()).toBe(200);
+    const reissued = (await recovered.json()).data;
+
+    // The browser took up the session the recovery reissued, and the real
+    // middleware accepts it although the recovery revoked every earlier
+    // session of the account.
+    await expect(page.getByText(/you are signed in/i)).toBeVisible();
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('pevo_session')));
+    expect(stored).toMatchObject({ token: reissued.token, username });
+    const settingsRead = await page.request.get('/api/settings/email', {
+      headers: { Authorization: `Bearer ${reissued.token}` },
+    });
+    expect(settingsRead.status()).toBe(200);
+    expect((await settingsRead.json()).data.hasPassword).toBe(false);
 
     // password_hash preserved as NULL; email rotated to the new address.
     const after = await pool.query(

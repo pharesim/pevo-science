@@ -124,8 +124,8 @@ const template = `
                 <svg class="w-8 h-8 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
               </div>
               <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('recover.doneTitle')"></h2>
-              <p class="text-ink-muted mb-6" x-text="$t('recover.doneDescription')"></p>
-              <button @click="navigate('/login')" class="btn-primary" x-text="$t('recover.goToLogin')"></button>
+              <p class="text-ink-muted mb-6" x-text="$t(doneCopy.description)"></p>
+              <button @click="navigate(doneCopy.path)" class="btn-primary" x-text="$t(doneCopy.action)"></button>
             </div>
           </template>
 
@@ -149,6 +149,8 @@ export function initRecoverPage() {
 
     error: null,
     isSubmitting: false,
+    // Whether the ORCID arm signed this browser in to the recovered account.
+    signedIn: false,
 
     // ORCID state
     orcidAvailable: false,
@@ -168,6 +170,19 @@ export function initRecoverPage() {
 
     get canSubmitSeed() {
       return this.username.trim() && this.seedPhrase.trim() && this.newEmail.trim() && this.passwordValid && this.passwordsMatch;
+    },
+
+    // The done screen's text and next step. When the ORCID arm left another
+    // account signed in, /login would only say so, so the step is the papers
+    // list instead.
+    get doneCopy() {
+      if (this.method === 'seed') {
+        return { description: 'recover.doneDescription', action: 'recover.goToLogin', path: '/login' };
+      }
+      if (this.signedIn) {
+        return { description: 'recover.orcidDoneSignedIn', action: 'recover.goToSettings', path: '/settings' };
+      }
+      return { description: 'recover.orcidDoneOtherAccount', action: 'common.goToPapers', path: '/papers' };
     },
 
     get canSubmitOrcid() {
@@ -314,7 +329,8 @@ export function initRecoverPage() {
         try {
           // Submit `newPassword: null`. The backend preserves
           // `password_hash = NULL` and returns success.
-          await recoverWithOrcid(this.username.trim(), this.orcidToken, this.newEmail.trim(), null);
+          const res = await recoverWithOrcid(this.username.trim(), this.orcidToken, this.newEmail.trim(), null);
+          this.signedIn = Alpine.store('auth').adoptRecoveredSession(res.data);
           this.phase = 'done';
         } catch (err) {
           // Sanitization pattern (see executeUpgrade() in settings.js).

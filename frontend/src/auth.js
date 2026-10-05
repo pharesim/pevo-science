@@ -210,6 +210,31 @@ export function initAuth() {
       return true;
     },
 
+    // A recovery of `data.username` revoked every earlier session of that
+    // account and reissued `data.token`, the one session the server spares
+    // (ARCHITECTURE.md § 6.7). Settle this browser on it as part of the
+    // user's own action, so no later bearer request meets the revoked token
+    // and tears the session down with the signed-out message. A session for
+    // the same account ends through `disconnect` first, whose scrub drops
+    // the tab state the recovery made stale: the session-proof window, and a
+    // remembered password the recovery may have removed. A session for
+    // another account is left signed in and the reissued one is not adopted.
+    //
+    // Returns true when the reissued session was adopted.
+    adoptRecoveredSession(data) {
+      if (this.username && this.username !== data.username) return false;
+      if (this.username) this.disconnect();
+      this.loginFromResponse({
+        token: data.token,
+        expires_at: data.expires_at,
+        username: data.username,
+        custody: data.custody ?? 'light',
+        is_accredited: false,
+        accreditation: null,
+      });
+      return true;
+    },
+
     disconnect() {
       this.username = null;
       this.isConnected = false;

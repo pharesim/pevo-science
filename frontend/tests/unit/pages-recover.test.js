@@ -25,12 +25,16 @@ vi.mock('../../src/hive-keys.js', () => ({
 }));
 
 const mockRouterStore = { navigate: vi.fn() };
+// What the auth store does with the recovery's answer is pinned against the
+// real store in pages-recover-session.test.js.
+const mockAuthStore = { adoptRecoveredSession: vi.fn(() => true) };
 
 vi.mock('alpinejs', () => ({
   default: {
     data: vi.fn(),
     store: vi.fn((name) => {
       if (name === 'router') return mockRouterStore;
+      if (name === 'auth') return mockAuthStore;
       return {};
     }),
   },
@@ -267,7 +271,9 @@ describe('recoverPage', () => {
 
   describe('handleSubmit - orcid method', () => {
     it('SEC-004: calls recoverWithOrcid with newPassword: null', async () => {
-      mockRecoverWithOrcid.mockResolvedValue({});
+      mockRecoverWithOrcid.mockResolvedValue({
+        data: { token: 'jwt', expires_at: '2099-01-01T00:00:00.000Z', custody: 'light', username: 'alice' },
+      });
       const comp = createComponent();
       comp.method = 'orcid';
       comp.username = 'alice';
