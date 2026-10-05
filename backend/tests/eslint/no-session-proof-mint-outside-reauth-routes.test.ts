@@ -651,9 +651,9 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     // owning module.
     const owner = sources.filter((s) => s.rel === ENTRY_STORE_MODULE);
     expect(owner.length, 'the guarded module was renamed or removed').toBe(1);
-    // The literal still lives on the definition line, once. Without this the
-    // stray scan below passes vacuously when the namespace or the constant is
-    // renamed.
+    // The literal still lives on the definition line, once. Without this,
+    // `strayKeyspaceLiterals` passes vacuously when the namespace or the
+    // constant is renamed.
     expect(
       owner[0].lines.filter(
         (line) => ENTRY_KEY_PREFIX_DEFINITION_RE.test(line) && ENTRY_KEYSPACE_LITERAL_RE.test(line),

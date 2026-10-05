@@ -532,7 +532,7 @@ describe('every session-window consume carries the account revocation epoch', ()
     // commented out by shape, so an epoch or a field named inside that comment
     // vouches for nothing. The no-region comment predicate would read the
     // line as live, comment text included, and pair the consume or the
-    // surface below it.
+    // surface in the same function.
     const epochAheadOfCode: ScannedSource = {
       rel: 'routes/synthetic.ts',
       lines: [
@@ -600,6 +600,25 @@ describe('every session-window consume carries the account revocation epoch', ()
       ],
     };
     expect(literalEpochSurfaces([valueBehindProseClose]).offenders).toHaveLength(1);
+
+    // Control: a comment that is nothing but comment IS stepped past, so the
+    // request epoch written after a docblock is still the field's value.
+    const epochAfterDocblock: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'async function consumeEpochAfterDocblock(req: Request, token: string) {',
+        '  return consumeFreshAuthTokenForSurface(token, {',
+        '    acceptSession: true,',
+        '    sessionsInvalidatedAtMs:',
+        '      /**',
+        '       * read once by the signature middleware',
+        '       */',
+        '      req.hiveSessionsInvalidatedAt,',
+        '  });',
+        '}',
+      ],
+    };
+    expect(literalEpochSurfaces([epochAfterDocblock]).offenders).toEqual([]);
   });
 
   it('a session-accepting surface with a literal epoch value is an offender', () => {
