@@ -100,3 +100,70 @@ signal block holds the shared verification run and the contract TODOs.
   It says the guards bound which rows reach the branch and say nothing about what the branch
   writes.
 - **Considered, not built.** A deterministic test for the eviction DELETE matching 0 rows.
+
+## Architect re-review (2026-10-05) — HELD PENDING FIXES:
+
+Reviewed d33792ce, scoped to `writeSignupRow` and the `POST /signup` handler in `routes/auth.ts`,
+the canary docblock in `tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`,
+and the six signup specs in `tests/routes/auth-state-g-rows.test.ts`. Scope 1 to 3 and AC1 to AC3
+are met. AC3 was re-run on copies: the factor-carrying spec fails at d33792ce~1 (200, row
+rewritten) and the file passes at d33792ce (12/12). Both held items are comment fixes. No new spec
+is required.
+
+1. **Narrow the two docblocks that say a row written after the duplicate pre-check is left
+   alone.** Both upserts run `DO UPDATE` only `WHERE accounts.username IS NULL AND
+   accounts.verify_token NOT LIKE 'confirmed:%'`, and a pending signup row E satisfies that. If
+   another signup for the same address writes its E row inside the window, this signup's upsert
+   rewrites that row and answers 200. Measured on a copy of d33792ce, with the interleave forced
+   through a `pool.query` spy: an interleaved E row gave 200 with its token replaced, and an
+   interleaved G row gave 409 with the row unchanged. The behavior is intended. The comments claim
+   more than the code does.
+   - `writeSignupRow` docblock: "a row written for the address after that check ... is left as it
+     is". Narrow it to a row other than a pending signup row E. The same sentence calls E "the one
+     row the duplicate pre-check lets through", but the pre-check also lets a factor-less
+     unverified G row through, to the eviction. Narrow that to the one row the `DO UPDATE` branch
+     rewrites.
+   - Canary docblock: "a row written for the address between the check and the upsert is declined
+     rather than rewritten". Narrow it the same way.
+
+2. **Delete one stale sentence from the outer catch's ORCID_ALREADY_LINKED comment:** "The
+   email-duplicate path returns 409 DUPLICATE before the INSERT, so it never reaches this branch."
+   The `claim_changed` 409s return after the upsert ran. The rest of the comment needs no
+   replacement text.
+
+Decided at this review (user, 2026-10-05):
+
+- **The ORCID+email path keeps the eviction.** This corrects the residual in
+  `backend-state-g-unverified-row-lifecycle` that an evictor "cannot verify it without the
+  mailbox". That holds on the email path only. On the ORCID+email path the signup writes a
+  `confirmed:` row and sends no mail, so whoever evicts a factor-less unverified G claim there holds
+  the address at once. Measured on a copy of d33792ce: 200, and the response carries the new row's
+  `confirmed:` auth_token and the binding cookie. Kept for three reasons. The evicted claim carries
+  no mailbox proof either. The ORCID path already attaches an unregistered address without one
+  (`api-contracts/auth.md`, signup). And refusing there would let an unverified G claim, kept alive
+  by re-issuing, block ORCID+email signups indefinitely for an address on a non-accredited domain.
+  The spec "evicts a factor-less G row on the ORCID path" pins the eviction.
+
+Dismissed at this review (recorded so the archive keeps them):
+
+- The ARCHITECTURE.md § 6.3 edge for the eviction. It is already a `[TODO Architect]` in
+  `backend-state-g-unverified-row-lifecycle` and lands with that task's § 6 edits, under the
+  decision above.
+- Specs pinning four guards: the ORCID+email upsert's `DO UPDATE` WHERE, the eviction DELETE's
+  `verify_token = $2` term, its `rowCount !== 1` rollback, and the `NOT LIKE 'confirmed:%'` term in
+  both upserts. Removing any one of them left every signup spec green. Also dismissed: a spec that
+  tells the pre-check's factor-carrying 409 apart from the `claim_changed` 409, which the upsert
+  WHERE produces when that branch is removed. All of this is preemptive test hardening: the code is
+  correct, and each window lies between the pre-check and the write.
+- The eviction predicate not testing `custody` or `upgraded_at`. The § 6.2 row shape that would
+  reach it, an unverified G row moved to custody 'self' by `/upgrade` under a leftover light JWT,
+  is the subject of the pending `backend-custody-routes-gate-on-row-claim`.
+
+Open, outside this hold: an account takeover through the signup verify link. A signup for someone
+else's address leaves the signup's password on the row, `POST /api/auth/verify` asks for no
+password, and `/confirm` and `/link` keep it. If the address owner finishes that signup, the
+signer can log in with that password. This predates the change, but the eviction lets an attacker
+time it, since settings and signup both mail the subject "PEvO - Verify your email". It is awaiting
+the user's decision on filing a task, and nothing here depends on it.
+
+When both items are in, `git mv` this file back to `tasks/review/`.
