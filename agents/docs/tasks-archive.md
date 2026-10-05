@@ -1,250 +1,250 @@
-## Account-state comments that enumerate A/B/C/D predate state G (archived 2026-10-05) — both held items fixed; the State G premise residual filed as the custody-routes row-claim task
+## The carve-out canary's mixed-script check refuses honest unit and math symbols (archived 2026-10-05) — three review rounds; Greek narrowed to the 33-letter GREEK_LOOKALIKES table; every held item fixed; clean third-pass re-review
 
 ### Architect archive note (2026-10-05)
 
-Re-review of 49aa2c65 with /ce-code-review (full: correctness, project-standards, security,
-adversarial in-process). No primary finding. Both held items are fixed, and H1, H2 and AC1 to
-AC3 hold. All four lenses verified the D line's clause: a password consent-kind proof minted
-before the upgrade stays consumable until its 300s TTL, because the upgrade sweeps only
-session-kind proofs and the consent consume reads no revocation epoch. One residual, raised by
-correctness and adversarial and by security as the same root cause: the State G line's premise
-("the password issuer refuses its non-light claim") came from the architect's hold wording, and
-it fails for a light JWT left over from a deleted earlier light row of the same username,
-because the custody routes take the claim from the token and refuse a row only by
-`upgraded_at`. The same gap lets `/upgrade` move a G row to a D shape. Triaged with the user:
-not held here; filed as backend-custody-routes-gate-on-row-claim, which makes the G line true
-as written; ARCHITECTURE.md § 6.2 and § 6.4 corrected in 78a59b1e.
+Re-review of 0330bef4 with /ce-code-review (focused: orchestrator correctness, standards and
+requirements read plus one independent in-process adversarial read). Neither read found
+anything. The second-pass hold item is FIXED: the `normalizeCommentText` docblock's "so a
+look-alike character cannot make the label or a path read one way and match another" clause
+and its "as a reader sees it" lead are deleted, and the LETTERS sentence is narrowed to letters
+of a script other than Latin and Common, with its pointer to the header's residual list kept.
+Measured on isolated copies under Node 20.20.2 (Unicode 17.0): no letter of a script other than
+Latin and Common folds to a Latin letter (0 of 143,180), while 687 of 1,039 Common letters do;
+Cf 170/170 and M 2543/2543 dropped, Zs 17/17 to a space, Pd plus U+2212 28/28 to `-`; every
+pattern consumer reads the normalised block text from `commentBlocks`. Comment-only diff
+(identical parser leaf streams at base and head), canary 12/12, exit 0. AC 1 to 5 met.
+Settled, not reopened: the "every dash" wording (U+2053 SWUNG DASH unmapped, decided with the
+user) and the open spacing-mark residual (dismissed in the second-pass hold). No solutions/
+entry was written during the holds. Compound: no.
 
 **Owner:** backend
-**Created:** 2026-10-05
-
-Surfaced by the backend in its re-review signal on the custody-column
-alignment (since archived) and approved for filing at that task's archive.
-Comment-only. No behaviour change is wanted.
+**Created:** 2026-10-01
 
 ## Why
 
-ARCHITECTURE.md § 6.1 enumerates state G: a pure self-custody Keychain account
-that acquired an `accounts` row by registering an email through
-`POST /api/settings/email`'s add flow. Its `custody` is NULL, it may later link
-an ORCID and set a password, and it leaves through the same deletion exit as
-A/B/C/D. § 6.3 now carries G's transitions, including
-`A/B/C/D/G ──settings/email DELETE──> [no row]`.
+`mixedScriptWords` in
+`backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`
+flags every word that mixes Latin letters with letters of any other script. It
+runs on every comment under `backend/tests`, not only on labelled clause-(c)
+blocks. It exists to catch a look-alike letter that hides the label or a
+filename from the regexes, such as a Cyrillic `а` inside `Real-path`.
 
-Several backend comments still restate the pre-G enumeration. A comment that
-lists states closes the set it names, so each of these now asserts something
-false about which rows reach the code it describes. Known sites at HEAD
-(re-locate each by its quoted text, not by position):
+Its reach is wider than that purpose. `normalizeCommentText` applies NFKC
+first, and NFKC folds the micro sign U+00B5 to Greek mu U+03BC. So `250µs`,
+the SI spelling of microseconds, becomes a Latin-plus-Greek word, and so does
+`Δt`. Neither is a look-alike for any Latin letter.
 
-1. `routes/orcid.ts`, in the `/start` handler: "`delete_account` action
-   (right-to-erasure exit, A/B/C/D → [no row] per ...".
-2. `lib/fresh-auth.ts`, two docblocks: "(the de-facto right-to-erasure exit,
-   A/B/C/D → [no row] per ..." and "anonymizes the audit log, transitioning
-   A/B/C/D to the no-row state".
-3. `routes/settings.ts`, above `DELETE /email`: "anonymizes
-   `custody_audit_log`, transitioning A/B/C/D to the no-row state".
-4. `jobs/registration-watch.ts`, the module docblock's event table:
-   "`registration_done` ... a row reaches a finalized state (A/B/C/D)". The
-   `collectCompleted` docblock in the same file already names G and is
-   correct; the table above it now disagrees with it.
-5. `routes/settings.ts`, `POST /set-password`: "today only the ORCID-path
-   signup/recover leaves password_hash = NULL". False today. A G row is
-   created with no password, a D row finalized through `POST /api/auth/link`
-   has none, and a D row upgraded from C keeps C's NULL. The handler gates on
-   `password_hash` NULL with `orcid` set and on no custody state, which is
-   what § 6.4's set-password row now says.
+Measured on 2026-10-01 against an isolated copy of HEAD:
+`mixedScriptWords(normalizeCommentText('waits 250µs, then Δt elapses; 250μs too; plain 250us'))`
+returns `["μs","Δt","μs"]`.
+
+The verdict cannot be waived. `auditSources` collects mixed-script words
+before any block is classified, so the ALLOW_MARKER does not exempt them, and
+no backlog map covers them. The only remedy available to an author is the
+ASCII spelling. No file trips this today, since the canary is green. A
+symbol-carrying comment in a timing-sensitive suite is the shape that will. A
+guard that accuses honest text is the guard that gets marked or deleted.
+
+The `mixedScriptWords` docblock already records this as a deliberate deferral:
+"which scripts are confusable is a decision worth taking deliberately". This
+task takes that decision.
 
 ## Scope
 
-1. Fix every site above so it is true against § 6.1 and § 6.3 as they stand.
-   Prefer citing § 6.3 for the deletion exit over restating a state list: the
-   restated list is the shape that went stale. Where a list is genuinely
-   needed, make it the § 6.3 set (A/B/C/D/G).
-2. Sweep for sites this list missed before calling the item done. At minimum
-   grep `backend/src` and `backend/tests` for `A/B/C/D`, `A, B, C, D`,
-   `A/B/C`, `states A`, `finalized state`, and `light account row`, and read
-   each hit against § 6.1. Report what the sweep found, including hits you
-   judged correct and why.
-3. The `set-password` comment's purpose is to explain why the handler
-   requires an ORCID. Keep that purpose; replace only the false enumeration
-   of which rows carry a NULL hash.
+1. Decide which characters the check refuses. Measure each candidate against
+   the corpus and the existing look-alike probes before choosing. Candidate
+   directions, not a prescription:
+   - Refuse only letters whose glyphs are confusable with Latin letters, such
+     as the Cyrillic and Greek letters that render like `a`, `e`, `o`, `p`,
+     `c`, `x`.
+   - Keep the script rule, but exempt a named set of unit and math symbols
+     (the micro sign and its NFKC image, `Δ`), either before NFKC or as an
+     allowlist after it.
+
+   Do NOT restrict the check to labelled blocks. A look-alike letter inside
+   the label is what makes a block read as unlabelled in the first place, so
+   that restriction reopens exactly the escape the check exists to close.
+2. Implement the decision.
+3. Record the reasoning in the `mixedScriptWords` docblock and in the
+   header's normalisation paragraph, replacing the "blunt instrument"
+   paragraph with a description of the trigger set the code now has.
 
 ## Acceptance criteria
 
-1. No comment in `backend/src` or `backend/tests` asserts a finalized-state
-   set or a NULL-`password_hash` population that § 6.1 contradicts.
-2. No behaviour change: `git diff` touches comments and docblocks only.
-3. Comment-anchor conventions hold (root CLAUDE.md "Comment anchors"): no
-   task slugs, round numbers, line numbers, or bare positional anchors in what
-   you write. Cite § 6.1 and § 6.3 by section, which is the established form
-   in these files.
+1. A comment under `backend/tests` containing `250µs` or `Δt` no longer fails
+   the canary, pinned by direct probes.
+2. Look-alike letters are still refused. The existing probes stay green: a
+   Cyrillic `а` in `Real-path`, a Cyrillic `е` in `settings.tеst.ts`, and the
+   negative cases `Müller` and `Петров`. Add at least one Greek look-alike
+   case (for example a Greek omicron in `companion`) that must still be
+   refused.
+3. Each member or rule of the chosen confusable set has a probe that goes red
+   when that member alone is removed.
+4. Every docblock and header sentence about this check describes the trigger
+   set the code has, verified against measured behaviour.
+5. The canary is green. `LANDING_FREE_PROSE`, `LANDING_FILELESS`, both
+   deferred maps and `LANDING_DIGEST` are untouched.
 
-## Backend implementation signal (2026-10-05, commit d475f59c)
+## Notes
 
-d475f59c verified as an ancestor of HEAD with `git merge-base --is-ancestor`. Comment-only:
-a TypeScript token-stream comparison (parser leaves, comments and JSDoc excluded) of all 15
-touched files against their pre-commit HEAD is identical. Typecheck and lint exit 0 (the one
-lint warning is pre-existing in `author-supersession.ts`). The pre-commit hook's
-`anchor_violation()` (ALLOW_MARKER set, control line fires) reports zero hits on the added
-lines; `no-stale-comment-anchors` and the `updated_at` writer canary pass.
+This task and two sibling tasks edit the same canary file:
+`backend-carve-out-canary-reverse-declaration-in-mocking-file` and
+`backend-carve-out-canary-loose-claim-accuses-docblock-example`. Land them one
+at a time. Anchor any comment you write on stable symbols, never on line
+numbers, task slugs or round numbers.
 
-**Known sites (Why items 1-5): all fixed.**
-1. `orcid.ts` `/start`: the deletion exit cites § 6.3 instead of a list, and the ORCID issuance
-   side for `delete_account` is "any account with an ORCID linked" (it said "state C / state B
-   / D", which also missed G).
-2. `fresh-auth.ts`, both docblocks: deletion exit by § 6.3 citation, no list.
-3. `settings.ts` DELETE /email: same.
-4. `registration-watch.ts` event table: `registration_done` defers to section 6.1 and to
-   `collectCompleted`'s best-effort note for G. The sweep also found `signup_started` "(state E
-   or F)" false: `collectSignupStarted` is `WHERE id > $1` with no state filter, so the settings
-   add flow's G row is announced too. Fixed, with the "because signup writes `accounts`"
-   sentence after the table.
-5. `settings.ts` set-password: the ORCID requirement now rests on G (a null hash with no ORCID)
-   and keeps its purpose. It does not cite a `/link` D row; see the first [TODO Architect] note.
+Reproduce the measurement on a probe copy, never the shared checkout: build
+it per the backend probe recipe (`git archive HEAD backend`, symlinked
+`node_modules` and `.env`, `tests/setup.ts` replaced by `export {};`). Then
+append an `it()` to the copied canary that writes `mixedScriptWords(...)`
+output to a file with the already-imported `writeFileSync`. Console output is
+silenced in this suite.
 
-**Sweep (Scope item 2).** A five-angle multi-agent sweep over a HEAD snapshot of `backend/src`
-and `backend/tests` (state letters, including every pattern the task names; null-hash
-populations; custody and row-existence claims; deletion, ORCID and add-flow paths; test
-headers), per-file adversarial verification and a completeness critic, then a three-lens review
-of the diff (truth against § 6 and the code, mechanics, completeness). 93 judged hits plus 22
-critic additions.
+## Backend implementation signal (2026-10-01, commit 930820cc)
 
-Fixed beyond the five (same AC1 classes):
-- `set_password` described as "C → B" (`orcid.ts` `/start`, `fresh-auth.ts` union docblock):
-  now C → B with G and D staying put, per § 6.3.
-- set-password handler: header "Bearer JWT for light accounts", "a state-C account (null
-  password_hash)", "state-C detection", "state-C / state-B distinction", and the closed-default
-  "state C has no registered password factor" now speak of null-hash accounts.
-- `orcid.ts` ORCID issuance for `ipfs_upload`, `edit_accreditation_metadata` and the admin
-  actions: "serves state C + state B" became "any account with an ORCID linked" (D and G rows
-  with an ORCID hold JWTs and mint here). The credit and consent-op comments keep C/B, because
-  those ops ride the light-only broadcast.
-- `orcid.ts` handleLogin: "the state-C passwordless shape" became a NULL hash on C, D and G,
-  with C the steady-state carrier on the custody routes.
-- `settings.ts` change-email and delete factor tables: State G row added.
-- `auth.ts` /resend-verification and /login null-hash comments no longer equate a null hash with
-  ORCID-only; the /login comment says the `NO_PASSWORD_SET` message's remedies fit C, not a G
-  row with no ORCID. Two `custody.ts` cross-references to "the /login ORCID-only burn" now name
-  `NO_PASSWORD_SET`.
-- `accreditation-metadata.ts`: "a pure self-custody caller has no accounts row" became the
-  no-row case affecting 0 rows, with a G caller synced like any other.
-- Tests: migration 017 docblock (c) and its NULL-column seed comment cover G;
-  `custody-fresh-auth-null-hash` header and seed comment name state C and drop a fictional
-  "admin rolled into light-mode" path; `settings-email-delete-fresh-auth` Keychain specs stop
-  calling their row state D; the `settings-set-password` ORCID_REQUIRED comment;
-  `recover.test` and `auth-argon-error-translation` "ORCID-only" labels (line-number cites and a
-  hold/round prefix on the touched lines dropped); the `custody.test` carve-out note drops a
-  "documented-unreachable null-hash safety sentinel" that no longer exists in `custody.ts`;
-  `auth.test` "finalizes the ORCID-only row" became "writes the F row".
+Decision: a hybrid of the two candidate directions. Two designs were
+measured on isolated copies, and the two judges split:
+- A confusable set for every script loses recall against today's rule.
+  Lisu and Coptic carry exact Latin capitals (`U+A4E3` reads as R,
+  `U+2CA2` as P).
+- An allowlist of notation shapes needs a slash rule and line-wrap token
+  logic, and it still refuses `µs/op`.
 
-Judged correct and left unchanged:
-- `collectCompleted` docblock (already names G); `custody-claim.ts` "states A-C" / "state D"
-  (it names G separately right after).
-- `custody.ts` /fresh-auth and /session-auth "state A/B" versus "state C": both 403 any
-  non-light claim first, so only A/B/C reach them. `orcid.ts` credit and consent-op ORCID
-  issuance "C + B": light-only broadcast.
-- `recover.ts` comments scoped by `upgraded_at` (state D excluded) and the ORCID-only NULL
-  email; `log-pii.ts` and `signup-verify.ts` "ORCID-only accounts have password_hash NULL" are
-  true statements about that origin, not closed populations.
-- Tests whose state lists name exactly the rows they seed: `custody-claim.test` "light states
-  A/B/C", `custody-non-consent-fresh-auth` "A/B/C/D acceptance", `custody-session-auth` "A/B/C/D
-  rows", `custody-upgrade` "A/B/C/D coverage", `settings-set-password-fresh-auth` "state C →
-  state B", `settings-email-fresh-auth` "Happy path C", and `settings.test`'s G add-email seed.
-- The `updated_at` canary docblock already names G for both hex-token statements.
+The hybrid narrows only Greek, the one script where honest notation lives.
+Every other script keeps the whole-script rule.
 
-**Needs triage.** Found by the sweep, outside this comment-only task. Not fixed, not filed.
+Trigger set (`mixedScriptWords`): a word holding a Latin letter plus either
+(a) any letter outside Latin and Greek, or (b) a Greek letter whose base
+letter, accents stripped, is in `GREEK_LOOKALIKES`.
+- `GREEK_LOOKALIKES` holds the 30 Greek letters whose UTS #39 prototype is
+  one ASCII letter, keyed by NFKC image. An independent derivation from
+  `confusables.txt` matched it exactly.
+- Capital sigma is included because the lunate capital sigma, which renders
+  as C, folds to it. So `Σi` glued to Latin is refused, a recorded cost.
+- Widening to non-ASCII Latin prototypes was measured and declined. It
+  would refuse delta, epsilon, phi, beta and capital lambda, and their
+  Latin twins (small-capital T, open e) already pass at HEAD.
 
-Code defects for G rows, most severe first:
-1. /login pending branch (`auth.ts`): a G row with a password and an unverified settings email
-   gets 409 PENDING_UNVERIFIED, and past `expires_at` the handler runs
-   `DELETE FROM accounts WHERE id = $1`. That is a G → [no row] exit § 6.3 does not list,
-   triggered by the owner's own login.
-2. `signup-cleanup.ts`: the hourly job deletes hex-token rows past `expires_at` with no
-   `username` filter, and the settings add-flow INSERT sets `expires_at`, so an unverified G row
-   is reaped along with any ORCID link or password it acquired meanwhile.
-3. `POST /api/auth/verify` (`signup-verify.ts`) selects by `verify_token` alone: a G row's
-   settings token presented there writes `confirmed:<hex>` and `signup_binding_hash` on a row
-   with `username` SET, a shape § 6.1 does not enumerate (and an expired one is DELETEd). This is
-   the reverse direction of the pending settings-verify-clears-any-row-token task.
-4. /resend-verification (`auth.ts`) selects by email alone, so a G row with a password and an
-   unverified email gets its settings token replaced by a signup verification link (feeds 3).
-5. ORCID recovery (`recover.ts`) looks up `username = $1 AND verify_token IS NULL`, which admits
-   a verified G row. With an ORCID linked it passes the `upgraded_at`-only gate and gets an
-   email/password rebind plus a JWT. § 6.4 limits ORCID recovery to B and C and § 6.3 has no G
-   recover transition. Code gap or doc gap is the architect's call.
-6. The /login `NO_PASSWORD_SET` message "sign in with ORCID or recover via seed phrase" is the
-   wrong remedy for a G row with no ORCID (user-facing string; the comment now says so).
-7. Already filed: the signup upsert overwriting an unverified G row (the pending
-   signup-upsert-overwrites-finalized-row task). Its `auth.ts` comments were left for that task.
+Adversarial verify (three lenses: neuters, escape hunt, docblock truth),
+with findings fixed:
+- Accented Greek (tonos, breathing) escaped by passing as a non-member.
+  Closed by the base-letter lookup. With `baseOf` neutered to identity the
+  accent probe goes red.
+- The residual sentence was wrong. It now names four residuals: a
+  single-script word; Latin-script look-alikes NFKC does not fold; Greek
+  letters with a non-ASCII Latin confusable (pinned as passing beside their
+  Latin twins); and non-letter symbols, which split the word.
+- Reworded the `auditSources` docblock and the failure message, the
+  "basic (ASCII) Latin letter" wording, and "every Greek letter" instead of
+  "every Greek entry".
 
-Comment classes outside AC1's letter:
-8. JWT path equated with light accounts: `admin-roster.ts` module docblock and
-   `requireFreshAdminAuth` docblock, `validation.ts` (two schema comments),
-   `accreditation-metadata.ts` fresh-auth gate comment. D and G rows hold JWTs via password or
-   ORCID login; the code keys on `hiveAuthMethod` and is correct. Predates G.
-9. "No-row-before-JWT invariant": `settings.ts` POST /email header, handler-order item (4) and
-   the add-flow guard comment, plus the `settings-email-fresh-auth.test` header and spec comment.
-   False: `POST /api/auth/session` mints a JWT for a row-less Keychain caller and account
-   deletion leaves earlier JWTs live, so the add-flow JWT guard is the only barrier. The guard
-   exists, so there is no hole.
+AC 1: `250µs`, `250μs`, `Δt`, `10 kΩ` and `πr` pass, by direct probe and
+end to end in the synthetic `auditSources` source (`mixed` stays 1).
 
-Test data:
-10. `settings-email-delete-fresh-auth` `seedSigUser` inserts `custody = 'self'` with no
-    `upgraded_at`, a pairing § 6.1 calls fictional (the route never reads it).
-11. The migration 017 test title "accepts every enumerated shape: A/B/C, D, and the
-    pre-finalize NULL column" is a string literal, left per AC2; its docblock and seed comment
-    now say the NULL-column seed stands for G too.
+AC 2: the Cyrillic probes, `Müller` and `Петров` are unchanged. Greek
+omicron in `companion`, alpha in `Real` and upsilon in a filename are
+refused.
 
-[TODO Architect] ARCHITECTURE.md (not edited by backend):
-- § 6.1's D row and § 6.3's `/link` line say `password_hash` and `orcid` stay NULL on the
-  signup-verify(self) path. The `/link` finalize UPDATE writes neither column, so a `/link` D
-  keeps its E/F row's password (email path) or ORCID (ORCID path). Why item 5 inherited the
-  claim, which is why the set-password comment cites only G. § 6.4's set-password row also omits
-  the eligible ORCID-path `/link` D.
-- § 6.4 "Issue fresh-auth proof" rows say "A or B" and "B or C", while their parentheticals
-  ("states with password/ORCID registered") also cover D and G rows that carry those factors.
-  The change-email and delete rows' per-state availability omit G.
-- § 6.2 has no G entry, and its no-row "no PEvO-server session is involved" is contradicted by
-  `POST /api/auth/session` (item 9).
-- If unverified-G expiry (item 2) is intended housekeeping, § 6.3 needs that transition.
+AC 3: each run below was alone on an isolated copy.
+
+| Mutant | Result |
+|---|---|
+| alpha removed from the table | red |
+| final sigma removed from the table | red |
+| capital Sigma removed from the table | red |
+| Greek exemption removed | red, 2 failed, incl. the synthetic `mixed` count |
+| other-script arm removed | red, 2 failed |
+| Latin test removed | red, 2 failed |
+| member added to the table | red via the set-equality pin |
+| `baseOf` neutered to identity | red |
+
+AC 4: the header normalisation paragraph, `normalizeCommentText`,
+`GREEK_LOOKALIKES` and `mixedScriptWords` docblocks were checked against
+measured behaviour.
+
+AC 5: canary green (12/12, exit 0) and `typecheck:tests` clean.
+`LANDING_*`, the deferred maps and `LANDING_DIGEST` are untouched. The
+non-self census is identical to HEAD.
 
 ## Architect re-review (2026-10-05) — HELD PENDING FIXES:
 
-`/ce-code-review` on d475f59c (correctness, project-standards, testing, security, adversarial,
-learnings; one validator batch). AC2 and AC3 hold. Two comment lines this diff wrote close a set
-the code leaves open, and one of them is AC1's remaining miss. Both are comment-only; AC2 still
-binds the fix.
+Reviewed `930820cc` via `/ce-code-review` (focused: orchestrator correctness, standards and
+requirements read plus one independent in-process adversarial read). Verified on isolated
+copies: canary 12/12, exit 0, at `930820cc` and at its parent. All eight mutants in your table
+reproduce. Four extra mutants are red as well: `baseOf` keeping marks, upsilon removed, small
+iota removed, and NFKC dropped from the normaliser. The 30-letter `GREEK_LOOKALIKES` equals an
+independent derivation from `confusables.txt` v18.0.0 under the table's stated rule, and the
+"Of the ones it folds" sentence is exact. AC 1, 2, 3 and 5 are met. Two items remain under
+AC 4, both in `backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`.
 
-1. **`settings.ts`, both fresh-auth factor tables (the POST /email header and the DELETE /email
-   header): the new State G line promises a password leg no route can mint.** "whichever
-   password/orcid factors it has" is true only of the consume-side mechanism check. On the JWT
-   path a G row cannot obtain a password-mechanism proof: `custodyClaimFor` resolves its NULL
-   `custody` to `'self'`, and `POST /api/custody/fresh-auth`, the only password-mechanism issuer,
-   answers 403 to any non-light claim. Its one JWT-path factor is ORCID, when linked (ORCID
-   issuance in `routes/orcid.ts` has no custody gate). The pre-existing State D line in both tables
-   ("preserved password/orcid factors") overstates the same leg for the same reason (a D row's
-   claim is `'self'` too). Fix both lines in both tables so each says what the row can present on
-   the JWT path: ORCID when linked, because the password issuer refuses a non-light claim. If you
-   find a password proof minted while the row was still light can be consumed after the upgrade,
-   say so on the D line; otherwise leave it out.
-2. **`tests/routes/auth.test.ts`, the ORCID-only signup comment: "(state F, which signup-verify
-   later finalizes to C)" closes F's finalize set.** An F row also finalizes to D through
-   `POST /api/auth/link` (§ 6.3's signup-verify(self) line; the `/link` lookup is by
-   `verify_token` alone). Name both: C through `/confirm`, D through `/link`.
+1. **Eta and theta hide the label, and no residual names them.** `confusables.txt` maps eta
+   (U+03B7) to `n` followed by U+0329 COMBINING VERTICAL LINE BELOW. It maps small theta
+   (U+03B8), capital theta (U+0398), the theta symbol (U+03D1) and the capital theta symbol
+   (U+03F4) to `O` followed by U+0335 COMBINING SHORT STROKE OVERLAY. The table's rule, a
+   prototype that is one ASCII letter, leaves all of them out. `normalizeCommentText` drops
+   combining marks, so their Latin twins (`n` + U+0329, `O` + U+0335) reach the patterns as
+   plain `n` and `O` and are caught, while the Greek letter passes. Measured in review:
+   `// Real-path companioη: settings.test.ts covers the rest of the gate.` and
+   `// REAL-PATH CΘMPANION: settings.test.ts ...`, planted under `tests/routes/`, are green at
+   `930820cc` and red at its parent. The same two plants spelt in ASCII, and spelt with the
+   Latin twin, are red at `930820cc`. So the header's list of four residuals is incomplete, and
+   the `normalizeCommentText` docblock's claim that the header's normalisation paragraph lists
+   the residual is false.
+   Fix: derive the table the way the check reads text. The rule becomes a Greek letter whose
+   prototype, with combining marks removed, is one ASCII letter. Re-derived in review from the
+   same `confusables.txt`, that rule yields exactly the current 30 plus eta (under `n`) and
+   small and capital theta (under `O`). The two theta symbols fold to those two under NFKC, and
+   an accented eta reaches eta through `baseOf`. Add the three letters to `GREEK_LOOKALIKES` and
+   to the probe's independent copy, so the per-member loop and the set-equality pin cover them.
+   Add the eta and capital-theta label spellings above as refused probes. Reword the table
+   docblock and the header's normalisation paragraph to the rule with marks removed. The cost:
+   a theta glued to a Latin letter as notation (for example `cosθ`) is now refused, as rho and
+   sigma glued to Latin already are. Name it beside them in the `mixedScriptWords` docblock's
+   cost sentence.
 
-Not held here (triaged with the user 2026-10-05):
-- The set-password comment ("Only ORCID-verified accounts can opt into password login") is false
-  today because `POST /api/auth/reset` writes a password onto any row with an email, a G row with
-  no ORCID included. The pending password-reset gating task's default rule (reset never adds a
-  password) makes it true; a note there covers the comment if that rule changes.
-- The signal block's [TODO Architect] notes: the architect is correcting ARCHITECTURE.md § 6.1 to
-  § 6.4 in a separate commit.
-- The signal block's "Needs triage" items 1-11: filed by the user as the state-G unverified-row
-  lifecycle task, plus a note on its item 10 about the `NO_PASSWORD_SET` comment's
-  exception list.
-- registration-watch announcing G rows as "Signup started / Email + password", with their email
-  sent to the operator Discord: filed as a new backend task.
+2. **"none of which a comment in this corpus has a reason to contain" measures false.** The
+   first residual, a confusable that is a single-script word of its own, is in the corpus
+   today: a standalone Greek alpha (U+03B1, a `GREEK_LOOKALIKES` member) names review clusters
+   in `lib/logger-redact.test.ts` and `startup-checks.test.ts`. Neither hides anything. The
+   parent commit's header carried the same claim in shorter words, and this diff restates it
+   over four residuals. Fix: replace the clause with a statement you have measured against the
+   corpus, or drop it.
 
-## Backend re-review signal (2026-10-05, commit 49aa2c65)
+Keep AC 5 as it stands, and re-measure the non-self census after item 1, since the corpus
+holds standalone and hyphen-split Greek (α, δ, Φυσική). Anchor any new comment on stable
+symbols only. The reverse-declaration task is also held on this file; land the two one at a
+time.
 
-49aa2c65 verified as an ancestor of HEAD with `git merge-base --is-ancestor`. It is comment-only:
+## Backend re-review signal (2026-10-05, commits 9a853710, ead0464a and 40459854)
+
+All three commits are on main (`git merge-base --is-ancestor`, checked).
+Three rounds of adversarial verification ran: neuters, an independent
+derivation and escape hunt over confusables.txt 18.0.0, prose truth, and a
+corpus census. ead0464a and 40459854 fix what the later rounds found.
+
+Item 1, eta and theta:
+- `GREEK_LOOKALIKES` adds eta (under `n`) and small and capital theta (under
+  `O`), 33 members. Re-derived independently twice: the Greek letters whose
+  prototype, with combining marks removed, is one ASCII letter, keyed by
+  NFKC image. The result matches exactly, and the old rule gives exactly the
+  previous 30.
+- The probe's independent copy carries the three new letters. Refused probes
+  added: the eta label spelling (`companio` + eta) and the capital-theta one
+  (`C` + Theta + `MPANION`), the two theta symbols folded by NFKC, an
+  accented eta (via `baseOf`), and the cost line (`cos` + theta beside rho
+  and sigma).
+- Table docblock and header now state the marks-removed rule. The
+  `mixedScriptWords` cost sentence names theta after `cos`.
+- Found in verification and fixed in ead0464a. The header said Greek means
+  "only" letters the data maps to an ASCII letter. Final and capital sigma
+  are in the table only as the NFKC folds of the lunate sigmas: the data maps
+  capital sigma to an esh and has no row for final sigma. The header now
+  gives the NFKC half and says why the sigmas are in, and residual (iii) is
+  scoped to Greek letters outside the table. The table docblock says its
+  keys are not read (a key-move mutant stays green).
+
+Item 2, the corpus clause: "none of which a comment in this corpus has a
+reason to contain" is dropped. The `normalizeCommentText` docblock now says
+the header "lists the residuals it does not refuse". The escape hunt makes
+that true by measurement. Of 2257 confusables rows whose prototype contains
+an ASCII letter, every passing one falls under a named residual. The list
