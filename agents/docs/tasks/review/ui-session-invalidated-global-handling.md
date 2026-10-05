@@ -145,3 +145,11 @@ Follow-ups filed from the triage: `ui-sign-in-modal-has-no-orcid-path`,
 
 Verification: full frontend unit suite green at `7247ff5b` (88 files, 1995
 tests, exit 0). Not checked in a browser and no e2e run.
+
+**Architect note (2026-10-05), for this task's review:** the review of
+`ui-expired-session-token-reads-as-wrong-password` rejected the "call sites
+still show their own generic error next to the central message" carve-out for
+`SESSION_EXPIRED` on the upload surface, the custody broadcast wrapper and the
+consent-op retry gate, and held that task for it. This task carries the same
+carve-out for `SESSION_INVALIDATED` on the same surfaces. Decide at review
+whether the revoked rejection gets the same treatment.

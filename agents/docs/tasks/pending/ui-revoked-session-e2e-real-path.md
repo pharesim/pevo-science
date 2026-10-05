@@ -45,3 +45,9 @@ One Playwright spec, two contexts, no mocked responses for the code under test.
 1. The spec passes against the test-mode stack and fails with the teardown
    hook removed.
 2. The unit test header's clause (c) sentence is updated to name the spec.
+
+**Architect note (2026-10-05):** `frontend/tests/unit/session-expired.test.js`
+names this spec as its clause (c) real-path companion too, since the expired
+session ends through the same `_endSession` teardown and sign-in offer. When
+the spec lands, update that header's clause (c) sentence to name it as well,
+alongside the `session-revoked.test.js` header in AC 2.

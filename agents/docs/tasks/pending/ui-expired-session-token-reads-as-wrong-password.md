@@ -157,3 +157,101 @@ Verification:
   ordering, two skeptics per finding) left 0 findings standing, 4 refuted.
 - No e2e run and no browser check: a real expired session needs a JWT past
   its 24-hour lifetime.
+
+## Architect re-review (2026-10-05) — HELD PENDING FIXES:
+
+Reviewed `b9de6dcc` with `/ce-code-review` (correctness, security, adversarial,
+testing, project-standards, frontend races, learnings; one validator over the
+merged set, both findings confirmed). Verified independently in an isolated
+copy of `b9de6dcc`: full frontend unit suite 91 files / 2110 tests, exit 0;
+`npm run build` exit 0. Scope 1, 3 and 4 and AC 1, 3, 4 and 5 are met.
+Security, testing and project-standards returned no findings.
+
+Triage decision (user, 2026-10-05): the "Not covered, by decision" carve-out
+for call sites whose guarded call is itself the expired request is rejected on
+the surfaces Scope 2 names: the upload surface, the custody broadcast wrapper,
+and both consent-op orchestrators. Scope 2 says no caller may misread the
+error, and it names the upload surface. On those surfaces, a `SESSION_EXPIRED`
+whose teardown has already run must add nothing to the expiry message, the way
+the paths that end at the status read or the mint already behave.
+
+1. **Upload under an open window** (`lib/ipfs-upload.js`). When a session
+   window is still cached as the JWT passes `expiresAt`, the pre-flight is
+   refused client-side, `uploadFile`'s catch matches none of its branches and
+   rethrows `SESSION_EXPIRED`, and `describeUploadError` maps it to
+   `common.uploadFailed`. Publish then shows "Upload failed" and "Publishing
+   failed" after the expiry toast; the editor shows its image-upload failure
+   and does not abandon the queued images. Required: a `SESSION_EXPIRED` that
+   arrives once this flight's guard reads torn down resolves to the
+   already-reported code (`describeUploadError` returns `null`), in
+   `uploadFile`'s catch and in `retryOnce`'s catch. Keep the `guard.tornDown()`
+   condition. In the adoption branch `endSessionIfExpired` returns true with no
+   teardown and no message, so that rejection must keep reporting. Adding
+   `SESSION_EXPIRED` to `describeUploadError`'s `null` cases would silence it,
+   so the fix does not go there.
+   Measured by the architect in a copy of `b9de6dcc`: asserting
+   `describeUploadError(err)` is `null` in the case "refuses an upload under an
+   open window without retrying it" fails at `b9de6dcc` with "expected
+   'common.uploadFailed' to be null", and passes with
+   `if (err?.code === 'SESSION_EXPIRED' && guard.tornDown()) throw uploadError(UPLOAD_SESSION_TORN_DOWN);`
+   placed just before `uploadFile`'s final `throw err;`. The `retryOnce` arm
+   was not planted.
+
+2. **Custody broadcast under an open window** (`lib/fresh-auth.js`,
+   `broadcastWithFreshAuth`). Same state: `broadcastOps` tears the session
+   down and throws `SESSION_EXPIRED`, the wrapper's catch has no branch for
+   it, and the rejection reaches the caller, so `components/vote-buttons.js`
+   toasts `vote.voteFailed` and publish sets "Publishing failed" next to the
+   expiry message. On the retry leg the status-less error is wrapped as
+   `FRESH_AUTH_RETRY_FAILED`. Required: once the guard reads torn down, a
+   `SESSION_EXPIRED` on either leg returns `FRESH_AUTH_REDIRECT_PENDING`, the
+   sentinel the wrapper already returns when a teardown abandons its
+   acquisition. Same `guard.tornDown()` condition, for the same reason as
+   item 1.
+   Measured the same way: making the case "sends nothing under a window that
+   outlived the session, and ends the session once" expect a `null` resolve
+   fails at `b9de6dcc` and passes with
+   `if (err?.code === 'SESSION_EXPIRED' && guard.tornDown()) return FRESH_AUTH_REDIRECT_PENDING;`
+   placed first in the outer catch, ahead of its `FRESH_AUTH_REQUIRED` branch.
+   With items 1 and 2 planted, `session-expired.test.js` and
+   `session-revoked.test.js` pass (31 tests). The retry-leg arm was not
+   planted.
+
+3. **Consent-op guarded call** (`consentOpFreshAuthRetryGate` in
+   `lib/fresh-auth.js`, serving `withSettingsFreshAuth` and
+   `withAuthorshipFreshAuth`). When the proof in hand is spent after the
+   session expired (a cached ORCID-factor proof, or one minted just before the
+   instant), `run(proof)` meets the pre-send check and the session is torn
+   down. The gate rethrows every error other than `FRESH_AUTH_REQUIRED`, on
+   the first call and on its retry call, so the page's own failure lands next
+   to the expiry message. Required: once the guard reads torn down, a
+   `SESSION_EXPIRED` from `run` resolves to `{ cancelled: true }`, the outcome
+   both orchestrators document for an action a teardown abandoned. Not
+   planted; the shape is yours.
+
+4. **Tests.** Pin the page-level outcome in the two open-window cases (the
+   assertions measured under items 1 and 2), and add one case for item 3 on
+   either orchestrator. Retry-leg cases are not required.
+
+Scope limits:
+
+- `SESSION_INVALIDATED` produces the same double message on the same surfaces.
+  Whether it gets the same treatment is decided at the review of
+  `ui-session-invalidated-global-handling`, which carries the same carve-out.
+  Do not extend these items to it unless that review says so.
+- The rest of the carve-out stands: plain authenticated calls and the
+  self-custody `run(undefined)` path outside the named surfaces, the
+  `set_password` cold ORCID start, and the idle-tab notification poll.
+
+Dismissed:
+
+- Refusing the expired request after adopting another tab's newer session,
+  with no message (P3): kept as implemented. It needs a storage event still in
+  flight, the docblock records the choice, and refusing is the conservative
+  failure. The mint retry leg in that branch can still show "Re-authentication
+  failed"; accepted for the same reason.
+- A client clock fast by 24 hours or more signs every new session out at its
+  first request: Scope 3 accepts skew.
+- The test header's clause (c) names the revoked-session e2e spec, which is
+  filed but not yet written. That satisfies clause (c). A note on
+  `ui-revoked-session-e2e-real-path` asks it to update this suite's header too.
