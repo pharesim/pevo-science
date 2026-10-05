@@ -166,6 +166,29 @@ DELETE FROM accounts
 
 The window self-resolves within 24h via `expires_at` regardless; the cleanup just turns a confusing stuck `400` into an immediate clean re-signup for users mid-flight at deploy time.
 
+#### Post-deploy cleanup: rows the old settings verify handler locked
+
+Before the settings verify add flow required `username IS NOT NULL`, `GET /api/settings/email/verify/:token` accepted a pending signup row's token (state E or F) and cleared `verify_token` and `expires_at` on it. That left rows with `verify_token` NULL and `username` NULL, a combination no state in § 6.1 has. Such a row keeps its email and ORCID iD claims: a new signup with either answers 409, no login on it yields a usable session, and the signup cleanup never reaps it, because `ABANDONED_ACCOUNT_ROWS` requires a token. Deleting it reaches the end state the cleanup would have reached.
+
+The repair is a one-time operator step, not a migration: `deploy.sh migrate` re-applies every migration file on each deploy, so a DELETE there would become a standing sweeper. Run it on the server from the repo root, after deploying a backend whose settings verify add flow requires a username (the old handler can create new locked rows until then):
+
+```bash
+# 1. List the rows (read-only):
+docker compose exec -T postgres psql -U pevo -d pevo_app -v ON_ERROR_STOP=1 \
+  -f - < backend/scripts/repair-locked-signup-rows-count.sql
+
+# 2. Back up exactly those rows, since the delete cannot be undone:
+docker compose exec -T postgres psql -U pevo -d pevo_app -v ON_ERROR_STOP=1 -c \
+  "COPY (SELECT * FROM accounts WHERE verify_token IS NULL AND username IS NULL ORDER BY id) TO STDOUT WITH CSV HEADER" \
+  > ~/locked-signup-rows-backup.csv
+
+# 3. Delete them in one transaction. It prints the deleted ids and DELETE <n>:
+docker compose exec -T postgres psql -U pevo -d pevo_app -v ON_ERROR_STOP=1 \
+  --single-transaction -f - < backend/scripts/repair-locked-signup-rows-delete.sql
+```
+
+The deleted ids should match the step 1 list. Run step 1 again afterwards: it should list no rows. No foreign key references `accounts`, so the delete cascades nowhere. It frees each deleted row's email and ORCID iD for a new signup. The backup can hold password hashes, so delete it once the result is confirmed.
+
 ## 2. Data Model
 
 ### Paper (Hive post)

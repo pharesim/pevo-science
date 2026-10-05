@@ -1,250 +1,250 @@
-## Audit the accreditation and Web of Trust code (archived 2026-10-05) — 27 findings triaged: 14 tasks filed, the accreditation contract fixed in place, 2 dismissed
+## Rows the old settings verify handler locked out of signup are never repaired (archived 2026-10-06) — clean first review; the operator procedure now lives in ARCHITECTURE.md
 
-### Architect archive note (2026-10-05)
+### Architect archive note (2026-10-06)
 
-First audit task run. Nine reviewers on a synthetic whole-file diff of `9d4325fc`; the validator
-confirmed findings 1 to 8; finding 27 was measured on the HAF node (gate lookup 19.75 s on a
-no-match account, 2.4 ms fenced). Five high-priority defects in the trust layer went to backend
-and ui tasks, the mailbox-binding question went to an architect design task, and two tasks sit in
-`blocked/` behind the task they are sequenced after. The per-finding dispositions, the dismissals
-and the deferred `solutions/` refreshes are in the "Dispositions" section of the task below. No
-`/ce-compound`.
-
-**Owner:** architect
-**Created:** 2026-10-05
-**Priority:** normal
-
-## Why
-
-No commit since 2026-08-01 has changed these files, so no current review has looked at them. Reviews of the code that tasks do touch keep turning up pre-existing defects there, among them the signup upsert that can overwrite a finalized account row and the settings verify handler that clears `verify_token` on whatever row carries it. This task reviews the files below as they stand.
-
-The trust layer (root `CLAUDE.md` principle 3): the accreditation routes and service, email validation, and the Web of Trust.
-
-## Scope (line counts at filing)
-
-- `backend/src/routes/accreditation.ts` (1331)
-- `backend/src/accreditation.ts` (470)
-- `backend/src/routes/accreditations.ts` (188)
-- `backend/src/email-validator.ts` (123)
-- `backend/src/wot.ts` (343)
-- `backend/src/routes/wot.ts` (267)
-
-Total: 2722 lines.
-
-## Method
-
-`agents/architect/CLAUDE.md` "Audit tasks (existing code, no diff)". Audit the files at the HEAD current at pickup; a file that changed since filing is still audited whole.
-
-## Done when
-
-The findings are triaged with the user, accepted ones are filed as tasks with a priority or folded into an open task that covers them, the dispositions are recorded in this file, and the file is archived.
-
-## Dispositions (2026-10-05)
-
-Audited at `9d4325fc` with `/ce-code-review` on a synthetic whole-file diff, all reviewers on
-Fable 5.1 at the user's request: correctness, security, in-process adversarial,
-project-standards, reliability, performance, api-contract, maintainability, learnings. 65 raw
-findings merged into 26 (5 P1, 4 P2, 17 P3). The validator confirmed findings 1 to 8 from the
-code; 9 to 26 were not in its batch. Reviewers ran no tests and no database, Redis or network
-access, so no finding has measured incidence. Finding 27 came from an `EXPLAIN ANALYZE` the architect
-ran on the HAF node with the user's permission. Triage: user, "as recommended", with decisions on
-findings 1, 3, 4 and 27.
-
-| Finding | What | Disposition |
-|---|---|---|
-| 1 | `/verify` confirms a WoT enrollee below the threshold and broadcasts nothing | `backend-verify-gate-treats-wot-enrollee-as-accredited` (high). Decision: an email verification pins any WoT enrollee |
-| 2, 8 | Both limiters refund requests that already did their work | `backend-accreditation-limiters-refund-work-already-done` (high) |
-| 3 | One mailbox can accredit any number of accounts | `architect-accreditation-mailbox-binding-design` (high). Decision: design task, not accepted for beta |
-| 4 | The verify link accredits the requester's account for whoever opens it | Decision: `/verify` requires the account's session. `backend-accreditation-mail-names-the-account` (high), `ui-accreditation-verify-page-signs-in-first` (high), then `backend-accreditation-verify-requires-the-account-session` (high, in `blocked/` behind the ui task) |
-| 5, 20 | WoT auto-accredit reads a stale membership cache; unused pool fetch | `backend-wot-auto-accredit-reads-stale-membership` (high), which also validates `vouchee` as an account name (from the residual list) |
-| 6, 25 | The cap keeps a refused claim; comments say otherwise | `backend-verify-cap-keeps-a-refused-claim` (low) |
-| 7 | `/request` stores an ORCID and a `created_at` nothing reads | `backend-accreditation-request-stores-unread-fields` (low), `ui-accreditation-email-form-orcid-input` (low) |
-| 9 | WoT enrollment has one trigger | `backend-wot-enrollment-has-a-single-trigger` (normal, in `blocked/` behind the stale-membership task) |
-| 10, 15, 18 | Contract doc: emdashes, an error code `/verify` cannot emit, a null the route returns | Fixed in place in `api-contracts/accreditation.md`. `architect-api-contracts-emdash-sweep` (low) covers the other contract docs |
-| 11, 12, 13, 14, 16, 17, 19, 21, 22, 23 | False or stale comments, one unused export | `backend-accreditation-wot-comment-and-dead-code-pass` (deferred until the other backend tasks from this audit are archived) |
-| 24 | The per-token idempotency branch is shadowed by the account gate | Dismissed: harmless redundancy on a chain-write path |
-| 26 | `VouchStatus.accreditation_method` has no reader | Dismissed: a documented response field |
-| 27 | Three latest-op HAF lookups walk the blocks index on a no-match input (gate lookup measured at 19.75 s, 2.4 ms when fenced) | `backend-latest-op-haf-lookups-walk-the-blocks-index` (high) |
-
-Also changed in `api-contracts/accreditation.md` while fixing 10, 15 and 18: "WoT-revoke" became
-"revoke" in the grace-period paragraph (finding 16's contract part); the
-`BROADCAST_ATTEMPT_LIMIT_EXCEEDED` entry lost its "after which the user can retry the same token"
-clause (finding 6); the `BROADCAST_TIMEOUT` entry now says a retry normally answers
-`already_accredited`, because the account gate runs ahead of the per-token lookup (finding 24).
-
-Dismissed from the residual list: the seconds-wide window between a sanction landing and HAF
-indexing it; the abused-domain exclusion and the TLD-suffix arm of `isInstitutionalEmail` (not
-measurable without the generated data file's source lists); the WoT threshold default cached
-after a failed read; a seed throw after a landed WoT op reported as `chain_error`; the listing
-total of 0 past the last page; `req.body` undefined on a non-JSON `/vouch`.
-
-Carried into other pending audits as notes: `architect-audit-frontend-security-surface`,
-`architect-audit-broadcast-idempotency-ipfs`, `architect-audit-hafsql-and-chain-walkers`,
-`architect-audit-reputation`.
-
-Not plan-checked: the sibling reads with the same `ORDER BY block_num DESC LIMIT 1` shape, listed
-in the latest-op task's "Out of scope".
-
-Learnings: no `/ce-compound`. Three `solutions/` entries are stale. Two describe code that tasks
-from this audit change, so their refresh is a `[TODO Architect]` on those tasks
-(`accreditation-state-read-latest-action-wins` on the gate task, the `skipFailedRequests`
-carve-out on the limiter task). The third, a note in
-`hive-primitive-aware-design-rules-for-pevo-custom-json-ops` that `getAccreditedSet` and the list
-endpoint inline `accred_ranked`, waits for the next `/ce-compound-refresh` pass.
-
-## Password reset gates on no account state (archived 2026-10-05) — clean first review; reset rotates an existing password and never adds one; three follow-ups filed, the test gaps dismissed
-
-### Architect archive note (2026-10-05)
-
-Review of 8bf9283a, bd5d7e28 and 1dd8776a with /ce-code-review (full: correctness, security,
-in-process adversarial, testing, project-standards, learnings; the validator batch was empty).
-Clean: no findings. Scope items 1 to 4 and AC 1 to 3 are met. The testing reviewer ran the new
-suite in a git-archive copy of 1dd8776a: 17 passed, 0 skipped. Five planted mutants (reset-request
-gate dropped, UPDATE gate dropped, rowCount refusal deleted, refusal message changed, sentinel
-burn skipped) were all killed.
-
-Triage (user: "as recommended"):
-- Filed `backend-reset-tokens-outlive-email-changes-and-recovery` (high). It covers the signal's
-  "tokens survive email changes" item, the review's residual risk that a refused token works
-  again once set-password re-adds a password, the review's residual risk that a legacy
-  unverified G row with a password still gets a reset link, and the backend half of the
-  `RESET_REQUEST_OK_MESSAGE` overclaim.
-- Filed `ui-reset-request-copy-promises-a-link` (low): the UI half of the overclaim.
-- Filed `backend-orcid-path-f-resume` (normal): the ORCID-proven resume path the user approved.
-- Dismissed: the refused-reset specs do not pin "no audit row, token untouched" (preemptive test
-  hardening). No spec covers an expired token on a passwordless row; that case also shows the
-  signal's claim that only a concurrent password drop separates a lookup-placed gate from an
-  UPDATE-placed one is wrong. No code comment carries the claim. The signal's SELECT-only
-  mutant note is dismissed with it.
-- The doc updates stay with `architect-password-reset-gate-docs`, which now notes the follow-up.
-- Compound: no.
+Clean `/ce-code-review` of 2fd1c633, b238605c and 5e9510a4: seven reviewers (correctness, adversarial,
+project-standards, testing, data-migration, deployment verification, learnings), zero findings. Six of
+them independently enumerated every `accounts` writer at 5e9510a4 and found none that leaves
+`verify_token` and `username` both NULL, even transiently. The testing reviewer reproduced every
+mutation-kill claim in the signal. The `[TODO Architect]` is done: ARCHITECTURE.md § Schema Migrations
+gains "Post-deploy cleanup: rows the old settings verify handler locked", with the operator commands
+plus the pre-delete backup step (a COPY of the matched rows) that the deployment reviewer asked for.
+§ 6.1's "No transition produces a row that doesn't match one of the rows above" stays as is: it is true
+of the current code, and the new section records the history. The production run is the user's, after
+a backend whose settings verify add flow requires a username is deployed. No `/ce-compound`.
 
 **Owner:** backend
 **Created:** 2026-10-05
 **Priority:** high
 
-Surfaced by the backend while working on the custody-column alignment (since
-archived): it was the mechanism behind a rejected stuck-recovery predicate.
-Approved for filing at that task's archive. This is an account-state defense
-divergence between the documented state machine and the code.
-
 ## Why
 
-ARCHITECTURE.md § 6.3 ("Forgot password") documents reset as
-`A → A` and `B → B` only, and says "C cannot use /reset". § 6.4 lists reset's
-per-state availability as "A and B (states with email AND password)".
+Before d33792ce, `GET /api/settings/email/verify/:token` looked a row up by the token alone and
+cleared `verify_token` and `expires_at` on it. A pending signup row's token (state E's hex
+token, or state F's `confirmed:` token) presented there was accepted. That left the row with
+`verify_token` NULL and `username` NULL. No state in ARCHITECTURE.md section 6.1 has that
+combination: E and F carry a token, and every state with a NULL token has a username.
 
-The code gates on neither. `POST /api/auth/reset-request` selects the row by
-email alone (`SELECT id, username FROM accounts WHERE email = $1`), and
-`POST /api/auth/reset` selects by reset token alone and writes the new
-`password_hash` unconditionally. So any row carrying an email can be reset,
-whatever its state. What that reaches, as far as can be read from the code
-(measure it, do not take this list as given):
+d33792ce stops producing these rows but does not repair any that already exist. Such a row is
+terminal:
 
-- A state C row that carries an email gains a password: C → B through an edge
-  § 6.3 says does not exist.
-- A D or G row with no password gains one; a D or G row with a password has
-  it rotated.
-- A pre-finalize E or F row has its password rotated, or set on an F row from
-  the ORCID path, and gets a `sessions_invalidated_at` stamp.
+- `POST /api/auth/signup` answers 409 for its email, so the address cannot sign up again.
+- `ABANDONED_ACCOUNT_ROWS` in `signup-cleanup.ts` requires `verify_token IS NOT NULL`, so the
+  signup cleanup never reaps it.
+- A password login on it mints a JWT whose `sub` is null. `verifyHiveSignature` accepts only
+  a non-empty string `sub`, so the session authorizes nothing. The row only holds the address.
 
-Reset is also the one route a confused user reaches for while locked out, so
-whatever rule lands must not strand a legitimate recovery. In particular, a
-user part-way through signup who forgot their password resumes through
-`POST /api/auth/resume-signup`, which authenticates by email and password, so
-resetting the password on an E or F email-path row is plausibly a flow that
-has to keep working.
+Had the token not been cleared, the cleanup would have deleted the row: an E row once its
+link expired, an F row 30 days after creation. Deleting a locked row therefore reaches the
+end state the cleanup would have reached, and the person can sign up again from the start.
+
+Nobody has checked whether the beta database holds any such rows. No review runs queries
+against a deployed database.
 
 ## Scope
 
-1. Measure first. For every state in § 6.1 (A, B, C, D, G, E, F, and F on the
-   ORCID path), drive `reset-request` and `reset` against real Postgres and
-   record what each does to the row today. Use route tests, not reasoning.
-2. Default rule to implement unless step 1 shows it strands a legitimate flow:
-   **reset rotates an existing password and never adds one.** Refuse a row
-   whose `password_hash` is NULL, at both ends. `reset-request` keeps its
-   uniform response and simply issues no token. `reset` refuses with its
-   existing invalid-token shape, so a token issued before the gate landed
-   cannot add a password either. This refuses C, a D or G row with no
-   password, and the ORCID-path F row, and it keeps A, B, E, the email-path F
-   row, and a D or G row that already has a password.
-3. If step 1 finds a legitimate flow the default rule would strand, do not
-   ship a different rule on your own judgment. Move this file to `blocked/`
-   with a `[BLOCKED by Architect]` note giving the per-state measurement and
-   your proposed rule. Section 6.3 moves before the code does.
-4. Do not touch the stuck-recovery lookups in `routes/signup-verify.ts`. They
-   deliberately read no revocation state; § 6.3's Option C note explains why.
+1. Add a one-time repair the operator runs against a deployed database. It deletes the rows
+   with `verify_token IS NULL AND username IS NULL`, the one combination section 6.1 does
+   not enumerate, which only the old handler produced.
+
+   Do not put it in `backend/migrations/`. `./deploy.sh migrate` re-applies every file there
+   on every deploy, so a DELETE there would become a standing sweeper. It would run forever
+   against a shape no current writer produces, which the account-state rule treats as
+   defending a fictional state. Make it an operator script, for example under
+   `backend/scripts/`, that runs from the repo root against the postgres container. It has
+   two steps:
+   - A read-only count step the operator runs first. It lists each row the delete would
+     remove: id, created_at, and whether `password_hash` and `orcid` are set.
+   - A delete step, in one transaction, that removes only those rows.
+2. Before writing the delete, enumerate every table that refers to an `accounts` row.
+   That means foreign keys to `accounts.id`, plus rows keyed by the account's email or
+   username, such as `notification_preferences`. State in the signal what happens to a
+   deleted row's dependents. A row with a NULL username has no on-chain account and no
+   username-keyed rows, but verify that from the schema and code rather than relying on it.
+3. Put the exact operator commands in the signal block: the count step, then the delete
+   step. The user runs them on the server. Agents cannot reach it.
 
 ## Acceptance criteria
 
-1. A route test per state pins what reset does to it, both the accepted and
-   the refused states, against real Postgres.
-2. No response distinguishes a refused row from an unknown email:
-   `reset-request` returns the same status, body, and timing class either way.
-3. The completion signal lists the per-state outcome table, so the architect
-   can bring § 6.3's "Forgot password" block and § 6.4's reset row up to date
-   at review. Do not edit those sections yourself.
+1. A test seeds the following rows, runs the delete step against the test database, and
+   asserts that only the locked row is gone:
+   - one locked row (`verify_token` NULL, `username` NULL);
+   - a state E row and a state F row (token set, `username` NULL);
+   - a finalized state A row;
+   - a verified state G row (`username` set, token NULL).
+2. The count step writes nothing. Pin this in the same test, or make it true by
+   construction (a file that holds only a SELECT).
+3. Running the delete step a second time, after a successful run, deletes nothing.
 
-## Architect note (2026-10-05): the set-password comment depends on this rule
+## Notes
 
-`routes/settings.ts`, `POST /set-password`: "Only ORCID-verified accounts can opt into password
-login" is false today, because `reset-request` and `reset` let any row with an email gain a
-password, a state G row with no ORCID included. The default rule in Scope item 2 (reset never
-adds a password) makes that sentence true, and so does the `ORCID_REQUIRED` comment in
-`tests/routes/settings-set-password.test.ts` that restates it. If step 1 sends this task to
-`blocked/` and a different rule lands, rescope both comments to that rule in the same pass:
-either limit them to this route, or name the reset path that also adds a password.
+- The producer is fixed in d33792ce: the settings verify handler's add-flow lookup now
+  requires `username IS NOT NULL`. The opposite direction through the same column is
+  `backend-signup-upsert-overwrites-finalized-row.md`.
+- Database-only. No chain operations are involved.
 
-## Architect note (2026-10-05), carried from the state G review
+## Backend implementation signal (2026-10-05, commits 2fd1c633, b238605c, 5e9510a4)
 
-Since d33792ce, `POST /api/auth/login` logs in a state G row whose email is still unverified,
-given its password: the pending block is scoped to `username IS NULL`. So a password that
-reset adds to such a row is a working login. In step 1, measure the unverified G row, with and
-without a password, as a state of its own next to the verified G row.
+**Commits:**
 
-## Backend implementation signal (2026-10-05, commits 8bf9283a, bd5d7e28, 1dd8776a)
+- `2fd1c633`, `backend(scripts): a one-time repair for rows with neither a verify token nor a username`:
+  - `backend/scripts/repair-locked-signup-rows-count.sql`: one SELECT. It lists each row with
+    `verify_token IS NULL AND username IS NULL`: id, created_at, and whether email,
+    password_hash and orcid are set (`has_email`, `has_password`, `has_orcid`). It writes nothing
+    by construction (AC2).
+  - `backend/scripts/repair-locked-signup-rows-delete.sql`: one `DELETE ... RETURNING id` over
+    the same predicate, run under `--single-transaction`.
+  - `backend/tests/scripts/repair-locked-signup-rows.test.ts`: AC1 to AC3. Each spec runs the
+    files verbatim on a dedicated connection. On that connection the unqualified `accounts` is a
+    temporary table built `LIKE public.accounts INCLUDING ALL`. The spec's transaction is rolled
+    back and the connection destroyed, so the shared table is never touched.
+    - Seeds: two locked rows (email path; ORCID path with email NULL and no password), plus E, F,
+      A, verified G and unverified G.
+    - AC2 is also pinned at runtime: the count's transaction is never assigned a transaction id.
+  - `backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`:
+    - Its `backend/scripts` KNOWN LIMITS entry said a script there that writes rows in the
+      application database is a new root.
+    - Its scanned SQL set now includes `backend/scripts/**/*.sql`, keyed `scripts/<name>`.
+    - Its prose says so.
+- `b238605c`: fixes from my own verification pass, triaged by the user. Details are under
+  "Verification" below.
+- `5e9510a4`: the `/ce-simplify-code` pass.
 
-All three are on `main` (`git merge-base --is-ancestor` checked). `8bf9283a` is the gate and the
-new suite; `bd5d7e28` narrows comments the gate made false (found by the verification pass
-below); `1dd8776a` is the simplify pass. The default rule from Scope item 2 shipped. Step 1
-found one flow it closes (ORCID-path F, below); the user decided to ship the default rule and
-flag a follow-up rather than block (asked before the move, 2026-10-05).
+**Checks:**
 
-**Change.**
-- `routes/auth.ts`, `POST /reset-request`: the lookup is `WHERE email = $1 AND password_hash IS
-  NOT NULL`. A passwordless row takes the unknown-email branch itself: same status and body, the
-  same `burnSentinel` call, no token written.
-- `routes/auth.ts`, `POST /reset`: the token lookup and the expiry check are unchanged. The
-  UPDATE carries `AND password_hash IS NOT NULL`, and a write that matches no row answers 400
-  `INVALID_TOKEN` with `RESET_TOKEN_INVALID_MESSAGE`, the same constant the unknown-token branch
-  now uses. A refused reset stamps no `sessions_invalidated_at`, writes no audit row and sweeps
-  no session-proof window. ORCID recovery without a new password (`routes/recover.ts`) writes
-  `password_hash = NULL` and never touches `reset_token`, so such a leftover token is refused
-  too. An EXPIRED token on a passwordless row still takes the expiry branch first ("Reset token
-  has expired", token cleared, no password written).
-- `routes/signup-verify.ts`: the `/link` stuck-recovery rationale said reset "gates on nothing
-  about account state"; now "gates on no account state but the password". The lookup SQL is
-  byte-identical (Scope item 4). The same stale claim in `tests/routes/signup-verify-stuck-recovery.test.ts`
-  ((g) header, (g) and (h) specs) and the "any account row" claims in
-  `tests/routes/auth-log-shape.test.ts` are narrowed.
-- New suite `tests/routes/auth-reset-account-state.test.ts` (17 specs, real Postgres, no mocks,
-  rows seeded directly in their § 6.1 shapes): AC 1.
+- The new test and the canary pass: 34 tests, `--retry=0`.
+- `npm run typecheck` and `npm run lint` are clean.
+- Full suite at `b238605c`: 8 files and 18 specs fail, out of 250 files and 2760 specs.
+  - Every one of those files is on the recorded list of failures on clean main:
+    `cast-hardening-author-index-weight`, `idempotency-real-haf`, `accreditation-idempotency`,
+    the two `accreditation.test.ts` broadcast-attempts-cap specs, `papers-enrichment-parity-gate`,
+    `profile-auth-bypass`, the two `reviews.test.ts` SQL-gate specs, and the self-poisoning
+    `signup-verify-activation-recovery` `LOCK_HELD` spec.
+  - The run also hit HAF connect timeouts.
+  - None of these commits touches `backend/src`.
 
-**Per-state outcome table (AC 3).** Measured with a throwaway route probe against real Postgres
-before and after (probe deleted; the new suite pins the "After" column).
+### Operator commands (on the server, from the repo root)
 
-| State | Before: reset-request | Before: reset | Before: what the new password then did | After |
-|---|---|---|---|---|
-| A | token issued | rotates, stamps `sessions_invalidated_at` | login 200 | unchanged: rotates |
-| B | token issued | rotates, stamps | login 200 | unchanged: rotates |
-| C (with an email) | token issued | ADDS a password, stamps | login 200 (C to B, an edge § 6.3 does not list) | refused |
-| D with a password | token issued | rotates, stamps | login 200 | unchanged: rotates |
-| D without a password | token issued | ADDS a password, stamps | login 200 | refused |
-| G, email verified, with a password | token issued | rotates, stamps | login 200 | unchanged: rotates |
-| G, email verified, without a password | token issued | ADDS a password, stamps | login 200, no ORCID needed (set-password requires one) | refused |
-| G, email unverified, with a password (legacy shape) | token issued | rotates, stamps | login 200 | unchanged: rotates |
-| G, email unverified, without a password | token issued | ADDS a password, stamps | login 200, against § 6.2's "may not acquire a password while unverified" | refused |
-| E | token issued | rotates, stamps | login 409 PENDING_UNVERIFIED | unchanged: rotates |
-| F, email path | token issued | rotates, stamps | `/resume-signup` 200 (the forgot-password resume flow) | unchanged: rotates, resume still works |
-| F, ORCID path (with an email) | token issued | ADDS a password, stamps | `/resume-signup` 200 | refused; login NO_PASSWORD_SET |
+0. First deploy a build that contains d33792ce (`./deploy.sh restart`). The old settings verify
+   handler stays live until then, and it can create new locked rows after the delete.
+   - d33792ce is on main. Its task, `backend-settings-verify-clears-any-row-token.md`, is still
+     in `pending/` under a hold.
+   - The hold may change the add-flow clear's conjuncts. The add-flow SELECT keeps
+     `username IS NOT NULL` either way.
+1. Count (read-only):
+
+   ```bash
+   docker compose exec -T postgres psql -U pevo -d pevo_app -v ON_ERROR_STOP=1 \
+     -f - < backend/scripts/repair-locked-signup-rows-count.sql
+   ```
+
+2. Check the list, then delete:
+
+   ```bash
+   docker compose exec -T postgres psql -U pevo -d pevo_app -v ON_ERROR_STOP=1 \
+     --single-transaction -f - < backend/scripts/repair-locked-signup-rows-delete.sql
+   ```
+
+   - It prints the deleted ids and `DELETE <n>`.
+   - Run step 1 again afterwards: it should list no rows.
+
+**Notes for the operator:**
+
+- The postgres container mounts only `backend/migrations`, so both files are fed in over stdin
+  (`-T` plus `-f -`).
+- The count may well be zero. Reaching the bug took a token holder who sent a signup token to the
+  settings verify route on purpose, since neither email links there.
+- Both commands were run as written against a throwaway database (`pevo_probe_repair`, all 17
+  migrations applied, then dropped):
+  - The count listed exactly the two seeded locked rows.
+  - The delete returned their ids, and a second run gave `DELETE 0`.
+  - A broken file under `ON_ERROR_STOP=1 --single-transaction` exited 3 with nothing deleted.
+
+### Dependents of a deleted row (Scope item 2)
+
+Checked in the migrations, the code, and the live catalogs of `pevo_app` and `pevo_app_test`.
+
+- **Foreign keys:** none reference `accounts`, and no table has a trigger or rule.
+  - `009_audit_log_fk_anonymize.sql` adds no FK, despite its name. It only drops NOT NULL on
+    `custody_audit_log.username`.
+  - So the DELETE removes the matched rows and nothing else: no cascade, no SET NULL, no RESTRICT
+    error.
+- **Tables keyed by username:** none can hold a row for an account whose username is NULL.
+  - `notification_preferences.username`: PK, NOT NULL.
+  - `pending_recovery.username`: NOT NULL.
+  - `pending_ipfs_uploads.uploader_account`: NOT NULL.
+  - `bridge_import_queue.username`: NOT NULL.
+  - `custody_audit_log.username`: nullable since 009 for anonymized rows. It is written under an
+    authenticated username, which a locked row never had.
+  - The script deliberately cascades nowhere:
+    - a `custody_audit_log WHERE username IS NULL` co-delete would destroy the anonymized forensic
+      rows left by earlier email erasures;
+    - an email-keyed cascade on `notification_preferences.email`, `pending_recovery.new_email` or
+      `pending_accred` would hit other identities' free-text addresses.
+- **The row's own claims:** the delete releases its `accounts_email_key` and
+  `accounts_orcid_unique` claims. This is the intended effect: the address and ORCID iD can sign
+  up again.
+  - A staged `pending_recovery` row whose `new_email` equals a locked row's email is refused at
+    phase 2 while the locked row exists. The delete unblocks it, which is harmless.
+- **Redis:**
+  - The `rl:` byAuthToken keys and `signup_activation_lock:` keys for the row's old token are
+    TTL-bound and keyed by a token the row no longer carries.
+  - The `regwatch` cursors are high-water ids. SERIAL ids are never reused.
+- **Outside the database:**
+  - If the registration-watch webhook was configured, its "Signup started" post already carried
+    the row's email, name and institution. The delete does not retract it.
+  - Reset links and signup cookies that point at the row stop working.
+- **Chain:** the task says "a row with a NULL username has no on-chain account". That is not
+  strictly true, though the delete is unaffected.
+  - An F row could crash mid-`/confirm`, after `createClaimedAccount` but before the finalize
+    UPDATE, and then be locked by the old handler.
+  - Such a row matches an on-chain account the app DB records nowhere.
+  - That account holds no server-side keys: `posting_key_enc`/`memo_key_enc` are written only by
+    the finalize UPDATE that also sets `username`. It also has no accreditation.
+  - The user controls it through the mnemonic and can sign up again after the delete.
+
+### Producer history
+
+- The old `GET /api/settings/email/verify/:token` add flow, from 9a6772aa up to d33792ce, is the
+  only producer that reached rows.
+- A second writer with the same SQL shape existed: the ORCID sibling sweep in `/confirm` and
+  `/link`, from 44b26476 to b8b1287e.
+  - It matched nothing, because `accounts_orcid_unique` (508ce94e, an ancestor) forbids a second
+    row with the same ORCID.
+- No current writer produces the shape. Every token-clearing write either:
+  - sets `username` in the same UPDATE (the `/confirm` and `/link` finalizes), or
+  - requires a username (the settings verify add flow; the change flow reaches only rows found by
+    `pending_email_token`, which only username-keyed writes set).
+- Nothing sets `accounts.username` to NULL.
+
+### Verification and triage (user-approved 2026-10-05)
+
+I ran a verification workflow:
+
+- **Mutation probes** in a scratchpad copy:
+  - Every behavior pinned by the new test goes red when broken: dropping either conjunct from the
+    delete or the count; a count that writes; a delete qualified as `public.accounts`, which
+    committed nothing.
+  - The canary goes red on an `updated_at` writer planted in a scripts `.sql`, and green when the
+    scripts root is removed.
+  - With `release()` instead of `release(true)`, the next spec fails 42P07, so a leaked shadow is
+    loud.
+- **The operator-command run** described above.
+- **A claim audit** of every new comment.
+
+The user approved my recommendations:
+
+- **Fixed** in `b238605c`:
+  - The canary's codeSourcesUnder docblock counted the call sites held by reading as two. There
+    are now three.
+  - The roots paragraph said "collected the same way". The scripts root is walked recursively.
+  - The symlink KNOWN LIMITS entry now covers `backend/scripts`.
+  - Scripts rels are keyed `scripts/<name>`, so they no longer share the bare-filename namespace
+    of migrations.
+  - A short reflow line.
+- **Dismissed** (low, theoretical or cosmetic):
+  - The seeds advance the real `accounts_id_seq`. The serial default is copied by
+    `LIKE ... INCLUDING ALL`, and sequences are non-transactional, so this means id gaps only.
+  - The count's "writes nothing" probe does not see a non-transactional `nextval()`.
+  - Dropping `ORDER BY` from the count stays green.
 
