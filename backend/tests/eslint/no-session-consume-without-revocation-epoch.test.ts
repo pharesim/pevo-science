@@ -88,7 +88,17 @@ import {
  *  shape test in `isCommentedOut` keeps out each line of that prose that
  *  begins with `*`, `//` or `/*`; a continuation written with no prefix,
  *  inside a comment opened after code on its line, still reads as live, a
- *  residual the shared module names at `skipCommentLine`. */
+ *  residual the shared module names at `skipCommentLine`.
+ *
+ *  A second residual needs no under-reported region. `isCommentedOut`
+ *  answers about whole lines, so an epoch named in a comment that shares a
+ *  LIVE line satisfies the pairing
+ *  (`return consumeSessionFreshAuthToken(token, username, undefined); // TODO hiveSessionsInvalidatedAt`),
+ *  and the value seam tests the whole value text, so
+ *  `sessionsInvalidatedAtMs: /* hiveSessionsInvalidatedAt *\/ undefined,`
+ *  counts as an epoch reference. Closing either means telling a comment from
+ *  the same characters inside a string, the lexer the shared module
+ *  declines. */
 const skipCommentedOut = (line: string, lineIndex: number, lines: string[]): boolean =>
   isCommentedOut(line, lineIndex, lines);
 
@@ -169,16 +179,26 @@ function fieldlessSurfaces(files: ScannedSource[]) {
 
 /** The text a key's value occupies: the remainder of the line after the first
  *  colon following `name`, or, when the key is wrapped (colon at end of line),
- *  the next line `isCommentedOut` does not read as commented out. Returns null
- *  when `name` is written in shorthand position (no colon), which for the
- *  epoch field means a pass-through of the same-named binding.
+ *  the first non-blank line below it. Returns null when `name` is written in
+ *  shorthand position (no colon), which for the epoch field means a
+ *  pass-through of the same-named binding.
  *
- *  The wrapped lookup reads by shape because the epoch value it returns is
- *  satisfying-side: a prose line naming the epoch, sitting behind a region
- *  the region pass under-reports, would otherwise become the value and vouch
- *  for a surface whose real value is a literal. Skipping a live star line
- *  instead reads the line after it, which at worst leaves the field without
- *  an epoch reference, an offender. */
+ *  The wrapped lookup steps past a line only when it is comment and nothing
+ *  else: `isCommentedOut` reads it as commented out AND the no-region
+ *  `isCommentLine` reads it as prose (a `//` line, a docblock opener or star
+ *  continuation, a comment whose close has nothing live after it). Neither
+ *  test is enough alone. By shape, `/* wired later *\/ undefined,` is
+ *  commented out though the code after its close is the real value, and
+ *  stepping past it makes the NEXT property's line the value, which vouches
+ *  for the surface when that line names the epoch. Without a region,
+ *  ` * hiveSessionsInvalidatedAt belongs here *\/ undefined,` is live, and
+ *  its prose becomes a value naming the epoch.
+ *
+ *  A line the two tests disagree on (code after a close, or a line with no
+ *  prefix inside a block comment) is returned as `''`, never as its text.
+ *  `''` carries neither an epoch reference nor a literal, so for the epoch
+ *  field an accepting surface is an offender. For the `acceptSession` value
+ *  it reads as accepting, which can only turn a demand on, a red bar. */
 function valueTextAfterKey(lines: string[], lineIndex: number, name: string): string | null {
   const line = lines[lineIndex];
   const m = line.match(new RegExp(`(?<!\\.)\\b${name}\\b\\s*(:)?`));
@@ -186,8 +206,9 @@ function valueTextAfterKey(lines: string[], lineIndex: number, name: string): st
   const after = line.slice((m.index ?? 0) + m[0].length);
   if (after.trim() !== '') return after;
   for (let j = lineIndex + 1; j < lines.length; j++) {
-    if (isCommentedOut(lines[j], j, lines) || lines[j].trim() === '') continue;
-    return lines[j];
+    if (lines[j].trim() === '') continue;
+    if (!isCommentedOut(lines[j], j, lines)) return lines[j];
+    if (!isCommentLine(lines[j])) return '';
   }
   return '';
 }
@@ -504,6 +525,81 @@ describe('every session-window consume carries the account revocation epoch', ()
     };
     expect(blockCommentInterior(wrappedValueBehindProse.lines)[6]).toBe(false);
     expect(literalEpochSurfaces([wrappedValueBehindProse]).offenders).toHaveLength(1);
+  });
+
+  it('a block comment ahead of live code satisfies nothing and hides no value', () => {
+    // A line that opens with a comment and carries code after its close is
+    // commented out by shape, so an epoch or a field named inside that comment
+    // vouches for nothing. The no-region comment predicate would read the
+    // line as live, comment text included, and pair the consume or the
+    // surface below it.
+    const epochAheadOfCode: ScannedSource = {
+      rel: 'routes/synthetic.ts',
+      lines: [
+        'async function consumeBesideLeadingComment(token: string, username: string) {',
+        '  return consumeSessionFreshAuthToken(',
+        '    token,',
+        '    username,',
+        '    /* hiveSessionsInvalidatedAt */ undefined,',
+        '  );',
+        '}',
+      ],
+    };
+    expect(epochlessConsumes([epochAheadOfCode]).offenders).toEqual([
+      'routes/synthetic.ts#consumeBesideLeadingComment',
+    ]);
+    const fieldAheadOfCode: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'async function consumeSurfaceBesideLeadingComment(token: string) {',
+        '  return consumeFreshAuthTokenForSurface(',
+        '    token,',
+        '    /* sessionsInvalidatedAtMs */ surface,',
+        '  );',
+        '}',
+      ],
+    };
+    expect(fieldlessSurfaces([fieldAheadOfCode]).offenders).toEqual([
+      'lib/synthetic.ts#consumeSurfaceBesideLeadingComment',
+    ]);
+
+    // The wrapped value. A value line that is commented out by shape but
+    // carries code after its close is not stepped past, because that code is
+    // the value: stepping past it made the next property's line the field's
+    // value, and a line there naming the request epoch vouched for the
+    // literal behind the comment.
+    const valueBehindComment: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'async function consumeValueBehindComment(req: Request, token: string) {',
+        '  return consumeFreshAuthTokenForSurface(token, {',
+        '    acceptSession: true,',
+        '    sessionsInvalidatedAtMs:',
+        '      /* wired later */ undefined,',
+        '    note: req.hiveSessionsInvalidatedAt,',
+        '  });',
+        '}',
+      ],
+    };
+    expect(literalEpochSurfaces([valueBehindComment]).offenders).toHaveLength(1);
+
+    // Nor does the close line of a comment become the value: code after the
+    // close does not make the prose before it live, and that prose names the
+    // epoch.
+    const valueBehindProseClose: ScannedSource = {
+      rel: 'lib/synthetic.ts',
+      lines: [
+        'async function consumeValueBehindProseClose(token: string) {',
+        '  return consumeFreshAuthTokenForSurface(token, {',
+        '    acceptSession: true,',
+        '    sessionsInvalidatedAtMs:',
+        '      /* the epoch note',
+        '       * hiveSessionsInvalidatedAt belongs here */ undefined,',
+        '  });',
+        '}',
+      ],
+    };
+    expect(literalEpochSurfaces([valueBehindProseClose]).offenders).toHaveLength(1);
   });
 
   it('a session-accepting surface with a literal epoch value is an offender', () => {
