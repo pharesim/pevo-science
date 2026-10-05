@@ -134,12 +134,20 @@
  * which the bundler does make importable, still leaves the fetch's name to be
  * written by the first module on that road that reaches for the fetch rather
  * than relaying the whole script: where it binds the fetch under an alias or
- * re-exports it, and otherwise where it uses it. A module that only relays
- * the script, by a star re-export of its own, writes nothing for the name
- * scan to count. In a `.js` file under `src` the name scan counts those
- * sites, all but the aliased imports named in AN ALIAS THE VETO DOES NOT
- * REACH. In the entry document the entry-document assertion counts every one
- * of them, along with any other line there that names the fetch.
+ * re-exports it, and otherwise where it uses it. The exception is a module
+ * that reaches the fetch without spelling its name, through a computed key
+ * on a namespace import of the script, say. It writes the name at none of
+ * those sites, so neither the name scan nor the entry-document assertion
+ * counts its reach for the fetch, and if it also reads the discriminator
+ * through a computed key it is the shape named in A NAME THAT IS NEVER
+ * SPELLED. In a `.js` file under `src` the name scan counts those sites,
+ * except for the shapes named in A MATCH RIDING ON A SKIPPED LINE and AN
+ * ALIAS THE VETO DOES NOT REACH and for any line one of the shared scan
+ * machinery's own residuals drops; `enclosing-symbol.js` names those
+ * residuals. In the entry document the entry-document assertion counts every
+ * one of those sites, along with any other line there that names the fetch.
+ * A module that only relays the script, by a star re-export of its own,
+ * writes nothing for the name scan to count.
  *
  * Residuals, pinned in prose rather than silently absorbed. Four, and each
  * one is left to review of the diff for its own reason.
