@@ -1,250 +1,250 @@
-## Admit the comment_options op on the custody broadcast, bound to its comment (archived 2026-10-05) — two review rounds; comment_options admitted under subject, earlier-comment and full policy-field pins; every held item fixed; clean re-review
+## Pin the custody-derivation canary's unpinned surfaces (archived 2026-10-05) — two review rounds; four scope items landed with a 43-mutant record; four prose hold items fixed; one confirmed P3 and three implementer triage items filed as backend-custody-canary-docblocks-overclaim-coverage
 
 ### Architect archive note (2026-10-05)
 
-Re-review of 822e4843 with /ce-code-review (focused: orchestrator correctness, standards and
-requirements read plus one independent in-process adversarial read). Neither read found
-anything. All three 2026-10-01 hold items are FIXED. Item 1: the file ships 18 cases (16
-before); on a git-archive copy of 822e4843 with Postgres reachable, the baseline is 18 passed
-exit 0, deleting the non-object guard fails both new cases (null 500, string 403), and cutting
-it to `typeof opParams !== 'object'` fails only the null case. Item 2: the narrowed wording
-matches hived develop 9c415d3 (`comment_options_evaluator::do_apply` in
-`hive_evaluator_social.cpp`: required `get_comment`; tightening needs `!has_votes()`, the sticky
-`was_voted_on` every vote sets since HF26; re-enabling and raising refused; paid-out refused
-since HF24). Item 3: the test comment describes the lone-op bundle. Residual, not held: the
-sibling `comment` / `vote` / `custom_json` arms still 500 on a null params value (dismissed at
-the 2026-10-01 hold). At archive the architect updated `api-contracts/custody.md` (allowlist,
-`comment_options` bindings and refusal messages, vouch actions, the 2026-10-01 note's
-corrections) and the root CLAUDE.md "allowed operations" list. Compound: no.
+Re-review of ab6fe37b with /ce-code-review (full: correctness, in-process adversarial, testing,
+maintainability, project-standards, learnings, one validator). Hold items 1 to 4 (the 2026-10-01
+hold and the 2026-10-05 addendum) are all met, and the user-approved deletions and narrowings
+are true at ab6fe37b. Orchestrator run on a git-archive copy of ab6fe37b: tests/eslint/ 9 files,
+146 tests, exit 0. One confirmed P3: the STATEMENT_JOIN_CAP docblock ("steps over comment lines
+for free", "stepping over prose costs nothing there") and one probe comment still claim every
+comment line is free, while statementFrom joins a line isCommentLine reads as live, such as an
+unstarred line inside a block comment.
+
+Triage (user: "as recommended"):
+- Filed backend-custody-canary-docblocks-overclaim-coverage (low): the P3, plus three items from
+  the implementer's "for architect triage" list: the typed destructure against "absolute" and
+  "every spelling", parenthesised and cast ternary branches against the two ternary descriptions
+  (prose only), and the walk-cap "twelve or more consecutive comment lines" sentence.
+- Dismissed: the EPOCH_TERNARY_RE pattern change (no instance in backend/src); the scan-2
+  over-matches (safe direction, the listed examples unseen as written); the adversarial note that
+  the signal's "a derivation REPLACING a helper call is red in scan 1" fails at POST /recover (the
+  code text is true there, only the signal's rationale was wrong); the "four row-reading mints"
+  count (true at HEAD, and the hold prescribed it).
+- Compound: no (a-readers-bound-restated-at-n-sites-reads-as-sufficient-at-each.md covers it).
 
 **Owner:** backend
-**Created:** 2026-09-28
-**Priority:** normal
+**Created:** 2026-09-08
+**Priority:** low
 
-Filed from the architect review of `ui-light-account-fresh-auth-e2e-coverage`, which
-pinned this defect as a known-defect e2e assertion. The defect itself was surfaced by
-that task's implementation session and has been awaiting triage since 2026-09-14; the
-user approved filing it on 2026-09-28.
+Routed out of the round-5 architect review of
+`backend-custody-column-self-alignment`. All four items are pre-existing, on
+surfaces that task's diff never touched. Filed separately rather than held so
+a task otherwise finished after two small fixes does not grow two more rounds.
 
 ## Why
 
-`backend/src/routes/custody.ts` admits only `comment`, `vote`, and `custom_json` on
-`POST /api/custody/broadcast`, while every NEW post the SPA builds (comment composer,
-publish page, review page, edit-page continuation post) bundles a `comment_options` op
-alongside the `comment` for the rewards policy (`percent_hbd: 0`; rewards allowed, not
-displayed). The handler refuses the bundle with 403 FORBIDDEN, "Operation
-'comment_options' is not allowed for custodial accounts", BEFORE the fresh-auth gate.
-Both sides date from the initial light-accounts commit (92c2e6b6), so a light account's
-comment, review, and publish have never worked through custody. Votes and the edit
-page's same-author native edit (a lone `comment` op) are unaffected.
+`backend/tests/eslint/no-custody-claim-derivation-outside-helper.test.ts` is a
+merge-blocking guard: it scans `backend/src` and refuses a second derivation of
+the JWT `custody` claim outside `custodyClaimFor`, and refuses a row-reading
+mint that does not use it. Its failure mode is not a crash. It is going green
+while the guard is dead.
 
-Reproduced outside Playwright with a minted JWT: comment plus comment_options is
-refused in 4 ms with no gate log line, while comment-only and vote-only bundles reach
-the gate.
+Four of its surfaces are currently unpinned, each verified by execution during
+the round-5 review rather than reasoned about:
+
+1. `JWT_MINT_RE` is referenced exactly twice, at its definition and at the mint
+   scan. Every other scanner in the file carries planted positives and
+   negatives, and the sibling canary
+   `no-session-proof-mint-outside-reauth-routes.test.ts` pins its identical
+   copy of this same pattern with three probes. Mangle `JWT_MINT_RE` here and
+   the scan finds no mints at all, which every emptiness assertion in the mint
+   test satisfies.
+2. `ALLOWED_LITERAL_CLAIM_SITES` and `ALLOWED_CLAIM_CARRY_SITES` are read only
+   through `.includes`. `ALLOWED_HELPER_CALL_SITES` in the same file gets a
+   set-equality assertion against the observed sites. The asymmetry means a
+   silently added entry, or an entry that has gone stale, is undetected in the
+   two lists that license a claim.
+3. The mint classification is a key-set membership test with no per-symbol
+   tally, so a SECOND mint inside a symbol that is already licensed adds no new
+   member and is never named. The file's own docblock states that a site which
+   mints is refused by the claim-source classification; that is true only
+   outside the allowed keys.
+4. `mintPayload` walks one line past a mint whose parens open and close on the
+   mint's own line: the `depth <= 0` break carries a positional term and is
+   evaluated after the line has already been appended. A one-line
+   `jwt.sign(...)` followed by a line carrying a custody key classifies as
+   `'literal'` or `'variable'` instead of `'none'`. Unreachable today because
+   all eight mint sites in `backend/src` open multi-line, and the direction is
+   a false positive rather than a missed violation, so this is latent, not
+   live. Nothing pins the walk's START line either: changing it to begin one
+   line lower leaves the whole file green.
 
 ## Scope
 
-Admit `comment_options` on the custody broadcast under bindings that keep the server
-from signing anything the SPA does not build:
-
-1. A `comment_options` op is admitted only when the same bundle carries a `comment` op
-   whose `author` and `permlink` equal the `comment_options` op's `author` and
-   `permlink`. A lone `comment_options`, or one pointing at a different author or
-   permlink, is refused.
-2. The `comment_options` `author` must equal the JWT subject, same as the existing
-   `comment` and `vote` binding checks.
-3. Server-side rewards-policy enforcement: `percent_hbd` must be 0 and `extensions`
-   must be empty (the SPA sends no beneficiaries; refusing beneficiary routing on
-   custodial signing keeps a stolen JWT from redirecting rewards). Verify the SPA's
-   actual bundle shape in `frontend/src/lib/signer.js` (or wherever the bundle is
-   assembled) before pinning the field set, and push back on this item with what you
-   find if the SPA sends more than `{author, permlink, max_accepted_payout,
-   percent_hbd, allow_votes, allow_curation_rewards, extensions}`.
-4. Refusals for binding violations use the existing pre-gate 403 FORBIDDEN shape with
-   a message naming what failed. No emdashes in response strings.
-5. Backend tests: the admitted comment+comment_options bundle reaches the fresh-auth
-   gate (post-gate stop on a seeded key-less row, or the mock-auth fixture per the
-   carve-out); each refusal class (lone options op, author mismatch, permlink
-   mismatch, subject mismatch, nonzero percent_hbd, non-empty extensions) is pinned;
-   vote-only and lone-comment bundles stay admitted.
-
-## Coordination
-
-- `frontend/tests/e2e/non-consent-fresh-auth.spec.js`'s comment test pins today's 403
-  refusal as a positive assertion under a `known-defect` annotation. When the
-  allowlist admits the op, that pin reddens BY DESIGN; the ui agent replaces it with
-  `expectPostGateStop` per the spec's own docblock. Note this in your signal block so
-  the architect routes the ui follow-up; do not edit frontend files yourself.
-- `agents/docs/api-contracts/custody.md` is architect-zone; the architect updates the
-  allowlist wording there at review. Flag in the signal if the implemented refusal
-  shapes diverge from what this task prescribes.
+1. Plant positive and negative probes for `JWT_MINT_RE`, mirroring the shape
+   the sibling canary already uses for its copy. Include a non-empty assertion
+   on the mint scan so "no violations" and "no mints found" stop being the same
+   observation.
+2. Add set-equality assertions for both claim allow-lists against the sites
+   actually observed by the scan, matching how `ALLOWED_HELPER_CALL_SITES` is
+   already enforced.
+3. Make the mint classification a per-symbol tally rather than a membership
+   test, so a second mint inside an allowed symbol is a new red bar. Correct
+   the docblock sentence that states the mint-site refusal without its
+   outside-the-allowed-keys qualifier.
+4. Fix `mintPayload`'s overrun by replacing the positional break term with an
+   explicit record that a paren was opened, and plant the two probes that
+   cannot exist against the current shape: a single-line mint followed by a
+   custody-carrying line, and one that pins the walk's start line.
 
 ## Acceptance criteria
 
-1. A light account's comment, review, and publish bundles (comment + comment_options)
-   pass the op allowlist and reach the fresh-auth gate.
-2. Every binding listed in Scope 1-3 is enforced and refused with the pre-gate 403.
-3. Vote-only and lone-comment behavior is unchanged.
-4. Backend tests cover the admit path and each refusal class.
+1. Every scanner and every budget constant in the file is pinned by at least
+   one probe that goes red when it is mutated. Demonstrate this per item by
+   mutating the shipped file and recording which assertions red; a green run on
+   the clean tree proves nothing.
+2. The mint test can distinguish an empty violation set from an empty mint set.
+3. Both claim allow-lists red on a silently added entry and on a stale one.
+4. A second mint inside an already-allowed symbol is reported by name.
+5. The `mintPayload` fix reproduces every existing probe result in the file,
+   including both cap-boundary pairs, before it is considered done.
 
-## Backend implementation signal (2026-09-30, commit 4cb4347b)
+## Notes
 
-Landed in `4cb4347b` (verified an ancestor of `main`). Files: `backend/src/routes/custody.ts`, new `backend/tests/routes/custody-comment-options.test.ts`.
+- The whole-file scan and both cap-boundary pairs landed in
+  `backend-custody-column-self-alignment` and are correct; do not disturb them.
+  Item 4's fix in particular must leave both pairs green.
+- Enumerate valid-syntax evasions before calling any item verified, and mutate
+  INSIDE an allowed symbol rather than only outside one. A guard that is green
+  on the clean tree has demonstrated nothing about what it refuses.
+- Scope boundary worth stating in the file while you are there: the scan covers
+  `.ts` under `backend/src` only. Content under `backend/scripts/`, other module
+  extensions, and build output are outside every scan in this file, and the
+  prose does not currently say so.
 
-- **SPA bundle shape verified** (Scope 3): all four builders (`frontend/src/pages/publish.js`, `pages/edit.js` continuation, `pages/review.js`, `components/comment-composer.js`) send exactly `[comment, comment_options]` with `{author, permlink, max_accepted_payout: '1000000.000 HBD', percent_hbd: 0, allow_votes: true, allow_curation_rewards: true, extensions: []}`. No extra fields; no pushback on the field set.
-- **Deviation 1, stricter pinning (flag for review).** Beyond `percent_hbd` and `extensions`, the handler also pins `max_accepted_payout` to `'1000000.000 HBD'` and `allow_votes` / `allow_curation_rewards` to `true`. Reason: the bound `comment` op may be an edit of an existing post (edit.js's native edit is a lone `comment`), and the chain only lets these fields tighten. Unpinned, a stolen session (JWT plus session window) could send edit + `allow_votes: false` and permanently disable native voting on a live paper, something the endpoint could not do before. The SPA sends constants, so nothing breaks. Surfaced by an adversarial pre-commit check.
-- **Deviation 2, ordering.** The binding requires the matching `comment` op to come EARLIER in the bundle (the chain requires that order anyway); an options-before-comment bundle is refused with the binding message.
-- **Refusal shapes** (all pre-gate 403 FORBIDDEN, no emdashes): `comment_options author must be '<user>'`; `comment_options must follow a comment op for the same author and permlink in the same bundle`; `comment_options percent_hbd must be 0`; `comment_options extensions must be empty`; `comment_options max_accepted_payout must be '1000000.000 HBD'`; `comment_options allow_votes and allow_curation_rewards must be true`. A non-object params value is 400 VALIDATION_ERROR `Invalid comment_options payload`. Author mismatch against the bundled comment collapses into the subject binding (the comment's author is already bound to the subject), so it carries the subject message.
-- **Tests:** 20 cases, real `verifyHiveSignature`, real Postgres and fresh-auth store, mocked dhive and decryptKey (carve-out header present). The admit path broadcasts both ops unchanged with a session proof, and stops at 401 FRESH_AUTH_REQUIRED `missing` without one. Vote-only and lone-comment stay 200. Every refusal class is sent without a proof and asserts 403, which proves the refusal is pre-gate. Red baseline observed before the change: 11 of 13 original cases failed on the old allowlist message.
-- **Verification:** `vitest run tests/routes/custody*.test.ts tests/lib/broadcast-error.test.ts tests/lib/idempotency.test.ts`: 16 files, 227 passed, exit 0. `npm run lint`: 0 errors (1 pre-existing warning in `src/lib/author-supersession.ts`, untouched). `npm run typecheck`: exit 0. `tests/lib/idempotency-real-haf.test.ts` hung in a combined run and was excluded; it is on the known pre-existing-failure list and this change does not touch idempotency.
-- **[TODO Architect] contract:** `agents/docs/api-contracts/custody.md` allowlist wording should add `comment_options` with the bindings and refusal messages above.
-- **[TODO Architect] ui follow-up routing:** `frontend/tests/e2e/non-consent-fresh-auth.spec.js`'s comment test pins today's 403 under a `known-defect` annotation. It now reddens by design; the ui agent replaces it with `expectPostGateStop`.
+## Backend implementation signal (2026-09-30, commits `309f9c47`, `5f30b2b2`, `87b21065`)
+
+All three commits touch one file,
+`backend/tests/eslint/no-custody-claim-derivation-outside-helper.test.ts`, and
+each is an ancestor of `main` (`git merge-base --is-ancestor` checked).
+`npx vitest run tests/eslint/` at `87b21065`: 9 files, 141 tests, exit 0.
+`npm run typecheck` and eslint on the file clean. The file holds 8 `it` blocks.
+
+**What landed, per scope item**
+
+1. `JWT_MINT_RE` is read through one helper, `mintColumns`, which both the scan
+   and the spelling probes use, so the probes pin what the scan matches with,
+   flags included. Planted positives and negatives, every unseen spelling the
+   docblock names, and a non-empty assertion on the tree scan.
+2. The literal and carry lists are compared by tally against the mints the scan
+   observed. Added, stale and duplicated entries are each red.
+3. The scan returns a list (one entry per match, so two mints on one line are
+   two), and each licence list is a tally expectation: one entry, one mint. The
+   helper callers that mint got a list of their own, `ROW_READING_MINT_SITES`,
+   because calling the helper is not a licence to mint: the two settings
+   handlers call it and issue no session. A second mint inside any licensed
+   symbol shows in the failure diff as `"<file>#<symbol>": 2`. The docblock
+   sentence on the mint-site refusal carries its qualifier.
+4. `mintPayload` counts parens from the mint's own column and ends on the line
+   where the count returns to zero after a paren was opened. Probes: a one-line
+   mint followed by a custody-carrying line in both spellings, the walk's start
+   line in both directions, a paren closed ahead of the mint, a second opener
+   after the close, and the end of walk plus both cap-boundary values on the
+   column path the tree scan takes.
+
+Scope boundary (`.ts` under `backend/src` only) is stated in the top docblock.
+
+**Deviation from the literal scope, flagged:** item 3 asked for a tally; it did
+not ask for a new list. `ROW_READING_MINT_SITES` is one. Without it the
+helper-caller half of the second-mint refusal had to live inline in the tree
+test, where the first mutation pass disabled it with the file green.
+
+**Acceptance criterion 1: mutation record at `87b21065`**
+
+Run in a scratch copy built with `git archive`, `tests/setup.ts` stubbed, one
+mutation at a time, byte-exact restore confirmed with `cmp`. 43 of 43 red, no
+parse errors. Summary by item (mutation: what went red):
+
+- Item 1. Pattern matches nothing: the tree non-empty assertion, the planted
+  scan and the cap pair through the scan. Drop `\b`, drop `\s*`, admit
+  `jsonwebtoken`, admit `sign\w*`, admit whitespace round the dot, lookbehind
+  for `\b`: one spelling probe each. `mintColumns` with `gi`, with a hardcoded
+  narrowed pattern, returning the first match only: red. Scan confined to
+  `routes/`, scan without the block-comment region, scan without the comment
+  skip: red.
+- Item 2. Literal list entry added, removed, duplicated; carry list entry
+  added, emptied, duplicated; row-reading list entry removed, settings handler
+  added: red at the matching tree tally assertion each time.
+- Item 3. `tally` always 1, saturating at 2; `keysOf` deduping; caller test by
+  prefix; literal or claimless bucket dropping helper callers; partition
+  swapped; symbol resolved one line up; site label off by one; classifier
+  precedence swapped: red.
+- Item 4. The old break shape; the `opened` flag dropped; counting from column
+  0; the column applied to every line; the column ignored; start one line
+  lower; start one line higher; cap bound `<`; no cap on the column path; cap
+  one short on the column path; `STATEMENT_SCAN_CAP` at 11 and at 13: red.
+
+Tree-side (canary untouched, `backend/src` mutated): a second literal, variable
+or claimless mint inside `POST /upgrade`, `POST /login`, `POST /session` and
+`POST /recover/verify`, after the first, on its line and on its closing line;
+a first mint in either settings handler; a removed mint at a row-reading,
+carry or literal site; a new handler minting each kind; a one-line claimless
+mint followed by a custody line: all red, offending symbol named.
+
+**Acceptance criteria 2 to 5:** 2 met twice (the non-empty assertion, and the
+tally equalities, which an empty scan also fails). 3 met, duplicates included.
+4 met. 5 met: no pre-existing probe was changed or removed, and both
+cap-boundary pairs are untouched and green.
+
+**Left alone on purpose**
+
+- `STATEMENT_JOIN_CAP` is unpinned at 1, 2, 3, 5 and 40. That is round-5 item 2
+  of `backend-custody-column-self-alignment`, still pending, same file.
+
+**For architect triage: survivors outside the four items**
+
+Found by the mutation passes on surfaces this task did not own. Not fixed, not
+filed. The first two are now stated as residuals in the scan-3 docblock; the
+third is stated there too.
+
+1. The classifier reads the text of the call's lines, not the payload object.
+   Inside a licensed symbol, a mint that drops its claim stays green when a
+   bare `custody` sits in the options argument, a nested object, a trailing
+   comment, or as another key's value.
+2. A literal licence does not check which literal. `'self'` flipped to
+   `'light'` at `POST /upgrade` is green. Whether a behavioural test catches
+   that flip was not checked.
+3. Licence keys collide for two declarations that resolve to one name in one
+   file: a second registration of the same method and path, or a nested
+   function named like a licensed one, absorbs a mint moved out of the
+   original.
+4. Term-level survivors on older patterns: `LITERAL_CLAIM_RE` (double-quote and
+   backtick styles, leading `\b`, spacing round the colon), `VARIABLE_CLAIM_RE`
+   (the `\w` half of the lookbehind), `EPOCH_TERNARY_RE` (the `light`
+   alternative: every positive probe has `self` first, so an inverted ternary
+   is unpinned), `COLUMN_DESTRUCTURE_RE` (10 of 16 mutations green, including
+   "custody must be the first member"), `COLUMN_COPY_RE` (`<>` and `$` in the
+   whitelist, bracket quote styles), `BLOCK_OPENER_RE` (over-matching is
+   green), `HELPER_CALL_RE` and `HELPER_DEFINITION_RE` (loosenings green).
+5. `HELPER_MODULE` can be pointed at any other real module, or the exemption
+   removed, with the file green: the helper's own module matches no shape
+   today, so the exemption licenses nothing.
+6. `statementFrom` re-inlining a literal 12 with the constant moved to 13 is
+   green. The mirror mutation on `mintPayload` is red.
+7. The tree test's tally assertions are sequential hard expects, so a mutation
+   that breaks two buckets names only the first.
 
 ## Architect re-review (2026-10-01) — HELD PENDING FIXES:
 
-Reviewed `4cb4347b^..4cb4347b` with `/ce-code-review` (correctness, security,
-adversarial, testing, project-standards, learnings) plus an independent
-validator, which confirmed item 1.
+Reviewed `6522283e..87b21065` (the three commits above, one file) with
+`/ce-code-review` (correctness, adversarial, testing, maintainability,
+project-standards, learnings) plus an independent validator, which confirmed
+items 1 and 2. The review read the `87b21065` snapshot. HEAD has moved since:
+`cca00888` and `146ce7de` (other tasks) edited this file and
+`tests/support/enclosing-symbol.ts`. Make the fixes on current HEAD. The
+sentences quoted below are unchanged there.
 
 Verified and NOT held:
-- AC 1 and AC 3: the admit path stops at 401 `FRESH_AUTH_REQUIRED` `missing`
-  without a proof and broadcasts both ops unchanged with one. Vote-only and
-  lone-comment bundles stay 200. `findGatedOpsInBundle` scans only
-  `custom_json`, so `comment_options` can never become a gated op, and every
-  admitted bundle still goes through the session-proof consume.
-- AC 2: every Scope 1-3 binding is enforced before the gate, and each one is
-  killed by a test that sends no proof and asserts its own message.
-- Deviation 1 (the extra pins on `max_accepted_payout`, `allow_votes` and
-  `allow_curation_rewards`) is accepted. The pinned values match all four SPA
-  builders and both server-side builders (`anonymousReview.ts`,
-  `bridge-worker.ts`). Deviation 2 (the matching comment must come earlier in
-  the bundle) is accepted too.
-- `tests/routes/custody-comment-options.test.ts`: 16 passed, exit 0.
+- Scope items 1 to 4 and the scope-boundary sentence all landed. At
+  `87b21065` the file runs 8 tests, exit 0, and `tests/eslint/` runs 9 files
+  and 141 tests, exit 0. The testing lens reproduced the cap, partition,
+  start-line, column-path, symbol and label mutants, all eight allow-list
+  add/remove/duplicate mutants and nine tree-side second-mint and claim-flip
+  mutants. All of them went red. Both cap-boundary pairs are untouched.
+- The `ROW_READING_MINT_SITES` deviation is accepted. The helper-caller half of
+  AC4 needs it, and a non-caller entry in it reds as stale.
+- The 8 `jwt.sign(` sites under `backend/src` at `87b21065` are 3 literal,
+  1 carry and 4 row-reading, which matches the three lists.
 
-Dismissed: a test with an `idempotency_key` on a `[comment, comment_options]`
-bundle (code reading shows the embed touches only the comment, and the SPA
-sends no key today); a test with several comments in one bundle; the
-existing `comment` / `vote` / `custom_json` arms reading `opParams` without
-an object check.
-
-Anchor every comment you write on stable symbols. Never use line numbers,
-task slugs, or round numbers.
-
-1. **The 400 branch for a non-object payload has no test.** In the
-   `comment_options` arm of the `/broadcast` per-op loop, the
-   `typeof opParams !== 'object' || opParams === null` guard returns 400
-   `VALIDATION_ERROR` `Invalid comment_options payload`. No test sends that
-   payload. Delete the guard and the suite stays green, while a null payload
-   throws on the `opParams.author` read instead of returning 400. Your signal
-   block lists this 400 as a refusal shape and says "20 cases". The file has
-   16.
-   - Add two cases. One sends `[commentOp(USER, 'paper-one'), ['comment_options', null]]`
-     and one sends a string as the params value. Each asserts 400, code
-     `VALIDATION_ERROR`, the message, and no broadcast. Neither needs a proof,
-     because the guard runs before the gate. The null case is the one that
-     tells the guard apart from no guard.
-   - In the new signal, give the case count you actually ship.
-
-2. **Two comments claim more than the chain enforces.** Both rest on how
-   hived's `comment_options_evaluator` behaves, as reviewers recalled it.
-   Check that evaluator's source (`hive_evaluator.cpp` in the hived repo)
-   before you reword. If the source disagrees, keep the current wording and
-   say so in your signal.
-   - The `commentKeys` comment above the per-op loop says "(the chain also
-     requires that order)". That holds only when the comment op creates the
-     post in the same transaction. For an edit of an existing post, the chain
-     accepts the options op first. The route's stricter order stays. Scope the
-     parenthetical to a new post, or drop it.
-   - The comment in the `comment_options` arm says an unpinned value "would
-     permanently disable voting or rewards on a paper already in its payout
-     window". The test file header has the same claim ("on a live paper").
-     hived refuses `allow_votes: false`, `allow_curation_rewards: false`, and
-     a lowered `max_accepted_payout` once the comment has rshares, which means
-     once it has a vote. So the harm the pins close is a live post with no
-     votes yet. Reword both sentences to that window.
-
-3. **A test comment describes the wrong bundle.** In "a lone comment_options
-   op for another author is refused by the subject binding", the comment says
-   the bundle "puts the foreign options op first". The bundle holds that op
-   alone. Say so: a foreign comment op would be refused first by the comment
-   binding, so the options op is sent by itself.
-
-Architect at archive, not for the implementer: add `comment_options`, its
-bindings, and its refusal messages to the allowlist wording in
-`agents/docs/api-contracts/custody.md`. Update the root `CLAUDE.md` "Account
-Creation" sentence that lists server-side signing as "(comment, vote only)".
-
-## Architect note (2026-10-01): more `custody.md` corrections to make at this task's archive
-
-Found by the composer retry-safety decision (archived 2026-10-01), not by this task's diff.
-Not held here; the architect folds them into the same `api-contracts/custody.md` edit as the
-`[TODO Architect] contract` item above, so the file is touched once:
-
-- A fresh 200 carries no `block_num`: dhive's `send` returns `Object.assign({ id }, result)` over
-  `condenser_api.broadcast_transaction`'s `{}`. "On a fresh broadcast `block_num` is always a
-  positive integer" is wrong. A 200 means one node accepted the transaction, not that a block
-  holds it.
-- 502 `BROADCAST_FAILED` is not proof that nothing landed: dhive throws "request may have been
-  received" transport errors that the route maps to the same envelope as a chain rejection.
-  Only a 4xx or a 500/503 from the handler is known to be pre-broadcast.
-- "SPA clients carrying an `idempotency_key` MAY retry safely" is false while the first
-  transaction is not yet in a HAF-indexed block, and the SPA sends no key.
-- The intro's list of permitted ops is out of date (it omits `comment_options` and several
-  `custom_json` actions); a missing account is 401 `UNAUTHORIZED`, not `NOT_FOUND`; the
-  "single-use proof ... MUST issue a new proof before retrying" paragraph holds for gated ops
-  only, not for the multi-use session-kind proof that comment bundles use.
-
-## Backend re-review signal (2026-10-05, commit 822e4843)
-
-All three hold items landed in `822e4843` (verified an ancestor of `main`). Files: `backend/src/routes/custody.ts`, `backend/tests/routes/custody-comment-options.test.ts`.
-
-- **Item 1.** New describe "a non-object payload is refused before the fresh-auth gate with 400 VALIDATION_ERROR" with two cases: `[commentOp(USER, 'paper-one'), ['comment_options', null]]`, and the same bundle with the string `'paper-one'` as the params value. Each asserts 400, code `VALIDATION_ERROR`, the exact message, and no broadcast, and sends no proof. **The file ships 18 cases** (16 before). Mutation probe on a scratchpad copy of `822e4843`: deleting the guard fails both (null gets 500 from the `opParams.author` read, the string gets 403 from the author binding); cutting the guard to `typeof opParams !== 'object'` fails only the null case. Restored copy: 18 passed.
-- **Item 2.** Checked against hived `develop` (9c415d38, 2026-10-02). `comment_options_evaluator` now lives in `libraries/chain/hive_evaluator_social.cpp`, not `hive_evaluator.cpp`. The source agrees with the hold, so the wording changed:
-  - `do_apply` opens with a required `_db.get_comment`, so options-before-comment fails only when the comment op creates the post; an edit of an existing post accepts either order. The `commentKeys` comment now reads "(for a new post, the chain also requires that order)".
-  - The tightening branch (`allow_votes` or `allow_curation_rewards` false, or a lower `max_accepted_payout`) asserts `!has_votes()`, which returns `was_voted_on`. Since HF26's dust-vote fix every vote sets it, downvotes included, and nothing clears it. With no cashout object (paid out) the op is refused since HF24. Re-enabling votes or curation and raising the cap are refused. The `comment_options` arm comment now reads "on a post still in its payout window that nobody has voted on yet, an unpinned `allow_votes: false` or lowered payout cap could not be reverted", and the test header bullet names the same window ("an unpinned value could not be reverted"). "Permanently disable" is gone from both.
-- **Item 3.** The test comment now reads "A foreign comment op would be refused first by the comment binding, so the options op is sent by itself."
-- **One extra narrowing**, needed by item 1: the test header's "Every refusal is the pre-gate 403 FORBIDDEN" now says "Every binding refusal", since the file also holds the 400 shape cases. Those send no proof too, so the header's proof clause still covers them.
-- **Verification:** `vitest run --retry=0 tests/routes/custody-comment-options.test.ts`: 18 passed, exit 0. `npm run lint`: 0 errors (the pre-existing `src/lib/author-supersession.ts` warning only). `npm run typecheck`: exit 0. A four-agent check (the guard mutation probe, two independent refuters of the new wording against the hived source, and a hold and comment-anchor check) found nothing.
-- **Unchanged for the architect at archive:** the `api-contracts/custody.md` allowlist wording and the corrections in the 2026-10-01 architect note, plus the root `CLAUDE.md` "(comment, vote only)" sentence. The ui e2e pin flip is already archived.
-
-## The carve-out canary's mixed-script check refuses honest unit and math symbols (archived 2026-10-05) — three review rounds; Greek narrowed to the 33-letter GREEK_LOOKALIKES table; every held item fixed; clean third-pass re-review
-
-### Architect archive note (2026-10-05)
-
-Re-review of 0330bef4 with /ce-code-review (focused: orchestrator correctness, standards and
-requirements read plus one independent in-process adversarial read). Neither read found
-anything. The second-pass hold item is FIXED: the `normalizeCommentText` docblock's "so a
-look-alike character cannot make the label or a path read one way and match another" clause
-and its "as a reader sees it" lead are deleted, and the LETTERS sentence is narrowed to letters
-of a script other than Latin and Common, with its pointer to the header's residual list kept.
-Measured on isolated copies under Node 20.20.2 (Unicode 17.0): no letter of a script other than
-Latin and Common folds to a Latin letter (0 of 143,180), while 687 of 1,039 Common letters do;
-Cf 170/170 and M 2543/2543 dropped, Zs 17/17 to a space, Pd plus U+2212 28/28 to `-`; every
-pattern consumer reads the normalised block text from `commentBlocks`. Comment-only diff
-(identical parser leaf streams at base and head), canary 12/12, exit 0. AC 1 to 5 met.
-Settled, not reopened: the "every dash" wording (U+2053 SWUNG DASH unmapped, decided with the
-user) and the open spacing-mark residual (dismissed in the second-pass hold). No solutions/
-entry was written during the holds. Compound: no.
-
-**Owner:** backend
-**Created:** 2026-10-01
-
-## Why
-
-`mixedScriptWords` in
-`backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`
-flags every word that mixes Latin letters with letters of any other script. It
-runs on every comment under `backend/tests`, not only on labelled clause-(c)
-blocks. It exists to catch a look-alike letter that hides the label or a
-filename from the regexes, such as a Cyrillic `а` inside `Real-path`.
-
-Its reach is wider than that purpose. `normalizeCommentText` applies NFKC
-first, and NFKC folds the micro sign U+00B5 to Greek mu U+03BC. So `250µs`,
-the SI spelling of microseconds, becomes a Latin-plus-Greek word, and so does
-`Δt`. Neither is a look-alike for any Latin letter.
-
-Measured on 2026-10-01 against an isolated copy of HEAD:
-`mixedScriptWords(normalizeCommentText('waits 250µs, then Δt elapses; 250μs too; plain 250us'))`
-returns `["μs","Δt","μs"]`.
-
-The verdict cannot be waived. `auditSources` collects mixed-script words
+AC1 is read as the four scope items, and it is met for them. Your
