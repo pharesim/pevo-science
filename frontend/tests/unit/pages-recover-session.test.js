@@ -8,16 +8,15 @@
 // case drives the REAL recover page component into the REAL auth store
 // (`initAuth`) through the REAL api.js request path, then reads what the
 // browser holds afterwards: the stored session, the subject-bound tab state,
-// and what a later bearer request sends and meets.
+// what a later bearer request sends and meets, and what a second tab of the
+// browser makes of the storage events.
 //
 // Mocking justification (clause (a) of the project CLAUDE.md carve-out for
 // deterministic edge-case coverage): only the network boundary is stubbed
 // (`fetch` answers with the backend's envelopes), plus the `alpinejs` store
 // registry every unit suite replaces and the Keychain probe the store's
-// module imports. The revoked-then-reissued pair needs a completed ORCID
-// round-trip against a live provider, and the later-request case needs the
-// server to reject exactly the pre-recovery token, which only a
-// test-controlled answer can arrange per request. Clause (b): no auth
+// module imports. A unit test has no backend to run the ORCID round-trip and
+// the revocation against. Clause (b): no auth
 // middleware is mocked and no cryptographic verification is bypassed; the
 // cases assert what the client does with the server's answers. Clause (c):
 // the real-path companion is the ORCID recovery round-trip in
@@ -206,8 +205,44 @@ describe('ORCID recovery in a signed-out browser', () => {
     expect(comp.doneCopy).toEqual({
       description: 'recover.orcidDoneSignedIn',
       action: 'recover.goToSettings',
-      path: '/settings',
     });
+    comp.doneAction();
+    expect(stores.router.navigate).toHaveBeenCalledWith('/settings');
+  });
+});
+
+describe('ORCID recovery with a second tab signed in to the recovered account', () => {
+  // Storage events reach the other windows of a browser, never the one that
+  // wrote, so the second tab's events are replayed here in the order the
+  // writes happened, which is the order a browser delivers them in.
+  function recordSessionWrites() {
+    const writes = [];
+    const { setItem, removeItem } = Storage.prototype;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (key, value) {
+      if (this === localStorage && key === SESSION_KEY) writes.push(value);
+      return setItem.call(this, key, value);
+    });
+    vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(function (key) {
+      if (this === localStorage && key === SESSION_KEY) writes.push(null);
+      return removeItem.call(this, key);
+    });
+    return writes;
+  }
+
+  it('leaves both tabs on the reissued session', async () => {
+    const secondTab = stores.auth;
+    initAuth();
+    signInAs('old-jwt', 'alice');
+    secondTab._restoreSession();
+    const writes = recordSessionWrites();
+
+    await recoverWithOrcid();
+    for (const newValue of [...writes]) secondTab._handleStorageEvent({ key: SESSION_KEY, newValue });
+
+    expect(secondTab.isConnected).toBe(true);
+    expect(secondTab.token).toBe('new-jwt');
+    expect(stores.auth.token).toBe('new-jwt');
+    expect(storedSession()).toMatchObject({ token: 'new-jwt', username: 'alice' });
   });
 });
 
@@ -227,35 +262,60 @@ describe('ORCID recovery in a browser signed in to another account', () => {
     expect(sessionStorage.getItem(WINDOW_KEY)).not.toBeNull();
   });
 
-  it('says the browser is still signed in to another account', async () => {
+  it('says the browser is still signed in to another account, and offers to switch', async () => {
     const comp = await recoverWithOrcid();
 
     expect(comp.doneCopy).toEqual({
       description: 'recover.orcidDoneOtherAccount',
-      action: 'common.goToPapers',
-      path: '/papers',
+      action: 'recover.switchAccount',
     });
+  });
+
+  it('switches to the recovered account when the user asks', async () => {
+    const comp = await recoverWithOrcid();
+
+    comp.doneAction();
+
+    expect(comp.signedIn).toBe(true);
+    expect(stores.auth.username).toBe('alice');
+    expect(stores.auth.token).toBe('new-jwt');
+    expect(storedSession()).toMatchObject({ token: 'new-jwt', username: 'alice' });
+    expect(sessionStorage.getItem(WINDOW_KEY)).toBeNull();
+    expect(comp.doneCopy.description).toBe('recover.orcidDoneSignedIn');
   });
 });
 
 describe('the first step of a seed-phrase recovery', () => {
-  it('leaves the session alone, since nothing on the account has changed yet', async () => {
+  // Nothing on the account has changed yet, so the session stays as it was.
+  async function recoverWithSeedPhrase() {
     recoverAnswer = seedStaged;
-    signInAs('old-jwt', 'alice');
-    openWindow();
     const comp = mountRecoverPage();
     comp.username = 'alice';
     comp.seedPhrase = MNEMONIC;
     comp.newEmail = 'new@pevo.test';
     comp.newPassword = 'NewSecurePass456';
     comp.newPasswordConfirm = 'NewSecurePass456';
-
     await comp.handleSubmit();
-
     expect(comp.error).toBeNull();
     expect(comp.phase).toBe('done');
+    return comp;
+  }
+
+  it('leaves a signed-in session alone', async () => {
+    signInAs('old-jwt', 'alice');
+    openWindow();
+
+    await recoverWithSeedPhrase();
+
     expect(stores.auth.token).toBe('old-jwt');
     expect(storedSession()).toMatchObject({ token: 'old-jwt', username: 'alice' });
     expect(sessionStorage.getItem(WINDOW_KEY)).not.toBeNull();
+  });
+
+  it('leaves a signed-out browser signed out', async () => {
+    await recoverWithSeedPhrase();
+
+    expect(stores.auth.isConnected).toBe(false);
+    expect(localStorage.getItem(SESSION_KEY)).toBeNull();
   });
 });

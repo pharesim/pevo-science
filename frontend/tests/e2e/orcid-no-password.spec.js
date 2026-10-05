@@ -630,6 +630,8 @@ test.describe('real-backend ORCID null-password round-trips', () => {
     });
     expect(settingsRead.status()).toBe(200);
     expect((await settingsRead.json()).data.hasPassword).toBe(false);
+    await page.getByRole('button', { name: /go to settings/i }).click();
+    await expect(page).toHaveURL(/\/settings$/);
 
     // password_hash preserved as NULL; email rotated to the new address.
     const after = await pool.query(

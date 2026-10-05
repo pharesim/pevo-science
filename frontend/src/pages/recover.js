@@ -125,7 +125,7 @@ const template = `
               </div>
               <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('recover.doneTitle')"></h2>
               <p class="text-ink-muted mb-6" x-text="$t(doneCopy.description)"></p>
-              <button @click="navigate(doneCopy.path)" class="btn-primary" x-text="$t(doneCopy.action)"></button>
+              <button @click="doneAction()" class="btn-primary" x-text="$t(doneCopy.action)"></button>
             </div>
           </template>
 
@@ -151,6 +151,9 @@ export function initRecoverPage() {
     isSubmitting: false,
     // Whether the ORCID arm signed this browser in to the recovered account.
     signedIn: false,
+    // The ORCID arm's answer, kept for the done screen's switch when another
+    // account stayed signed in.
+    _recovered: null,
 
     // ORCID state
     orcidAvailable: false,
@@ -172,17 +175,23 @@ export function initRecoverPage() {
       return this.username.trim() && this.seedPhrase.trim() && this.newEmail.trim() && this.passwordValid && this.passwordsMatch;
     },
 
-    // The done screen's text and next step. When the ORCID arm left another
-    // account signed in, /login would only say so, so the step is the papers
-    // list instead.
+    // The done screen's text and button label; `doneAction` is the button.
     get doneCopy() {
       if (this.method === 'seed') {
-        return { description: 'recover.doneDescription', action: 'recover.goToLogin', path: '/login' };
+        return { description: 'recover.doneDescription', action: 'recover.goToLogin' };
       }
       if (this.signedIn) {
-        return { description: 'recover.orcidDoneSignedIn', action: 'recover.goToSettings', path: '/settings' };
+        return { description: 'recover.orcidDoneSignedIn', action: 'recover.goToSettings' };
       }
-      return { description: 'recover.orcidDoneOtherAccount', action: 'common.goToPapers', path: '/papers' };
+      return { description: 'recover.orcidDoneOtherAccount', action: 'recover.switchAccount' };
+    },
+
+    // When the ORCID arm left another account signed in, the button switches
+    // this browser to the recovered account at the user's request.
+    doneAction() {
+      if (this.method === 'seed') return this.navigate('/login');
+      if (this.signedIn) return this.navigate('/settings');
+      this.signedIn = Alpine.store('auth').adoptRecoveredSession(this._recovered, { replaceAnotherAccount: true });
     },
 
     get canSubmitOrcid() {
@@ -330,6 +339,7 @@ export function initRecoverPage() {
           // Submit `newPassword: null`. The backend preserves
           // `password_hash = NULL` and returns success.
           const res = await recoverWithOrcid(this.username.trim(), this.orcidToken, this.newEmail.trim(), null);
+          this._recovered = res.data;
           this.signedIn = Alpine.store('auth').adoptRecoveredSession(res.data);
           this.phase = 'done';
         } catch (err) {

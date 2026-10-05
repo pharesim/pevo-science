@@ -4111,7 +4111,7 @@ The done screen after an account recovery through ORCID. The recovery leaves
 the account without a password. When this browser was signed out or signed in
 to the same account, it is now signed in to the recovered account and the
 button opens Settings. When it is signed in to a different account, that
-account stays signed in, and the copy says how to switch.
+account stays signed in, and the copy says so.
 
 ar: recover.orcidDoneSignedIn
 cs: recover.orcidDoneSignedIn
@@ -4158,3 +4158,25 @@ pt: recover.goToSettings
 sv: recover.goToSettings
 tr: recover.goToSettings
 zh: recover.goToSettings
+
+### Added 2026-10-06 (ui-recover-and-reset-leave-a-revoked-session-signed-in)
+
+The button on the done screen after an account recovery through ORCID, when
+this browser stays signed in to a different account. It signs that account
+out and signs in to the account just recovered.
+
+ar: recover.switchAccount
+cs: recover.switchAccount
+da: recover.switchAccount
+de: recover.switchAccount
+es: recover.switchAccount
+fa: recover.switchAccount
+fr: recover.switchAccount
+he: recover.switchAccount
+it: recover.switchAccount
+nl: recover.switchAccount
+pl: recover.switchAccount
+pt: recover.switchAccount
+sv: recover.switchAccount
+tr: recover.switchAccount
+zh: recover.switchAccount

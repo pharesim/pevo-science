@@ -214,16 +214,21 @@ export function initAuth() {
     // account and reissued `data.token`, the one session the server spares
     // (ARCHITECTURE.md § 6.7). Settle this browser on it as part of the
     // user's own action, so no later bearer request meets the revoked token
-    // and tears the session down with the signed-out message. A session for
-    // the same account ends through `disconnect` first, whose scrub drops
-    // the tab state the recovery made stale: the session-proof window, and a
-    // remembered password the recovery may have removed. A session for
-    // another account is left signed in and the reissued one is not adopted.
+    // and tears the session down with the signed-out message. For the same
+    // account, this tab's subject-bound state is scrubbed first, which drops
+    // the session-proof window the recovery closed. The reissued session is
+    // saved over the stored one, never after removing it: another tab reads a
+    // removal as a sign-out and removes the stored session itself, and one
+    // that does so after the save removes the reissued session too.
+    //
+    // A session for another account is left signed in and the reissued one
+    // is not adopted, unless `replaceAnotherAccount` says the user chose to
+    // switch; the login then scrubs as any change of subject does.
     //
     // Returns true when the reissued session was adopted.
-    adoptRecoveredSession(data) {
-      if (this.username && this.username !== data.username) return false;
-      if (this.username) this.disconnect();
+    adoptRecoveredSession(data, { replaceAnotherAccount = false } = {}) {
+      if (this.username && this.username !== data.username && !replaceAnotherAccount) return false;
+      if (this.username === data.username) this._scrubSubjectBoundState();
       this.loginFromResponse({
         token: data.token,
         expires_at: data.expires_at,
