@@ -186,7 +186,7 @@ function tornDownSession() {
 // through here so a `username_mismatch` surfacing on a SECOND attempt takes the
 // same teardown the first attempt does. Written as a wrapper rather than two
 // copies of the mismatch branch because the retries live in `uploadFile`'s
-// single flat catch, where a rejection has no enclosing handler left and would
+// flat catch, where a rejection has no enclosing handler left and would
 // otherwise escape raw — the page layer then stacks a generic upload failure on
 // top of a session that was never torn down.
 //

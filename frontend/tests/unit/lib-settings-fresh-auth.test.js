@@ -455,8 +455,8 @@ describe('withSettingsFreshAuth', () => {
   // arms have a single home. Cases above already reach two of them — the
   // retry's successful `run()`, and a second FRESH_AUTH_REQUIRED out of it —
   // but three had no spec on either surface: what the retry MINT's own cancel
-  // and its exhaustion resolve to, and what a NON-fresh-auth error from the
-  // retry's `run()` does. These three drive exactly those, through the public
+  // and its exhaustion resolve to, and what a DUPLICATE from the retry's
+  // `run()` does. These three drive exactly those, through the public
   // orchestrator, which is what puts this surface's bindings (its factor
   // resolution, its bound mint, its `run`) in the picture at all.
 

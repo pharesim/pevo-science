@@ -20,7 +20,7 @@
 // Mocking justification (clause (a) of the project CLAUDE.md carve-out for
 // deterministic edge-case coverage): only the network boundary is stubbed
 // (`fetch`), plus the `alpinejs` store registry every unit suite replaces and
-// the Keychain probe the store's module imports. A real expired session needs
+// the Keychain extension module (`keychain.js`). A real expired session needs
 // a JWT that lives past its 24-hour lifetime inside one test, which only a
 // controlled clock can produce. Clause (b): no auth middleware is mocked and
 // no cryptographic verification is bypassed; the cases assert what the client
