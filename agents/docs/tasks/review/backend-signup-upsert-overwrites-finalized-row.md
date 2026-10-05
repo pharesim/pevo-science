@@ -167,3 +167,28 @@ time it, since settings and signup both mail the subject "PEvO - Verify your ema
 the user's decision on filing a task, and nothing here depends on it.
 
 When both items are in, `git mv` this file back to `tasks/review/`.
+
+## Backend hold-fix signal (2026-10-06)
+
+Landed in the commit that moves this file to `review/`. Comment-only; no code or spec changed.
+
+- **Item 1, `writeSignupRow` docblock.** The sentence now says a row *other than an E row*
+  written for the address after the check is left as it is. The appositive "the one row the
+  duplicate pre-check lets through" is deleted rather than rewritten: with the preceding clause
+  already confining `DO UPDATE` to E, "the one row the `DO UPDATE` branch rewrites" would only
+  restate it.
+- **Item 1, canary docblock.** "a row other than an E row written for the address between the
+  check and the upsert is declined rather than rewritten".
+- **Item 2.** The stale sentence is deleted from the outer catch's ORCID_ALREADY_LINKED comment;
+  nothing replaces it.
+- **One more site, same claim class, outside the quoted sentences.** The canary docblock's
+  "That second one is a delay" paragraph said "Neither reaches the row the pre-check lets through,
+  state E". The pre-check also lets a factor-less unverified G row through to the eviction, and
+  the settings add-flow clearer does reach that row, so the appositive is deleted: "Neither
+  reaches state E, whose username is NULL ...". Found by a verification pass over this fix (two
+  independent lenses converged on it, four skeptics upheld it). The same pass judged the three
+  edited sites accurate and found no other residue in `routes/auth.ts`,
+  `tests/routes/auth-state-g-rows.test.ts` or `tests/routes/recover.test.ts`.
+- **Verification.** `tests/eslint/` (all nine source scans) plus
+  `tests/routes/auth-state-g-rows.test.ts`: 10 files, 158 tests passed, exit 0. Canary file
+  re-run after the last edit: 31/31, exit 0.

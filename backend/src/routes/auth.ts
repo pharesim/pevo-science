@@ -305,10 +305,10 @@ interface EvictableClaim {
  * because the G row no longer has the state the pre-check read, or the
  * upsert's conflict branch declined the row that now holds the address. Both
  * upserts confine `DO UPDATE` to a pending signup row E (`username` NULL and a
- * token that is not `confirmed:`), the one row the duplicate pre-check lets
- * through, so a row written for the address after that check (a G row the
- * settings add flow INSERTs while argon2.hash runs, say) is left as it is
- * rather than taking the signup's password, ORCID and token.
+ * token that is not `confirmed:`), so a row other than an E row written for
+ * the address after that check (a G row the settings add flow INSERTs while
+ * argon2.hash runs, say) is left as it is rather than taking the signup's
+ * password, ORCID and token.
  */
 async function writeSignupRow(
   pool: pg.Pool,
@@ -702,9 +702,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     // Postgres raises 23505. Map it to the same 409 ORCID_ALREADY_LINKED the
     // /orcid/callback accredit and link paths return, instead of leaking a
     // generic 500. Gate on the constraint name so an unrelated unique violation
-    // (a future constraint) is not mislabeled as an ORCID collision. The
-    // email-duplicate path returns 409 DUPLICATE before the INSERT, so it never
-    // reaches this branch.
+    // (a future constraint) is not mislabeled as an ORCID collision.
     if (
       err !== null &&
       typeof err === 'object' &&

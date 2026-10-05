@@ -47,9 +47,10 @@
  * for a NULL token and a `confirmed:` prefix, and keeps the branch off any row
  * whose `username` is set. And both upserts confine the `DO UPDATE` branch
  * itself to `accounts.username IS NULL AND accounts.verify_token NOT LIKE
- * 'confirmed:%'`, so a row written for the address between the check and the
- * upsert is declined rather than rewritten. Together they leave state E, the
- * branch's intended target, as the one row it reaches. State G, a self-custody
+ * 'confirmed:%'`, so a row other than an E row written for the address between
+ * the check and the upsert is declined rather than rewritten. Together they
+ * leave state E, the branch's intended target, as the one row it reaches.
+ * State G, a self-custody
  * account that acquired a row by registering an email through settings,
  * carries the same random hex token as E while that email is unverified, and
  * only its set username keeps it out (ARCHITECTURE.md section 6.1). The route
@@ -73,7 +74,7 @@
  * custody or the marker in its own SET list: the add-flow branch on a row with
  * a username whose `verify_token` is the link's token, and the change branch,
  * with the email swap, on a row whose `pending_email_token` is. Neither reaches
- * the row the pre-check lets through, state E, whose username is NULL and which
+ * state E, whose username is NULL and which
  * never carries a `pending_email_token` (only the settings `POST /email`
  * handler writes one, on a row it found by username). So an E row leaves the
  * branch's hiding place only through a finalize. The delay is real for a G row
