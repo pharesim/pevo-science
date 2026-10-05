@@ -5,17 +5,16 @@ import { mockLoginFromResponse } from './fixtures/mock-auth.js';
 import enMessages from '../../public/messages/en.json';
 
 const INDEX_HTML = readFileSync(resolve(__dirname, '../../index.html'), 'utf8');
-const MODAL_START = INDEX_HTML.indexOf('<div x-data="signInModal">');
-if (MODAL_START === -1) throw new Error('no sign-in modal in index.html');
-const MODAL_HTML = INDEX_HTML.slice(MODAL_START);
+const MODAL = new DOMParser().parseFromString(INDEX_HTML, 'text/html').querySelector('[x-data="signInModal"]');
+if (!MODAL) throw new Error('no sign-in modal in index.html');
 
-// The shipped markup of one modal mode, from its x-if template to the next
-// mode's.
-function modeMarkup(mode) {
-  const start = MODAL_HTML.indexOf(`<template x-if="mode === '${mode}'">`);
-  if (start === -1) throw new Error(`no ${mode} mode in the sign-in modal markup`);
-  const next = MODAL_HTML.indexOf(`<template x-if="mode === '`, start + 1);
-  return MODAL_HTML.slice(start, next === -1 ? undefined : next);
+// The shipped x-if template of one modal mode. Alpine renders its content
+// only while that mode is showing.
+function modeTemplate(mode) {
+  const dialog = MODAL.querySelector('template[x-if="open"]').content;
+  const template = dialog.querySelector(`template[x-if="mode === '${mode}'"]`);
+  if (!template) throw new Error(`no ${mode} mode in the sign-in modal markup`);
+  return template;
 }
 
 // Run shipped binding code with `scope` as its scope, the way Alpine runs it:
@@ -332,38 +331,35 @@ describe('signInModal', () => {
     const MODES = ['choose', 'email'];
 
     function loginLink(mode) {
-      const links = [...modeMarkup(mode).matchAll(/<a\s[^>]*>/g)]
-        .map(([tag]) => tag)
-        .filter((tag) => tag.includes("navigate('/login')"));
+      const links = modeTemplate(mode).content.querySelectorAll(`a[x-text="$t('signIn.orcidGoToLogin')"]`);
       expect(links).toHaveLength(1);
       return links[0];
     }
 
     it.each(MODES)('the %s mode links to the locale-prefixed /login page', (mode) => {
-      const href = loginLink(mode).match(/:href="([^"]+)"/)[1];
+      const href = loginLink(mode).getAttribute(':href');
       expect(evaluate(href, { $lp: (path) => `lp:${path}` })).toBe('lp:/login');
     });
 
-    it.each(MODES)('the %s mode link closes the modal and settles the prompt before navigating', async (mode) => {
-      const click = loginLink(mode).match(/@click\.prevent="([^"]+)"/)[1];
+    it.each(MODES)('the %s mode link closes the modal, settles the prompt and navigates to /login', async (mode) => {
+      const click = loginLink(mode).getAttribute('@click.prevent');
+      expect(click, 'the link must not do a full page load').toBeTruthy();
       const comp = createComponent();
       const prompted = comp.prompt();
       comp.mode = mode;
-      // The modal sits outside the routed page and survives the route
-      // change, so it must already be closed when the router runs.
-      let openWhenNavigated;
-      mockRouterStore.navigate.mockImplementationOnce(() => { openWhenNavigated = comp.open; });
 
       runHandler(click, comp);
 
-      expect(mockRouterStore.navigate).toHaveBeenCalledWith('/login');
-      expect(openWhenNavigated).toBe(false);
+      // The modal sits outside the routed page and survives the route
+      // change, so the link has to close it.
+      expect(comp.open).toBe(false);
       expect(comp.mode).toBe('choose');
+      expect(mockRouterStore.navigate).toHaveBeenCalledWith('/login');
       await expect(prompted).resolves.toBeNull();
     });
 
     it.each(MODES)('every string in the %s mode resolves in en.json', (mode) => {
-      const keys = [...modeMarkup(mode).matchAll(/\$t\('([^']+)'\)/g)].map(([, key]) => key);
+      const keys = [...modeTemplate(mode).innerHTML.matchAll(/\$t\('([^']+)'\)/g)].map(([, key]) => key);
       expect(keys).toEqual(expect.arrayContaining(['signIn.orcidPrompt', 'signIn.orcidGoToLogin']));
       for (const key of keys) {
         const value = key.split('.').reduce((node, part) => node?.[part], enMessages);
