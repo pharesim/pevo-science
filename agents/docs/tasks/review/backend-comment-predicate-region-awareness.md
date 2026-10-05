@@ -566,3 +566,112 @@ stable symbols, never on line numbers, task slugs, or round numbers.
   `fail-closed-does-not-transfer-from-set-equality-to-pairing-canaries`
   entry, whose snippets pass a bare `isCommentLine` as a skip, which no
   longer typechecks.
+
+---
+
+Backend re-review signal (2026-10-05, commits dd0d5690 + d0c7f771 + 6d9bff47 +
+539b59ed + 431cca4a + 301be50f + 9da4c0b2, all ancestors of main):
+
+- Item 1: the wrapped loop in `valueTextAfterKey` steps past a line only when
+  `isCommentedOut` reads it commented out AND `isCommentLine` reads it as
+  prose; a line the two disagree on returns `''`. Two deviations from the
+  hold's literal form, both found by verifying that form:
+  - The comment test answers as if a region were open
+    (`isCommentLine(line, true)`), not with no region. It differs only on a
+    `//` line carrying a close. The no-region form stepped past
+    `// wired later */ undefined,` closing a block opened above, so the next
+    property's epoch vouched; silent at base too.
+  - `literalEpochSurfaces` counts a `''` epoch value as literal (unresolved).
+    Facts are per symbol, so under the literal form a second surface in the
+    same function writing `req.hiveSessionsInvalidatedAt` covered a literal
+    behind a no-prefix comment line. Base reported that shape and the literal
+    form went silent on it.
+  Pins in the new it() beside `wrappedValueBehindProse`: `valueBehindComment`
+  (`/* wired later */ undefined,` then a line naming the epoch),
+  `valueBehindProseClose`, `slashLedClose` plus a parity-inverted twin,
+  `unreadBesideEpochWrite`, and the control `epochAfterDocblock` (a docblock
+  stepped past to a real epoch value). The "at worst" paragraph is rewritten.
+- Item 2: `epochAheadOfCode` through `epochlessConsumes`, `fieldAheadOfCode`
+  through `fieldlessSurfaces`.
+- Item 3: `strayKeyspaceLiterals` skips the definition line with
+  `skipCommentOr(ENTRY_KEY_PREFIX_DEFINITION_RE)` in `lib/fresh-auth.ts` only,
+  scans every other module with `skipCommentLine`, and expects no keys.
+  Deviation: the hold's whole-tree skip spares a column-0 copy of the
+  `KEY_PREFIX` line pasted into another module (measured: silent under the
+  literal form, red at head and at base). Verification then found that the
+  shape skip spared the carrier wherever it sat in the owning module (moved
+  into an exported function: red at base, green at 6d9bff47).
+  `keyspaceDefinitionScopes` now pins exactly one live carrier that resolves
+  to module scope. Planted probes cover an inner `*/ }` close, a second
+  module-scope literal, a copied definition, a moved carrier, a second
+  carrier, a same-scope pair, and a renamed namespace beside a commented
+  copy. The SET-EQUALITY bullet and both walk comments are re-derived. An
+  outward answer fails closed only where the allowed set does not hold the
+  outer scope. A shape skip plus a scope pin narrows the module-scope
+  license to one line without removing it. The accounts canary's per-key
+  counts are named.
+- Item 4: the point-in-time sentence is dropped, per the paragraph's own rule
+  that a kept list of differences goes stale, and "in outline" is added. Both
+  over-long lines are reflowed.
+- Item 5: the `skipCommentedOut` docblock names the comment-on-a-live-line
+  residual. The trailing form, on the pairing and the value seam, needs a
+  lexer. The leading form on the value seam could be refused by shape; it
+  is recorded, not closed. When it names nothing, an epoch write elsewhere
+  in the function covers it.
+
+Verification:
+- The machinery suite plus the five importing canaries give 6 files, 83
+  tests, exit 0. The count includes sibling additions to the carve-out canary
+  since 71217d5f. `npm run typecheck` is clean. Lint has 0 errors and one
+  pre-existing warning in `src/lib/author-supersession.ts`.
+  `enclosing-symbol.ts` is comment-only across the range (the comment-stripped
+  ASTs are identical), so the session-proof-invalidation route file was not
+  re-run.
+- Two adversarial verification workflows ran on scratchpad copies, comparing
+  base 04a51e1a with each head, and every finding was re-probed
+  independently. Every hold-named mutant is killed:
+  - the wrapped lookup reverted to the base step-past, or to the no-region
+    reading;
+  - `return ''` changed to return the text, or every commented line
+    returning `''`;
+  - each satisfying scan on the no-region skip or on the region-aware skip;
+  - `epochRef` set unconditionally;
+  - the owner and elsewhere skips swapped or collapsed;
+  - the scope pin made constant, de-duplicated, or without its literal test;
+  - the liveness filter dropped;
+  - the computed region passed in place of `true`.
+  The final probe on 301be50f killed 7 of 7.
+- End-to-end plants in a copied `src/lib/fresh-auth.ts`:
+  - the inner-close literal and the second module-scope literal are green at
+    base and red at head;
+  - a copied definition in a routes file is red at both;
+  - the moved carrier is red at base, green at 6d9bff47, and red at head;
+  - an arrow function sharing the definition line is red at base, green at
+    6d9bff47, and red at head.
+
+Found by verification, NOT fixed. Each is named in a docblock where it
+touches a claim:
+1. A carrier moved into a function that the resolver answers module scope
+   for still passes the scope pin. That happens below an inner `*/ }` close,
+   and for an object method or a class member. It passes at base too. Named
+   at `keyspaceDefinitionScopes` and in the SET-EQUALITY bullet.
+2. A second plain-const statement sharing the `KEY_PREFIX` definition line is
+   spared with it. Pre-existing.
+3. A live carrier below a line-start `/*` inside a template literal, with no
+   close between, reads as commented out. This is `isCommentedOut`'s
+   phantom-opener residual, already in the Not-held list. Named at
+   `keyspaceDefinitionScopes`.
+4. A no-prefix line in a comment reopened after another close on its line is
+   returned as text by the wrapped lookup. Named.
+5. Surviving mutants judged loud-only or equivalent:
+   - the blank-line skip dropped (it differs only on a whitespace-only line
+     beside an epoch write elsewhere in the function);
+   - the final `return ''` changed to `null` (it differs only on a file
+     ending at a wrapped key);
+   - the whole-tree comparator weakened (the planted probes pin the helper);
+   - region-dropping closures at the two new `occurrencesOf` sites (the class
+     the first hold waived).
+6. For the architect at archive: the
+   `fail-closed-does-not-transfer-from-set-equality-to-pairing-canaries`
+   entry also still calls the module-scope bucket "safe by construction"
+   under set-equality.
