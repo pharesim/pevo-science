@@ -592,9 +592,9 @@ describe('every session-window consume carries the account revocation epoch', ()
 
     // The wrapped value. A value line that is commented out by shape but
     // carries code after its close is not stepped past, because that code is
-    // the value: stepping past it made the next property's line the field's
-    // value, and a line there naming the request epoch vouched for the
-    // literal behind the comment.
+    // the value. Stepping past it would make the next property's line the
+    // field's value, and a line there naming the request epoch would vouch
+    // for the literal behind the comment.
     const valueBehindComment: ScannedSource = {
       rel: 'lib/synthetic.ts',
       lines: [
