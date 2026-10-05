@@ -282,3 +282,15 @@ contradicts.
   cannot reach re-issue or delete, because it has no proof it can mint. This predates this
   work. The pending ui-state-d-session-settings-critical-actions task covers only D's change
   and delete.
+
+## Architect note (2026-10-05), carried from the settings-verify review
+
+For this task's review, not a hold. The settings-verify review of d33792ce raised one item
+that belongs here: `POST /api/auth/resend-verification` reads the row, checks
+`username === null`, runs an argon2 verify, and then writes the new hex token keyed on `id`
+alone. A confirm plus finalize that completes inside that window would leave a signup hex
+token on a finalized row. The ORCID `/start`, set-password and recover gates would then read
+it as an unverified state G row, and nothing in normal use clears it: the mailed link goes to
+`POST /api/auth/verify`, which now matches only username-NULL rows. The window is improbable
+(a full Hive-broadcast finalize has to finish inside one argon2 verify). Triage it with this
+task's other findings.

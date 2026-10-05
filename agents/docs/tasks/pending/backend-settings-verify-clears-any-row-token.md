@@ -124,3 +124,71 @@ signal block holds the shared verification run.
   changes made several of its sentences false: the re-issue writes `verify_token` on an
   existing row, and the change branch now clears the token. So it was rewritten in d33792ce
   under that task, and the clearer it names is described with its new scope.
+
+## Architect re-review (2026-10-05) — HELD PENDING FIXES:
+
+Reviewed d33792ce, scoped to `GET /api/settings/email/verify/:token` and its specs in
+`tests/routes/settings-state-g-unverified-email.test.ts`. Scope 1, Scope 2 and AC1 to AC4 are
+met. Both held items are in that handler.
+
+1. **Key the change-branch swap on the presented token.** The swap UPDATE matches
+   `WHERE id = $1` only. A `POST /email` that writes between the handler's
+   `pending_email_token` SELECT and the swap therefore has its address swapped in by the
+   earlier link. Measured on a copy of d33792ce, with the interleave forced through a
+   `pool.query` wrapper:
+   - A row with a verified email A0 and pending A under token T1. A second change request
+     writes pending B under T2 inside the window. The T1 link answers 200 and
+     `accounts.email` becomes B, an address nobody proved. Signup then answers 409 for B.
+   - A legacy unverified state G row that carries a pending triple. A re-issue to B lands
+     inside the window. The T1 link answers 200 and the swap writes `email = NULL` (the
+     column is nullable) and `verify_token = NULL`, discarding the re-issued link.
+
+   Fix: add `AND pending_email_token = $2` (bound to the presented token) to the swap's
+   WHERE. When it matches no row, answer the same generic 400 'Invalid or expired
+   verification link' and skip the `notification_preferences` UPDATE. Plant-tested in that
+   form, with `RETURNING email` feeding the `notification_preferences` UPDATE:
+   - Both interleaves answer the generic 400.
+   - Each row keeps what the interleaving write left: pending B under T2 on the verified
+     row, the re-issued email and token on the legacy row.
+   - The in-scope spec file plus `tests/routes/settings.test.ts` stay green (37/37).
+
+   If `RETURNING` replaces it, the `newEmail` local goes unused. Either source is correct,
+   because once the swap is keyed on the token the two are equal.
+
+   The comment above the swap says clicking the link "proves control of the new address,
+   which is now the row's email". That is false under the interleave today. Reword it to
+   say why it holds once the swap is keyed. Every write of `pending_email` in `settings.ts`
+   writes `pending_email_token` in the same UPDATE: the change branch sets both, the
+   re-issue branch clears both, and both SMTP-fail restores put both back. So a swap
+   matched on the token installs the address that token was mailed to.
+
+   No new spec is required for this item. An interleave spec was considered and dismissed
+   as preemptive hardening, as for the add-flow clear below.
+
+2. **Drop `AND username IS NOT NULL` from the add-flow clear.** The clear matches
+   `WHERE id = $1 AND verify_token = $2 AND username IS NOT NULL` on a row the SELECT
+   already found with `username IS NOT NULL`. The username conjunct can refuse only if that
+   row's username became NULL between the two statements. No writer sets `username` to
+   NULL and ARCHITECTURE.md section 6.1 lists no such transition, so under the account-state
+   rule it defends a fictional state. It also absorbs the wrong-flow pins.
+   - At d33792ce, removing the SELECT's predicate fails only the expired state E spec,
+     because the clear's conjunct still refuses live E and F tokens.
+   - Measured with the conjunct dropped, removing the SELECT's predicate fails all three
+     wrong-flow specs (E, expired E, F).
+
+   Keep `AND verify_token = $2`. That is what refuses a link whose token a re-issue
+   replaced.
+
+Dismissed at this review (recorded so the archive keeps them):
+- An interleave spec pinning the add-flow clear's token key and its `rowCount === 0`
+  refusal. Mutation shows no spec fails when either is removed. But the guard is in place,
+  and removing it is not a realistic refactor, so this was dismissed as preemptive hardening.
+- Scope 3's "say so in the commit". The decision and its reason are stated in the comment
+  above the change branch, which is the more durable home.
+- The blast-radius trace the Why asked for. It was traced at review: a row with `username`
+  NULL and `verify_token` NULL logs in with a JWT whose `sub` is null. `verifyHiveSignature`
+  accepts only a non-empty string `sub`, so that session authorizes nothing.
+
+Filed separately: rows the base handler already left with `verify_token` NULL and
+`username` NULL are not repaired by this change. See
+`tasks/pending/backend-repair-rows-the-settings-verify-handler-locked.md`.
