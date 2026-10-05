@@ -40,26 +40,24 @@
  *      so nothing else can name it.
  *
  *      What it still does not see, deliberately. A derivation that reaches the
- *      epoch or the column through an INTERMEDIATE BINDING (an `upgraded_at`
+ *      epoch or the column through an INTERMEDIATE BINDING (an `upgradedAt`
  *      local, then a ternary on the local), one written as CONTROL FLOW rather
  *      than a conditional expression (`if (row.upgraded_at) return 'self'`),
- *      one whose destination carries a DIFFERENT NAME, an assignment
+ *      a property read of the column into a DIFFERENT NAME, an assignment
  *      destructure (`({ custody } = row)`, which is not a declaration), and a
- *      column named through a constant (`row[COLUMN]`). Reading through any of
- *      them needs taint analysis, not a textual scan. At a site that MINTS
- *      and holds no licence of its own, the claim-source classification
- *      refuses them anyway: the claim binds from a variable at a symbol that
- *      is neither a row-reading mint nor the token refresh. Inside a symbol
- *      that IS one of those, the one variable claim it is licensed for is
+ *      column named through a constant (`row[COLUMN]`). At a mint `JWT_MINT_RE`
+ *      matches, in a symbol that holds no licence of its own, the claim-source
+ *      classification refuses one that becomes the claim. Inside a row-reading
+ *      mint or the token refresh, the one variable claim it is licensed for is
  *      licensed whatever it was bound from, so the classification says nothing
- *      about where the binding came from there. The residual is therefore a
- *      reader that mints nothing, and a licensed symbol that derives through
- *      one of these shapes beside its helper call. The statement join has
- *      stated bounds of
- *      its own: it stops at a blank line, and it carries two caps, one on the
- *      lines it joins and one on the lines it walks, so prose inside a
- *      statement costs nothing while prose between two statements cannot
- *      bridge them.
+ *      about where the binding came from there. While the helper's caller set
+ *      stays as pinned, the residual therefore includes these shapes where
+ *      their value never reaches a mint's claim, whether or not their symbol
+ *      mints, and where they feed the variable claim at the four row-reading
+ *      mints or at the token refresh.
+ *      The statement join has stated bounds of its own: it stops at a blank
+ *      line, and it carries two caps, one on the lines it joins and one on the
+ *      lines it walks.
  *
  *      The over-match to expect first is a multi-line call whose arguments
  *      mention `upgraded_at` and whose later lines contain a conditional
@@ -271,10 +269,13 @@ const ALLOWED_CLAIM_CARRY_SITES = ['routes/auth.ts#POST /session'];
  *  call into one statement, where an `upgraded_at` near the top and an
  *  unrelated conditional yielding `'self'` or `'light'` several members
  *  further down would read as one derivation.
- *  What it costs is a derivation whose epoch read and yielding branch sit more
- *  than four joined lines apart: that one escapes. The boundary is pinned in
- *  both directions by the joined-count probes, so moving the cap means moving
- *  those counts and the four stated here with it. */
+ *  What it costs is that every shape `statementOccurrences` matches can escape
+ *  once its two halves sit more than four joined lines apart: the epoch read
+ *  and the yielding branch of a ternary, the `custody` destination and the
+ *  column read of a copy, and the declaration keyword and the closing `} =` of
+ *  a destructure. The ternary's boundary is pinned in both directions by the
+ *  joined-count probes, so moving the cap means moving those counts and the
+ *  four stated here with it. */
 const STATEMENT_JOIN_CAP = 4;
 const STATEMENT_SCAN_CAP = 12;
 
@@ -396,10 +397,10 @@ const BLOCK_OPENER_RE = /\)\s*\{\s*$/;
 
 /** The STATEMENT a line opens: the line itself, joined with the lines below it
  *  until one carries a terminator or opens a block, a blank line ends the run,
- *  or one of the two caps is reached. Comment lines inside the run are stepped
- *  over, not joined, so prose between two halves of an expression neither
- *  breaks the join nor contributes text to it, and it spends no budget either:
- *  the cap that ends the run counts the lines JOINED, not the lines walked.
+ *  or one of the two caps is reached. Lines inside the run that `isCommentLine`
+ *  reads as comment are stepped over, not joined, so such a line between two
+ *  halves of an expression neither breaks the join nor contributes text to it,
+ *  and it spends no join budget either.
  *
  *  Counting the walk instead was the bug this replaced, and it was not confined
  *  to one call. Four lines of prose between a ternary's condition and its
@@ -533,9 +534,10 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
     expect(all.length, 'the mint scan found no session-JWT mint at all').toBeGreaterThan(0);
     expect(
       unclassified.map((mint) => mint.site),
-      'a session JWT with no custody claim reads as self at the middleware; ' +
-        'each of these mints either omits the claim or writes it in a shape ' +
-        `the classifier does not read (a bare binding or a quoted literal):\n${sitesOf(unclassified)}`,
+      'a session JWT with no custody claim reads as self at the middleware, ' +
+        'and the classifier found no claim in these mints. It reads a ' +
+        '`custody:` key followed by a quoted self or light, and a bare ' +
+        `\`custody\` ahead of a comma or a closing brace:\n${sitesOf(unclassified)}`,
     ).toEqual([]);
     expect(
       tally(keysOf(literal)),
@@ -560,9 +562,11 @@ describe('one custody-claim derivation, and every row-reading mint uses it', () 
 
   it('the mint scan finds mints, tallies them per symbol, and walks only the call', () => {
     // `JWT_MINT_RE` through `mintColumns`, the one reader the scan has, then
-    // through the scan itself. Prose that
-    // merely names the mint has no open paren and does not match; prose that
-    // quotes the call shape does, and is spared by the comment skip instead.
+    // through the scan itself. Prose naming the mint with no open paren after
+    // it does not match; prose that quotes the call shape does, and the
+    // comment skip spares it only on a line it reads as comment from start to
+    // end. On any other line, including one where it trails live code in a
+    // comment or a string, it is one more mint at that line's symbol.
     const seesMint = (line: string) => mintColumns(line).length > 0;
     expect(seesMint('    const token = jwt.sign(')).toBe(true);
     expect(mintColumns('  const a = jwt.sign(x, s), b = jwt.sign(y, s);')).toEqual([12, 32]);
