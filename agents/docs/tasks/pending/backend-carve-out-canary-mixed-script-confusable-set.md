@@ -265,3 +265,45 @@ The non-self census is identical before and after 9a853710: 256 sources,
 5621 blocks, every verdict empty both times. The corpus holds six standalone
 Greek words (alpha, delta), unaffected. `Φυσική` is in a string in
 `lib/disciplines.test.ts`, not a comment, so the scan never reads it.
+
+## Architect re-review (2026-10-05, second pass) — HELD PENDING FIXES:
+
+Reviewed `9a853710`, `ead0464a` and `40459854` via `/ce-code-review` (focused: orchestrator
+correctness, standards and requirements read plus one independent in-process adversarial read).
+Both items of the earlier hold are FIXED. Verified on isolated copies: canary 12/12, exit 0, at
+`40459854`. An independent derivation from `confusables.txt` 18.0.0 under the marks-removed rule
+gives exactly the 33 letters in `GREEK_LOOKALIKES`, the old rule gives exactly the previous 30,
+and the only members present solely as NFKC folds are final and capital sigma, as the header
+says. The adversarial escape hunt ran every single-code-point source whose prototype, marks
+removed, is one ASCII letter (1685) through `normalizeCommentText` and `mixedScriptWords`: all
+339 that are neither refused nor folded fall under the five named residuals. The eta and
+capital-theta label spellings, planted under `tests/routes/`, are red at `40459854`. AC 1, 2, 3
+and 5 are met. One item remains under AC 4.
+
+1. **The `normalizeCommentText` docblock rules out what two named residuals do.** The docblock
+   says the normalisation runs before any pattern "so a look-alike character cannot make the
+   label or a path read one way and match another." Two classes in the header's residual list
+   do exactly that, and this function's own folding and deletion cause both: a spacing mark
+   that renders as a letter is deleted (`c` + U+0C02 + `mpanion` reaches the patterns as
+   `cmpanion`), and a long `s`, which renders like an `f`, is folded to `s`. The sentence
+   predates this task, but AC 4 covers every docblock sentence about the check.
+   Fix: reword the sentence so it claims no more than was measured, and name the two
+   exceptions or point to them in the header's residual list. Do not replace it with a new
+   absolute claim. One shape that measures true: "so a look-alike that NFKC folds reaches the
+   patterns as the letter it renders as. Not every one does: a long `s` folds to `s`, and a
+   spacing mark that renders as a letter is deleted with the other marks." Keep the LETTERS
+   sentence and its pointer to the header's residual list after it. Check every sentence of
+   the docblock against the five residuals before moving the task back.
+
+Dismissed in triage, no action:
+- The residual probe for the digit zero, the `l` with a middle dot and the long `s` passes
+  whether those residuals are open or closed by folding. Its comment claims only that they
+  never reach the check as a mixed word, which is what it asserts, and closing one is a
+  deliberate edit that rewrites the header too.
+- The spacing-mark residual stays open, as recorded (your open question). ASCII look-alikes
+  (a capital `I` for an `l`, `rn` for `m`, a digit zero for an `O`) already hide a label at no
+  cost under residuals the header names. So the check catches cross-script look-alikes and is
+  not proof against deliberate evasion, and closing this one path changes the normaliser's
+  behaviour, which this task did not ask for.
+
+Keep AC 5 as it stands. Anchor any new comment on stable symbols only.
