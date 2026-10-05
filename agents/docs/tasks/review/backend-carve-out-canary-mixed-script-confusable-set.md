@@ -197,3 +197,71 @@ Keep AC 5 as it stands, and re-measure the non-self census after item 1, since t
 holds standalone and hyphen-split Greek (α, δ, Φυσική). Anchor any new comment on stable
 symbols only. The reverse-declaration task is also held on this file; land the two one at a
 time.
+
+## Backend re-review signal (2026-10-05, commits 9a853710, ead0464a and 40459854)
+
+All three commits are on main (`git merge-base --is-ancestor`, checked).
+Three rounds of adversarial verification ran: neuters, an independent
+derivation and escape hunt over confusables.txt 18.0.0, prose truth, and a
+corpus census. ead0464a and 40459854 fix what the later rounds found.
+
+Item 1, eta and theta:
+- `GREEK_LOOKALIKES` adds eta (under `n`) and small and capital theta (under
+  `O`), 33 members. Re-derived independently twice: the Greek letters whose
+  prototype, with combining marks removed, is one ASCII letter, keyed by
+  NFKC image. The result matches exactly, and the old rule gives exactly the
+  previous 30.
+- The probe's independent copy carries the three new letters. Refused probes
+  added: the eta label spelling (`companio` + eta) and the capital-theta one
+  (`C` + Theta + `MPANION`), the two theta symbols folded by NFKC, an
+  accented eta (via `baseOf`), and the cost line (`cos` + theta beside rho
+  and sigma).
+- Table docblock and header now state the marks-removed rule. The
+  `mixedScriptWords` cost sentence names theta after `cos`.
+- Found in verification and fixed in ead0464a. The header said Greek means
+  "only" letters the data maps to an ASCII letter. Final and capital sigma
+  are in the table only as the NFKC folds of the lunate sigmas: the data maps
+  capital sigma to an esh and has no row for final sigma. The header now
+  gives the NFKC half and says why the sigmas are in, and residual (iii) is
+  scoped to Greek letters outside the table. The table docblock says its
+  keys are not read (a key-move mutant stays green).
+
+Item 2, the corpus clause: "none of which a comment in this corpus has a
+reason to contain" is dropped. The `normalizeCommentText` docblock now says
+the header "lists the residuals it does not refuse". The escape hunt makes
+that true by measurement. Of 2257 confusables rows whose prototype contains
+an ASCII letter, every passing one falls under a named residual. The list
+grew to five:
+- a long `s`, now named under residual (ii);
+- non-letters: a digit zero, a danda, letters newer than Node 20's Unicode
+  17, and an `l` with a middle dot, now named under the splitting residual;
+- a fifth class, spacing marks that render as a letter (a Telugu anusvara
+  for `o`, Batak vowel signs). The normaliser deletes them, so a label spelt
+  with one hides: `c` + anusvara + `mpanion` reaches the patterns as
+  `cmpanion`. A paired control went red. Pinned beside the other residual
+  probes.
+
+Not closed, for the architect: the spacing-mark residual is a real hiding
+path, but closing it changes the normaliser's behaviour, which this task did
+not ask for. Refusing \p{Mc} marks of another script inside a Latin word
+would close it. It is recorded as a residual instead.
+
+AC 3, each run alone on an isolated copy of 9a853710, all exit 1:
+- each of the 33 members removed from the table;
+- each removed from the copy string (the set-equality pin);
+- `baseOf` neutered to identity, and NFD-only;
+- NFKC dropped;
+- \p{M} removal dropped;
+- the whole-script rule off, the Latin gate off, Greek widened to every
+  letter.
+
+Note: each new member's dedicated probes pin it only in pairs. Removing a
+member from both the table and the copy is red only through the new probes.
+
+AC 5: canary 12/12, exit 0, at 40459854. `typecheck:tests` is clean.
+`LANDING_FREE_PROSE`, `LANDING_FILELESS`, both deferred maps and
+`LANDING_DIGEST` are byte-identical to c7c52859 (sha256 per declaration).
+The non-self census is identical before and after 9a853710: 256 sources,
+5621 blocks, every verdict empty both times. The corpus holds six standalone
+Greek words (alpha, delta), unaffected. `Φυσική` is in a string in
+`lib/disciplines.test.ts`, not a comment, so the scan never reads it.
