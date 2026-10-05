@@ -1057,9 +1057,11 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
   const normalizedEmail = email.trim().toLowerCase();
 
   try {
-    // Look up account by email
+    // Look up account by email. Reset rotates an existing password and never
+    // adds one, so a row with no password is not selected: it gets the
+    // unknown-email answer, sentinel burn included, and no token.
     const { rows } = await pool.query<{ id: number; username: string | null }>(
-      'SELECT id, username FROM accounts WHERE email = $1',
+      'SELECT id, username FROM accounts WHERE email = $1 AND password_hash IS NOT NULL',
       [normalizedEmail],
     );
 
@@ -1232,16 +1234,23 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
     // cast is needed here.
     const passwordHash = await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS), { signal: abortSignal });
 
-    // Update password, clear reset token, invalidate all existing sessions
-    await pool.query(
+    // Update password, clear reset token, invalidate all existing sessions.
+    // `password_hash IS NOT NULL` is the never-adds-a-password gate. It sits
+    // on the write, not the token lookup, so it also refuses a token that
+    // outlived its row's password: ORCID recovery without a new password
+    // drops the hash and leaves the token in place.
+    const updated = await pool.query(
       `UPDATE accounts
        SET password_hash = $1,
            reset_token = NULL,
            reset_token_expires_at = NULL,
            sessions_invalidated_at = NOW()
-       WHERE id = $2`,
+       WHERE id = $2 AND password_hash IS NOT NULL`,
       [passwordHash, account.id],
     );
+    if (updated.rowCount === 0) {
+      return sendError(res, 400, 'INVALID_TOKEN', 'Invalid or expired reset token');
+    }
 
     if (account.username) {
       // Close any open session-proof window alongside the JWT revocation the

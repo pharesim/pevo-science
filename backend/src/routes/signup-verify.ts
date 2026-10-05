@@ -1146,8 +1146,8 @@ router.post('/link', linkLimiter, linkTokenLimiter, verifyHiveSignature, async (
       // the table carries no trigger, so nothing later reorders the pair.
       //
       // A revocation-presence term was written first and rejected: `POST
-      // /api/auth/reset` selects by reset token alone and gates on nothing
-      // about account state, so a password reset at ANY point in a row's life
+      // /api/auth/reset` reads no account state but the password, so a
+      // password reset at ANY point in the life of a row with a password
       // would permanently refuse that row's recovery, and a finalized row
       // carries no `confirmed:` verify_token for `/resume-signup` to pick up
       // instead. What the epoch ordering costs by comparison is the row whose
