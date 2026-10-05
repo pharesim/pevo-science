@@ -136,3 +136,66 @@ deferred maps and `LANDING_DIGEST` untouched.
 Cost for architect to accept: a real-path suite that takes a carve-out of
 its own must write a reverse self-declaration outside that header block,
 separated by code (a blank line alone does not split blocks).
+
+## Architect re-review (2026-10-05) — HELD PENDING FIXES:
+
+Reviewed `65a86fc4` via `/ce-code-review` (focused: orchestrator correctness, standards and
+requirements read plus one independent in-process adversarial read). Verified on an isolated
+copy of `65a86fc4`: canary 12/12, exit 0. Your three neuters reproduce exactly. The corpus
+counts in your signal hold: one structured reverse citation (the canary's self-excluded header
+example), 127 labelled blocks, 124 with carve-out wording, and the 4 forward-cited companions
+all call `vi.mock` and carry an (a)/(b) header. AC 1, 2, 3 and 5 are met. The block key and its
+cost are accepted (user, 2026-10-05), with the cost stated as measured in item 1. Two items
+remain under AC 4, both in `backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`.
+
+1. **The header's cost and the failure message describe a narrower reach than the arm has.**
+   `statesOwnCarveOut` fires on any block carrying a clause-(a) or clause-(b) marker. Measured in
+   review: the four suites whose header declares the file itself the real-path companion in
+   prose (`hafsql-btrim-charset-real-postgres.test.ts`,
+   `wot-vouch-status-select-real-postgres.test.ts`,
+   `middleware/verifyHiveSignature-reissuedat-roundtrip.test.ts`,
+   `routes/admin-fresh-auth-real-path-verifyhivesignature.test.ts`) all write that declaration in
+   a block where `statesOwnCarveOut` is true. Two of them, the hafsql-btrim and wot-vouch suites,
+   contain no `vi.mock`, `vi.doMock` or `vi.spyOn` call, and both are entries in
+   `DEFERRED_FREE_PROSE`, which the header tells authors to convert. Converted in place to the
+   reverse form, either goes red, and the message says its block "states this file's own
+   carve-out". Meanwhile the header confines the cost to "A real-path suite that also takes a
+   carve-out of its own". The module-key paragraph ("so that key refused the reverse form in the
+   very suites it exists for") is true of the module key. But in context it reads as if the
+   block key refuses fewer. In place it refuses all four self-declarations, including the two in
+   files the module key would admit. What it adds over the module key is the way through by
+   placement.
+   Fix: in `REVERSE_IN_OWN_CARVE_OUT` and in the header's WHAT IS CHECKED sentence about
+   `statesOwnCarveOut`, say the block carries a clause-(a) or clause-(b) marker, not that it
+   states the file's own carve-out. Word the move advice as separation from that (a)/(b) list by
+   code. In the header's reverse-form paragraph, state the cost as measured: a suite whose
+   header lists (a)/(b) clauses writes its reverse self-declaration in a comment separated from
+   that list by code. Today that is every self-declaring suite, including two that mock
+   nothing. Also state that this placement way through is what the block key gains over the
+   module key. Arm behaviour stays as it is.
+
+2. **`OWN_CARVE_OUT_RE` misses two marker spellings the corpus writes.** Its docblock says it
+   reads a marker "in every spelling the corpus writes one", and the marker probe's comment says
+   the same. The corpus also writes "clauses a/b/c" (`ipfs-cleanup-backend-dispatch.test.ts`,
+   `routes/auth-log-shape.test.ts`, twice in `routes/accreditation.test.ts`) and "clauses (a/b)"
+   (`routes/auth-smtp-transporter.test.ts`). The pattern reads neither, because `\bclause[\s-]*`
+   stops at the `s` and `(a/b)` is not `\([ab]\)`. No block is missed today, since each of those
+   blocks also carries a separate (a) or (b) item. Measured in review: a pool-mocking suite that
+   writes only the house spelling, with a reverse declaration as its clause (c), answered by a
+   forward citation, stays green.
+   Fix: accept the plural (`clauses?`), and add `'per root CLAUDE.md test carve-out, clauses a/b/c'`
+   and `'carve-out clauses (a/b)'` to the positive marker list. Checked in review with node:
+   every existing negative probe string, and `clauses are`, stays false under `clauses?`. If you
+   take a different form, the bar is the same: every marker spelling the corpus writes matches,
+   and the docblock's claim is true.
+
+Dismissed (user, 2026-10-05): the wrapped-marker probe input `'per clause-\n(a)'` is matched by
+the bare `(a)` alternative, so `rejoined` inside `statesOwnCarveOut` is unpinned (replacing it
+with the raw text stays green). No failure follows from it.
+
+No action, already disclosed by the header and measured in review: the same mutual discharge
+through two forward citations; a reverse declaration relocated into a comment of its own; a
+carve-out listed without (a)/(b) markers.
+
+Keep AC 5 as it stands. Anchor any new comment on stable symbols only. The mixed-script task is
+also held on this file; land the two one at a time.

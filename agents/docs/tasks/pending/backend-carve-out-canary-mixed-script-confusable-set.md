@@ -148,3 +148,52 @@ measured behaviour.
 AC 5: canary green (12/12, exit 0) and `typecheck:tests` clean.
 `LANDING_*`, the deferred maps and `LANDING_DIGEST` are untouched. The
 non-self census is identical to HEAD.
+
+## Architect re-review (2026-10-05) — HELD PENDING FIXES:
+
+Reviewed `930820cc` via `/ce-code-review` (focused: orchestrator correctness, standards and
+requirements read plus one independent in-process adversarial read). Verified on isolated
+copies: canary 12/12, exit 0, at `930820cc` and at its parent. All eight mutants in your table
+reproduce. Four extra mutants are red as well: `baseOf` keeping marks, upsilon removed, small
+iota removed, and NFKC dropped from the normaliser. The 30-letter `GREEK_LOOKALIKES` equals an
+independent derivation from `confusables.txt` v18.0.0 under the table's stated rule, and the
+"Of the ones it folds" sentence is exact. AC 1, 2, 3 and 5 are met. Two items remain under
+AC 4, both in `backend/tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts`.
+
+1. **Eta and theta hide the label, and no residual names them.** `confusables.txt` maps eta
+   (U+03B7) to `n` followed by U+0329 COMBINING VERTICAL LINE BELOW. It maps small theta
+   (U+03B8), capital theta (U+0398), the theta symbol (U+03D1) and the capital theta symbol
+   (U+03F4) to `O` followed by U+0335 COMBINING SHORT STROKE OVERLAY. The table's rule, a
+   prototype that is one ASCII letter, leaves all of them out. `normalizeCommentText` drops
+   combining marks, so their Latin twins (`n` + U+0329, `O` + U+0335) reach the patterns as
+   plain `n` and `O` and are caught, while the Greek letter passes. Measured in review:
+   `// Real-path companioη: settings.test.ts covers the rest of the gate.` and
+   `// REAL-PATH CΘMPANION: settings.test.ts ...`, planted under `tests/routes/`, are green at
+   `930820cc` and red at its parent. The same two plants spelt in ASCII, and spelt with the
+   Latin twin, are red at `930820cc`. So the header's list of four residuals is incomplete, and
+   the `normalizeCommentText` docblock's claim that the header's normalisation paragraph lists
+   the residual is false.
+   Fix: derive the table the way the check reads text. The rule becomes a Greek letter whose
+   prototype, with combining marks removed, is one ASCII letter. Re-derived in review from the
+   same `confusables.txt`, that rule yields exactly the current 30 plus eta (under `n`) and
+   small and capital theta (under `O`). The two theta symbols fold to those two under NFKC, and
+   an accented eta reaches eta through `baseOf`. Add the three letters to `GREEK_LOOKALIKES` and
+   to the probe's independent copy, so the per-member loop and the set-equality pin cover them.
+   Add the eta and capital-theta label spellings above as refused probes. Reword the table
+   docblock and the header's normalisation paragraph to the rule with marks removed. The cost:
+   a theta glued to a Latin letter as notation (for example `cosθ`) is now refused, as rho and
+   sigma glued to Latin already are. Name it beside them in the `mixedScriptWords` docblock's
+   cost sentence.
+
+2. **"none of which a comment in this corpus has a reason to contain" measures false.** The
+   first residual, a confusable that is a single-script word of its own, is in the corpus
+   today: a standalone Greek alpha (U+03B1, a `GREEK_LOOKALIKES` member) names review clusters
+   in `lib/logger-redact.test.ts` and `startup-checks.test.ts`. Neither hides anything. The
+   parent commit's header carried the same claim in shorter words, and this diff restates it
+   over four residuals. Fix: replace the clause with a statement you have measured against the
+   corpus, or drop it.
+
+Keep AC 5 as it stands, and re-measure the non-self census after item 1, since the corpus
+holds standalone and hyphen-split Greek (α, δ, Φυσική). Anchor any new comment on stable
+symbols only. The reverse-declaration task is also held on this file; land the two one at a
+time.
