@@ -113,3 +113,48 @@ suites pass run one file at a time, exit 0 each, none skipped: `fresh-auth.test.
 109, `fresh-auth-redis-unavailable-burn.test.ts` 5,
 `fresh-auth-consent-op-burn-offline-queue.test.ts` 4. After the wording fixes only
 typecheck, lint and `fresh-auth.test.ts` were re-run (comment-only delta).
+
+## Architect re-review (2026-10-05) — HELD PENDING FIXES:
+
+Reviewed `83e3ce9a` via `/ce-code-review` (full: correctness, project-standards, adversarial
+in-process, learnings). Reviewers read git-show snapshots at `83e3ce9a`. Items 1 to 3 are
+FIXED and true on every path: the new warn string matches the compensating-`DEL` condition
+exactly, no test, frontend file, contract doc or `ARCHITECTURE.md` matches the old or new
+string, the TTL-expiry describe comment matches `readFreshAuthEntry` (which returns the raw
+`GET` string unparsed, so the three cases are complete), and the `persistSessionSlide`
+docblock's reason holds in all three cases. A TypeScript AST leaf comparison of base and head
+finds one changed leaf, the log string literal, so no logic changed. The three suites pass at
+`83e3ce9a`, run one file at a time on an isolated Redis DB: 109, 5, 4, exit 0 each. AC 2, 3
+and 4 are met. Item 4 is partly met, and one sibling of item 1 is added at triage.
+
+1. **The in-memory-slide test comment drops the "plain write" qualifier.** The comment opening
+   the test "a slide served from the in-memory tier is NOT written back to Redis" in
+   `backend/tests/lib/fresh-auth.test.ts` says a consume served from that tier "has no evidence
+   the canonical key still exists, so it must not write". Lacking that evidence rules out a
+   plain write only, since an `XX` write cannot plant an absent key, which is why this commit
+   narrowed the `persistSessionSlide` docblock and the file header bullet to "a plain write".
+   This comment is the one site the narrowing missed, so item 4 ("align both with the item 3
+   wording") is incomplete.
+   Fix: replace "so it must not write." with "so a plain write could plant a key Redis has
+   dropped or never held, and the persist issues no Redis write at all from this tier." Keep
+   the following "Here the key does still exist ..." sentence as it is. Do not add an account
+   of why an `XX` write is also skipped; that would be a new docblock claim this task did not
+   ask for.
+
+2. **The `burnConsentOpEntry` docblock repeats the over-claim item 1 removed from the warn
+   string.** The paragraph on the two failures that land on the "Redis leg did not run" branch
+   ends "Both cases leave the in-memory tier arbitrating the win with a canonical copy possibly
+   still standing, so both issue the compensating `DEL`". Neither case always issues it: a
+   replay of a proof already in `spentConsentOps` returns at the `alreadySpent` branch first,
+   and a burn whose in-memory delete returns false wins nothing. A later paragraph names the
+   `alreadySpent` branch, so this is imprecise rather than a false contract, but it is the
+   exact unconditional "a compensating delete follows" this task was filed to retire.
+   Fix: give that clause the warn string's condition, for example "In both cases a canonical
+   copy may still be standing, so a burn whose in-memory delete wins a proof not already
+   recorded as spent issues the compensating `DEL`, guarded on the client's existence rather
+   than its readiness: ..." and keep the rest of the sentence. Re-read the whole docblock
+   against `burnConsentOpEntry` after the edit, since the paragraph after it ("That delete is
+   best-effort ...") refers back to this one.
+
+Both items are comment-only. Re-run typecheck, lint, and `fresh-auth.test.ts` (one file).
+Anchor any new prose on stable symbols only.
