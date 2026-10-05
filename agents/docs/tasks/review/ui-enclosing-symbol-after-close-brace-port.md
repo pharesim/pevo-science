@@ -87,3 +87,59 @@ User decision 2026-10-05: port the rule rather than decline it.
   backend docblock's description of the shared brace test. The two can land in either
   order. Do not cite either task, or any slug or SHA, in the docblock.
 - Do not edit `backend/`.
+
+UI implementation signal (2026-10-05, commits `78abead8`, `a2085733`):
+
+- `78abead8`: the port (line-leading close read, `afterClose`, brace condition
+  `afterClose || indentOf(line) <= declIndent`, textually the backend walk apart from the
+  template-literal branch), the docblock rewrite, and the suite probes. `a2085733`: the canary
+  header narrowing below (user-approved fold-in). Both verified on main
+  (`git merge-base --is-ancestor`), file lists match.
+- AC1: the four table rows give module/module/module/module on both copies (HEAD frontend gave
+  f/f/f/module). A differential over about 12M generated files (37M + 25M targets) found 0 walk
+  divergences between the copies outside dialect-only declaration shapes; a mixed-dialect corpus
+  attributes every divergence to a declaration only one dialect recognizes.
+- AC2: one rule statement (WHICH BRACE THE WALK SEES) with OUTWARD/INWARD bullets replaces the
+  two-boundary paragraph and the "IS handled" sentence; the OUTWARD bullet carries the port's
+  inner-block cost. Three adversarial verification rounds planted every shape the bullets name.
+  Sentences the port or the new bullet made false were narrowed or deleted beyond the three the
+  task names: the walk comment (tracking, re-entry, after-close brace, "fails closed" now per
+  allowed key, "silent" dropped from the inward label); the region-pass docblock's "Openers are
+  recognized at line start only, which is the same boundary the rest of this module draws"
+  (deleted: the walk now also reads after an untracked line-leading close); the rule summary
+  ("demonstrably" dropped, "a close the walk reads"); "two shapes the backend copy does not"; the
+  isCommentLine cross-reference; sourcesUnder "a deliberate divergence"; in the suite, the
+  header's false "both resolve outward to module scope" rationale and "and no other", plus three
+  probe comments (width-pin "absorbs", "The residual resolves outward", "every declaration the
+  walk tests") and the region-pass OPENER comment's "same boundary the brace walk draws".
+- AC3: the SET-EQUALITY bullet now says set-equality fails closed when the wrong key is not
+  allowed, that keys alone absorb an allowed wrong key, and that a per-key count pin turns an
+  absorbed addition into a moved count.
+- AC4: a "Hand-ported sibling." paragraph names `backend/tests/support/enclosing-symbol.ts` and
+  the two-way obligation; no which-copy-is-ahead claim, no slug or SHA.
+- AC5: eslint dir 2 files / 18 tests green; full frontend unit suite 91 files / 2135 tests green
+  (two-level scratch copy; later edits were comment-only); no allowlist change; A/B of the HEAD
+  and ported walk over all 88 `frontend/src` files gives symbolDiff=0; zero line-leading closes
+  followed by code in `frontend/src` or `backend/src`; the anchor gate on added lines is clean
+  (control line fires); babel parse shows the block-comment count unchanged (no escaped close
+  ended a docblock early).
+- User decisions (2026-10-05): (1) four surviving mutants of the new arm (close read widened to
+  `includes`, `afterClose` hoisted out of the per-line loop, the opener test skipped after an
+  untracked close, `lastIndexOf` in the slice) are DISMISSED as preemptive hardening; the backend
+  suite has the same gaps. (2) The canary header's "an unresolvable or wrongly resolved symbol
+  fails closed as an unexpected member" overclaim was folded in (`a2085733`, "or wrongly
+  resolved" deleted).
+- Code review: not run here; agents/ui/CLAUDE.md assigns it to the architect at intake.
+- Out of scope, for follow-up filing (backend twins of sentences narrowed here, all in
+  `backend/tests/support/`): `blockCommentInterior`'s "Openers are recognized at line start only,
+  which is the same boundary the rest of this module draws" (false there since the backend walk
+  reads after an untracked line-leading close); the WHICH BRACE tracking sentence lacks
+  "multi-line" (a self-contained `/* note */ }` reads as tracked); the walk comment's "A `}`
+  leading the code after a close ends the declaration WHATEVER the line's indentation" lacks
+  "the walk reads"; the rule summary's "demonstrably" and its unqualified "after a comment
+  close"; the INWARD item "the close of a comment opened mid-line" and the walk comment's "does
+  not see a comment opened mid-line" lack "after other code"; the INWARD item "a `}` indented
+  right of its own declaration" (a `}` after a read close is taken at any indentation); the suite
+  comment "OPENER, line start only: the same boundary the brace walk draws". The frontend twin of
+  the backend sibling task's item 2 also stands: the file docblock's "in the canary that consumes
+  it" omits the module's own suite (incomplete, not false).
