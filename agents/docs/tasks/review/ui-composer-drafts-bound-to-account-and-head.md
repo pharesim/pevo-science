@@ -451,3 +451,140 @@ Not held (triaged 2026-10-05):
   redundancy is documented, no change.
 - Discard clicked while a submit is in flight: the form was never disabled during a submit; no change.
 - An account deleted in one tab while another tab's composer stays mounted: a section 8 Limits line now states it.
+
+## UI re-review signal (2026-10-05, commits 4ca874dc, 03aceaf5, 18951b4a, e3bf84f4)
+
+All four are on main (`git merge-base --is-ancestor <sha> main` checked for each) and carry the Co-Authored-By trailer.
+Sibling commits between them (a0160e7d, 1ee49955) touch no frontend file. 4ca874dc lands the four items with their
+pins, 03aceaf5 adds editor-level pins, and 18951b4a plus e3bf84f4 fix what a self-verification review then found.
+
+### The four held items
+
+1. **Markdown mode** (4ca874dc, 18951b4a, e3bf84f4). `PevoEditor.setContent` in markdown mode also fills the source view
+   (`markdownSource`, which `getMarkdown` returns), the textarea and the counter. `onTransaction` counts the source view
+   while in markdown mode, so the normalise the pages run right after setContent does not swap the rendered length back
+   in. The toggle back to visual flips the mode before its own setContent for the same reason.
+   **Measured deviation from the hold's wording:** the source view takes the content as the editor serialises it
+   (`turndown(getHTML())`, the text a toggle into markdown mode shows), not "the markdown it was given". With the given
+   text (the hold's literal form, as landed in 4ca874dc), the /edit restored card's Discard in markdown mode took its
+   baseline over the served body before the editor's list rewrite. Toggling back to visual and undoing an edit, or a
+   sign-out and back in, then drafted a form the user never changed, and the next visit showed the restored card. Two
+   review lenses reproduced this independently; the user triaged it as fix.
+2. **Merged citations** (4ca874dc, 18951b4a). `_mergeCitationCollection` records what it takes out of the collection in
+   `_mergedCitations`. The restored card's Discard re-appends the missing entries after the re-taken baseline and drafts
+   them at once: `destroy()` clears the debounce, and the collection no longer holds a copy. `removeCitation` drops the
+   entry from the record, so the Discard does not put back a citation the user removed (review finding, triaged as
+   fix). Both pages.
+3. **Landing** (4ca874dc). On both pages `_remountWhenSettled` opens with
+   `if (this._landed) { this._remountRequested = false; return; }`, as prescribed. The remount-flag field comments and
+   both `_onAccountChange` docblocks now say a landed instance is kept (18951b4a, review finding).
+4. **Provisional adoption** (4ca874dc). On /publish, `_onAccountChange` routes an account change under a standing
+   choice card to `_readoptAccount`. That clears the card, empties the author fields `_prefillEmptyAuthorFields` filled
+   since the capture (`_prefilledFields`, value and baseline), then calls `_adoptAccount`. A field the user typed is kept.
+
+### Pins
+
+All in `composer-drafts-real-editors.test.js` unless noted.
+
+- Item 1: "the choice card's Restore puts the draft's body into an editor in markdown mode, and stores the draft whole"
+  (/publish); "the restored card's Discard returns an editor in markdown mode to the loaded body" (/edit; it also
+  toggles back and undoes an edit); "after the restored card's Discard in markdown mode, a sign-out and back in drafts
+  nothing". `editor.test.js` has a new describe, "PevoEditor in markdown mode", with four cases: setContent with no
+  transaction after it, the text visual mode reads back for the same content, a transaction on the hidden document,
+  and the toggle back.
+- Item 2: "... restored card Discard keeps the citations the collection merge added, and drafts them at once" and
+  "... does not put back a merged citation the user removed", each on both pages.
+- Item 3: the describe "a replacement requested during a broadcast that lands is dropped: the landed instance navigates
+  to the paper", one case per page.
+- Item 4: "another account that signs in while the adoption choice card stands adopts the instance in its place, with
+  its own author fields" (the hold's sequence: type, eve, sign out, bob: bob's author fields, both drafts, no remount);
+  "a provisional adoption gives back only the author fields its prefill filled, value and baseline" (a typed name is
+  kept; an unaccredited second account shows the emptied baseline).
+
+Red before: against the pre-fix sources (4ca874dc~1 for the first 11 cases, 03aceaf5 for the 5 the review fixes added
+or extended), exactly those cases fail and every other case passes.
+
+### Probes (AC 9)
+
+29 revert probes. Each changes one site in a scratch copy of the commit it probes (03aceaf5 for the first 25, 18951b4a
+for 3, e3bf84f4 for 1), then runs `composer-drafts-real-editors` plus `editor.test.js` or the page's unit file.
+Result: 25 RED, 4 GREEN.
+
+| Probe | Mutation | Result | First failing test |
+|---|---|---|---|
+| `md-setcontent-block` | editor `setContent`: no markdown-mode branch | RED | setContent replaces the source view, the textarea and the counter, with no transaction after it |
+| `md-setcontent-textarea` | editor `setContent`: textarea not set | RED | (same) |
+| `md-setcontent-count` | editor `setContent`: counter not set | RED | (same) |
+| `md-ontransaction` | editor `onTransaction`: always the rendered length | RED | a transaction on the hidden document keeps the count of the source view |
+| `md-toggle-order` | editor toggle back: mode flips after setContent | RED | the toggle back to visual counts the rendered text |
+| `md-turndown` (18951b4a, and again at e3bf84f4) | editor `setContent`: source view = the text given | RED | setContent shows the content as the editor holds it, the text visual mode reads back for the same content |
+| `md-normalize-only` (18951b4a) | editor `setContent`: no explicit normalise | GREEN | (none) |
+| `pub-landed-remount` | publish `_remountWhenSettled`: no landed check | RED | a replacement requested ... on the publish page |
+| `pub-landed-clear` | publish: landed check keeps the request flag | GREEN | (none) |
+| `ed-landed-remount` | edit `_remountWhenSettled`: no landed check | RED | a replacement requested ... on the edit page |
+| `ed-landed-clear` | edit: landed check keeps the request flag | GREEN | (none) |
+| `pub-readopt-branch` | publish `_onAccountChange`: no provisional branch | RED | another account that signs in while the adoption choice card stands adopts the instance in its place |
+| `pub-readopt-clearchoice` | publish `_readoptAccount`: card not cleared | RED | (same) |
+| `pub-readopt-empty-value` | publish `_readoptAccount`: values not emptied | RED | (same) |
+| `pub-readopt-empty-baseline` | publish `_readoptAccount`: baseline not emptied | RED | a provisional adoption gives back only the author fields its prefill filled, value and baseline |
+| `pub-readopt-all-fields` | publish `_readoptAccount`: empties both author fields | RED | (same) |
+| `pub-prefilled-push` | publish `_prefillEmptyAuthorFields`: nothing recorded | RED | another account that signs in while the adoption choice card stands ... |
+| `pub-prefilled-reset` | publish `_captureAccount`: record not reset | GREEN | (none) |
+| `pub-merge-record` | publish `_mergeCitationCollection`: nothing recorded | RED | the publish page's restored card Discard keeps the citations the collection merge added ... |
+| `pub-discard-append` | publish `discardDraft`: no re-append | RED | (same) |
+| `pub-discard-write` | publish `discardDraft`: no write at once | RED | (same) |
+| `pub-discard-order` | publish `discardDraft`: re-append before the baseline | RED | (same) |
+| `pub-remove-merged` (18951b4a) | publish `removeCitation`: record kept | RED | the publish page's restored card Discard does not put back a merged citation the user removed |
+| `ed-merge-record` | edit `_mergeCitationCollection`: nothing recorded | RED | the restored card's Discard keeps the citations the collection merge added ... |
+| `ed-discard-append` | edit `discardDraft`: no re-append | RED | (same) |
+| `ed-discard-write` | edit `discardDraft`: no write at once | RED | (same) |
+| `ed-discard-order` | edit `discardDraft`: re-append before the baseline | RED | (same) |
+| `ed-remove-merged` (18951b4a) | edit `removeCitation`: record kept | RED | the restored card's Discard does not put back a merged citation the user removed |
+| `test-orcid-settle` | ORCID round-trip case: no settle | RED | a replacement requested ... on the publish page |
+
+The four greens:
+
+- `pub-landed-clear` and `ed-landed-clear`: clearing `_remountRequested` on the landed path has no observable effect,
+  because every later call stops at the `_landed` check. Kept because the hold prescribes it.
+- `pub-prefilled-reset`: a stale `_prefilledFields` entry can only name a field that is empty again before the next
+  prefill (the card locks the form). Kept so the field holds what its comment says.
+- `md-normalize-only`: the explicit normalise inside setContent was redundant, since setContent's own transaction applies
+  the rewrite. Removed in e3bf84f4.
+
+### Test harness change
+
+The ORCID round-trip case now settles after its flush. Measured: its title watcher ran after `visit()` had destroyed
+the instance and armed a debounce that no `destroy()` clears. Two seconds of fake time later it fired inside the publish
+landing pin and wrote "Typed before the round-trip" back. With the settle in place, an instrumented run shows no
+debounce armed on a destroyed instance anywhere in the file. In the real app a keystroke's watcher runs long before
+any navigation click.
+
+### Tests and build
+
+- Unit, at e3bf84f4 in a scratch copy: `npx vitest run` gives 91 files, 2125 tests, exit 0, with no Errors line.
+  `composer-drafts-real-editors` has 50 cases. The first signal's "46 cases" was wrong: there were 39 at e4e7eed2.
+- Build: `npm run build` exit 0 in a scratch copy, with only the standing chunk-size and dhive `eval` warnings.
+- E2E: not run. No spec drives markdown mode, the draft cards or the citation collection (grepped), and the real-app
+  jsdom spec covers each item. The composer specs' E2E state reported in the first signal is untouched by this round.
+
+### Self-verification and triage
+
+After the four fixes, a review workflow ran five lenses (one per held item, plus tests and standards) with one skeptic
+per finding, 10 agents in all. It returned 5 findings: 4 confirmed, 1 refuted. The user triaged them "as recommended":
+
+- Fixed: the markdown-mode baseline over the text as given (found by 2 lenses), the removed merged citation coming
+  back, and the stale landing comments.
+- Not built, for the architect's triage: an email sign-in (its accreditation arrives by polling) under a /publish choice
+  card, followed by the card's Discard, leaves the author fields empty. `_onAccreditationChange` returns while the card
+  stands, and `discardPendingDraft` applies no prefill. This is older than this round: a direct adoption from signed
+  out reaches the same state. The skeptic refuted it as out of scope, since none of that code changed here and the
+  readopt reaches exactly the state a direct adoption does. A one-line candidate fix is `_prefillEmptyAuthorFields()`
+  in `discardPendingDraft` after `_clearDraftChoice()`.
+
+Considered and not built: a citation merged by an earlier instance is, after a reload, part of the restored draft
+rather than of the new instance's record, so the restored card's Discard drops it with the draft. The record is per
+instance, which is how the hold scopes it ("the entries this instance merged").
+
+### Coordination
+
+`pending/ui-upload-batch-teardown-guard.md`: unchanged since the first signal (this task landed first).
