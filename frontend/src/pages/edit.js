@@ -1424,14 +1424,16 @@ export function initEditPage() {
     // Merging takes the collection out of storage, so the citations it adds
     // have no other copy from then on. They are drafted at once, before the
     // collection goes: an instance destroyed before the debounce fires saves
-    // nothing. The merge is held back wherever _writeDraft refuses, so no entry
-    // leaves the collection without being stored: without a key, until the
-    // baseline exists, while a choice card stands, and once the instance has
-    // landed. The merged citations then count as user work, and neither a
-    // restore, the choice nor the restored card's Discard can replace them. A
-    // visitor who cannot edit the paper (no key, no form) leaves the
-    // collection where it is, and so does a landed instance, for the next form
-    // to merge.
+    // nothing. A merge that adds nothing writes nothing: the form is
+    // unchanged, and a write would only put it over a draft another tab on the
+    // same paper may have stored since, or remove that draft when the form is
+    // at its baseline. The merge is held back wherever _writeDraft refuses, so
+    // nothing it adds goes unstored: without a key, until the baseline exists,
+    // while a choice card stands, and once the instance has landed. The merged
+    // citations then count as user work, and neither a restore, the choice nor
+    // the restored card's Discard can replace them. A visitor who cannot edit
+    // the paper (no key, no form) leaves the collection where it is, and so
+    // does a landed instance, for the next form to merge.
     _mergeCitationCollection() {
       if (this._landed || !this._draftKey || !this._hasBaseline || this.draftChoice) return;
       const key = 'pevo-citation-collection';
@@ -1440,19 +1442,22 @@ export function initEditPage() {
       const collection = JSON.parse(raw);
       if (!Array.isArray(collection) || collection.length === 0) return;
       this._mergedCitations.push(...collection);
-      this._appendMissingCitations(collection);
-      this._writeDraft();
+      if (this._appendMissingCitations(collection)) this._writeDraft();
       localStorage.removeItem(key);
     },
 
-    // Append each entry the form does not cite yet, counting for reputation.
+    // Append each entry the form does not cite yet, counting for reputation,
+    // and return whether any was appended.
     _appendMissingCitations(entries) {
+      let appended = false;
       for (const entry of entries) {
         const exists = this.citations.some(c => c.author === entry.author && c.permlink === entry.permlink);
         if (!exists) {
           this.citations.push({ author: entry.author, permlink: entry.permlink, title: entry.title || '', reputation_relevant: true });
+          appended = true;
         }
       }
+      return appended;
     },
 
     dragCitationStart(index) {

@@ -1380,7 +1380,7 @@ describe('composer drafts in the real app', () => {
     });
   });
 
-  describe('a citation collection merge is drafted before the collection goes, and a landed instance leaves the collection alone', () => {
+  describe('a citation collection merge drafts what it adds at once, and a landed instance leaves the collection alone', () => {
     const COLLECTION = [{ author: 'zed', permlink: 'cited', title: 'Cited' }];
     const PUBLISH_KEY = 'pevo-draft-publish:alice';
     const EDIT_KEY = 'pevo-draft-edit:alice:alice:p1';
@@ -1453,6 +1453,43 @@ describe('composer drafts in the real app', () => {
       expect(localStorage.getItem('pevo-citation-collection')).toBeNull();
       await leaveAtOnce(comp);
       expect(draftedCitations(EDIT_KEY)).toEqual(['cited']);
+    });
+
+    it('on the publish page, a cite the form already holds writes nothing over a draft another tab stored', async () => {
+      signIn('alice');
+      localStorage.setItem('pevo-citation-collection', JSON.stringify(COLLECTION));
+      await visit('/publish', 'publishPage');
+      const comp = await editorsReady('publishPage');
+      expect(comp.citations.map((c) => c.permlink)).toEqual(['cited']);
+      await pastDebounce();
+      // Another tab of the account stored its own work since.
+      const other = { title: 'Other tab work', savedAt: 12345 };
+      localStorage.setItem(PUBLISH_KEY, JSON.stringify(other));
+
+      citeInAnotherTab();
+      expect(localStorage.getItem('pevo-citation-collection')).toBeNull();
+      await pastDebounce();
+      expect(drafts()[PUBLISH_KEY]).toEqual(other);
+    });
+
+    it('on the edit page, a cite the paper already holds writes nothing over a draft another tab stored', async () => {
+      papers['alice/p1'] = paperFixture('p1', {
+        json_metadata: { pevotest: { type: 'paper', version: 1, discipline: 'Physics', keywords: [], authors: AUTHORS, citations: COLLECTION } },
+      });
+      signIn('alice');
+      await visit('/edit/alice/p1', 'editPage');
+      const comp = await editorsReady('editPage');
+      expect(comp.citations.map((c) => c.permlink)).toEqual(['cited']);
+      await pastDebounce();
+      // Another tab on the same paper stored its work after this one loaded,
+      // so this form is still at its baseline.
+      const other = { title: 'Other tab work', savedAt: 12345, head_marker: 'alice/p1/1/100' };
+      localStorage.setItem(EDIT_KEY, JSON.stringify(other));
+
+      citeInAnotherTab();
+      expect(localStorage.getItem('pevo-citation-collection')).toBeNull();
+      await pastDebounce();
+      expect(drafts()[EDIT_KEY]).toEqual(other);
     });
 
     it('a landed publish page leaves a cite from another tab in the collection', async () => {
