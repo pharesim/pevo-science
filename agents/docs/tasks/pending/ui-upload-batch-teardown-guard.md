@@ -2,6 +2,7 @@
 
 **Owner:** ui
 **Created:** 2026-09-02
+**Priority:** normal
 
 Routed out of the architect round-2 review of `ui-consent-op-teardown-guard`
 (`01347275` + `646c23bb`). Not held there: the round-1 hold marked a batch-level guard

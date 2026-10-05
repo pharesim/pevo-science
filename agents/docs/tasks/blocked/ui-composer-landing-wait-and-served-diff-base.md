@@ -2,6 +2,7 @@
 
 **Owner:** ui
 **Created:** 2026-10-01
+**Priority:** normal
 
 Implements, from `agents/docs/ARCHITECTURE.md` § 8 ("Composer Drafts"), item 4 of "Landing is
 terminal" and "What a native edit sends" except its first rule (the retry window, which a later

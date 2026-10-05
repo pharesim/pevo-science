@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-10-01
+**Priority:** normal
 
 Implements the backend half of the composer retry-safety decision. Read
 `agents/docs/ARCHITECTURE.md` § 2 "Body, edits and versions" and § 8 "Composer Drafts" first:

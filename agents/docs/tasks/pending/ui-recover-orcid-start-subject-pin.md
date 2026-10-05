@@ -2,6 +2,7 @@
 
 **Owner:** ui
 **Created:** 2026-10-05
+**Priority:** low
 
 Routed out of the architect review of `ui-page-level-orcid-start-subject-pin`
 (archived 2026-10-05), where the implementer flagged it as out of scope.

@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-09-28
+**Priority:** normal
 
 Filed from the architect review of `ui-light-account-fresh-auth-e2e-coverage`, which
 pinned this defect as a known-defect e2e assertion. The defect itself was surfaced by

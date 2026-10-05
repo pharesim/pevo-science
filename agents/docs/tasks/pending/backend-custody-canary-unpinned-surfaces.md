@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-09-08
+**Priority:** low
 
 Routed out of the round-5 architect review of
 `backend-custody-column-self-alignment`. All four items are pre-existing, on

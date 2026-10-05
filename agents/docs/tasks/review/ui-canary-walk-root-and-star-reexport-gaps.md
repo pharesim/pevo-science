@@ -2,6 +2,7 @@
 
 **Owner:** ui
 **Created:** 2026-09-06
+**Priority:** low
 
 Routed out of the round-3 architect review of
 `ui-factor-resolver-source-discipline-canary`. Both gaps were raised as findings

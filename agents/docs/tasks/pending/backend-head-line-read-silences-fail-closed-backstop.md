@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-09-22
+**Priority:** low
 
 Routed out of the round-2 architect review of `backend-assembled-writes-misses-alter-head`.
 The backend's own round-2 sweep found it and recorded it as a `[TODO Architect]` gap

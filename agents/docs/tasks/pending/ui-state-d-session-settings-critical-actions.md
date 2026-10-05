@@ -2,6 +2,7 @@
 
 **Owner:** ui
 **Created:** 2026-10-05
+**Priority:** normal
 
 Raised by the backend in the custody-column alignment (since archived) and
 approved for filing at that task's archive. Reproduce first. This may turn out

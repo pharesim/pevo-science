@@ -2,6 +2,7 @@
 
 **Owner:** ui
 **Created:** 2026-09-30
+**Priority:** high
 
 ## Why
 

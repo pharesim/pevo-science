@@ -2,6 +2,7 @@
 
 **Owner:** ui
 **Created:** 2026-10-05
+**Priority:** low
 
 Routed out of the architect re-review of `backend-enclosing-symbol-port-backreference`
 (archived 2026-10-05). The two enclosing-symbol copies stay separate by ratified decision

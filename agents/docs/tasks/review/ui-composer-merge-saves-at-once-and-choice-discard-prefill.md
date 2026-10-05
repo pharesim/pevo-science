@@ -2,6 +2,7 @@
 
 **Owner:** ui
 **Created:** 2026-10-05
+**Priority:** normal
 
 Two gaps in the composer drafts (`agents/docs/ARCHITECTURE.md` § 8, "Composer Drafts"), both older than the
 draft binding and both found while reviewing it. Verify each against the code first; neither reproduction below

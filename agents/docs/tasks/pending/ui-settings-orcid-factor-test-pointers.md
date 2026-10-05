@@ -2,6 +2,7 @@
 
 **Owner:** ui
 **Created:** 2026-10-01
+**Priority:** low
 
 Routed out of the architect re-review of `ui-e2e-retry-model-comment-sweep` (archived
 2026-10-01), where the implementer listed the false pointer for triage. Comment-only

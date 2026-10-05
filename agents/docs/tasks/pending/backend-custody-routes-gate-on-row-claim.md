@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-10-05
+**Priority:** high
 
 Surfaced by the architect re-review of the state-G account-state comments task and approved
 for filing by the user on 2026-10-05.

@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-09-09
+**Priority:** normal
 
 Routed out of the round-3 architect review of the `accounts.updated_at` writer
 canary, which touched this file's docblock. Pre-existing behaviour, unrelated to

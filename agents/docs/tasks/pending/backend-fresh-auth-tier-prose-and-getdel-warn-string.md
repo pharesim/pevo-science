@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-09-30
+**Priority:** low
 
 Filed from the prose sweep run for `backend-fresh-auth-retirement-contract-prose-and-pins`.
 That sweep confirmed four statements that are false or over-general about the code but

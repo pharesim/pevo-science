@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-10-01
+**Priority:** deferred (until all other open tasks are archived)
 
 Implements `agents/docs/ARCHITECTURE.md` § 1 "Light-Account Resource Credits" (decided
 2026-10-01). Read it first.

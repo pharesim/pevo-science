@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-09-22
+**Priority:** normal
 
 Filed by the ui agent at the user's request, after an E2E harness review surfaced the
 frontend half and tracing the root cause landed in backend config.

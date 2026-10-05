@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-10-01
+**Priority:** normal
 
 Surfaced as a pre-existing P2 during the architect review of
 `backend-custody-admits-vouch-and-retract` (found independently by the security and adversarial

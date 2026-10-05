@@ -2,6 +2,7 @@
 
 **Owner:** ui
 **Created:** 2026-10-01
+**Priority:** low
 
 Reported as out of scope in the signal block of `ui-non-consent-spec-comment-options-pin-flip`
 (archived 2026-10-01). The user chose to file it.

@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-09-14
+**Priority:** high
 
 Surfaced by the security lens during the round-4 review of the
 `accounts.updated_at` writer canary, and confirmed by an independent validation

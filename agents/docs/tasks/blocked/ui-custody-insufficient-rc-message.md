@@ -2,6 +2,7 @@
 
 **Owner:** ui
 **Created:** 2026-10-01
+**Priority:** deferred (until backend-light-account-rc-delegation-and-preflight is archived)
 
 ## Why
 

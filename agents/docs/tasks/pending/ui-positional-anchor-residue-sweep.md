@@ -2,6 +2,7 @@
 
 **Owner:** ui
 **Created:** 2026-10-05
+**Priority:** low
 
 Routed out of the architect review of the frontend positional-anchor sweep (archived
 2026-10-05, commit 473af3f9). That sweep re-anchored every line the pre-commit hook's

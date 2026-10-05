@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-09-22
+**Priority:** low
 
 Routed out of the round-7 architect review of the `accounts.updated_at` writer
 canary (`backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`),

@@ -2,6 +2,7 @@
 
 **Owner:** ui
 **Created:** 2026-10-01
+**Priority:** low
 
 Routed out of the architect archive of the fresh-auth count-tally task (archived
 2026-10-01). The implementer's last sweep reported these sentences as outside that

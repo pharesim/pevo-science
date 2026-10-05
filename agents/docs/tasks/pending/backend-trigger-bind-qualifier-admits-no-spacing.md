@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-09-14
+**Priority:** low
 
 Surfaced by the survey behind the `ALTER TABLE IF EXISTS` pin and triaged for
 filing rather than folded into it: the clause is a different pattern serving a

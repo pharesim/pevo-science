@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-10-05
+**Priority:** low
 
 Routed out of the architect re-review of `backend-enclosing-symbol-port-backreference`
 (clean at `2f27df71`, archived 2026-10-05). Both items are HEAD-state drift: each

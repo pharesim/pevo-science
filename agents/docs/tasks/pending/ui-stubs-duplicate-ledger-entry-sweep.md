@@ -2,6 +2,7 @@
 
 **Owner:** ui
 **Created:** 2026-09-08
+**Priority:** low
 
 Surfaced while clearing the same defect for `upgrade.sessionChangedBeforeCleanup`
 under the custody-upgrade subject-pin task. That fix was scoped to its own key by

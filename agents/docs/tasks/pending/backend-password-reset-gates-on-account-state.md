@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-10-05
+**Priority:** high
 
 Surfaced by the backend while working on the custody-column alignment (since
 archived): it was the mechanism behind a rejected stuck-recovery predicate.

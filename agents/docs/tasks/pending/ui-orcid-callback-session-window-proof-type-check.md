@@ -2,6 +2,7 @@
 
 **Owner:** ui
 **Created:** 2026-09-14
+**Priority:** normal
 
 Routed out of the round-4 re-review of the shared-dispatch task (an adversarial
 residual, confirmed at HEAD by the architect). Low priority: pre-existing,

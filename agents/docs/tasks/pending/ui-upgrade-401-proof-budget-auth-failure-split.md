@@ -2,6 +2,7 @@
 
 **Owner:** ui
 **Created:** 2026-09-06
+**Priority:** normal
 
 Routed out of the architect review of the custody-upgrade subject-pin work. Pre-existing;
 surfaced there because that task added a third entry point into the same retry.

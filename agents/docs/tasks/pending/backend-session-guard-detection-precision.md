@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-08-31
+**Priority:** low
 
 Routed out of the architect review of `b9526720` (windowed session fresh-auth,
 round 4), which archived clean on its own acceptance criteria. The production

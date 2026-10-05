@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-10-05
+**Priority:** high
 
 Surfaced by the state-G sweep on the account-state comments task (its signal block,
 "Needs triage", items 1-11). The user triaged every item to "fix" on 2026-10-05 and

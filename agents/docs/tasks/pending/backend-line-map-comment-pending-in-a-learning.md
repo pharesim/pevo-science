@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-09-23
+**Priority:** low
 
 Surfaced by the `/ce-compound-refresh` pass over the `backend/tests/eslint` learning
 cluster. The refresh verified the claim against HEAD and left it alone, since a refresh

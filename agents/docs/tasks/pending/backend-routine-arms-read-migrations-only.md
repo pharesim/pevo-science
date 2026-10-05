@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-09-21
+**Priority:** low
 
 Routed out of the round-1 architect review of `backend-assembled-writes-misses-alter-head`,
 whose sweep re-found it. It is the third independent rediscovery: it sits open on

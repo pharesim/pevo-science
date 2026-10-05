@@ -2,6 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-10-01
+**Priority:** normal
 
 ## Why
 

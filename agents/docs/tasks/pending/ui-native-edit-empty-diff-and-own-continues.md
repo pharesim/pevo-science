@@ -2,6 +2,7 @@
 
 **Owner:** ui
 **Created:** 2026-10-01
+**Priority:** high
 
 Two defects in the native-edit arm of `handleSubmit` in `frontend/src/pages/edit.js`, found
 while deciding the composer retry-safety question. Neither depends on any other task. Read
