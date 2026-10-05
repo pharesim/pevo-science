@@ -39,6 +39,28 @@
  * rather than dropped, which puts it in front of the same extension gate. A
  * link back to an ancestor is not entered.
  *
+ * The entry document is not under the walk's root. `index.html` sits one
+ * directory above `src`, is the page Vite builds from, and carries the global
+ * re-auth modal, the inline password prompt that is one of the resolver's two
+ * answers. It gets an assertion of its own beside the four layers, not a
+ * wider root. A root wide enough to hold it also holds the test tree, the
+ * build config, `public` and `node_modules`, each needing an exclusion, and
+ * the scans' skip predicates read JavaScript comment syntax, not HTML. The
+ * entry-document assertion needs no skip at all, because it licenses no
+ * site: any occurrence there of the status fetch's name or of the
+ * discriminator fails, one inside an HTML comment included. It reads one
+ * named file, so a wrong path throws rather than passing vacuously.
+ *
+ * COVERAGE. Read: every `.js` file under `src`, and the entry document. Not
+ * read, because nothing here follows an import or a script tag: a module
+ * outside `src` that a source imports or the entry document loads, a second
+ * page added as a further build input, and the dependencies under
+ * `node_modules`. A module in any of those places ships unscanned, so a
+ * change that puts page code there extends this canary in the same change.
+ * Within what is read, the scans are still blind to the three named
+ * residuals (CONSTANT-WIDTH REPLACEMENT, A MATCH RIDING ON A SKIPPED LINE, A
+ * NAME THAT IS NEVER SPELLED).
+ *
  * GRANULARITY. Occurrence assertions are over `file#symbol` pairs resolved by
  * `enclosingSymbol`, never over files: a file already on an allowed list
  * would absorb a second, different occurrence silently. The licensed sites
@@ -95,6 +117,12 @@
  *     rebinding shape that writes neither the function's name nor the
  *     property's.
  *
+ * The entry-document assertion applies layers 1 and 3 there, with nothing
+ * licensed. Layers 2 and 4 have nothing to add in that file: with no
+ * specifier skip, layer 1 already fails any import that names the fetch,
+ * and an inline module script's exports have no path another module could
+ * import them from.
+ *
  * Residuals, pinned in prose rather than silently absorbed. Three, and each
  * one is left to review of the diff for its own reason.
  *
@@ -117,12 +145,13 @@
  *  3. A NAME THAT IS NEVER SPELLED. Both scans are token matches, so a
  *     derivation that assembles the fetch's name from string fragments and
  *     reads the discriminator through a computed key writes neither token
- *     and is invisible to all four layers. No textual guard closes this and
+ *     and is invisible to all four layers and to the entry-document
+ *     assertion alike. No textual guard closes this and
  *     none should be attempted: the defence is that such a module is
  *     conspicuous in review precisely because it went to the trouble.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -303,8 +332,18 @@ const UNSCANNED_EXTENSION =
   'the same change. A non-script asset the walk may pass over is licensed by its extension ' +
   'in NON_SCRIPT_EXTENSIONS.';
 
+/** Every line of the entry document that names the status fetch or the
+ *  discriminator, as `index.html:<line>` sites. No skip predicate: the entry
+ *  document licenses no site, so an occurrence in an HTML comment fails like
+ *  any other. */
+const entryDocumentSites = (lines) =>
+  lines.flatMap((line, i) =>
+    STATUS_FETCH_IDENT_RE.test(line) || HAS_PASSWORD_RE.test(line) ? [`index.html:${i + 1} ${line.trim()}`] : [],
+  );
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const { sources, foreign } = sourcesUnder(path.resolve(here, '..', '..', '..', 'src'));
+const entryDocumentLines = readFileSync(path.resolve(here, '..', '..', '..', 'index.html'), 'utf8').split('\n');
 
 describe('single password-factor resolver: no second fetchEmailStatus-derived decision', () => {
   it('walks a plausible number of source files and finds nothing script-shaped it cannot read', () => {
@@ -412,6 +451,16 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
       sites,
       `${CONSUME_THE_RESOLVER}\nA star re-export rebinds fetchEmailStatus under a new module ` +
         `path that the import-site assertion cannot see:\n${sites.join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('the entry document neither names the status fetch nor touches hasPassword', () => {
+    const sites = entryDocumentSites(entryDocumentLines);
+    expect(
+      sites,
+      `${CONSUME_THE_RESOLVER}\nThe entry document (index.html) licenses no site, so any occurrence ` +
+        'there fails, prose in an HTML comment included. A display-only read belongs in a module ' +
+        `under src, where the allowed maps can pin it.\nentry-document sites:\n${sites.join('\n')}`,
     ).toEqual([]);
   });
 
@@ -847,6 +896,28 @@ describe('single password-factor resolver: no second fetchEmailStatus-derived de
         lines: ['/**', ' * hasPassword drives the factor choice', ' */', 'function pick() {}'],
       }),
     ).toEqual([]);
+  });
+
+  it('the entry-document scan fires on markup, an inline script, and an HTML comment alike', () => {
+    // Planted shapes for the entry-document matcher, for the reason the walk's
+    // scans carry theirs: a matcher that returns nothing leaves the
+    // whole-document assertion green while it enforces nothing. A line naming
+    // neither identifier, and one naming a longer identifier that merely
+    // starts with the discriminator, mint no site.
+    expect(
+      entryDocumentSites([
+        '<div x-data x-show="$store.reauthModal.open">',
+        '  <p x-show="$store.auth.emailStatus?.hasPassword === false"></p>',
+        "  <script type=\"module\">import { fetchEmailStatus as f } from '/src/api.js';</script>",
+        '  <!-- hasPassword picks the factor here -->',
+        '  <p x-text="hasPasswordHint"></p>',
+        '</div>',
+      ]),
+    ).toEqual([
+      'index.html:2 <p x-show="$store.auth.emailStatus?.hasPassword === false"></p>',
+      "index.html:3 <script type=\"module\">import { fetchEmailStatus as f } from '/src/api.js';</script>",
+      'index.html:4 <!-- hasPassword picks the factor here -->',
+    ]);
   });
 
 });
