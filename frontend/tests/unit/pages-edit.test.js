@@ -730,7 +730,9 @@ describe('editPage handleSubmit sanitization', () => {
         head_author: 'bob', head_permlink: 'cont-1',
         canonical_author: 'alice', canonical_permlink: 'p1',
         body: 'bob current body',
-        json_metadata: JSON.stringify({ pevotest: { version: 1 } }),
+        // Parsed, as the detail endpoint serves it, and the latest op's: bob's
+        // continuation, which names the post it continues.
+        json_metadata: { pevotest: { version: 2, continues: { author: 'alice', permlink: 'p1' } } },
         title: 'Bob version title',
         versions: [
           { version_number: 1, author: 'alice', permlink: 'p1' },
@@ -760,6 +762,92 @@ describe('editPage handleSubmit sanitization', () => {
       expect(commentOp[1].body.startsWith('@@')).toBe(false);
       expect(commentOp[1].body).toContain('alice abstract');
       expect(commentOp[1].body).toContain('alice body revision');
+      // The root continues nothing, whatever the served metadata names.
+      expect(JSON.parse(commentOp[1].json_metadata).pevotest).not.toHaveProperty('continues');
+    });
+
+    it('non-head native edit of a continuation post sends the post it continues, not the head\'s', async () => {
+      // alice/p1 <- bob/cont-1 <- carol/cont-2. Bob edits cont-1 while carol's
+      // cont-2 is the head, and the served metadata is cont-2's.
+      const { invalidatePaperCache } = await import('../../src/api.js');
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      invalidatePaperCache.mockResolvedValue({});
+
+      const comp = createComponent();
+      mockStores.auth.username = 'bob';
+      comp.paper = {
+        author: 'alice', permlink: 'p1',
+        head_author: 'carol', head_permlink: 'cont-2',
+        canonical_author: 'alice', canonical_permlink: 'p1',
+        body: 'carol current body',
+        json_metadata: { pevotest: { version: 3, continues: { author: 'bob', permlink: 'cont-1' } } },
+        title: 'Carol version title',
+        versions: [
+          { version_number: 1, author: 'alice', permlink: 'p1' },
+          { version_number: 2, author: 'bob', permlink: 'cont-1' },
+          { version_number: 3, author: 'carol', permlink: 'cont-2' },
+        ],
+      };
+      comp._originalBody = '## Abstract\n\ncarol abstract\n\n---\n\ncarol current body';
+      comp.title = 'Bob revises';
+      comp.abstract = 'bob abstract';
+      comp.body = 'bob body revision';
+      comp.discipline = 'Physics';
+      comp.authorName = 'Bob';
+      comp.authorAffiliation = 'Harvard';
+      comp.authorOrcid = '';
+      comp.keywordsText = 'quantum';
+
+      await comp.handleSubmit();
+
+      expect(comp.step).toBe('success');
+      const commentOp = broadcastOps.mock.calls[0][1][0];
+      expect(commentOp[1].author).toBe('bob');
+      expect(commentOp[1].permlink).toBe('cont-1');
+      expect(JSON.parse(commentOp[1].json_metadata).pevotest.continues)
+        .toEqual({ author: 'alice', permlink: 'p1' });
+    });
+
+    it('head native edit of a continuation post keeps the post it continues when the latest op is the root\'s', async () => {
+      // alice/p1 <- bob/cont-1, and alice edited p1 after bob's continuation,
+      // so the served metadata is p1's and names nothing to continue.
+      const { invalidatePaperCache } = await import('../../src/api.js');
+      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+      invalidatePaperCache.mockResolvedValue({});
+
+      const comp = createComponent();
+      mockStores.auth.username = 'bob';
+      comp.paper = {
+        author: 'alice', permlink: 'p1',
+        head_author: 'bob', head_permlink: 'cont-1',
+        canonical_author: 'alice', canonical_permlink: 'p1',
+        body: 'bob current body',
+        json_metadata: { pevotest: { version: 3 } },
+        title: 'Bob version',
+        versions: [
+          { version_number: 1, author: 'alice', permlink: 'p1' },
+          { version_number: 2, author: 'bob', permlink: 'cont-1' },
+          { version_number: 3, author: 'alice', permlink: 'p1' },
+        ],
+      };
+      comp._originalBody = '## Abstract\n\nbob abstract\n\n---\n\nbob current body';
+      comp.title = 'Bob version, retitled';
+      comp.abstract = 'bob abstract';
+      comp.body = 'bob current body';
+      comp.discipline = 'Physics';
+      comp.authorName = 'Bob';
+      comp.authorAffiliation = 'Harvard';
+      comp.authorOrcid = '';
+      comp.keywordsText = 'quantum';
+
+      await comp.handleSubmit();
+
+      expect(comp.step).toBe('success');
+      const commentOp = broadcastOps.mock.calls[0][1][0];
+      expect(commentOp[1].author).toBe('bob');
+      expect(commentOp[1].permlink).toBe('cont-1');
+      expect(JSON.parse(commentOp[1].json_metadata).pevotest.continues)
+        .toEqual({ author: 'alice', permlink: 'p1' });
     });
 
     it('head-author native edit still computes diff (diff base IS the chain head body)', async () => {
@@ -1849,6 +1937,77 @@ describe('editPage handleSubmit supplementary-file upload', () => {
     expect(comp.step).toBe('idle');
     expect(comp.errorMessage).toBe('');
     expect(broadcastOps).not.toHaveBeenCalled();
+  });
+});
+
+describe('editPage native edit with an unchanged body', () => {
+  // A head target whose body the form leaves as loaded. The chain rejects an
+  // empty body, which is what the patch of an unchanged body is.
+  function unchangedBodyComponent() {
+    const comp = createComponent();
+    mockStores.auth.username = 'alice';
+    comp.paper = {
+      author: 'alice', permlink: 'p1',
+      head_author: 'alice', head_permlink: 'p1',
+      canonical_author: 'alice', canonical_permlink: 'p1',
+      body: '## Abstract\n\nsame abstract\n\n---\n\nbody text',
+      json_metadata: {
+        pevotest: {
+          version: 1,
+          keywords: ['quantum'],
+          authors: [{ name: 'Alice', hive: 'alice', orcid: '', affiliation: 'MIT' }],
+        },
+      },
+      title: 'Same Title',
+      versions: [{ version_number: 1, author: 'alice', permlink: 'p1' }],
+    };
+    comp._originalBody = '## Abstract\n\nsame abstract\n\n---\n\nbody text';
+    comp._primaryIndex = -1;
+    comp.title = 'Same Title';
+    comp.abstract = 'same abstract';
+    comp.body = 'body text';
+    comp.discipline = 'Physics';
+    comp.authorName = 'Alice';
+    comp.authorAffiliation = 'MIT';
+    comp.authorOrcid = '';
+    comp.keywordsText = 'quantum';
+    return comp;
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockStores.auth.isConnected = true;
+    mockStores.auth.isAccredited = true;
+    const { invalidatePaperCache } = await import('../../src/api.js');
+    broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+    invalidatePaperCache.mockResolvedValue({});
+    mockSessionUpload.mockResolvedValue({ data: { cid: 'bafycid123' } });
+  });
+
+  it.each([
+    ['a title', (comp) => { comp.title = 'A New Title'; }],
+    ['a supplementary file', (comp) => {
+      comp.supplementaryFiles = [{
+        file: new Blob(['x'], { type: 'application/pdf' }),
+        fileName: 'data.pdf',
+        description: 'dataset',
+        cid: null,
+        error: null,
+        uploading: false,
+      }];
+    }],
+    ['an addressed review', (comp) => { comp.addressedReviews = [{ author: 'carol', permlink: 'rev-1' }]; }],
+  ])('an edit of only %s sends the no-op patch as the body', async (_change, applyChange) => {
+    const comp = unchangedBodyComponent();
+    applyChange(comp);
+
+    await comp.handleSubmit();
+
+    expect(comp.step).toBe('success');
+    const commentOp = broadcastOps.mock.calls[0][1][0];
+    expect(commentOp[1].author).toBe('alice');
+    expect(commentOp[1].permlink).toBe('p1');
+    expect(commentOp[1].body).toBe('@@ -0,0 +0,0 @@\n');
   });
 });
 

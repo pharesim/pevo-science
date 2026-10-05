@@ -50,6 +50,28 @@ function computeDiff(oldText, newText) {
   return dmp.patch_toText(patches);
 }
 
+// A patch that leaves the body as it is. The patch of an unchanged body is the
+// empty string, and the chain rejects an empty body.
+const NO_OP_PATCH = '@@ -0,0 +0,0 @@\n';
+
+// The post a chain post continues: the chain link before it, or null for the
+// root. versions[] is in block order, and the composer publishes a
+// continuation against a head already on chain, so listing the posts in order
+// of their first version gives the chain's links in order.
+function chainPredecessor(versions, author, permlink) {
+  const seen = new Set();
+  let previous = null;
+  for (const v of versions || []) {
+    if (!v.author || !v.permlink) continue;
+    const key = `${v.author}/${v.permlink}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (v.author === author && v.permlink === permlink) return previous;
+    previous = { author: v.author, permlink: v.permlink };
+  }
+  return null;
+}
+
 const template = `
       <div x-data="editPage" class="container-narrow py-8">
         <!-- Loading state -->
@@ -1613,6 +1635,9 @@ export function initEditPage() {
         const targetAuthor = ownPost ? ownPost.author : this.paper.author;
         const targetPermlink = ownPost ? ownPost.permlink : this.paper.permlink;
         const targetIsHead = targetAuthor === headAuthor && targetPermlink === headPermlink;
+        // A native edit keeps its target's own `continues`. pevoMeta is the
+        // latest op's metadata, which can be another chain post's.
+        const targetContinues = chainPredecessor(this.paper.versions, targetAuthor, targetPermlink);
         // Where the cache invalidation and the post-success navigate point,
         // whichever arm runs: the paper-detail endpoint resolves any chain
         // entry to its canonical root before reading. Captured here with the
@@ -1779,7 +1804,11 @@ export function initEditPage() {
           let broadcastBody;
           if (targetIsHead) {
             const diffText = computeDiff(this._originalBody, newPostBody);
-            broadcastBody = diffText.length >= newPostBody.length ? newPostBody : diffText;
+            if (diffText === '') {
+              broadcastBody = NO_OP_PATCH;
+            } else {
+              broadcastBody = diffText.length >= newPostBody.length ? newPostBody : diffText;
+            }
           } else {
             // Non-head target (e.g. root author native-editing their own
             // post while a co-author's continuation is currently the head):
@@ -1799,6 +1828,7 @@ export function initEditPage() {
               authors: allAuthors,
               discipline: this.discipline,
               keywords,
+              continues: targetContinues || undefined,
               addresses_reviews: this.addressedReviews.length > 0 ? this.addressedReviews : undefined,
               citations: citationsData.length > 0 ? citationsData : undefined,
               supplementary_files: uploadedSupplementary.length > 0 ? uploadedSupplementary : undefined,

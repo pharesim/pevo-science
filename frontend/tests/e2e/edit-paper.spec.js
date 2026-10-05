@@ -679,6 +679,15 @@ test('non-head edit target (own post no longer chain head) broadcasts full body,
     ...base,
     head_author: HEAD_AUTHOR,
     head_permlink: HEAD_PERMLINK,
+    // The served metadata is the latest op's, here the head continuation's,
+    // which names the post it continues.
+    json_metadata: {
+      ...base.json_metadata,
+      [APP_TAG]: {
+        ...base.json_metadata[APP_TAG],
+        continues: { author: researcher.username, permlink: OWN_PERMLINK },
+      },
+    },
     versions: [
       { version_number: 1, author: researcher.username, permlink: OWN_PERMLINK },
       { version_number: 2, author: HEAD_AUTHOR, permlink: HEAD_PERMLINK },
@@ -734,7 +743,8 @@ test('non-head edit target (own post no longer chain head) broadcasts full body,
   expect(commentBody.body.startsWith('@@')).toBe(false);
 
   // In-place edit (not continuation): same permlink as the user's own post
-  // in the chain. The json_metadata MUST NOT carry a `continues` pointer.
+  // in the chain. That post is the root, which continues nothing, so the
+  // json_metadata carries no `continues` though the served metadata names one.
   const meta = JSON.parse(commentBody.json_metadata);
   expect(meta[APP_TAG].continues).toBeUndefined();
 });
