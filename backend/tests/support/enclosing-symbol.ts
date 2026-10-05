@@ -49,9 +49,10 @@
  *
  *  - OUTWARD: a block comment OPENED mid-line after other code is not
  *    tracked, so a brace leading one of its lines reads as live and can
- *    close the declaration early. So can a `}` leading a line of template content. And a `}` after
- *    a read close ends the declaration even where it really closes an inner
- *    block. The answer is the enclosing function, or module scope.
+ *    close the declaration early. So can a `}` leading a line of template
+ *    content. And a `}` after a read close ends the declaration even where
+ *    it really closes an inner block. The answer is the enclosing function,
+ *    or module scope.
  *  - INWARD: the brace that really ends the block is missed, so the
  *    declaration reads as still open and a match after it resolves to it.
  *    The shapes that do this include a block that opens and closes on its
@@ -85,13 +86,17 @@
  *    absorbed: that is the silent pass, and every INWARD shape can produce
  *    it. A FABRICATED name produces it the same way when it equals an allowed
  *    key. An OUTWARD answer names an enclosing scope, which fails closed
- *    exactly when that scope is not licensed itself. Two cases are: an
- *    allowed function enclosing a nested declaration, and module scope where
- *    an assertion licenses it. The keyspace-literal assertion in
- *    `no-session-proof-mint-outside-reauth-routes.test.ts` licenses
- *    `lib/fresh-auth.ts` at {@link MODULE_SCOPE}, a key that stands for every
- *    module-scope line of that file, so an outward answer landing there is
- *    absorbed.
+ *    exactly when the allowed set does not hold that scope: an allowed
+ *    function enclosing a nested declaration absorbs it, and so does
+ *    {@link MODULE_SCOPE} in a file whose module-scope key the allowed set
+ *    holds. Outward is therefore safe per allowlist, never for this module
+ *    as a whole. A key stands for every line that resolves to it, so an
+ *    assertion that must admit one module-scope line can skip that line by
+ *    shape instead of licensing its key, as the keyspace-literal assertion in
+ *    `no-session-proof-mint-outside-reauth-routes.test.ts` does for its
+ *    definition line, or count occurrences per key, as the accounts canary
+ *    does for the `.sql` migrations it keys at module scope, where an arrival
+ *    raises a count instead of riding on the key.
  *
  *  - PAIRING assertions (every occurrence of X must have a Y in the same
  *    symbol) do NOT inherit that property. When both sides of a pair resolve to
@@ -104,18 +109,17 @@
  *    that vouches for itself.
  *
  * Hand-ported sibling. `frontend/tests/unit/eslint/enclosing-symbol.js` carries
- * a dialect-adjusted copy of this module. The two share one algorithm:
- * {@link enclosingSymbol}'s upward declaration scan and its closing-brace test
- * (a declaration whose block closed at or left of its own indentation is
- * rejected), the region pass in {@link blockCommentInterior}, and the comment
- * predicate {@link isCommentLine}. The closing-brace test is shared only up to
- * the comment close: reading the code after a close that begins its line, and
- * taking a brace there at any indentation, landed in this copy first. They stay separate deliberately, because
- * each is written for the declaration shapes and the scan contract of its own
- * tree, and neither is a subset of the other: {@link isCommentedOut} here has
- * no equivalent in that copy, and that copy carries machinery of its own that
- * has none here. Read the sibling for what differs; a list of the differences
- * kept in this docblock would go stale with nothing failing.
+ * a dialect-adjusted copy of this module. The two share one algorithm in
+ * outline: {@link enclosingSymbol}'s upward declaration scan and its
+ * closing-brace test (a declaration whose block closed at or left of its own
+ * indentation is rejected), the region pass in {@link blockCommentInterior},
+ * and the comment predicate {@link isCommentLine}. They stay separate
+ * deliberately, because each is written for the declaration shapes and the
+ * scan contract of its own tree, and neither is a subset of the other:
+ * {@link isCommentedOut} here has no equivalent in that copy, and that copy
+ * carries machinery of its own that has none here. Read the sibling for what
+ * differs; a list of the differences kept in this docblock would go stale
+ * with nothing failing.
  *
  * Nothing mechanical carries a fix to the shared machinery across, in either
  * direction, and the two have drifted before: a hardening of the comment
@@ -348,14 +352,16 @@ export function enclosingSymbol(lines: string[], lineIndex: number): string {
     // an indentation test there would miss ` */ }` closing the declaration
     // and resolve inward. Where that brace really closes an inner block, the
     // answer is outward instead, which a set-equality consumer reads as a new
-    // member.
+    // member only when its allowed set does not hold the outer scope (the
+    // file docblock's SET-EQUALITY bullet).
     //
     // "Can SEE close" is bounded by the target line, inclusive, not by the
     // end of the file (the region pass, which has no target, reads to the
     // end). A close below the target cannot vouch for an opener above it:
     // taking it would swallow a brace on evidence the walk has not reached
     // and resolve INWARD, and inward is the direction a licensed key can
-    // absorb. Declining resolves outward, which fails closed.
+    // absorb. Declining resolves outward, which fails closed wherever the
+    // outer scope is not itself an allowed key.
     //
     // Template parity is seeded from the declaration line's own backticks,
     // because a one-line declaration can open a literal the next line is

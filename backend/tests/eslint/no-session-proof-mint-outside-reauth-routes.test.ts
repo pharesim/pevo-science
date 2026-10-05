@@ -369,6 +369,37 @@ const ALLOWED_ENTRY_KEY_PREFIX_SITES = [
  *  definition, at module scope of the module that owns the store. */
 const ENTRY_KEYSPACE_LITERAL_RE = /fresh_auth:token/;
 
+/** The module that owns the entry store, and the only one whose key-prefix
+ *  definition line may carry the keyspace literal. */
+const ENTRY_STORE_MODULE = 'lib/fresh-auth.ts';
+
+/** Every live occurrence of the entry keyspace literal except the key-prefix
+ *  definition in the owning module. The definition line is skipped by shape,
+ *  in that module only: a copy of the same constant line pasted into another
+ *  module is the cheapest way to reach the store from outside it, so there it
+ *  is an occurrence like any other.
+ *
+ *  The result is compared to the empty set rather than to a module-scope key
+ *  standing for the definition. A key stands for every line that resolves to
+ *  it, so licensing `lib/fresh-auth.ts#<module>` would let a second
+ *  module-scope literal in the owning module ride on the definition's key,
+ *  and a literal inside a function too wherever the resolver answers module
+ *  scope for it, which it does below an inner block closing on a `*\/ }`
+ *  line. With no key licensed, every such line is a member. */
+function strayKeyspaceLiterals(files: ScannedSource[]): { keys: string[]; sites: string[] } {
+  const owner = occurrencesOf(
+    files.filter((s) => s.rel === ENTRY_STORE_MODULE),
+    ENTRY_KEYSPACE_LITERAL_RE,
+    skipCommentOr(ENTRY_KEY_PREFIX_DEFINITION_RE),
+  );
+  const elsewhere = occurrencesOf(
+    files.filter((s) => s.rel !== ENTRY_STORE_MODULE),
+    ENTRY_KEYSPACE_LITERAL_RE,
+    skipCommentLine,
+  );
+  return { keys: [...owner.keys, ...elsewhere.keys].sort(), sites: [...owner.sites, ...elsewhere.sites] };
+}
+
 /** The test-only in-memory seeding hook. It writes the entry tier directly, so
  *  a production caller would be a mint with no licensed name, no discriminator
  *  literal, and no slide — invisible to every scan above. Its caller set is
@@ -616,13 +647,60 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     // KEY_PREFIX is module-private, but the namespace string is not: a helper
     // anywhere under src/ can rebuild the key from the literal and reach the
     // store with no identifier the scans above pin. Comments are spared (prose
-    // cannot address Redis); everything else is one definition line at module
-    // scope of the owning module.
-    const { keys, sites } = occurrencesOf(sources, ENTRY_KEYSPACE_LITERAL_RE, skipCommentLine);
+    // cannot address Redis); everything else is one definition line in the
+    // owning module.
+    const owner = sources.filter((s) => s.rel === ENTRY_STORE_MODULE);
+    expect(owner.length, 'the guarded module was renamed or removed').toBe(1);
+    // The literal still lives on the definition line, once. Without this the
+    // stray scan below passes vacuously when the namespace or the constant is
+    // renamed.
+    expect(
+      owner[0].lines.filter(
+        (line) => ENTRY_KEY_PREFIX_DEFINITION_RE.test(line) && ENTRY_KEYSPACE_LITERAL_RE.test(line),
+      ),
+      'the key-prefix definition no longer carries the entry keyspace literal',
+    ).toHaveLength(1);
+    const { keys, sites } = strayKeyspaceLiterals(sources);
     expect(
       keys,
       `the fresh-auth entry keyspace is addressed outside its defining constant:\n${sites.join('\n')}`,
-    ).toEqual([`lib/fresh-auth.ts#${MODULE_SCOPE}`]);
+    ).toEqual([]);
+  });
+
+  it('a keyspace literal outside the definition is reported wherever it resolves', () => {
+    // Planted probes for the stray scan. Each plant sits beside the real
+    // definition line, which must stay unreported.
+    const definition = 'const KEY_PREFIX = `${config.appTag}:fresh_auth:token:`;';
+    const owner = (...body: string[]): ScannedSource => ({
+      rel: ENTRY_STORE_MODULE,
+      lines: ['/**', ' * Entries live under `${appTag}:fresh_auth:token:${token}`.', ' */', definition, '', ...body],
+    });
+    expect(strayKeyspaceLiterals([owner()]).keys).toEqual([]);
+
+    // A literal inside a function, below an inner block that closes on an
+    // indented `*\/ }` line. The walk reads that brace as the function's end
+    // and answers module scope, the key a licensed definition would share.
+    const belowInnerClose = owner(
+      'export function rebuildKey(token: string) {',
+      '  if (token) {',
+      '    /*',
+      '    the inner block ends here',
+      '    */ }',
+      '  return `${config.appTag}:fresh_auth:token:${token}`;',
+      '}',
+    );
+    expect(enclosingSymbol(belowInnerClose.lines, 10)).toBe(MODULE_SCOPE);
+    expect(strayKeyspaceLiterals([belowInnerClose]).keys).toEqual([`${ENTRY_STORE_MODULE}#${MODULE_SCOPE}`]);
+
+    // A second literal at module scope of the owning module.
+    const secondAtModuleScope = owner('const LEGACY_PREFIX = `${config.appTag}:fresh_auth:token:`;');
+    expect(strayKeyspaceLiterals([secondAtModuleScope]).keys).toEqual([
+      `${ENTRY_STORE_MODULE}#${MODULE_SCOPE}`,
+    ]);
+
+    // The definition line itself, copied into another module.
+    const copiedDefinition: ScannedSource = { rel: 'routes/synthetic.ts', lines: [definition] };
+    expect(strayKeyspaceLiterals([copiedDefinition]).keys).toEqual([`routes/synthetic.ts#${MODULE_SCOPE}`]);
   });
 
   it('the test-only seeding hook has no production caller', () => {
