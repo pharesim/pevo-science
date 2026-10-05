@@ -92,11 +92,13 @@
  *    holds. Outward is therefore safe per allowlist, never for this module
  *    as a whole. A key stands for every line that resolves to it, so an
  *    assertion that must admit one module-scope line can skip that line by
- *    shape instead of licensing its key, as the keyspace-literal assertion in
+ *    shape instead of licensing its key, and pin separately that exactly one
+ *    such line exists and that it resolves to module scope, as the
+ *    keyspace-literal assertion in
  *    `no-session-proof-mint-outside-reauth-routes.test.ts` does for its
- *    definition line, or count occurrences per key, as the accounts canary
- *    does for the `.sql` migrations it keys at module scope, where an arrival
- *    raises a count instead of riding on the key.
+ *    definition line. Or it can count occurrences per key, as the accounts
+ *    canary does for the `.sql` migrations it keys at module scope, where an
+ *    arrival raises a count instead of riding on the key.
  *
  *  - PAIRING assertions (every occurrence of X must have a Y in the same
  *    symbol) do NOT inherit that property. When both sides of a pair resolve to
@@ -639,8 +641,9 @@ export type SkipLine = (
  *  satisfied pair nobody wrote; those scans take {@link isCommentedOut},
  *  which keeps out such a line when it begins with `*`, `//` or `/*`. A line
  *  of that prose with no prefix (a continuation written without a leading
- *  star inside a comment opened after code on its line) reads as live to
- *  both, and closing it needs the lexer this module declines. */
+ *  star inside a comment opened after other text on its line, code or
+ *  another comment's close) reads as live to both, and closing it needs the
+ *  lexer this module declines. */
 export const skipCommentLine: SkipLine = (line, _lineIndex, _lines, insideRegion) =>
   isCommentLine(line, insideRegion);
 

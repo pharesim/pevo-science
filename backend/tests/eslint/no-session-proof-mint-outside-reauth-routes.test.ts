@@ -373,11 +373,14 @@ const ENTRY_KEYSPACE_LITERAL_RE = /fresh_auth:token/;
  *  definition line may carry the keyspace literal. */
 const ENTRY_STORE_MODULE = 'lib/fresh-auth.ts';
 
-/** Every live occurrence of the entry keyspace literal except the key-prefix
- *  definition in the owning module. The definition line is skipped by shape,
- *  in that module only: a copy of the same constant line pasted into another
- *  module is the cheapest way to reach the store from outside it, so there it
- *  is an occurrence like any other.
+/** Every live occurrence of the entry keyspace literal except on key-prefix
+ *  definition lines in the owning module. The definition line is skipped by
+ *  shape, in that module only: a copy of the same constant line pasted into
+ *  another module is the cheapest way to reach the store from outside it, so
+ *  there it is an occurrence like any other. Inside the owning module the
+ *  shape skip spares every definition-shaped line wherever it sits, so
+ *  {@link keyspaceDefinitionScopes} is what pins that exactly one of them
+ *  carries the literal, at module scope.
  *
  *  The result is compared to the empty set rather than to a module-scope key
  *  standing for the definition. A key stands for every line that resolves to
@@ -398,6 +401,19 @@ function strayKeyspaceLiterals(files: ScannedSource[]): { keys: string[]; sites:
     skipCommentLine,
   );
   return { keys: [...owner.keys, ...elsewhere.keys].sort(), sites: [...owner.sites, ...elsewhere.sites] };
+}
+
+/** The enclosing symbol of every key-prefix definition line in `source` that
+ *  carries the entry keyspace literal. {@link strayKeyspaceLiterals} skips
+ *  those lines by shape, which says nothing about how many there are or where
+ *  they sit; comparing this to `[MODULE_SCOPE]` refuses a second carrier, a
+ *  carrier moved into a function, and a renamed namespace. */
+function keyspaceDefinitionScopes(source: ScannedSource): string[] {
+  return source.lines.flatMap((line, i) =>
+    ENTRY_KEY_PREFIX_DEFINITION_RE.test(line) && ENTRY_KEYSPACE_LITERAL_RE.test(line)
+      ? [enclosingSymbol(source.lines, i)]
+      : [],
+  );
 }
 
 /** The test-only in-memory seeding hook. It writes the entry tier directly, so
@@ -651,15 +667,15 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     // owning module.
     const owner = sources.filter((s) => s.rel === ENTRY_STORE_MODULE);
     expect(owner.length, 'the guarded module was renamed or removed').toBe(1);
-    // The literal still lives on the definition line, once. Without this,
-    // `strayKeyspaceLiterals` passes vacuously when the namespace or the
-    // constant is renamed.
+    // Exactly one definition line carries the literal, at module scope.
+    // `strayKeyspaceLiterals` skips definition lines by shape, so it cannot
+    // see a second carrier or one moved into a function, and it passes
+    // vacuously when the namespace is renamed.
     expect(
-      owner[0].lines.filter(
-        (line) => ENTRY_KEY_PREFIX_DEFINITION_RE.test(line) && ENTRY_KEYSPACE_LITERAL_RE.test(line),
-      ),
-      'the key-prefix definition no longer carries the entry keyspace literal',
-    ).toHaveLength(1);
+      keyspaceDefinitionScopes(owner[0]),
+      'exactly one key-prefix definition line must carry the entry keyspace literal, ' +
+        'at module scope of the owning module',
+    ).toEqual([MODULE_SCOPE]);
     const { keys, sites } = strayKeyspaceLiterals(sources);
     expect(
       keys,
@@ -701,6 +717,27 @@ describe('invariant #9 — no session-proof mint outside the two re-auth routes'
     // The definition line itself, copied into another module.
     const copiedDefinition: ScannedSource = { rel: 'routes/synthetic.ts', lines: [definition] };
     expect(strayKeyspaceLiterals([copiedDefinition]).keys).toEqual([`routes/synthetic.ts#${MODULE_SCOPE}`]);
+
+    // The definition-shaped lines the stray scan spares, pinned by scope. The
+    // carrier moved into an exported function as a column-0 shadowing const,
+    // with the module constant derived from it, passes the stray scan; its
+    // scope is what reports it. So is a second carrier beside the real one.
+    expect(keyspaceDefinitionScopes(owner())).toEqual([MODULE_SCOPE]);
+    const definitionInFunction: ScannedSource = {
+      rel: ENTRY_STORE_MODULE,
+      lines: [
+        'const KEY_PREFIX = entryKeyPrefix();',
+        '',
+        'export function entryKeyPrefix(): string {',
+        definition,
+        '  return KEY_PREFIX;',
+        '}',
+      ],
+    };
+    expect(strayKeyspaceLiterals([definitionInFunction]).keys).toEqual([]);
+    expect(keyspaceDefinitionScopes(definitionInFunction)).toEqual(['entryKeyPrefix']);
+    const secondCarrier = owner('export function keyFor(token: string) {', definition, '  return KEY_PREFIX + token;', '}');
+    expect(keyspaceDefinitionScopes(secondCarrier)).toEqual([MODULE_SCOPE, 'keyFor']);
   });
 
   it('the test-only seeding hook has no production caller', () => {
