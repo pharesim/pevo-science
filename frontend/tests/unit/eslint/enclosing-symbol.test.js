@@ -19,15 +19,12 @@
  * wrongly in a direction a licensed key can absorb weakens every canary at
  * once while each of them stays green. The probes here are discriminators:
  * each is chosen so that mangling one branch of the machinery reddens that
- * probe and no other, and a composite probe (one that goes red when a whole
- * mechanism is deleted) is never the only cover a branch has. The two
- * parity inversions the module documents and declines to close are pinned
- * here as negatives, so the day one of them moves is a red bar rather than
- * a silent change. Its two comment-boundary residuals (an opener mid-line,
- * and a brace after a later boundary on a line carrying more than one) are
- * NOT pinned: both resolve outward to module scope, which no canary
- * licenses, so a consuming set-equality assertion already fails closed on
- * them and a pin would only restate the fail-closed argument.
+ * probe, and a composite probe (one that goes red when a whole mechanism is
+ * deleted) is never the only cover a branch has. The two
+ * parity inversions the module documents and declines to close, and the
+ * outward answer its after-close brace rule gives where that brace closes
+ * an inner block, are pinned here as negatives, so the day one of them
+ * moves is a red bar rather than a silent change.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -251,9 +248,7 @@ describe('enclosing-symbol: the resolver, the comment predicate, the brace walk 
     // comment. Markup inside a template literal writes that shape, and a
     // phantom region opened there never closes, swallowing the declaration's
     // real brace and widening every following module-scope line into the
-    // declaration. That is worse than an ordinary wrong answer, because the
-    // wrong symbol can be a key the consumer already licensed, which its
-    // width pin then absorbs.
+    // declaration.
     const strayCommentInMarkup = [
       'function renderPanel(status) {',
       '  return `',
@@ -311,6 +306,44 @@ describe('enclosing-symbol: the resolver, the comment predicate, the brace walk 
       'const usesPassword = status.hasPassword;',
     ];
     expect(enclosingSymbol(closingBraceAfterCommentClose, 5)).toBe(MODULE_SCOPE);
+    // EXIT, at any indentation: a comment's natural close is indented, so a
+    // brace after a close the walk reads ends the declaration whatever the
+    // line's own indentation. An indentation test there misses ` */ }` and
+    // resolves INWARD, into the function the brace closes.
+    for (const closeLine of [' */ }', '   */ }']) {
+      const indentedClose = closingBraceAfterCommentClose.map((line) =>
+        line === '*/ }' ? closeLine : line,
+      );
+      expect(enclosingSymbol(indentedClose, 5), closeLine).toBe(MODULE_SCOPE);
+    }
+    // The cost, pinned so it is a choice rather than an accident: where the
+    // brace after a close ends an INNER block, the answer moves OUTWARD past
+    // the function that really encloses the read.
+    const closeEndsInnerBlock = [
+      'function pick(status) {',
+      '  if (status) {',
+      '    /* the legacy branch lived here',
+      '   */ }',
+      '  return status.hasPassword;',
+      '}',
+    ];
+    expect(enclosingSymbol(closeEndsInnerBlock, 4)).toBe(MODULE_SCOPE);
+
+    // EXIT, after a comment opened MID-LINE after other code: the walk does
+    // not track that comment, so its close line is the one place it becomes
+    // visible. A close beginning its line is read like a tracked region's
+    // close, so the brace behind it ends the declaration rather than being
+    // missed.
+    const midLineOpenedCommentClosesWithBrace = [
+      'function pick(status) {',
+      '  const legacy = status.legacy; /* the legacy branch,',
+      '  described at length',
+      '  */ }',
+      '',
+      'const usesPassword = status.hasPassword;',
+    ];
+    expect(enclosingSymbol(midLineOpenedCommentClosesWithBrace, 5)).toBe(MODULE_SCOPE);
+    expect(enclosingSymbol(midLineOpenedCommentClosesWithBrace, 1)).toBe('pick');
 
     // OPENER inside a template literal, with a real comment close elsewhere
     // in the file. A later close cannot vouch for an opener that is markup:
@@ -432,9 +465,7 @@ describe('enclosing-symbol: the resolver, the comment predicate, the brace walk 
     // residual rather than a guess. Widening the test to any `/*` on the
     // line is the tempting way to "close" that residual, and it turns an
     // ordinary `'image/*'` (this tree writes the shape) into an opener whose
-    // phantom region swallows the declaration's brace. The residual resolves
-    // outward; the widening resolves INWARD, which is the direction a
-    // licensed key absorbs.
+    // phantom region swallows the declaration's brace.
     const midLineOpenerInAString = [
       'function pick(status) {',
       "  const pattern = 'image/*';",
@@ -448,10 +479,10 @@ describe('enclosing-symbol: the resolver, the comment predicate, the brace walk 
     // a count of backticks per line, and a backtick inside a regex literal
     // between the declaration and the target flips it: the literal below
     // then reads as closed, the opener in its markup passes the guard, and
-    // the declaration's brace is swallowed. This resolves INWARD, the walk's
-    // silent direction; the same file without the stray backtick resolves
-    // outward. Not closed, because telling a regex backtick from a template
-    // one is the lexer this module declines.
+    // the declaration's brace is swallowed. This resolves INWARD; the same
+    // file without the stray backtick resolves outward. Not closed, because
+    // telling a regex backtick from a template one is the lexer this module
+    // declines.
     const regexBacktickThenMarkupOpener = [
       'function renderPanel(status) {',
       '  const TICK_RE = /`/;',
@@ -619,8 +650,8 @@ describe('enclosing-symbol: the resolver, the comment predicate, the brace walk 
       false, true, true, false,
     ]);
 
-    // OPENER, line start only: the same boundary the brace walk draws, and
-    // the same widening defeats it here. A string holding `/*` would open a
+    // OPENER, line start only: widening the opener test to any `/*` on the
+    // line defeats it here. A string holding `/*` would open a
     // phantom region running to the next docblock's close, and every
     // star-leading line between it and that close reads as prose, so the
     // live read below is skipped. Both readers need this pinned, because

@@ -23,13 +23,15 @@
  * canary that needs a compiler to run is a canary people delete, and it is
  * why {@link enclosingSymbol} is exercised by planted positives and negatives
  * in the canary that consumes it. The rule: scan upward for the nearest
- * declaration, and reject it if its block demonstrably closed before the
- * target line (a `}` at or left of the declaration's own indentation, or for
- * a template-literal declaration, a later line carrying a backtick).
+ * declaration, and reject it if its block closed before the target line (a
+ * `}` at or left of the declaration's own indentation, or one leading the
+ * code after a comment close the walk reads, with WHICH BRACE THE WALK SEES
+ * stating the whole rule; for a template-literal declaration, a later line
+ * carrying a backtick).
  *
- * Beyond the backend's declaration shapes (function declarations and
- * function-valued const/let/var), this port recognizes two shapes the
- * frontend is written in and the backend is not:
+ * Beyond the declaration shapes it shares with the backend copy (function
+ * declarations and function-valued const/let/var), this port recognizes two
+ * shapes the backend copy does not:
  *
  *  - OBJECT-METHOD SHORTHAND (`async loadEmailStatus() {`). Alpine components
  *    are object literals of shorthand methods, so without this shape nearly
@@ -50,39 +52,53 @@
  * not recognized and resolves further up. A shape the patterns do not
  * recognize at all resolves to {@link MODULE_SCOPE}.
  *
- * Two comment boundaries are deliberately left open, both because closing
- * them needs a mid-line opener test, and telling a real opener from the same
- * two characters inside a string literal, a regex, or a CSS rule in template
- * markup is a lexer's job. A lexer is the dependency this module exists to
- * avoid, so both are named here instead:
+ * WHICH BRACE THE WALK SEES. Walking down from a declaration other than a
+ * template-literal one to the target line, the walk takes a `}` as the end
+ * of that declaration's block when the `}` leads its trimmed line at or left
+ * of the declaration's indentation, or leads the code after a comment close
+ * the walk reads, at any indentation. It reads a close in two places: the
+ * close of a block comment it is tracking, and a close that begins its
+ * trimmed line. It tracks a multi-line block comment opened at the start of
+ * a line, or at the start of the code after a close it reads, outside a
+ * template literal, whose close it can see by the target line. A brace inside a
+ * tracked region is prose.
  *
- *  - A block comment OPENED mid-line is not tracked, so a brace inside it
- *    reads as live and can close the declaration early. This one resolves
- *    OUTWARD, toward an enclosing function or module scope. Module scope is
- *    never a licensed key in the canaries built on this module, so the wrong
- *    answer is a new member and the consuming set-equality assertion still
- *    fails closed.
- *  - A line carrying more than one comment boundary is read only to its
- *    first close, so a brace sitting after a LATER boundary on that same
- *    line is missed and the declaration reads as still open. This one
- *    resolves INWARD, which is the direction a licensed key can absorb, and
- *    is therefore the weaker of the two. What keeps it small is that the
- *    shape has to put a whole comment and a block-closing brace on one
- *    physical line, which is conspicuous enough on its own that no
- *    reviewer reads past it.
+ * Comment boundaries are read no further than that, because telling a real
+ * mid-line opener from the same two characters inside a string literal, a
+ * regex, or a CSS rule in template markup is a lexer's job, and a lexer is
+ * the dependency this module exists to avoid. A brace the rule reads too
+ * EARLY resolves OUTWARD; a brace it misses resolves INWARD.
  *
- * The ordinary single-boundary form of that second shape, a close sharing
- * its line with the real closing brace, IS handled: the walk reads the code
- * after the close.
+ *  - OUTWARD: a block comment OPENED mid-line after other code is not
+ *    tracked, so a brace leading one of its lines reads as live and can
+ *    close the declaration early. So can a `}` leading a line of template
+ *    markup. And a `}` after a read close ends the declaration even where it
+ *    really closes an inner block. The answer is a declaration further up,
+ *    or module scope.
+ *  - INWARD: the brace that really ends the block is missed, so the
+ *    declaration reads as still open and a match after it resolves to it.
+ *    The shapes that do this include a block that opens and closes on its
+ *    declaration's own line, a `}` that follows other code or a
+ *    self-contained comment on its line (`foo(); }`, `/* note *\/ }`), a `}`
+ *    after a SECOND comment boundary on a line the walk reads only to its
+ *    first close, the close of a comment opened mid-line after other code
+ *    when that close does not begin its line (` * note *\/ }`), a `}`
+ *    leading its line indented right of its own declaration, and a brace
+ *    swallowed by the phantom region an inverted template-parity count lets
+ *    open (named at {@link blockCommentInterior}).
  *
  * The consequence in every case is a WRONG symbol, and how that fails depends
  * on the assertion consuming it:
  *
  *  - SET-EQUALITY assertions (occurrence keys, or keys with their per-key
- *    counts, compared to an exact allowed set or map) fail closed: a wrong
- *    symbol is a new member and therefore a red bar, never a silent pass.
- *    Every canary currently built on this module asserts that shape. The
- *    claim is scoped to it on purpose.
+ *    counts, compared to an exact allowed set or map) fail closed when the
+ *    wrong symbol is a key the allowed set does not hold. An INWARD
+ *    answer names a declaration above the match and an OUTWARD one names an
+ *    enclosing scope; when that declaration or scope is an allowed key, a
+ *    comparison of keys alone absorbs the match, which is the silent pass. A
+ *    count pinned per allowed key turns an absorbed addition into a moved
+ *    count. Every canary currently built on this module asserts that shape.
+ *    The claim is scoped to it on purpose.
  *
  *  - PAIRING assertions (every occurrence of X needs a Y under the same key)
  *    do NOT inherit the property: two unrelated occurrences that both resolve
@@ -92,6 +108,17 @@
  *    {@link isModuleScopeKey}) and treat a module-scope demand-side key as an
  *    offender in its own right, re-deriving the fail-closed argument rather
  *    than inheriting it from this docblock.
+ *
+ * Hand-ported sibling. `backend/tests/support/enclosing-symbol.ts` carries
+ * the backend's copy of this module. The two share one algorithm in outline:
+ * {@link enclosingSymbol}'s upward declaration scan and its closing-brace
+ * test, the region pass in {@link blockCommentInterior}, and the comment
+ * predicate {@link isCommentLine}. They stay separate deliberately, each
+ * written for the declaration shapes and the scan contract of its own tree.
+ * Nothing mechanical carries a fix to the shared machinery across, in either
+ * direction, so the obligation runs both ways: a change to the walk, the
+ * region pass, or the comment predicate in EITHER file is a prompt to read
+ * the other.
  */
 
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
@@ -193,8 +220,7 @@ function aCommentCloseFollows(lines, openIndex, lineIndex) {
  *  apart from one line, and treating every such line as prose skips live
  *  code: a forbidden-shape scan then misses the violation it exists to
  *  report. The context is what decides, so it is computed once per file here
- *  and handed to the skip predicate. Openers are recognized at line start
- *  only, which is the same boundary the rest of this module draws.
+ *  and handed to the skip predicate.
  *
  *  This asks the question {@link enclosingSymbol}'s brace walk asks, so it
  *  carries the walk's two guards for the same reasons: an opener inside a
@@ -307,9 +333,11 @@ export function enclosingSymbol(lines, lineIndex) {
     // and does not count either: a commented-out block left at the
     // declaration's own indentation would otherwise close it early. A `//`
     // line or a `*` continuation begins with its own marker and can never
-    // begin with `}`, so the only comment shape that needs handling is the
-    // interior of a block comment opened at line start, tracked as a
-    // running open/closed state.
+    // begin with `}`, so the comment shape that needs handling is the
+    // interior of a block comment, tracked as a running open/closed state for
+    // one opened at line start or at the start of the code after a close it
+    // reads; a block comment opened after other code on its line is not
+    // tracked.
     //
     // The state is entered only for a region the walk can SEE close. An
     // unterminated opener at line start is markup more often than it is a
@@ -317,21 +345,32 @@ export function enclosingSymbol(lines, lineIndex) {
     // template literal, and a phantom region opened there never closes and
     // swallows the brace that ends the declaration. Resolving wider that way
     // is not a safe direction: the wrong symbol can be one the consumer has
-    // already licensed, where a pinned width absorbs the addition, rather
-    // than a new member that fails closed.
+    // already licensed rather than a new member.
     //
     // Leaving the region, the code after the first close on that line is
-    // live and gets the same brace test as any other line, at the line's own
-    // indentation, and the same opener test: `*/ /* second` re-enters. Only
-    // the FIRST close on a line is read; the file docblock's comment-boundary
-    // paragraph names what that leaves open.
+    // live and gets the same opener test as any other line: `*/ /* second`
+    // re-enters. A line whose trimmed text BEGINS with a close is read the
+    // same way when no region is tracked, because the walk does not see a
+    // comment opened mid-line after other code, and its close line is the
+    // one place that comment becomes visible. Only the FIRST close on a line is read; WHICH
+    // BRACE THE WALK SEES in the file docblock names what that leaves open.
+    //
+    // A `}` leading the code after a close the walk reads ends the
+    // declaration WHATEVER the line's indentation. A comment's natural close
+    // is indented (` */`), so an indentation test there would miss ` */ }`
+    // closing the declaration and resolve inward. Where that brace really
+    // closes an inner block, the answer is outward instead, which a
+    // set-equality consumer reads as a new member only when its allowed set
+    // does not hold the outer scope (the file docblock's SET-EQUALITY
+    // bullet).
     //
     // "Can SEE close" is bounded by the target line, inclusive, not by the
     // end of the file (the region pass, which has no target, reads to the
     // end). A close below the target cannot vouch for an opener above it:
     // taking it would swallow a brace on evidence the walk has not reached
     // and resolve INWARD, and inward is the direction a licensed key can
-    // absorb. Declining resolves outward, which fails closed.
+    // absorb. Declining resolves outward, which fails closed wherever the
+    // outer scope is not itself an allowed key.
     //
     // Template parity is seeded from the declaration line's own backticks,
     // because a one-line declaration can open a literal (`= (s) => { const m
@@ -344,10 +383,10 @@ export function enclosingSymbol(lines, lineIndex) {
     // nested multi-line template contributes one backtick per line so its
     // markup reads as outside any literal. Inverted parity lets
     // a line-start opener in markup pass the template guard, which is this
-    // walk's inward, silent direction. Inverted the other way it refuses a
+    // walk's inward direction. Inverted the other way it refuses a
     // real opener, so a commented-out brace at the declaration's own
-    // indentation ends the block early and the target resolves outward,
-    // which fails closed. Not closed here (counting only
+    // indentation ends the block early and the target resolves outward.
+    // Not closed here (counting only
     // code-shaped backticks is the lexer this module declines); both shapes
     // are pinned as residuals in the resolver's own suite.
     let closedBefore = false;
@@ -358,11 +397,16 @@ export function enclosingSymbol(lines, lineIndex) {
       const inTemplate = ticks % 2 === 1;
       ticks += countOf(line, /`/g);
       let code = line;
+      let afterClose = false;
       if (inBlockComment) {
         const close = line.indexOf('*/');
         if (close === -1) continue;
         inBlockComment = false;
         code = line.slice(close + 2);
+        afterClose = true;
+      } else if (line.trim().startsWith('*/')) {
+        code = line.slice(line.indexOf('*/') + 2);
+        afterClose = true;
       }
       const trimmed = code.trim();
       if (
@@ -373,7 +417,7 @@ export function enclosingSymbol(lines, lineIndex) {
         inBlockComment = true;
         continue;
       }
-      if (trimmed.startsWith('}') && indentOf(line) <= declIndent) {
+      if (trimmed.startsWith('}') && (afterClose || indentOf(line) <= declIndent)) {
         closedBefore = true;
         break;
       }
@@ -426,7 +470,7 @@ export function sourcesUnder(root) {
   //
   // A link pointing nowhere is censused rather than dropped. It is still
   // script-shaped by name, and a consumer's extension gate over `foreign` is
-  // what turns an unreadable `.js` into a red bar. That is the one deliberate
+  // what turns an unreadable `.js` into a red bar. That is a deliberate
   // divergence from the backend port, whose contract returns sources only and
   // so has nowhere to report it.
   const ancestors = new Set();
@@ -527,15 +571,15 @@ export function sourcesUnder(root) {
  *     the two slashes of a `//` line and the opener of a CSS rule's comment,
  *     so each is answered without one and an interpolation the markup appears
  *     to comment out is dropped although it evaluates. This one fails
- *     SILENT, and further than either boundary the file docblock leaves
- *     open: those resolve to a WRONG symbol, which is at least a member the
- *     consuming set-equality can see, while here the whole line is dropped
- *     before {@link enclosingSymbol} runs, so no key is minted and there is
- *     no member to weigh. That is the dangerous direction. Closing
- *     it needs a new axis rather than a better region pass, and threading
- *     template parity through this predicate widens the surface every
- *     consumer shares and asks for the lexer the file docblock declines, so
- *     it is a separate decision.
+ *     SILENT, and further than any brace error the file docblock's WHICH
+ *     BRACE THE WALK SEES names: those resolve to a WRONG symbol, which is at
+ *     least a member the consuming set-equality can see, while here the
+ *     whole line is dropped before {@link enclosingSymbol} runs, so no key
+ *     is minted and there is no member to weigh. That is the dangerous
+ *     direction. Closing it needs a new axis rather than a better region
+ *     pass, and threading template parity through this predicate widens the
+ *     surface every consumer shares and asks for the lexer the file docblock
+ *     declines, so it is a separate decision.
  *   - THE CLOSE SEARCH for a block-comment prefix begins past the opener's
  *     own two characters. A line whose first three are that opener and a
  *     slash carries a close beginning at its second character, one position
