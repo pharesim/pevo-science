@@ -2,19 +2,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { mockLoginFromResponse } from './fixtures/mock-auth.js';
+import enMessages from '../../public/messages/en.json';
 
-const ROOT = resolve(__dirname, '../..');
-const INDEX_HTML = readFileSync(resolve(ROOT, 'index.html'), 'utf8');
-const EN_MESSAGES = JSON.parse(readFileSync(resolve(ROOT, 'public/messages/en.json'), 'utf8'));
+const INDEX_HTML = readFileSync(resolve(__dirname, '../../index.html'), 'utf8');
+const MODAL_START = INDEX_HTML.indexOf('<div x-data="signInModal">');
+if (MODAL_START === -1) throw new Error('no sign-in modal in index.html');
+const MODAL_HTML = INDEX_HTML.slice(MODAL_START);
 
 // The shipped markup of one modal mode, from its x-if template to the next
 // mode's.
 function modeMarkup(mode) {
-  const modal = INDEX_HTML.slice(INDEX_HTML.indexOf('<div x-data="signInModal">'));
-  const start = modal.indexOf(`<template x-if="mode === '${mode}'">`);
+  const start = MODAL_HTML.indexOf(`<template x-if="mode === '${mode}'">`);
   if (start === -1) throw new Error(`no ${mode} mode in the sign-in modal markup`);
-  const next = modal.indexOf(`<template x-if="mode === '`, start + 1);
-  return modal.slice(start, next === -1 ? undefined : next);
+  const next = MODAL_HTML.indexOf(`<template x-if="mode === '`, start + 1);
+  return MODAL_HTML.slice(start, next === -1 ? undefined : next);
 }
 
 // Run shipped binding code with `scope` as its scope, the way Alpine runs it:
@@ -326,7 +327,7 @@ describe('signInModal', () => {
   // A passwordless light account cannot use the email path, and the browser
   // extension does not apply to it, so both the chooser and the email form
   // link to the /login page, where ORCID sign-in starts. The bindings are
-  // taken from the shipped markup and evaluated against a real instance.
+  // taken from the shipped markup.
   describe('ORCID sign-in line', () => {
     const MODES = ['choose', 'email'];
 
@@ -365,7 +366,7 @@ describe('signInModal', () => {
       const keys = [...modeMarkup(mode).matchAll(/\$t\('([^']+)'\)/g)].map(([, key]) => key);
       expect(keys).toEqual(expect.arrayContaining(['signIn.orcidPrompt', 'signIn.orcidGoToLogin']));
       for (const key of keys) {
-        const value = key.split('.').reduce((node, part) => node?.[part], EN_MESSAGES);
+        const value = key.split('.').reduce((node, part) => node?.[part], enMessages);
         expect(typeof value, key).toBe('string');
       }
     });
