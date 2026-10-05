@@ -56,7 +56,7 @@ A decentralized platform for open scientific publication and interactive evaluat
     - `low`: comment and prose fixes, canary and pin upkeep, tooling and convention hygiene.
     - `deferred (<until when>)`: not picked up until the stated condition holds, e.g. `deferred (until all other open tasks are archived)`.
 
-    The agent filing a task sets it, the architect adjusts it at review or triage, and the user can override it at any time. Don't change the priority of a task you are implementing; if it looks wrong, say so in the signal block. **Pick order:** a task the user names comes first; otherwise `high`, then `normal`, then `low`, oldest `**Created:**` date first within one priority (alphabetically on the same date), skipping `deferred` tasks whose condition is unmet. This applies to implementers picking from `pending/` and to the architect picking from `review/`, and startup summaries list tasks in this order with their priority.
+    The agent filing a task sets it, the architect adjusts it at review or triage, and the user can override it at any time. Don't change the priority of a task you are implementing; if it looks wrong, say so in the signal block. **Pick order:** a task the user names comes first; otherwise `high`, then `normal`, then `low`, oldest `**Created:**` date first within one priority (alphabetically on the same date), skipping `deferred` tasks whose condition is unmet. This applies to every agent and every queue: implementers picking from `pending/`, and the architect picking from `review/` and from its own `architect-*` tasks in `pending/`. Startup summaries list tasks in this order with their priority.
 
 ## Commits and Pushes
 
