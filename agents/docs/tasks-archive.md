@@ -1,3 +1,213 @@
+## The signup upsert can overwrite a finalized account row (archived 2026-10-06) — clean re-review of the comment-only hold fix; one wording advisory dismissed
+
+### Architect archive note (2026-10-06)
+
+Clean focused `/ce-code-review` of 342f2820, the hold fix: an orchestrator correctness read plus one
+adversarial reviewer, no actionable findings. Both held items are fixed. The `writeSignupRow` and
+canary docblocks now say only that a row other than an E row is left alone or declined, which holds:
+in § 6.1 only state E has `username` NULL with a token that is not `confirmed:`. The stale
+catch-comment sentence is gone. The extra site the implementer narrowed, canary "Neither reaches state
+E", also holds: the add-flow clearer requires a username and the change branch selects by
+`pending_email_token`. `tests/eslint` on a copy of 342f2820: 9 files, 146 passed, exit 0.
+Dismissed by the user: advisory A1 (P3, confidence 50). It said "a row other than an E row written
+for the address" can be misread with "written" attached to "an E row", and suggested "a non-E row
+written". The clause before it settles the meaning. The hold's open item, the account takeover through
+the signup verify link, is filed as `backend-signup-verify-requires-the-signup-password` and
+`ui-signup-verify-asks-for-the-signup-password`. No `/ce-compound`.
+
+**Owner:** backend
+**Created:** 2026-09-08
+**Priority:** high
+
+Surfaced by the security pass during the round-2 review of the
+`accounts.updated_at` writer canary, and confirmed by an independent
+validation pass. Pre-existing, unrelated to that canary's own change, so it is
+filed here rather than held there.
+
+## Why
+
+`POST /signup` guards its upsert with a duplicate-email pre-check that answers
+409 when the existing row's `verify_token` is NULL or carries a `confirmed:`
+prefix. Those two shapes do not cover every finalized row. A state G row per
+ARCHITECTURE.md section 6.1, an email registered through the settings flow and
+not yet verified, has `username` set, a random hex `verify_token`, and
+`custody` NULL. It passes the pre-check.
+
+The request therefore reaches the `ON CONFLICT (email) DO UPDATE` branch, which
+overwrites `password_hash`, `orcid`, `verify_token`, `signup_binding_hash` and
+`created_at` from the incoming values. Anyone who knows that email address can
+rewrite those fields on an account they do not control, and the new
+`verify_token` is theirs.
+
+What limits the blast radius today is that the branch does not touch
+`updated_at`, and both stuck-recovery lookups additionally filter on `custody`,
+which a state G row does not satisfy. That is defence in depth behind a check
+that is supposed to be the barrier, not the barrier itself. The canary's
+docblock is being corrected separately to stop crediting the pre-check with
+work it does not do.
+
+## Scope
+
+1. Widen the `POST /signup` duplicate-email pre-check so it answers 409 for
+   every finalized row, not just the two token shapes it recognises today.
+   Selecting `username` alongside `verify_token` and refusing when `username IS
+   NOT NULL` is the straightforward form; confirm against section 6.1 that it
+   admits exactly the states the upsert's `DO UPDATE` branch is meant for and
+   no others.
+2. Preserve the timing equalisation the surrounding code documents. The argon2
+   burn must run on the new refusal branch too, or the widened check becomes an
+   email-enumeration oracle and trades one defect for another.
+3. Add a route test that creates a state G row through the settings
+   registration path and then posts `/api/auth/signup` with that email,
+   asserting 409 and asserting the stored row is unchanged. No such test
+   exists; that is why the gap survived.
+
+## Acceptance criteria
+
+1. A state G row cannot be reached by the upsert's `DO UPDATE` branch.
+2. The refusal is indistinguishable in timing from the existing 409 paths.
+3. The new route test fails against the current code and passes after the fix.
+
+## Notes
+
+- Check the states in ARCHITECTURE.md section 6.1 one at a time rather than
+  reasoning from the two token shapes; the whole defect is that those two do
+  not enumerate "finalized".
+- Do not reach for `updated_at` as part of the fix. That column carries a
+  separate invariant with its own standing guard, and adding a writer to this
+  path is exactly what that guard refuses.
+
+## Backend implementation signal (2026-10-05, commit d33792ce)
+
+d33792ce verified as an ancestor of HEAD with `git merge-base --is-ancestor`. It landed in the
+same pass as `backend-state-g-unverified-row-lifecycle`, at the user's request. That task's
+signal block holds the shared verification run and the contract TODOs.
+
+- **Scope 1, the pre-check.** It now also reads `username` and whether the row carries a
+  password or an ORCID. I checked § 6.1 state by state:
+  - A NULL token answers 409. That covers A, B, C, D and a verified G row.
+  - A `confirmed:` token answers 409. That covers F.
+  - A row with `username` set that carries a password or an ORCID answers 409, with the same
+    argon2.hash burn as the sibling branches. That covers a legacy G row with a factor.
+  - E is the one row left for the upsert's `DO UPDATE`.
+- **User decision (2026-10-05).** For one row the 409 gives way to an eviction. A factor-less
+  unverified G row holds nothing but the email claim, and holding it with a 409 let its owner
+  block signup for that address indefinitely (re-adding restarts the expiry). So a signup that
+  gets past the accreditation gate deletes that row and writes its own. The DELETE is
+  conditional, keyed on the state the pre-check read, and runs in one transaction with the
+  upsert. The G row's fields are never rewritten, so AC1 holds.
+- **AC1, made structural.** Both upserts' `DO UPDATE` carry `WHERE accounts.username IS NULL AND
+  accounts.verify_token NOT LIKE 'confirmed:%'`, and an upsert that writes no row answers 409
+  DUPLICATE. A row written for the address after the pre-check is left untouched. The realistic
+  case is the caller's own settings add-flow INSERT landing while argon2.hash runs, which would
+  otherwise turn a claim that can be evicted into one that is permanent.
+- **AC2, timing.** The new 409 burns argon2.hash like the existing ones. The eviction path and
+  the post-gate 409 both come after the happy path's argon2.hash, so they cost the same.
+- **AC3, tests.** In `tests/routes/auth-state-g-rows.test.ts`; every G row is created through
+  the real settings registration path:
+  - "answers 409 DUPLICATE for a G row carrying a factor, pays the argon2.hash burn, and leaves
+    the row unchanged". Against the base code: 200, and the upsert overwrote the row.
+  - "leaves a G row that appears after the duplicate pre-check untouched and answers 409
+    DUPLICATE". Before the `DO UPDATE` guard: 200, and the row overwritten.
+  - The eviction specs: email path, ORCID path, the 422 gate keeping the row, and
+    ORCID_ALREADY_LINKED rolling the DELETE back.
+- **`updated_at`.** Not touched. The canary docblock now describes both guards and the eviction.
+  It says the guards bound which rows reach the branch and say nothing about what the branch
+  writes.
+- **Considered, not built.** A deterministic test for the eviction DELETE matching 0 rows.
+
+## Architect re-review (2026-10-05) — HELD PENDING FIXES:
+
+Reviewed d33792ce, scoped to `writeSignupRow` and the `POST /signup` handler in `routes/auth.ts`,
+the canary docblock in `tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`,
+and the six signup specs in `tests/routes/auth-state-g-rows.test.ts`. Scope 1 to 3 and AC1 to AC3
+are met. AC3 was re-run on copies: the factor-carrying spec fails at d33792ce~1 (200, row
+rewritten) and the file passes at d33792ce (12/12). Both held items are comment fixes. No new spec
+is required.
+
+1. **Narrow the two docblocks that say a row written after the duplicate pre-check is left
+   alone.** Both upserts run `DO UPDATE` only `WHERE accounts.username IS NULL AND
+   accounts.verify_token NOT LIKE 'confirmed:%'`, and a pending signup row E satisfies that. If
+   another signup for the same address writes its E row inside the window, this signup's upsert
+   rewrites that row and answers 200. Measured on a copy of d33792ce, with the interleave forced
+   through a `pool.query` spy: an interleaved E row gave 200 with its token replaced, and an
+   interleaved G row gave 409 with the row unchanged. The behavior is intended. The comments claim
+   more than the code does.
+   - `writeSignupRow` docblock: "a row written for the address after that check ... is left as it
+     is". Narrow it to a row other than a pending signup row E. The same sentence calls E "the one
+     row the duplicate pre-check lets through", but the pre-check also lets a factor-less
+     unverified G row through, to the eviction. Narrow that to the one row the `DO UPDATE` branch
+     rewrites.
+   - Canary docblock: "a row written for the address between the check and the upsert is declined
+     rather than rewritten". Narrow it the same way.
+
+2. **Delete one stale sentence from the outer catch's ORCID_ALREADY_LINKED comment:** "The
+   email-duplicate path returns 409 DUPLICATE before the INSERT, so it never reaches this branch."
+   The `claim_changed` 409s return after the upsert ran. The rest of the comment needs no
+   replacement text.
+
+Decided at this review (user, 2026-10-05):
+
+- **The ORCID+email path keeps the eviction.** This corrects the residual in
+  `backend-state-g-unverified-row-lifecycle` that an evictor "cannot verify it without the
+  mailbox". That holds on the email path only. On the ORCID+email path the signup writes a
+  `confirmed:` row and sends no mail, so whoever evicts a factor-less unverified G claim there holds
+  the address at once. Measured on a copy of d33792ce: 200, and the response carries the new row's
+  `confirmed:` auth_token and the binding cookie. Kept for three reasons. The evicted claim carries
+  no mailbox proof either. The ORCID path already attaches an unregistered address without one
+  (`api-contracts/auth.md`, signup). And refusing there would let an unverified G claim, kept alive
+  by re-issuing, block ORCID+email signups indefinitely for an address on a non-accredited domain.
+  The spec "evicts a factor-less G row on the ORCID path" pins the eviction.
+
+Dismissed at this review (recorded so the archive keeps them):
+
+- The ARCHITECTURE.md § 6.3 edge for the eviction. It is already a `[TODO Architect]` in
+  `backend-state-g-unverified-row-lifecycle` and lands with that task's § 6 edits, under the
+  decision above.
+- Specs pinning four guards: the ORCID+email upsert's `DO UPDATE` WHERE, the eviction DELETE's
+  `verify_token = $2` term, its `rowCount !== 1` rollback, and the `NOT LIKE 'confirmed:%'` term in
+  both upserts. Removing any one of them left every signup spec green. Also dismissed: a spec that
+  tells the pre-check's factor-carrying 409 apart from the `claim_changed` 409, which the upsert
+  WHERE produces when that branch is removed. All of this is preemptive test hardening: the code is
+  correct, and each window lies between the pre-check and the write.
+- The eviction predicate not testing `custody` or `upgraded_at`. The § 6.2 row shape that would
+  reach it, an unverified G row moved to custody 'self' by `/upgrade` under a leftover light JWT,
+  is the subject of the pending `backend-custody-routes-gate-on-row-claim`.
+
+Open, outside this hold: an account takeover through the signup verify link. A signup for someone
+else's address leaves the signup's password on the row, `POST /api/auth/verify` asks for no
+password, and `/confirm` and `/link` keep it. If the address owner finishes that signup, the
+signer can log in with that password. This predates the change, but the eviction lets an attacker
+time it, since settings and signup both mail the subject "PEvO - Verify your email". It is awaiting
+the user's decision on filing a task, and nothing here depends on it.
+
+When both items are in, `git mv` this file back to `tasks/review/`.
+
+## Backend hold-fix signal (2026-10-06)
+
+Landed in the commit that moves this file to `review/`. Comment-only; no code or spec changed.
+
+- **Item 1, `writeSignupRow` docblock.** The sentence now says a row *other than an E row*
+  written for the address after the check is left as it is. The appositive "the one row the
+  duplicate pre-check lets through" is deleted rather than rewritten: with the preceding clause
+  already confining `DO UPDATE` to E, "the one row the `DO UPDATE` branch rewrites" would only
+  restate it.
+- **Item 1, canary docblock.** "a row other than an E row written for the address between the
+  check and the upsert is declined rather than rewritten".
+- **Item 2.** The stale sentence is deleted from the outer catch's ORCID_ALREADY_LINKED comment;
+  nothing replaces it.
+- **One more site, same claim class, outside the quoted sentences.** The canary docblock's
+  "That second one is a delay" paragraph said "Neither reaches the row the pre-check lets through,
+  state E". The pre-check also lets a factor-less unverified G row through to the eviction, and
+  the settings add-flow clearer does reach that row, so the appositive is deleted: "Neither
+  reaches state E, whose username is NULL ...". Found by a verification pass over this fix (two
+  independent lenses converged on it, four skeptics upheld it). The same pass judged the three
+  edited sites accurate and found no other residue in `routes/auth.ts`,
+  `tests/routes/auth-state-g-rows.test.ts` or `tests/routes/recover.test.ts`.
+- **Verification.** `tests/eslint/` (all nine source scans) plus
+  `tests/routes/auth-state-g-rows.test.ts`: 10 files, 158 tests passed, exit 0. Canary file
+  re-run after the last edit: 31/31, exit 0.
+
 ## Rows the old settings verify handler locked out of signup are never repaired (archived 2026-10-06) — clean first review; the operator procedure now lives in ARCHITECTURE.md
 
 ### Architect archive note (2026-10-06)
@@ -37,214 +247,3 @@ terminal:
 Had the token not been cleared, the cleanup would have deleted the row: an E row once its
 link expired, an F row 30 days after creation. Deleting a locked row therefore reaches the
 end state the cleanup would have reached, and the person can sign up again from the start.
-
-Nobody has checked whether the beta database holds any such rows. No review runs queries
-against a deployed database.
-
-## Scope
-
-1. Add a one-time repair the operator runs against a deployed database. It deletes the rows
-   with `verify_token IS NULL AND username IS NULL`, the one combination section 6.1 does
-   not enumerate, which only the old handler produced.
-
-   Do not put it in `backend/migrations/`. `./deploy.sh migrate` re-applies every file there
-   on every deploy, so a DELETE there would become a standing sweeper. It would run forever
-   against a shape no current writer produces, which the account-state rule treats as
-   defending a fictional state. Make it an operator script, for example under
-   `backend/scripts/`, that runs from the repo root against the postgres container. It has
-   two steps:
-   - A read-only count step the operator runs first. It lists each row the delete would
-     remove: id, created_at, and whether `password_hash` and `orcid` are set.
-   - A delete step, in one transaction, that removes only those rows.
-2. Before writing the delete, enumerate every table that refers to an `accounts` row.
-   That means foreign keys to `accounts.id`, plus rows keyed by the account's email or
-   username, such as `notification_preferences`. State in the signal what happens to a
-   deleted row's dependents. A row with a NULL username has no on-chain account and no
-   username-keyed rows, but verify that from the schema and code rather than relying on it.
-3. Put the exact operator commands in the signal block: the count step, then the delete
-   step. The user runs them on the server. Agents cannot reach it.
-
-## Acceptance criteria
-
-1. A test seeds the following rows, runs the delete step against the test database, and
-   asserts that only the locked row is gone:
-   - one locked row (`verify_token` NULL, `username` NULL);
-   - a state E row and a state F row (token set, `username` NULL);
-   - a finalized state A row;
-   - a verified state G row (`username` set, token NULL).
-2. The count step writes nothing. Pin this in the same test, or make it true by
-   construction (a file that holds only a SELECT).
-3. Running the delete step a second time, after a successful run, deletes nothing.
-
-## Notes
-
-- The producer is fixed in d33792ce: the settings verify handler's add-flow lookup now
-  requires `username IS NOT NULL`. The opposite direction through the same column is
-  `backend-signup-upsert-overwrites-finalized-row.md`.
-- Database-only. No chain operations are involved.
-
-## Backend implementation signal (2026-10-05, commits 2fd1c633, b238605c, 5e9510a4)
-
-**Commits:**
-
-- `2fd1c633`, `backend(scripts): a one-time repair for rows with neither a verify token nor a username`:
-  - `backend/scripts/repair-locked-signup-rows-count.sql`: one SELECT. It lists each row with
-    `verify_token IS NULL AND username IS NULL`: id, created_at, and whether email,
-    password_hash and orcid are set (`has_email`, `has_password`, `has_orcid`). It writes nothing
-    by construction (AC2).
-  - `backend/scripts/repair-locked-signup-rows-delete.sql`: one `DELETE ... RETURNING id` over
-    the same predicate, run under `--single-transaction`.
-  - `backend/tests/scripts/repair-locked-signup-rows.test.ts`: AC1 to AC3. Each spec runs the
-    files verbatim on a dedicated connection. On that connection the unqualified `accounts` is a
-    temporary table built `LIKE public.accounts INCLUDING ALL`. The spec's transaction is rolled
-    back and the connection destroyed, so the shared table is never touched.
-    - Seeds: two locked rows (email path; ORCID path with email NULL and no password), plus E, F,
-      A, verified G and unverified G.
-    - AC2 is also pinned at runtime: the count's transaction is never assigned a transaction id.
-  - `backend/tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`:
-    - Its `backend/scripts` KNOWN LIMITS entry said a script there that writes rows in the
-      application database is a new root.
-    - Its scanned SQL set now includes `backend/scripts/**/*.sql`, keyed `scripts/<name>`.
-    - Its prose says so.
-- `b238605c`: fixes from my own verification pass, triaged by the user. Details are under
-  "Verification" below.
-- `5e9510a4`: the `/ce-simplify-code` pass.
-
-**Checks:**
-
-- The new test and the canary pass: 34 tests, `--retry=0`.
-- `npm run typecheck` and `npm run lint` are clean.
-- Full suite at `b238605c`: 8 files and 18 specs fail, out of 250 files and 2760 specs.
-  - Every one of those files is on the recorded list of failures on clean main:
-    `cast-hardening-author-index-weight`, `idempotency-real-haf`, `accreditation-idempotency`,
-    the two `accreditation.test.ts` broadcast-attempts-cap specs, `papers-enrichment-parity-gate`,
-    `profile-auth-bypass`, the two `reviews.test.ts` SQL-gate specs, and the self-poisoning
-    `signup-verify-activation-recovery` `LOCK_HELD` spec.
-  - The run also hit HAF connect timeouts.
-  - None of these commits touches `backend/src`.
-
-### Operator commands (on the server, from the repo root)
-
-0. First deploy a build that contains d33792ce (`./deploy.sh restart`). The old settings verify
-   handler stays live until then, and it can create new locked rows after the delete.
-   - d33792ce is on main. Its task, `backend-settings-verify-clears-any-row-token.md`, is still
-     in `pending/` under a hold.
-   - The hold may change the add-flow clear's conjuncts. The add-flow SELECT keeps
-     `username IS NOT NULL` either way.
-1. Count (read-only):
-
-   ```bash
-   docker compose exec -T postgres psql -U pevo -d pevo_app -v ON_ERROR_STOP=1 \
-     -f - < backend/scripts/repair-locked-signup-rows-count.sql
-   ```
-
-2. Check the list, then delete:
-
-   ```bash
-   docker compose exec -T postgres psql -U pevo -d pevo_app -v ON_ERROR_STOP=1 \
-     --single-transaction -f - < backend/scripts/repair-locked-signup-rows-delete.sql
-   ```
-
-   - It prints the deleted ids and `DELETE <n>`.
-   - Run step 1 again afterwards: it should list no rows.
-
-**Notes for the operator:**
-
-- The postgres container mounts only `backend/migrations`, so both files are fed in over stdin
-  (`-T` plus `-f -`).
-- The count may well be zero. Reaching the bug took a token holder who sent a signup token to the
-  settings verify route on purpose, since neither email links there.
-- Both commands were run as written against a throwaway database (`pevo_probe_repair`, all 17
-  migrations applied, then dropped):
-  - The count listed exactly the two seeded locked rows.
-  - The delete returned their ids, and a second run gave `DELETE 0`.
-  - A broken file under `ON_ERROR_STOP=1 --single-transaction` exited 3 with nothing deleted.
-
-### Dependents of a deleted row (Scope item 2)
-
-Checked in the migrations, the code, and the live catalogs of `pevo_app` and `pevo_app_test`.
-
-- **Foreign keys:** none reference `accounts`, and no table has a trigger or rule.
-  - `009_audit_log_fk_anonymize.sql` adds no FK, despite its name. It only drops NOT NULL on
-    `custody_audit_log.username`.
-  - So the DELETE removes the matched rows and nothing else: no cascade, no SET NULL, no RESTRICT
-    error.
-- **Tables keyed by username:** none can hold a row for an account whose username is NULL.
-  - `notification_preferences.username`: PK, NOT NULL.
-  - `pending_recovery.username`: NOT NULL.
-  - `pending_ipfs_uploads.uploader_account`: NOT NULL.
-  - `bridge_import_queue.username`: NOT NULL.
-  - `custody_audit_log.username`: nullable since 009 for anonymized rows. It is written under an
-    authenticated username, which a locked row never had.
-  - The script deliberately cascades nowhere:
-    - a `custody_audit_log WHERE username IS NULL` co-delete would destroy the anonymized forensic
-      rows left by earlier email erasures;
-    - an email-keyed cascade on `notification_preferences.email`, `pending_recovery.new_email` or
-      `pending_accred` would hit other identities' free-text addresses.
-- **The row's own claims:** the delete releases its `accounts_email_key` and
-  `accounts_orcid_unique` claims. This is the intended effect: the address and ORCID iD can sign
-  up again.
-  - A staged `pending_recovery` row whose `new_email` equals a locked row's email is refused at
-    phase 2 while the locked row exists. The delete unblocks it, which is harmless.
-- **Redis:**
-  - The `rl:` byAuthToken keys and `signup_activation_lock:` keys for the row's old token are
-    TTL-bound and keyed by a token the row no longer carries.
-  - The `regwatch` cursors are high-water ids. SERIAL ids are never reused.
-- **Outside the database:**
-  - If the registration-watch webhook was configured, its "Signup started" post already carried
-    the row's email, name and institution. The delete does not retract it.
-  - Reset links and signup cookies that point at the row stop working.
-- **Chain:** the task says "a row with a NULL username has no on-chain account". That is not
-  strictly true, though the delete is unaffected.
-  - An F row could crash mid-`/confirm`, after `createClaimedAccount` but before the finalize
-    UPDATE, and then be locked by the old handler.
-  - Such a row matches an on-chain account the app DB records nowhere.
-  - That account holds no server-side keys: `posting_key_enc`/`memo_key_enc` are written only by
-    the finalize UPDATE that also sets `username`. It also has no accreditation.
-  - The user controls it through the mnemonic and can sign up again after the delete.
-
-### Producer history
-
-- The old `GET /api/settings/email/verify/:token` add flow, from 9a6772aa up to d33792ce, is the
-  only producer that reached rows.
-- A second writer with the same SQL shape existed: the ORCID sibling sweep in `/confirm` and
-  `/link`, from 44b26476 to b8b1287e.
-  - It matched nothing, because `accounts_orcid_unique` (508ce94e, an ancestor) forbids a second
-    row with the same ORCID.
-- No current writer produces the shape. Every token-clearing write either:
-  - sets `username` in the same UPDATE (the `/confirm` and `/link` finalizes), or
-  - requires a username (the settings verify add flow; the change flow reaches only rows found by
-    `pending_email_token`, which only username-keyed writes set).
-- Nothing sets `accounts.username` to NULL.
-
-### Verification and triage (user-approved 2026-10-05)
-
-I ran a verification workflow:
-
-- **Mutation probes** in a scratchpad copy:
-  - Every behavior pinned by the new test goes red when broken: dropping either conjunct from the
-    delete or the count; a count that writes; a delete qualified as `public.accounts`, which
-    committed nothing.
-  - The canary goes red on an `updated_at` writer planted in a scripts `.sql`, and green when the
-    scripts root is removed.
-  - With `release()` instead of `release(true)`, the next spec fails 42P07, so a leaked shadow is
-    loud.
-- **The operator-command run** described above.
-- **A claim audit** of every new comment.
-
-The user approved my recommendations:
-
-- **Fixed** in `b238605c`:
-  - The canary's codeSourcesUnder docblock counted the call sites held by reading as two. There
-    are now three.
-  - The roots paragraph said "collected the same way". The scripts root is walked recursively.
-  - The symlink KNOWN LIMITS entry now covers `backend/scripts`.
-  - Scripts rels are keyed `scripts/<name>`, so they no longer share the bare-filename namespace
-    of migrations.
-  - A short reflow line.
-- **Dismissed** (low, theoretical or cosmetic):
-  - The seeds advance the real `accounts_id_seq`. The serial default is copied by
-    `LIKE ... INCLUDING ALL`, and sequences are non-transactional, so this means id gaps only.
-  - The count's "writes nothing" probe does not see a non-transactional `nextval()`.
-  - Dropping `ORDER BY` from the count stays green.
-
