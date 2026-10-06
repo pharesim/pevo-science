@@ -970,6 +970,12 @@
   "seedPhrase": {
     "verifying": "جارٍ التحقق من بريدك الإلكتروني…",
     "invalidLink": "رابط التحقق غير صالح أو منتهي الصلاحية.",
+    "passwordTitle": "Confirm Your Signup",
+    "passwordDescription": "Enter the password you chose when you signed up for PEvO. If you did not sign up for PEvO, close this page.",
+    "passwordButton": "Verify Email",
+    "passwordWrong": "That password is incorrect. If you forgot it, start a new signup with the same email address.",
+    "verifyRetry": "Could not check your password right now. Please try again in a moment.",
+    "verifyRateLimited": "Too many attempts. Please wait a while, then try again.",
     "title": "عبارة الاسترداد",
     "description": "اكتب هذه الكلمات الاثنتي عشرة بالترتيب واحتفظ بها في مكان آمن. ستحتاج إليها لاحقًا للتحكم الكامل بحسابك.",
     "warning": "احفظ عبارة الاسترداد بأمان. إذا فقدتها، لن تتمكن من ترقية حسابك إلى الحراسة الذاتية الكاملة.",

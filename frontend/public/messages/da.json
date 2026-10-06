@@ -970,6 +970,12 @@
   "seedPhrase": {
     "verifying": "Bekræfter din e-mail…",
     "invalidLink": "Ugyldigt eller udløbet bekræftelseslink.",
+    "passwordTitle": "Confirm Your Signup",
+    "passwordDescription": "Enter the password you chose when you signed up for PEvO. If you did not sign up for PEvO, close this page.",
+    "passwordButton": "Verify Email",
+    "passwordWrong": "That password is incorrect. If you forgot it, start a new signup with the same email address.",
+    "verifyRetry": "Could not check your password right now. Please try again in a moment.",
+    "verifyRateLimited": "Too many attempts. Please wait a while, then try again.",
     "title": "Din gendannelsesfrase",
     "description": "Skriv disse 12 ord ned i rækkefølge og opbevar dem sikkert. Du får brug for frasen for at få fuld kontrol over din konto senere.",
     "warning": "Opbevar din gendannelsesfrase sikkert. Hvis du mister den, vil du ikke kunne opgradere din konto til fuld selvforvaltning.",

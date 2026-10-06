@@ -970,6 +970,12 @@
   "seedPhrase": {
     "verifying": "正在验证邮箱…",
     "invalidLink": "验证链接无效或已过期。",
+    "passwordTitle": "Confirm Your Signup",
+    "passwordDescription": "Enter the password you chose when you signed up for PEvO. If you did not sign up for PEvO, close this page.",
+    "passwordButton": "Verify Email",
+    "passwordWrong": "That password is incorrect. If you forgot it, start a new signup with the same email address.",
+    "verifyRetry": "Could not check your password right now. Please try again in a moment.",
+    "verifyRateLimited": "Too many attempts. Please wait a while, then try again.",
     "title": "恢复助记词",
     "description": "请按顺序写下这 12 个单词并妥善保管。日后您需要它来完全掌控您的账户。",
     "warning": "请安全保存您的恢复短语。如果丢失，您将无法将账户升级为完全自主托管。",

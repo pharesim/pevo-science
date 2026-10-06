@@ -974,6 +974,12 @@
   "seedPhrase": {
     "verifying": "E-postanız doğrulanıyor…",
     "invalidLink": "Doğrulama bağlantısı geçersiz veya süresi dolmuş.",
+    "passwordTitle": "Confirm Your Signup",
+    "passwordDescription": "Enter the password you chose when you signed up for PEvO. If you did not sign up for PEvO, close this page.",
+    "passwordButton": "Verify Email",
+    "passwordWrong": "That password is incorrect. If you forgot it, start a new signup with the same email address.",
+    "verifyRetry": "Could not check your password right now. Please try again in a moment.",
+    "verifyRateLimited": "Too many attempts. Please wait a while, then try again.",
     "title": "Kurtarma İfadeniz",
     "description": "Bu 12 kelimeyi sırasıyla yazın ve güvenli bir yerde saklayın. Hesabınızın tam kontrolünü almak için daha sonra bu ifadeye ihtiyacınız olacak.",
     "warning": "Kurtarma ifadenizi güvenli bir şekilde saklayın. Kaybederseniz, hesabınızı tam kendi yönetiminize yükseltemezsiniz.",

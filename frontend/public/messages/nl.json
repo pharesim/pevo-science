@@ -974,6 +974,12 @@
   "seedPhrase": {
     "verifying": "Je e-mailadres verifiëren…",
     "invalidLink": "Ongeldige of verlopen verificatielink.",
+    "passwordTitle": "Confirm Your Signup",
+    "passwordDescription": "Enter the password you chose when you signed up for PEvO. If you did not sign up for PEvO, close this page.",
+    "passwordButton": "Verify Email",
+    "passwordWrong": "That password is incorrect. If you forgot it, start a new signup with the same email address.",
+    "verifyRetry": "Could not check your password right now. Please try again in a moment.",
+    "verifyRateLimited": "Too many attempts. Please wait a while, then try again.",
     "title": "Je herstelzin",
     "description": "Schrijf deze 12 woorden op volgorde op en bewaar ze veilig. Je hebt deze zin nodig om later volledige controle over je account te krijgen.",
     "warning": "Bewaar je herstelzin op een veilige plek. Als je deze kwijtraakt, kun je je account niet upgraden naar volledig zelfbeheer.",

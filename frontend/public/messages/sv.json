@@ -970,6 +970,12 @@
   "seedPhrase": {
     "verifying": "Verifierar din e-post…",
     "invalidLink": "Ogiltig eller utgången verifieringslänk.",
+    "passwordTitle": "Confirm Your Signup",
+    "passwordDescription": "Enter the password you chose when you signed up for PEvO. If you did not sign up for PEvO, close this page.",
+    "passwordButton": "Verify Email",
+    "passwordWrong": "That password is incorrect. If you forgot it, start a new signup with the same email address.",
+    "verifyRetry": "Could not check your password right now. Please try again in a moment.",
+    "verifyRateLimited": "Too many attempts. Please wait a while, then try again.",
     "title": "Din återställningsfras",
     "description": "Skriv ner dessa 12 ord i ordning och förvara dem säkert. Du behöver frasen för att ta full kontroll över ditt konto senare.",
     "warning": "Förvara din återställningsfras säkert. Om du tappar bort den kan du inte uppgradera ditt konto till fullständig egen förvaltning.",

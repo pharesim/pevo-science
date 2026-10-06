@@ -71,7 +71,7 @@ function createComponent(query = {}) {
 }
 
 // Put a freshly created component into the post-verify/post-resume "choose"
-// state. This mirrors how verifyToken() and handleResume() seed authToken from
+// state. This mirrors how handleVerify() and handleResume() seed authToken from
 // a RESPONSE BODY (never from a URL query param). Used by the create/link flow
 // specs below, which exercise behavior downstream of obtaining the token.
 function enterChooseState(comp, { authToken = 'tok' } = {}) {
@@ -176,44 +176,125 @@ describe('signupVerifyPage', () => {
       expect(comp.resumeFromLogin).toBe(false);
     });
 
-    it('calls verifyToken when email token present', () => {
-      mockVerifyEmail.mockResolvedValue({ data: { flow: 'choose', auth_token: 'a', email: 'b@x.com' } });
+    // Landing with the mailed token verifies nothing: the page asks for the
+    // password chosen at signup and sends both together on submit.
+    it('lands on the password form when an email token is present, without verifying', () => {
       const comp = createComponent({ token: 'email-tok' });
       comp.init();
-      // verifyToken is called asynchronously
-      expect(mockVerifyEmail).toHaveBeenCalledWith('email-tok');
+      expect(comp.phase).toBe('password');
+      expect(comp.emailToken).toBe('email-tok');
+      expect(comp.error).toBeNull();
+      expect(mockVerifyEmail).not.toHaveBeenCalled();
     });
   });
 
-  describe('verifyToken', () => {
-    it('sets choose phase on success', async () => {
+  describe('handleVerify', () => {
+    function landOnPasswordForm() {
+      const comp = createComponent({ token: 'email-tok' });
+      comp.init();
+      return comp;
+    }
+
+    it('sends the token and the password, then sets choose phase', async () => {
       mockVerifyEmail.mockResolvedValue({ data: { flow: 'choose', auth_token: 'a', email: 'b@x.com' } });
-      const comp = createComponent({});
-      comp.phase = 'verifying';
+      const comp = landOnPasswordForm();
+      comp.verifyPassword = 'signup-pass';
 
-      await comp.verifyToken('tok');
+      await comp.handleVerify();
 
+      expect(mockVerifyEmail).toHaveBeenCalledWith('email-tok', 'signup-pass');
       expect(comp.phase).toBe('choose');
       expect(comp.authToken).toBe('a');
+      expect(comp.isVerifying).toBe(false);
+    });
+
+    it('does nothing without a password', async () => {
+      const comp = landOnPasswordForm();
+      comp.verifyPassword = '';
+
+      await comp.handleVerify();
+
+      expect(mockVerifyEmail).not.toHaveBeenCalled();
+      expect(comp.phase).toBe('password');
     });
 
     it('sets error phase on unexpected flow', async () => {
       mockVerifyEmail.mockResolvedValue({ data: { flow: 'other' } });
-      const comp = createComponent({});
+      const comp = landOnPasswordForm();
+      comp.verifyPassword = 'signup-pass';
 
-      await comp.verifyToken('tok');
+      await comp.handleVerify();
 
       expect(comp.phase).toBe('error');
+      expect(comp.error).toBe('seedPhrase.unexpectedResponse');
     });
 
-    it('sets error phase on API failure', async () => {
-      mockVerifyEmail.mockRejectedValue(new Error('expired'));
-      const comp = createComponent({});
+    // On a wrong password the form and the token stay, so a retry can still
+    // succeed.
+    it('keeps the form and the token on a wrong password, and a retry with the right password reaches choose', async () => {
+      mockVerifyEmail
+        .mockRejectedValueOnce(codedError('UNAUTHORIZED'))
+        .mockResolvedValueOnce({ data: { flow: 'choose', auth_token: 'a', email: 'b@x.com' } });
+      const comp = landOnPasswordForm();
+      comp.verifyPassword = 'wrong-pass';
 
-      await comp.verifyToken('tok');
+      await comp.handleVerify();
+
+      expect(comp.phase).toBe('password');
+      expect(comp.error).toBe('seedPhrase.passwordWrong');
+      expect(comp.emailToken).toBe('email-tok');
+      expect(comp.authToken).toBeNull();
+      expect(comp.isVerifying).toBe(false);
+
+      comp.verifyPassword = 'signup-pass';
+      await comp.handleVerify();
+
+      expect(mockVerifyEmail).toHaveBeenLastCalledWith('email-tok', 'signup-pass');
+      expect(comp.phase).toBe('choose');
+      expect(comp.authToken).toBe('a');
+      expect(comp.error).toBeNull();
+    });
+
+    // The unknown, already used and expired token answers: the link is spent,
+    // so the page offers the resume form.
+    it('shows the resume form on a 400 BAD_REQUEST token answer', async () => {
+      mockVerifyEmail.mockRejectedValue(codedError('BAD_REQUEST'));
+      const comp = landOnPasswordForm();
+      comp.verifyPassword = 'signup-pass';
+
+      await comp.handleVerify();
 
       expect(comp.phase).toBe('error');
       expect(comp.error).toBeNull(); // Shows resume form, no error message
+    });
+
+    it('keeps the form with a retry message on a 503', async () => {
+      const busy = codedError('SERVICE_UNAVAILABLE');
+      busy.details = { reason: 'queue_full' };
+      mockVerifyEmail.mockRejectedValue(busy);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = landOnPasswordForm();
+      comp.verifyPassword = 'signup-pass';
+
+      await comp.handleVerify();
+
+      expect(comp.phase).toBe('password');
+      expect(comp.error).toBe('seedPhrase.verifyRetry');
+      expect(comp.emailToken).toBe('email-tok');
+      expect(comp.isVerifying).toBe(false);
+      warnSpy.mockRestore();
+    });
+
+    it('keeps the form with a wait message on a 429', async () => {
+      mockVerifyEmail.mockRejectedValue(codedError('RATE_LIMITED'));
+      const comp = landOnPasswordForm();
+      comp.verifyPassword = 'signup-pass';
+
+      await comp.handleVerify();
+
+      expect(comp.phase).toBe('password');
+      expect(comp.error).toBe('seedPhrase.verifyRateLimited');
+      expect(comp.emailToken).toBe('email-tok');
     });
   });
 
@@ -868,19 +949,19 @@ describe('signupVerifyPage', () => {
   // create-account path derives keys from a BIP39 mnemonic and makes a
   // multi-second Hive broadcast; the user easily navigates away mid-flight.
   describe('teardown', () => {
-    it('verifyToken catch does not flip phase to error after destroy()', async () => {
+    it('handleVerify catch does not flip phase to error after destroy()', async () => {
       let rejectFn;
       mockVerifyEmail.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
       const comp = createComponent({ token: 'emailtok' });
-      expect(comp.phase).toBe('verifying');
       comp.init();
+      comp.verifyPassword = 'signup-pass';
+      const pending = comp.handleVerify();
       comp.destroy();
-      rejectFn(new Error('late'));
-      // Let the rejection + catch settle.
-      await Promise.resolve();
-      await Promise.resolve();
-      // phase stays 'verifying' (not flipped to 'error') after destroy.
-      expect(comp.phase).toBe('verifying');
+      rejectFn(codedError('BAD_REQUEST'));
+      await pending;
+      // phase stays 'password' (not flipped to 'error') after destroy.
+      expect(comp.phase).toBe('password');
+      expect(comp.error).toBeNull();
     });
 
     it('submitCreateAccount catch does not set error after destroy()', async () => {

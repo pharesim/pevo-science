@@ -39,6 +39,7 @@ import {
   mintSettingsActionProof,
   isRetriable503,
   resumeSignup,
+  verifyEmail,
   confirmAccount,
   linkExistingAccount,
   mintSessionAuthProof,
@@ -549,6 +550,29 @@ describe('signup-session-binding cookie credentials', () => {
     expect(url).toBe('/api/auth/link');
     expect(init.method).toBe('POST');
     expect(init.credentials).toBe('same-origin');
+  });
+});
+
+// The verify link carries the mailed token; the page sends the password chosen
+// at signup with it.
+describe('verifyEmail', () => {
+  let fetchSpy;
+
+  beforeEach(() => {
+    authStore = null;
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      mockJsonResponse(200, { status: 'ok', data: { flow: 'choose', auth_token: 'confirmed:x', email: 'e@x.com' } }),
+    );
+  });
+
+  afterEach(() => fetchSpy.mockRestore());
+
+  it('posts the mailed token and the signup password', async () => {
+    await verifyEmail('mailed-tok', 'signup-pass');
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe('/api/auth/verify');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ token: 'mailed-tok', password: 'signup-pass' });
   });
 });
 

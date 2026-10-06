@@ -970,6 +970,12 @@
   "seedPhrase": {
     "verifying": "A verificar o seu e-mail…",
     "invalidLink": "Ligação de verificação inválida ou expirada.",
+    "passwordTitle": "Confirm Your Signup",
+    "passwordDescription": "Enter the password you chose when you signed up for PEvO. If you did not sign up for PEvO, close this page.",
+    "passwordButton": "Verify Email",
+    "passwordWrong": "That password is incorrect. If you forgot it, start a new signup with the same email address.",
+    "verifyRetry": "Could not check your password right now. Please try again in a moment.",
+    "verifyRateLimited": "Too many attempts. Please wait a while, then try again.",
     "title": "A sua frase de recuperação",
     "description": "Anote estas 12 palavras por ordem e guarde-as em segurança. Precisará desta frase para assumir o controlo total da sua conta mais tarde.",
     "warning": "Guarde sua frase de recuperação com segurança. Se você perdê-la, não poderá atualizar sua conta para custódia própria completa.",

@@ -9,7 +9,8 @@
  *
  * Flow:
  *   1. Sign up via /signup, read the verification token from pevo_app_test
- *      (same pattern as email-signup.spec.js), land on /signup/verify.
+ *      (same pattern as email-signup.spec.js), land on /signup/verify and
+ *      enter the signup password.
  *   2. Click "Create new account", capture the mnemonic straight from
  *      Alpine's live component data — the same string the code uses to
  *      derive keys, so there's no chance of DOM/state drift.
@@ -71,7 +72,7 @@ test('signup-generated mnemonic re-derives to the same keys on /recover', async 
   const signupResponsePromise = page.waitForResponse(
     (resp) => resp.url().endsWith('/api/auth/signup'),
   );
-  await page.locator('form button[type="submit"]').click();
+  await page.locator('[x-data="signupPage"] form button[type="submit"]').click();
   const signupResp = await signupResponsePromise;
   expect(signupResp.status()).toBe(200);
 
@@ -87,7 +88,11 @@ test('signup-generated mnemonic re-derives to the same keys on /recover', async 
   expect(verifyToken).toBeTruthy();
 
   // ─── Step 2: land on /signup/verify, capture mnemonic ──────────────────
+  // The verify page asks for the password chosen at signup before it POSTs
+  // the token.
   await page.goto(`/signup/verify?token=${verifyToken}`);
+  await page.locator('input[x-model="verifyPassword"]').fill(TEST_PASSWORD);
+  await page.getByRole('button', { name: 'Verify Email' }).click();
 
   // Wait until the verify POST has run and the page has transitioned to the
   // 'choose' phase (create vs link existing). The heading and button labels
@@ -240,7 +245,7 @@ test('signup-generated mnemonic re-derives to the same keys on /recover', async 
   await page.locator('input[x-model="newPassword"]').fill('NewE2ePass1');
   await page.locator('input[x-model="newPasswordConfirm"]').fill('NewE2ePass1');
 
-  await page.locator('form button[type="submit"]').click();
+  await page.locator('[x-data="recoverPage"] form button[type="submit"]').click();
 
   await expect.poll(() => capturedRecoverBody, { timeout: 15_000 }).not.toBeNull();
   expect(capturedRecoverBody).toMatchObject({

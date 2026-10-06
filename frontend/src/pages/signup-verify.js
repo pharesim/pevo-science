@@ -16,11 +16,34 @@ const template = `
       <div x-data="signupVerifyPage" class="container-narrow py-8">
         <div class="max-w-lg mx-auto">
 
-          <!-- Verifying email token -->
-          <div x-show="phase === 'verifying'" class="text-center py-16">
-            <div class="animate-pulse">
-              <div class="w-12 h-12 bg-parchment-dark rounded-full mx-auto mb-4"></div>
-              <p class="text-ink-muted" x-text="$t('seedPhrase.verifying')"></p>
+          <!-- Email link landing: asks for the password chosen at signup,
+               sent with the token -->
+          <div x-show="phase === 'password'" class="py-16">
+            <div class="text-center mb-8">
+              <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.passwordTitle')"></h2>
+              <p class="text-ink-muted mb-4" x-text="$t('seedPhrase.passwordDescription')"></p>
+            </div>
+
+            <div class="max-w-sm mx-auto bg-parchment-light border border-parchment-dark rounded-lg p-6">
+              <div x-show="error" class="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+                <p class="text-red-700 text-sm" x-text="error"></p>
+              </div>
+
+              <form @submit.prevent="handleVerify" class="space-y-3">
+                <div>
+                  <label class="block text-sm font-medium text-ink mb-1" x-text="$t('signup.password')"></label>
+                  <input type="password" x-model="verifyPassword" required autocomplete="current-password"
+                         class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal">
+                </div>
+                <button type="submit" class="btn-primary w-full" :disabled="isVerifying || !verifyPassword">
+                  <span x-show="!isVerifying" x-text="$t('seedPhrase.passwordButton')"></span>
+                  <span x-show="isVerifying" x-text="$t('seedPhrase.verifying')"></span>
+                </button>
+              </form>
+
+              <div class="flex justify-end mt-4">
+                <a :href="$lp('/signup')" @click.prevent="navigate('/signup')" class="text-sm text-pevo-teal hover:underline" x-text="$t('seedPhrase.startOver')"></a>
+              </div>
             </div>
           </div>
 
@@ -268,8 +291,8 @@ function isValidUsername(u) {
 export function initSignupVerifyPage() {
   Alpine.data('signupVerifyPage', () => ({
     ...createTimerGuard(),
-    // Phases: 'verifying' | 'choose' | 'create-seed' | 'create-confirm' | 'create-username' | 'create-submitting' | 'link-keychain' | 'broadcast-pending' | 'done' | 'error'
-    phase: 'verifying',
+    // Phases: 'password' | 'choose' | 'create-seed' | 'create-confirm' | 'create-username' | 'create-submitting' | 'link-keychain' | 'broadcast-pending' | 'done' | 'error'
+    phase: 'password',
     error: null,
 
     // i18n keys rendered by the broadcast-pending phase. Default to the
@@ -285,6 +308,11 @@ export function initSignupVerifyPage() {
 
     // Auth token returned by verify/resume — used to authenticate confirm/link
     authToken: null,
+
+    // Email link landing: the mailed token, sent with the signup password
+    emailToken: null,
+    verifyPassword: '',
+    isVerifying: false,
 
     // Create flow: username step
     username: '',
@@ -347,7 +375,10 @@ export function initSignupVerifyPage() {
         this.error = this.$t('seedPhrase.invalidLink');
         return;
       }
-      this.verifyToken(emailToken);
+      // Landing never verifies: the password form sends the token together
+      // with the password chosen at signup.
+      this.emailToken = emailToken;
+      this.phase = 'password';
     },
 
     destroy() {
@@ -361,9 +392,13 @@ export function initSignupVerifyPage() {
       }
     },
 
-    async verifyToken(emailToken) {
+    async handleVerify() {
+      if (!this.emailToken || !this.verifyPassword || this.isVerifying) return;
+      this.isVerifying = true;
+      this.error = null;
+
       try {
-        const res = await verifyEmail(emailToken);
+        const res = await verifyEmail(this.emailToken, this.verifyPassword);
         if (!this._mounted) return;
         if (res.data.flow === 'choose') {
           this.authToken = res.data.auth_token;
@@ -372,11 +407,24 @@ export function initSignupVerifyPage() {
           this.phase = 'error';
           this.error = this.$t('seedPhrase.unexpectedResponse');
         }
-      } catch {
+      } catch (err) {
         if (!this._mounted) return;
-        // Token already consumed (second click) or expired — show resume form
-        this.phase = 'error';
-        this.error = null;
+        if (err.code === 'BAD_REQUEST') {
+          // Unknown, already used or expired token: show the resume form.
+          this.phase = 'error';
+          this.error = null;
+        } else if (err.code === 'UNAUTHORIZED') {
+          // Wrong password: keep the form and the token for a retry.
+          this.error = this.$t('seedPhrase.passwordWrong');
+        } else if (err.code === 'RATE_LIMITED') {
+          this.error = this.$t('seedPhrase.verifyRateLimited');
+        } else {
+          // Sanitization pattern (see executeUpgrade() in settings.js).
+          console.warn('[signup verify email]', err);
+          this.error = this.$t('seedPhrase.verifyRetry');
+        }
+      } finally {
+        if (this._mounted) this.isVerifying = false;
       }
     },
 

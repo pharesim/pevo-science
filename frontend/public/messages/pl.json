@@ -970,6 +970,12 @@
   "seedPhrase": {
     "verifying": "Weryfikacja adresu e-mail…",
     "invalidLink": "Link weryfikacyjny jest nieprawidłowy lub wygasł.",
+    "passwordTitle": "Confirm Your Signup",
+    "passwordDescription": "Enter the password you chose when you signed up for PEvO. If you did not sign up for PEvO, close this page.",
+    "passwordButton": "Verify Email",
+    "passwordWrong": "That password is incorrect. If you forgot it, start a new signup with the same email address.",
+    "verifyRetry": "Could not check your password right now. Please try again in a moment.",
+    "verifyRateLimited": "Too many attempts. Please wait a while, then try again.",
     "title": "Fraza odzyskiwania",
     "description": "Zapisz te 12 słów w kolejności i przechowuj je w bezpiecznym miejscu. Będziesz ich potrzebować, aby przejąć pełną kontrolę nad swoim kontem.",
     "warning": "Przechowuj frazę odzyskiwania w bezpiecznym miejscu. Jeśli ją utracisz, nie będziesz mógł zaktualizować konta do pełnej samodzielnej kontroli.",

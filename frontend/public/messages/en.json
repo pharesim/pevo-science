@@ -991,6 +991,12 @@
   "seedPhrase": {
     "verifying": "Verifying your email…",
     "invalidLink": "Invalid or expired verification link.",
+    "passwordTitle": "Confirm Your Signup",
+    "passwordDescription": "Enter the password you chose when you signed up for PEvO. If you did not sign up for PEvO, close this page.",
+    "passwordButton": "Verify Email",
+    "passwordWrong": "That password is incorrect. If you forgot it, start a new signup with the same email address.",
+    "verifyRetry": "Could not check your password right now. Please try again in a moment.",
+    "verifyRateLimited": "Too many attempts. Please wait a while, then try again.",
     "title": "Your Recovery Phrase",
     "description": "Write down these 12 words in order and store them safely. You will need this phrase to take full control of your account later.",
     "warning": "Store your recovery phrase safely. If you lose it, you will not be able to upgrade your account to full self-custody.",

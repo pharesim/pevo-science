@@ -970,6 +970,12 @@
   "seedPhrase": {
     "verifying": "در حال تأیید ایمیل شما…",
     "invalidLink": "لینک تأیید نامعتبر یا منقضی شده است.",
+    "passwordTitle": "Confirm Your Signup",
+    "passwordDescription": "Enter the password you chose when you signed up for PEvO. If you did not sign up for PEvO, close this page.",
+    "passwordButton": "Verify Email",
+    "passwordWrong": "That password is incorrect. If you forgot it, start a new signup with the same email address.",
+    "verifyRetry": "Could not check your password right now. Please try again in a moment.",
+    "verifyRateLimited": "Too many attempts. Please wait a while, then try again.",
     "title": "عبارت بازیابی شما",
     "description": "این ۱۲ کلمه را به ترتیب یادداشت کنید و در جایی امن نگهداری کنید. برای تحت کنترل گرفتن کامل حساب خود در آینده به این عبارت نیاز خواهید داشت.",
     "warning": "عبارت بازیابی خود را در جای امنی نگهداری کنید. اگر آن را گم کنید، نمی‌توانید حساب خود را به حضانت کامل شخصی ارتقا دهید.",

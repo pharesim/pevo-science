@@ -57,7 +57,7 @@ test('fresh visitor signs up and verifies email', async ({ page }, testInfo) => 
     (resp) => resp.url().endsWith('/api/auth/signup'),
   );
 
-  await page.locator('form button[type="submit"]').click();
+  await page.locator('[x-data="signupPage"] form button[type="submit"]').click();
 
   const signupReq = await signupRequestPromise;
   const body = JSON.parse(signupReq.postData() ?? '{}');
@@ -88,11 +88,24 @@ test('fresh visitor signs up and verifies email', async ({ page }, testInfo) => 
   expect(verifyToken).toBeTruthy();
   expect(verifyToken.startsWith('confirmed:')).toBe(false);
 
-  // Drive the verify page; it auto-POSTs /api/auth/verify on init.
+  // Drive the verify page: it asks for the password chosen at signup and
+  // POSTs it with the token to /api/auth/verify on submit.
+  await page.goto(`/signup/verify?token=${verifyToken}`);
+  await page.locator('input[x-model="verifyPassword"]').fill(TEST_PASSWORD);
+
+  const verifyRequestPromise = page.waitForRequest(
+    (req) => req.url().endsWith('/api/auth/verify') && req.method() === 'POST',
+  );
   const verifyResponsePromise = page.waitForResponse(
     (resp) => resp.url().endsWith('/api/auth/verify'),
   );
-  await page.goto(`/signup/verify?token=${verifyToken}`);
+  await page.getByRole('button', { name: 'Verify Email' }).click();
+
+  const verifyReq = await verifyRequestPromise;
+  expect(JSON.parse(verifyReq.postData() ?? '{}')).toEqual({
+    token: verifyToken,
+    password: TEST_PASSWORD,
+  });
 
   const verifyResp = await verifyResponsePromise;
   expect(verifyResp.status()).toBe(200);

@@ -654,11 +654,11 @@ export function resendVerification(email, password) {
   });
 }
 
-export function verifyEmail(token) {
+export function verifyEmail(token, password) {
   return request('/auth/verify', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token }),
+    body: JSON.stringify({ token, password }),
   });
 }
 

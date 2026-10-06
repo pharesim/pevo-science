@@ -970,6 +970,12 @@
   "seedPhrase": {
     "verifying": "Ověřování vašeho e-mailu…",
     "invalidLink": "Neplatný nebo vypršelý ověřovací odkaz.",
+    "passwordTitle": "Confirm Your Signup",
+    "passwordDescription": "Enter the password you chose when you signed up for PEvO. If you did not sign up for PEvO, close this page.",
+    "passwordButton": "Verify Email",
+    "passwordWrong": "That password is incorrect. If you forgot it, start a new signup with the same email address.",
+    "verifyRetry": "Could not check your password right now. Please try again in a moment.",
+    "verifyRateLimited": "Too many attempts. Please wait a while, then try again.",
     "title": "Vaše obnovovací fráze",
     "description": "Zapište si těchto 12 slov ve správném pořadí a bezpečně je uložte. Tuto frázi budete potřebovat k převzetí plné kontroly nad svým účtem.",
     "warning": "Uložte si obnovovací frázi na bezpečné místo. Pokud ji ztratíte, nebudete moci převést svůj účet na plnou vlastní správu.",
