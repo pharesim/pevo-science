@@ -113,7 +113,7 @@ Before (breaks after evalScript adoption — the reject is consumed by the limit
 
 ```ts
 vi.spyOn(redis, 'evalsha').mockRejectedValueOnce(new Error('Lua error: OOM ...'));
-const res = await postVerify(token, ip);
+const res = await postVerify(token);
 expect(res.status).toBe(503); // fails: got 429 from the limiter, cap-INCR never reached
 ```
 
@@ -134,7 +134,7 @@ const rejectCapIncr =
 const evalshaSpy = vi.spyOn(redis, 'evalsha').mockImplementation(rejectCapIncr(realEvalsha) as never);
 const evalSpy    = vi.spyOn(redis, 'eval').mockImplementation(rejectCapIncr(realEval) as never);
 try {
-  const res = await postVerify(token, ip);
+  const res = await postVerify(token);
   expect(res.status).toBe(503);
   expect(res.body.error.code).toBe('SERVICE_UNAVAILABLE');
   const capCalls = [...evalSpy.mock.calls, ...evalshaSpy.mock.calls].filter((c) => c[2] === counterKey);
