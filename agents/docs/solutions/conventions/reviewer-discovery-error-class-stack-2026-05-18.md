@@ -25,9 +25,9 @@ PEvO's accreditation-verify work landed across three rounds (2026-05-16 to 2026-
 
 - **Cascade A** — task `ui-accreditation-verify-retriable-handling` (archived 2026-05-17): backend-emitted retriable envelopes (`503 ACCREDITATION_GATE_UNAVAILABLE`) were routing to a "Request New" CTA, burning 1 of 3/24h `/accreditation/request` slots, re-emailing the user, and producing 5+ confused clicks before they realized their accreditation actually succeeded. Fix: SPA branches on `err.code === 'ACCREDITATION_GATE_UNAVAILABLE'` or `err.details?.retriable === true` → Retry CTA instead of "Request New".
 
-- **Cascade B** — task `ui-accreditation-verify-network-error-retriable` (round-2 hold as of 2026-05-18): fetch-layer errors (`TypeError` from offline/DNS/CORS, `AbortError` from the 30s fetch timeout) — one error class UP from envelope-wrapped errors — routed to the same "Request New" path. Fix: SPA's `_isNetworkError(err)` discriminator on `err?.name` → Retry CTA. The follow-up task was filed because the original task's `/ce-code-review` finding #5 noticed that `_isRetriable` only handled envelope-wrapped errors and asked "what about raw `TypeError`?"
+- **Cascade B** — task `ui-accreditation-verify-network-error-retriable` (round-2 hold as of 2026-05-18): fetch-layer errors (`TypeError` from offline/DNS/CORS, and the 30s fetch timeout) — one error class UP from envelope-wrapped errors — routed to the same "Request New" path. Fix: SPA's `_isNetworkError(err)` discriminator on `err?.name` → Retry CTA. That fix named the timeout `AbortError`, but `api.js` bounds requests with `AbortSignal.timeout`, which rejects with a `TimeoutError`; the discriminator matched it only from 2026-10-06. The follow-up task was filed because the original task's `/ce-code-review` finding #5 noticed that `_isRetriable` only handled envelope-wrapped errors and asked "what about raw `TypeError`?"
 
-- **Cascade C** — surfaced 2026-05-18 by the adversarial reviewer during architect review of cascade B's commit. `AbortError`-after-server-success: fetch reaches server, broadcast commits, `deleteToken` runs, response is lost (AbortError at 30s timeout). User clicks Retry on the now-deleted token → backend returns `400 BAD_REQUEST` → SPA classifies as `ApiRequestError` (not retriable, not network) → falls through to "Request New" → burns slot. Cascade B+A's failure mode displaced one MORE error class up. Filed as `backend-verify-post-success-retry-idempotency` for a grace-period record fix.
+- **Cascade C** — surfaced 2026-05-18 by the adversarial reviewer during architect review of cascade B's commit. `AbortError`-after-server-success: fetch reaches server, broadcast commits, `deleteToken` runs, response is lost (the 30s client timeout fires). User clicks Retry on the now-deleted token → backend returns `400 BAD_REQUEST` → SPA classifies as `ApiRequestError` (not retriable, not network) → falls through to "Request New" → burns slot. Cascade B+A's failure mode displaced one MORE error class up. Filed as `backend-verify-post-success-retry-idempotency` for a grace-period record fix.
 
 Three rounds, three correct fixes, one cascade chain. Each fix was correct in scope. None over-reached.
 
@@ -35,7 +35,7 @@ Three rounds, three correct fixes, one cascade chain. Each fix was correct in sc
 
 When reviewing — or scoping — a task that classifies errors into recovery paths, walk the error-class stack outward from the layer the task addresses and ask three questions:
 
-1. **What is the next error class up the stack from the one being fixed?** Move from inside-out: handler-emitted envelope → fetch-layer (`TypeError`, `AbortError`) → after-success-but-response-lost.
+1. **What is the next error class up the stack from the one being fixed?** Move from inside-out: handler-emitted envelope → fetch-layer (`TypeError`, `TimeoutError`, `AbortError`) → after-success-but-response-lost.
 2. **Does that next class produce the same downstream cascade?** If the recovery branch is uniform on "not retriable → \[burns quota slot / triggers user-action / loses progress\]", every unfixed layer above the most-recently-fixed one inherits the cascade.
 3. **Should the task scope expand to fix N + N+1, or is N+1 an explicit follow-up?** Make the decision explicit at scoping time. Don't let it surface only at review time, round after round.
 
@@ -44,7 +44,7 @@ The error-class stack is the discovery axis. A typical fetch-then-handler call s
 1. Validation errors (4xx envelope from schema check / authz).
 2. Server errors with retriable signaling (5xx envelope, `details.retriable: true`, `code: SERVICE_UNAVAILABLE`).
 3. Server errors without retriable signaling (5xx envelope, generic).
-4. Fetch-layer errors (`TypeError`, `AbortError`).
+4. Fetch-layer errors (`TypeError`, `TimeoutError`, `AbortError`).
 5. After-success-but-response-lost (server committed, client got step 4 error, retry sees post-success state).
 
 Each layer can route to the same downstream CTA ("burn a quota slot", "Request New", "log out the user", "redirect to home") if the recovery path is uniform on a single-axis predicate.
@@ -78,7 +78,7 @@ Skip when:
 
 PEvO's accreditation-verify three-round trajectory is the worked example (see Context section). At cascade A's scoping time, the architect would have asked:
 
-- **Q1:** What's the next error class up from "backend-emitted retriable envelope"? Answer: fetch-layer errors (`TypeError`, `AbortError`).
+- **Q1:** What's the next error class up from "backend-emitted retriable envelope"? Answer: fetch-layer errors (`TypeError`, `TimeoutError`, `AbortError`).
 - **Q2:** Does fetch-layer produce the same cascade? Yes — same `_isRetriable === false` branch routes to "Request New" → burns slot.
 - **Q3:** Fix in this task or queue?
 

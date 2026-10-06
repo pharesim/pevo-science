@@ -22,7 +22,7 @@ tags:
 
 ## Context
 
-The "grace-period idempotency record" pattern — landed in `backend-verify-post-success-retry-idempotency` round-1 on `POST /api/accreditation/verify` — writes a Redis-stored cached success envelope right after a successful on-chain broadcast. A subsequent retry with the same token reads the record and returns the identical 200 envelope instead of falling through to `400 BAD_REQUEST` (the pre-task behavior after `deleteTokenBestEffort` had cleared the pending row). The pattern closes the AbortError-after-success cascade where a client retries because the original response was dropped.
+The "grace-period idempotency record" pattern — landed in `backend-verify-post-success-retry-idempotency` round-1 on `POST /api/accreditation/verify` — writes a Redis-stored cached success envelope right after a successful on-chain broadcast. A subsequent retry with the same token reads the record and returns the identical 200 envelope instead of falling through to `400 BAD_REQUEST` (the pre-task behavior after `deleteTokenBestEffort` had cleared the pending row). The pattern closes the timeout-after-success cascade where a client retries because the original response was dropped.
 
 The cascade has a subtle ordering interaction with OTHER post-broadcast cleanup operations on the same handler. Specifically: when one of those cleanups can throw a permanent-failure class that escapes to the user-facing 502 POST_BROADCAST_OPERATOR_REQUIRED envelope, writing the grace-period record BEFORE that cleanup runs lets the user's retry silently mask the operator-actionable signal.
 
@@ -103,7 +103,7 @@ Adjacency to existing conventions but distinct from them:
 
 Apply when:
 
-- Adding a grace-period idempotency record to ANY post-broadcast route. The pattern is on `/api/accreditation/verify` today; sibling routes in `backend/src/routes/custody.ts` and `backend/src/routes/orcid.ts` have AbortError-after-success exposures too and may grow grace-period records in the future.
+- Adding a grace-period idempotency record to ANY post-broadcast route. The pattern is on `/api/accreditation/verify` today; sibling routes in `backend/src/routes/custody.ts` and `backend/src/routes/orcid.ts` have timeout-after-success exposures too and may grow grace-period records in the future.
 - Adding a NEW cleanup operation to a post-broadcast handler that already has a grace-period record. Audit the new operation's throw classes; if it can rethrow a permanent class, it goes BEFORE the record write.
 - Extending grace-period coverage to sibling 200-emitting branches per the `backend-verify-grace-period-sibling-branch-coverage` task (existing-accreditation gate-hit, per-token idempotency-hit branches of /verify). Apply the same ordering: record-write AFTER any permanent-rethrow-capable cleanup at those branches.
 
@@ -121,7 +121,7 @@ The round-1 bug + round-2 fix on `backend/src/routes/accreditation.ts` POST `/ap
 
 **Future audit candidates:**
 
-- `backend/src/routes/custody.ts` POST `/api/custody/broadcast` — if a grace-period idempotency record is added for non-consent or consent-op AbortError-after-success retries, apply this convention against any `seedAccreditationBonus`-shaped cascade calls on the success path.
+- `backend/src/routes/custody.ts` POST `/api/custody/broadcast` — if a grace-period idempotency record is added for non-consent or consent-op timeout-after-success retries, apply this convention against any `seedAccreditationBonus`-shaped cascade calls on the success path.
 - `backend/src/routes/orcid.ts` POST `/api/orcid/callback` — if `handleAccredit` / `handleLink` grow grace-period records, audit the post-broadcast cascade for permanent-rethrow operations and order the record write accordingly.
 
 **Cross-reference to sibling-branch coverage task:**
