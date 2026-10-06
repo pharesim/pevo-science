@@ -74,7 +74,7 @@ When triaging a `skipFailedRequests` adoption decision on a `rateLimit()` call s
    - No → defer to the JSDoc rule. MUST NOT adopt `skipFailedRequests`.
    - Yes → continue.
 2. **Does the route verify a credential (password, fresh-auth proof, signed challenge)?**
-   - No (one-shot ceremony like upgrade, accreditation-request) → adopting `skipFailedRequests` is non-controversial. Document the legitimate-user-lockout concern that motivates the adoption.
+   - No (a one-shot ceremony like upgrade) → outside this carve-out. Document the legitimate-user-lockout concern that motivates the adoption. `skipFailedRequests` also refunds a client abort, and the handler keeps running after one; where that run still does the costly work, list the refundable statuses in `refundStatusCodes` instead (the accreditation rows below).
    - Yes → continue.
 3. **Is the legitimate-user-lockout surface concrete?** (Stolen JWT + N failed probes = legitimate user locked out for ≥ windowMs.)
    - No → don't adopt. The DoS surface is hypothetical, not worth the brute-force exposure.
@@ -135,7 +135,7 @@ const recoverLimiter = rateLimit({
 });
 ```
 
-**Audit grid** (verified at HEAD 2026-05-17 via task 5 round-3 verbatim call-site audit, updated for task 4 round-2's adoption):
+**Audit grid** (verified at HEAD 2026-05-17 via task 5 round-3 verbatim call-site audit, updated for task 4 round-2's adoption; the two accreditation rows re-checked 2026-10-06):
 
 | Site | Keying | skipFailed | Credential-verify? | JWT-required? | Disposition |
 |---|---|---|---|---|---|
@@ -147,8 +147,8 @@ const recoverLimiter = rateLimit({
 | `custody.ts upgradeLimiter` | account | ✓ | ❌ (signed challenge) | ✓ | Correct adoption — one-shot ceremony |
 | `custody.ts freshAuthLimiter` | account | ✓ | ✓ (argon2) | ✓ | **Carve-out adoption — this convention** |
 | `custody.ts sessionAuthLimiter` | account | ✓ | ✓ (argon2) | ✓ | **Carve-out adoption — this convention** |
-| `accreditation.ts accreditationRequestLimiter` | account | ✓ | ❌ (fresh-auth proof, not new credential) | ✓ | Correct adoption — one-shot ceremony |
-| `accreditation.ts accreditationVerifyLimiter` | IP | ✓ | ❌ (token claim, not credential probe) | ❌ | Correct adoption — IP-keyed one-shot ceremony; HAF outage / Redis pre-INCR transients are the legitimate-user-lockout surface; 256-bit token entropy is the brute-force rate-bound |
+| `accreditation.ts accreditationRequestLimiter` | account | ❌ | ❌ | ✓ | Correct omission, `refundStatusCodes: [422, 500]`. Under `skipFailedRequests` a client abort was refunded while the handler kept running to the mail send, so an aborting client could send mails without limit |
+| `accreditation.ts accreditationVerifyLimiter` | IP | ❌ | ❌ (token claim, not credential probe) | ❌ | Correct omission, `refundStatusCodes: [503, 504]`. Under `skipFailedRequests` the 400, the sanctioned 403 and the cap 502 were refunded, so a caller repeating them was not throttled |
 
 The grid is the discriminator-in-practice: every site with `skipFailedRequests: true` is JWT-required AND has a concrete legitimate-user-lockout DoS surface that motivates the adoption.
 

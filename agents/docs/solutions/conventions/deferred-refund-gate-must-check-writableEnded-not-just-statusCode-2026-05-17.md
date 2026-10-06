@@ -88,6 +88,7 @@ This applies to every deferred handler on an HTTP response that:
 1. Has a runtime gate deciding "do something" vs "skip" based on response state.
 2. Is registered on `res.on('finish')` and/or `res.on('close')`.
 3. Sits behind a handler that does any awaited work before calling `res.status()` / `sendError()` / equivalent.
+4. Is meant to refund an aborted request. Express keeps running the handler after the client closes, so an aborted request can still finish the work the slot paid for. Where it does (`POST /api/accreditation/request` goes on to send the verification mail), a refund on abort lets a client repeat that work without limit. `refundStatusCodes` refunds only the listed statuses, so an abort before the handler sets one stays consumed.
 
 Concrete PEvO surfaces today: the `skipFailedRequests` refund path in `backend/src/middleware/rateLimit.ts`. Any future similar pattern (connection-pool release, distributed lock release, audit-log finalization) should adopt the same gate shape.
 
