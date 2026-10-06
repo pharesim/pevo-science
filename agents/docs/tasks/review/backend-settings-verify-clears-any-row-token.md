@@ -231,3 +231,8 @@ in `GET /api/settings/email/verify/:token`. No spec changed.
   swaps afterwards. (3) No spec pins the `notification_preferences` move. (4) Signup checks
   `email` only, not `pending_email`, so a signup can make another row's swap hit the UNIQUE
   constraint. Code reading only.
+- **Triage (2026-10-06).** The user asked for tasks for these four. A scoping pass measured each
+  on this commit. Filed as `backend-email-change-moves-other-users-digest-address` (items 1 and 3
+  together), `backend-recovery-and-reset-keep-a-queued-email-change` (item 2; password reset has
+  the same hole), and `backend-email-change-swap-500s-on-a-taken-address` (item 4, now measured;
+  the defect is at the swap, and ORCID recovery is a second trigger).

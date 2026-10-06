@@ -87,3 +87,11 @@ triage: "as recommended".
 4. The completion signal lists the writers Scope item 1 found and the per-state outcome changes,
    so the architect can update ARCHITECTURE.md § 6.3/6.4 and `api-contracts/auth.md`. Do not
    edit those yourself.
+
+## Note (2026-10-06, backend): land with the pending-email-change sibling
+
+`backend-recovery-and-reset-keep-a-queued-email-change` edits the same three statements: the two
+recovery UPDATEs in `routes/recover.ts` and the `POST /reset` UPDATE in `routes/auth.ts`. It adds
+`pending_email = NULL, pending_email_token = NULL, pending_email_expires_at = NULL` to their SET
+lists. Land both in one pass so each statement is edited once. Neither task closes the other's
+path.
