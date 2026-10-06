@@ -34,8 +34,7 @@ export function getRequestId(): string {
 //   2. `ReplyError.command = { name, args }` (from ioredis on errors
 //      propagated from a command call). For `redis.eval` of a Lua script,
 //      `args[]` includes the script body + the key. PEvO's accreditation-
-//      verify-attempts counter key contains the raw 64-hex verify token,
-//      which is the SOLE credential at /api/accreditation/verify.
+//      verify-attempts counter key contains the raw 64-hex verify token.
 //
 // The redact policy below keeps a tight allowlist of safe baseline fields
 // (`name`, `message`, `stack`, `cause` recursively) plus a small set of

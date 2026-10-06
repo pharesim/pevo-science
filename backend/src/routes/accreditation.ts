@@ -9,7 +9,7 @@ import { getRedis, isRedisAvailable } from '../redis.js';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { validate, accreditationRequestSchema, accreditationVerifySchema } from '../validation.js';
-import { rateLimit, byAccount, byIp } from '../middleware/rateLimit.js';
+import { rateLimit, byAccount } from '../middleware/rateLimit.js';
 import { hasUnliftedSanction, SANCTIONED_ACCREDIT_MESSAGE } from '../accreditation.js';
 import { logger } from '../logger.js';
 import { isInstitutionalEmail } from '../email-validator.js';
@@ -34,7 +34,7 @@ const accreditationRequestLimiter = rateLimit({ name: 'accred-req', windowMs: 24
 // (`BROADCAST_TIMEOUT`, after which the token is kept for a retry). Every
 // other outcome consumes a slot, including a client that closes the
 // connection before the response ends.
-const accreditationVerifyLimiter = rateLimit({ name: 'accred-verify', windowMs: 60_000, max: 5, keyFn: byIp, refundStatusCodes: [503, 504] });
+const accreditationVerifyLimiter = rateLimit({ name: 'accred-verify', windowMs: 60_000, max: 5, keyFn: byAccount, refundStatusCodes: [503, 504] });
 
 
 const router = Router();
@@ -579,7 +579,7 @@ router.post('/request', verifyHiveSignature, validate(accreditationRequestSchema
         from: config.smtpFrom,
         to: email,
         subject: `PEvO - Accreditation request for @${hive_username}`,
-        text: `The Hive account @${hive_username} asked PEvO to accredit it and gave this email address for verification.\n\nOpening the link below accredits @${hive_username} on PEvO under this name and institution:\n\nName: ${full_name}\nInstitution: ${institution}\n\n${verifyUrl}\n\nThis link expires in 24 hours.\n\nIf you did not request this, ignore this email and do not open the link.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
+        text: `The Hive account @${hive_username} asked PEvO to accredit it and gave this email address for verification.\n\nOpening the link below accredits @${hive_username} on PEvO under this name and institution:\n\nName: ${full_name}\nInstitution: ${institution}\n\nOpen the link in a browser where you are signed in to PEvO as @${hive_username}.\n\n${verifyUrl}\n\nThis link expires in 24 hours.\n\nIf you did not request this, ignore this email and do not open the link.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
       });
     } catch (mailErr) {
       logger.error(
@@ -637,10 +637,9 @@ router.post('/request', verifyHiveSignature, validate(accreditationRequestSchema
 
 // Body-validation BEFORE the limiter. Malformed/empty bodies (missing
 // `token`, wrong type, length > 128) short-circuit at the zod gate without
-// pre-broadcast-attempt counter INCR, HAF lookups, or chain reads. The
-// limiter is IP-keyed and sits after body validation so the per-IP slot
-// is not consumed on shape-only rejections.
-router.post('/verify', validate(accreditationVerifySchema), accreditationVerifyLimiter, async (
+// pre-broadcast-attempt counter INCR or HAF lookups. The limiter sits after
+// body validation so a slot is not consumed on shape-only rejections.
+router.post('/verify', verifyHiveSignature, validate(accreditationVerifySchema), accreditationVerifyLimiter, async (
   req: Request<Record<string, string>, unknown, z.infer<typeof accreditationVerifySchema>>,
   res: Response,
 ) => {
@@ -669,7 +668,7 @@ router.post('/verify', validate(accreditationVerifySchema), accreditationVerifyL
     // rationale: re-running the gate would re-introduce HAF dependency
     // on the idempotent retry path).
     const completion = await readAccreditationCompletion(token);
-    if (completion) {
+    if (completion && completion.username === req.hiveUsername) {
       return sendOk(res, {
         message: 'Accreditation confirmed',
         username: completion.username,
@@ -677,6 +676,15 @@ router.post('/verify', validate(accreditationVerifySchema), accreditationVerifyL
       });
     }
     return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired token');
+  }
+
+  if (pending.hive_username !== req.hiveUsername) {
+    return sendError(
+      res,
+      403,
+      'ACCREDITATION_ACCOUNT_MISMATCH',
+      'This verification link belongs to a different account. Sign in as that account and open the link again.',
+    );
   }
 
   // Broadcast accreditation custom_json to Hive
@@ -982,18 +990,11 @@ router.post('/verify', validate(accreditationVerifySchema), accreditationVerifyL
   // siblings (auth.ts, bridge.ts).
   //
   // Soft-block semantics on cap-exceeded: surface the limit envelope but
-  // DO NOT call deleteToken. Destroying the token here would give a
-  // stolen-token attacker with cap+1 rotating XFFs an asymmetric
-  // token-burn DoS (cheap rotating IPs vs the legitimate user's 24h
-  // re-`/request` lockout under the 3/24h byAccount limit). Leaving the
-  // token alive means the legitimate retry will re-hit the cap until the
-  // counter TTLs out (~24h from the first INCR), but the user retains
-  // the option to wait it out instead of burning a fresh `/request` slot;
-  // the Redis 24h TTL converges both keys independently. Hard-block (also
-  // destroying the token) and re-auth-required were considered: the
-  // former accepts a capability-loss DoS that's cheap to mount; the
-  // latter imposes a UX penalty on light-account users who lack ready
-  // Hive Keychain access on the verify-link landing page.
+  // DO NOT call deleteToken. Leaving the token alive means the legitimate
+  // retry will re-hit the cap until the counter TTLs out (~24h from the
+  // first INCR), but the user retains the option to wait it out instead of
+  // burning a fresh `/request` slot; the Redis 24h TTL converges both keys
+  // independently.
   const cap = config.verifyBroadcastAttemptsCap;
   let attempts: number;
   try {
@@ -1193,10 +1194,7 @@ router.post('/verify', validate(accreditationVerifySchema), accreditationVerifyL
         // sent and the counter will TTL out with the token). Log so operators
         // can correlate counter drift with Redis incidents. Emit `token_hash`
         // (12-hex sha256 prefix) instead of the raw 64-hex token: the token
-        // is the SOLE credential at /api/accreditation/verify (no Hive sig,
-        // no other auth) so logging the plaintext for 24h would give anyone
-        // with operator-log read access the ability to replay the
-        // verification and enqueue an `accredit` op signed by the admin key.
+        // must not be logged in plaintext.
         logger.warn(
           {
             event: 'accreditation.verify.broadcast_decrement_failed',
@@ -1215,11 +1213,8 @@ router.post('/verify', validate(accreditationVerifySchema), accreditationVerifyL
       } catch (deleteErr) {
         // Include `token_hash` (12-hex sha256 prefix) in the structured
         // fields so operators can correlate the orphan against Redis state
-        // during the 24h TTL window. Hashed, NOT plaintext (the token is
-        // the SOLE credential at /api/accreditation/verify, so logging the
-        // raw value would let anyone with operator-log read access replay
-        // the verification — same threat model as the
-        // `broadcast_decrement_failed` sibling timeout-branch warn).
+        // during the 24h TTL window. Hashed, NOT plaintext, as in the
+        // `broadcast_decrement_failed` sibling timeout-branch warn.
         // Per agents/docs/solutions/runtime-errors/helper-extraction-express5-response-ordering-2026-04-28.md
         // ("Survivor log fields for orphan resources").
         logger.error(

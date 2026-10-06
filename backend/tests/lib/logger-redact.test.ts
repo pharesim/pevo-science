@@ -16,8 +16,7 @@
  *     (2) ReplyError.command = { name, args } (ioredis shape) reaches
  *         operator logs when a command call rejects. For redis.eval of
  *         the accreditation broadcast-attempts INCR script, args[]
- *         contains the raw 64-hex verify token — the SOLE credential at
- *         /api/accreditation/verify.
+ *         contains the raw 64-hex verify token.
  *
  * Mutation-kill assertions:
  *   Removing the redact policy from src/logger.ts (reverting to pino's
@@ -75,8 +74,7 @@ describe('redactErrSerializer — pino err serializer redact policy', () => {
     // any error propagated from a command call. For redis.eval of the
     // accreditation broadcast-attempts INCR script, args[] includes the
     // key `${appTag}:pending_accred_broadcast_attempts:${token}` where
-    // ${token} is the raw 64-hex verify token — the SOLE credential at
-    // /api/accreditation/verify.
+    // ${token} is the raw 64-hex verify token.
     const verifyToken = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
     const counterKey = `pevotest:pending_accred_broadcast_attempts:${verifyToken}`;
     const err = Object.assign(new Error('Redis evicted to read-only'), {

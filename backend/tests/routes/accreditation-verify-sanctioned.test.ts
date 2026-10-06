@@ -4,14 +4,14 @@
  * deliberate admin accredit lifts it), so the guard returns 403
  * ACCREDITATION_SANCTIONED before the broadcast-attempt cap claim and the
  * admin broadcast, without leaking the moderation reason. The 403 also
- * consumes a slot of the per-IP `/verify` limiter.
+ * consumes a slot of the `/verify` limiter.
  *
  * Carve-out (root CLAUDE.md "Running Tests"): `hasUnliftedSanction` is mocked to
  * true because the read-only public HAF has no sanctioned `pevotest` account to
  * seed against; the rest of accreditation.js (the existing-accreditation gate
  * via the real HAF pool) runs real, and `broadcastAdminCustomJson` is mocked so
- * the no-broadcast invariant is asserted deterministically. The /verify route is
- * unauthenticated, so no auth middleware is bypassed. The shared guard logic
+ * the no-broadcast invariant is asserted deterministically. `verifyHiveSignature`
+ * is not mocked. The shared guard logic
  * itself (`hasUnliftedSanction` SQL) is covered against real Postgres in
  * `accreditation-membership-cte.test.ts`.
  */
@@ -19,6 +19,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 import crypto from 'node:crypto';
 import { PrivateKey } from '@hiveio/dhive';
+import jwt from 'jsonwebtoken';
 
 const { broadcastJsonMock, hasUnliftedSanctionMock } = vi.hoisted(() => ({
   broadcastJsonMock: vi.fn().mockResolvedValue({ id: 'mock-accred-tx' }),
@@ -73,6 +74,16 @@ async function seedPendingAccreditation(token: string, username: string): Promis
   await redis.set(`${config.appTag}:pending_accred:${token}`, JSON.stringify(pending), 'EX', 24 * 60 * 60);
 }
 
+// Posts the token with a session JWT for `username`, which the real
+// `verifyHiveSignature` checks.
+function postVerify(token: string, username: string) {
+  const session = jwt.sign({ sub: username, custody: 'self' }, config.sessionSecret, { expiresIn: '5m' });
+  return request(app)
+    .post('/api/accreditation/verify')
+    .set('Authorization', `Bearer ${session}`)
+    .send({ token });
+}
+
 describe('POST /api/accreditation/verify — ever-sanctioned guard', () => {
   beforeEach(() => {
     broadcastJsonMock.mockReset().mockResolvedValue({ id: 'mock-accred-tx' });
@@ -87,7 +98,7 @@ describe('POST /api/accreditation/verify — ever-sanctioned guard', () => {
     const token = `sanctioned-verify-${crypto.randomBytes(8).toString('hex')}`;
     await seedPendingAccreditation(token, username);
 
-    const res = await request(app).post('/api/accreditation/verify').send({ token });
+    const res = await postVerify(token, username);
 
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('ACCREDITATION_SANCTIONED');
@@ -102,31 +113,26 @@ describe('POST /api/accreditation/verify — ever-sanctioned guard', () => {
     const redis = getRedis();
     if (!redis || !isHafConfigured()) return skip(); // needs Redis + the HAF gate
 
-    // A fresh synthetic IP gives this spec its own bucket of the 5-per-minute
-    // per-IP limiter; app.ts sets `trust proxy = 1`, so X-Forwarded-For
-    // drives req.ip.
-    const ip = `10.8.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
-    const limiterKey = `${config.appTag}:rl:accred-verify:${ip}`;
+    // The fresh account gives this spec its own bucket of the 5-per-minute
+    // limiter.
     const username = `sanctioned-verify-${crypto.randomBytes(6).toString('hex')}`;
+    const limiterKey = `${config.appTag}:rl:accred-verify:${username}`;
     const token = `sanctioned-verify-${crypto.randomBytes(8).toString('hex')}`;
-    await redis.del(limiterKey);
     await seedPendingAccreditation(token, username);
-    const postVerify = (t: string) =>
-      request(app).post('/api/accreditation/verify').set('X-Forwarded-For', ip).send({ token: t });
 
     try {
       // Four invalid-token 400s use all but one of the five slots.
       for (let i = 0; i < 4; i++) {
-        const res = await postVerify(`sanctioned-verify-missing-${i}`);
+        const res = await postVerify(`sanctioned-verify-missing-${i}`, username);
         expect(res.status).toBe(400);
       }
 
-      const refused = await postVerify(token);
+      const refused = await postVerify(token, username);
       expect(refused.status).toBe(403);
       expect(refused.body.error.code).toBe('ACCREDITATION_SANCTIONED');
 
       // A 403 here means the refusal gave its slot back.
-      const res = await postVerify(token);
+      const res = await postVerify(token, username);
       expect(res.status).toBe(429);
       expect(res.body.error.code).toBe('RATE_LIMITED');
     } finally {

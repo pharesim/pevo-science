@@ -100,6 +100,8 @@ describe('POST /api/accreditation/verify', () => {
   it('returns 400 when token is missing', async () => {
     const res = await request(app)
       .post('/api/accreditation/verify')
+      .set('X-Hive-Username', 'testuser')
+      .set('X-Hive-Signature', 'mock')
       .send({});
     expect(res.status).toBe(400);
   });
@@ -107,6 +109,8 @@ describe('POST /api/accreditation/verify', () => {
   it('returns 400 for invalid token', async () => {
     const res = await request(app)
       .post('/api/accreditation/verify')
+      .set('X-Hive-Username', 'testuser')
+      .set('X-Hive-Signature', 'mock')
       .send({ token: 'nonexistent-token' });
     expect(res.status).toBe(400);
     expect(res.body.error.message).toContain('Invalid');

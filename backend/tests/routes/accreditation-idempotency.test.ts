@@ -12,8 +12,7 @@
  * `seedAccreditationBonus` is mocked because we need to drive both the
  * happy path and the throw path on demand to exercise the
  * PostBroadcastWriteError discrimination. `verifyHiveSignature` is NOT
- * mocked here — /verify is rate-limited but not auth-gated. Real Redis
- * stores the pending-accreditation row.
+ * mocked here. Real Redis stores the pending-accreditation row.
  *
  * Carve-out clause (c) follow-up: HAF integration coverage for
  * `findAccreditationBroadcastByIdempotencyKey`,
@@ -35,6 +34,7 @@ import request from 'supertest';
 import crypto from 'node:crypto';
 import { PrivateKey } from '@hiveio/dhive';
 import type { ChainableCommander } from 'ioredis';
+import jwt from 'jsonwebtoken';
 
 const { broadcastJsonMock, MockBroadcastTimeoutError } = vi.hoisted(() => ({
   broadcastJsonMock: vi.fn().mockResolvedValue({ id: 'fresh-accred-tx-id' }),
@@ -137,6 +137,16 @@ async function readBroadcastAttemptsCounter(token: string): Promise<number | nul
   return raw === null ? null : Number(raw);
 }
 
+// Posts the token with a session JWT for `username`, which the real
+// `verifyHiveSignature` checks.
+function postVerify(token: string, username: string) {
+  const session = jwt.sign({ sub: username, custody: 'self' }, config.sessionSecret, { expiresIn: '5m' });
+  return request(app)
+    .post('/api/accreditation/verify')
+    .set('Authorization', `Bearer ${session}`)
+    .send({ token });
+}
+
 describe('accreditation /verify — idempotency hit (Option A.4)', () => {
   beforeEach(() => {
     broadcastJsonMock.mockReset();
@@ -154,10 +164,6 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
       if (keys.length > 0) await redis.del(...keys);
       const counters = await redis.keys(broadcastAttemptsKey('accred-idem-*'));
       if (counters.length > 0) await redis.del(...counters);
-      // Clear the per-IP /verify rate-limit window — supertest pins
-      // remoteAddress to 127.0.0.1, so each test in this file shares the
-      // byIp bucket (limit: 5/min). Without this reset the 6th+ spec
-      // returns 429 before reaching the route handler.
       const limitKeys = await redis.keys(`${config.appTag}:rl:accred-verify:*`);
       if (limitKeys.length > 0) await redis.del(...limitKeys);
       // Clear the idempotency cache — the route caches HAF lookup results;
@@ -183,7 +189,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
 
     const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined as never);
     try {
-      const res = await request(app).post('/api/accreditation/verify').send({ token });
+      const res = await postVerify(token, username);
 
       expect(res.status).toBe(200);
       expect(res.body.data).toMatchObject({
@@ -249,7 +255,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
       rows: [{ trx_id: 'tx-prior-at-cap', block_num: 67890 }],
     });
 
-    const res = await request(app).post('/api/accreditation/verify').send({ token });
+    const res = await postVerify(token, username);
 
     // Hit branch wins: 200 outcome:'already_landed'. If the cap check had
     // run first, this would be 502 BROADCAST_ATTEMPT_LIMIT_EXCEEDED.
@@ -282,7 +288,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     hafQueryMock.mockResolvedValueOnce({ rows: [] });
     hafQueryMock.mockResolvedValueOnce({ rows: [] });
 
-    const res = await request(app).post('/api/accreditation/verify').send({ token });
+    const res = await postVerify(token, username);
 
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({ tx_id: 'fresh-accred-tx-id' });
@@ -311,7 +317,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     hafQueryMock.mockRejectedValueOnce(new Error('haf connection drop'));
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
     try {
-      const res = await request(app).post('/api/accreditation/verify').send({ token });
+      const res = await postVerify(token, username);
 
       // Fresh-broadcast envelope (no outcome:already_landed) — the layer
       // gracefully degrades when the HAF lookup throws.
@@ -339,7 +345,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     hafConfiguredFlag.value = false;
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
     try {
-      const res = await request(app).post('/api/accreditation/verify').send({ token });
+      const res = await postVerify(token, username);
 
       expect(res.status).toBe(200);
       expect(res.body.data.tx_id).toBe('fresh-accred-tx-id');
@@ -390,7 +396,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
 
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
     try {
-      const res = await request(app).post('/api/accreditation/verify').send({ token });
+      const res = await postVerify(token, username);
 
       expect(res.status).toBe(200);
       expect(res.body.data).toMatchObject({
@@ -456,7 +462,7 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
 
     const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => undefined as never);
     try {
-      const res = await request(app).post('/api/accreditation/verify').send({ token });
+      const res = await postVerify(token, username);
 
       expect(res.status).toBe(200);
       expect(res.body.data).toMatchObject({
@@ -514,7 +520,7 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
       rows: [{ trx_id: 'tx-prior-gate-at-cap', block_num: 88888, action: 'accredit' }],
     });
 
-    const res = await request(app).post('/api/accreditation/verify').send({ token });
+    const res = await postVerify(token, username);
 
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({
@@ -546,7 +552,7 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
 
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
     try {
-      const res = await request(app).post('/api/accreditation/verify').send({ token });
+      const res = await postVerify(token, username);
 
       // 503 envelope with stable error code + retriable hint.
       expect(res.status).toBe(503);
@@ -593,34 +599,33 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     }
   });
 
-  // Pin the per-IP slot-refund behaviour: a 503 ACCREDITATION_GATE_UNAVAILABLE
+  // Pin the slot-refund behaviour: a 503 ACCREDITATION_GATE_UNAVAILABLE
   // response refunds its `accreditationVerifyLimiter` slot. Without the
-  // refund, a HAF outage burns the IP's 5 slots/60s in 5 retries and the
-  // legitimate user trips 429 RATE_LIMITED for the next ~60s — locked out
-  // even after HAF recovers.
+  // refund, a HAF outage burns the account's 5 slots/60s in 5 retries and
+  // the legitimate user trips 429 RATE_LIMITED for the next ~60s — locked
+  // out even after HAF recovers.
   // Mirrors the sibling `Hive getAccounts throws then recovers: 503
   // refunds limiter slot so the retry succeeds` canary against the
   // `upgradeLimiter` in `backend/tests/routes/custody-upgrade.test.ts`.
-  // The limiter is keyed `byIp`; supertest pins remoteAddress to
-  // 127.0.0.1 so every request in this file shares the same bucket. The
+  // All six requests come from one account, so they share its bucket. The
   // afterEach hook clears `rl:accred-verify:*` keys so this spec starts
   // at an empty bucket.
-  it('503 ACCREDITATION_GATE_UNAVAILABLE refunds the per-IP limiter slot', async () => {
+  it('503 ACCREDITATION_GATE_UNAVAILABLE refunds the limiter slot', async () => {
     const redis = getRedis();
     if (!redis) return;
+    const username = 'slotrefunduser';
     // Drive the limiter's max (5/60s) consecutive 503s. Every 503 refunds
     // its slot; if one did not, the 6th request would 429 before the
     // handler runs.
     for (let i = 0; i < 5; i++) {
       const token = `accred-idem-refund-${i}-${crypto.randomBytes(8).toString('hex')}`;
-      const username = `slotrefund${i}user`;
       await seedPendingAccreditation(token, username);
       hafQueryMock.mockRejectedValueOnce(new Error('haf outage'));
-      const res = await request(app).post('/api/accreditation/verify').send({ token });
+      const res = await postVerify(token, username);
       expect(res.status).toBe(503);
       expect(res.body.error?.code).toBe('ACCREDITATION_GATE_UNAVAILABLE');
     }
-    // 6th request from the same IP: if the slot-refund worked, this
+    // 6th request from the same account: if the slot-refund worked, this
     // reaches the route handler and returns 503 again. If it had NOT
     // refunded, the limiter would short-circuit with 429 RATE_LIMITED.
     // The discriminating assertion is `not.toBe(429)` — the exact
@@ -628,12 +633,9 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     // (here another 503) but the load-bearing claim is "the limiter
     // did not lock the user out."
     const finalToken = `accred-idem-refund-final-${crypto.randomBytes(8).toString('hex')}`;
-    const finalUsername = 'slotrefundfinaluser';
-    await seedPendingAccreditation(finalToken, finalUsername);
+    await seedPendingAccreditation(finalToken, username);
     hafQueryMock.mockRejectedValueOnce(new Error('haf still down'));
-    const finalRes = await request(app)
-      .post('/api/accreditation/verify')
-      .send({ token: finalToken });
+    const finalRes = await postVerify(finalToken, username);
     expect(finalRes.status).not.toBe(429);
     // Confirm we reached the route handler (gate-throw path → 503).
     expect(finalRes.status).toBe(503);
@@ -668,7 +670,7 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
 
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
     try {
-      const res = await request(app).post('/api/accreditation/verify').send({ token });
+      const res = await postVerify(token, username);
 
       expect(res.status).toBe(200);
       expect(res.body.data).toMatchObject({
@@ -713,7 +715,7 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     // Per-token idempotency miss → broadcast proceeds.
     hafQueryMock.mockResolvedValueOnce({ rows: [] });
 
-    const res = await request(app).post('/api/accreditation/verify').send({ token });
+    const res = await postVerify(token, username);
 
     // Fresh broadcast envelope — the gate did NOT short-circuit on the
     // stale accredit tx_id. This is the regression guard for the
@@ -746,10 +748,6 @@ describe('accreditation /verify — PostBroadcastWriteError on seedAccreditation
       if (keys.length > 0) await redis.del(...keys);
       const counters = await redis.keys(broadcastAttemptsKey('accred-idem-*'));
       if (counters.length > 0) await redis.del(...counters);
-      // Clear the per-IP /verify rate-limit window — supertest pins
-      // remoteAddress to 127.0.0.1, so each test in this file shares the
-      // byIp bucket (limit: 5/min). Without this reset the 6th+ spec
-      // returns 429 before reaching the route handler.
       const limitKeys = await redis.keys(`${config.appTag}:rl:accred-verify:*`);
       if (limitKeys.length > 0) await redis.del(...limitKeys);
       // Clear the idempotency cache — the route caches HAF lookup results;
@@ -778,7 +776,7 @@ describe('accreditation /verify — PostBroadcastWriteError on seedAccreditation
     // severity:'permanent' → POST_BROADCAST_OPERATOR_REQUIRED branch.
     seedBonusMock.mockRejectedValueOnce(new TypeError('reputation weights shape regression'));
 
-    const res = await request(app).post('/api/accreditation/verify').send({ token });
+    const res = await postVerify(token, username);
 
     // Permanent severity surfaces as POST_BROADCAST_OPERATOR_REQUIRED
     // (distinct from POST_BROADCAST_FAILED — operator alerts route to DB
@@ -859,7 +857,7 @@ describe('accreditation /verify — grace-period idempotency (AbortError-after-s
     hafQueryMock.mockResolvedValueOnce({ rows: [] }); // idempotency
     broadcastJsonMock.mockResolvedValueOnce({ id: 'tx-grace-canary-1' });
 
-    const firstRes = await request(app).post('/api/accreditation/verify').send({ token });
+    const firstRes = await postVerify(token, username);
     expect(firstRes.status).toBe(200);
     expect(firstRes.body.data).toMatchObject({
       message: 'Accreditation confirmed',
@@ -882,7 +880,7 @@ describe('accreditation /verify — grace-period idempotency (AbortError-after-s
     // AbortError. The broadcast must NOT fire again — the grace-period
     // record satisfies the request.
     const broadcastCallsBefore = broadcastJsonMock.mock.calls.length;
-    const retryRes = await request(app).post('/api/accreditation/verify').send({ token });
+    const retryRes = await postVerify(token, username);
 
     expect(retryRes.status).toBe(200);
     expect(broadcastJsonMock.mock.calls.length).toBe(broadcastCallsBefore);
@@ -899,7 +897,7 @@ describe('accreditation /verify — grace-period idempotency (AbortError-after-s
     // `/verify` into an existence oracle.
     const token = `accred-grace-${crypto.randomBytes(8).toString('hex')}`;
 
-    const res = await request(app).post('/api/accreditation/verify').send({ token });
+    const res = await postVerify(token, 'gracemissuser');
 
     expect(res.status).toBe(400);
     expect(res.body.error?.code).toBe('BAD_REQUEST');
@@ -921,7 +919,7 @@ describe('accreditation /verify — grace-period idempotency (AbortError-after-s
     hafQueryMock.mockResolvedValueOnce({ rows: [] });
     broadcastJsonMock.mockResolvedValueOnce({ id: 'tx-fresh-id-only' });
 
-    const firstRes = await request(app).post('/api/accreditation/verify').send({ token });
+    const firstRes = await postVerify(token, username);
     expect(firstRes.body.data?.tx_id).toBe('tx-fresh-id-only');
 
     const digest = crypto.createHash('sha256').update(token).digest('hex');
@@ -948,7 +946,7 @@ describe('accreditation /verify — grace-period idempotency (AbortError-after-s
       rows: [{ trx_id: 'tx-gate-grace-prior', block_num: 70000, action: 'accredit' }],
     });
 
-    const firstRes = await request(app).post('/api/accreditation/verify').send({ token });
+    const firstRes = await postVerify(token, username);
     expect(firstRes.status).toBe(200);
     expect(firstRes.body.data).toMatchObject({
       message: 'Accreditation confirmed',
@@ -976,7 +974,7 @@ describe('accreditation /verify — grace-period idempotency (AbortError-after-s
     // retry, supertest would surface a no-more-mocks rejection.)
     const broadcastCallsBefore = broadcastJsonMock.mock.calls.length;
     const hafCallsBefore = hafQueryMock.mock.calls.length;
-    const retryRes = await request(app).post('/api/accreditation/verify').send({ token });
+    const retryRes = await postVerify(token, username);
 
     expect(retryRes.status).toBe(200);
     expect(retryRes.body.data).toMatchObject({
@@ -1011,7 +1009,7 @@ describe('accreditation /verify — grace-period idempotency (AbortError-after-s
       rows: [{ trx_id: 'tx-idem-grace-prior', block_num: 80000 }],
     });
 
-    const firstRes = await request(app).post('/api/accreditation/verify').send({ token });
+    const firstRes = await postVerify(token, username);
     expect(firstRes.status).toBe(200);
     expect(firstRes.body.data).toMatchObject({
       message: 'Accreditation confirmed',
@@ -1037,7 +1035,7 @@ describe('accreditation /verify — grace-period idempotency (AbortError-after-s
     // canonical 200 envelope. Neither HAF nor the broadcast fires.
     const broadcastCallsBefore = broadcastJsonMock.mock.calls.length;
     const hafCallsBefore = hafQueryMock.mock.calls.length;
-    const retryRes = await request(app).post('/api/accreditation/verify').send({ token });
+    const retryRes = await postVerify(token, username);
 
     expect(retryRes.status).toBe(200);
     expect(retryRes.body.data).toMatchObject({
@@ -1104,7 +1102,7 @@ describe('accreditation /verify — grace-period idempotency (AbortError-after-s
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => logger);
 
     try {
-      const firstRes = await request(app).post('/api/accreditation/verify').send({ token });
+      const firstRes = await postVerify(token, username);
 
       // Acceptance (a): broadcast still happens → 200 success envelope.
       expect(firstRes.status).toBe(200);
@@ -1135,7 +1133,7 @@ describe('accreditation /verify — grace-period idempotency (AbortError-after-s
       const isAvailableSpy = vi.spyOn(redisModule, 'isRedisAvailable').mockReturnValue(false);
       try {
         const broadcastCallsBefore = broadcastJsonMock.mock.calls.length;
-        const retryRes = await request(app).post('/api/accreditation/verify').send({ token });
+        const retryRes = await postVerify(token, username);
 
         expect(retryRes.status).toBe(200);
         expect(retryRes.body.data).toMatchObject({
@@ -1151,5 +1149,132 @@ describe('accreditation /verify — grace-period idempotency (AbortError-after-s
       multiSpy.mockRestore();
       warnSpy.mockRestore();
     }
+  });
+});
+
+describe('accreditation /verify — the session must belong to the account the token was requested for', () => {
+  const OWNER = 'sessionowneruser';
+  const OTHER = 'sessionotheruser';
+  const MISMATCH_MESSAGE =
+    'This verification link belongs to a different account. Sign in as that account and open the link again.';
+
+  beforeEach(() => {
+    broadcastJsonMock.mockReset();
+    broadcastJsonMock.mockResolvedValue({ id: 'fresh-accred-tx-id' });
+    hafQueryMock.mockReset();
+    seedBonusMock.mockReset();
+    seedBonusMock.mockResolvedValue(undefined);
+    hafConfiguredFlag.value = true;
+  });
+
+  afterEach(async () => {
+    const redis = getRedis();
+    if (redis) {
+      const keys = await redis.keys(`${config.appTag}:pending_accred:accred-session-*`);
+      if (keys.length > 0) await redis.del(...keys);
+      const counters = await redis.keys(broadcastAttemptsKey('accred-session-*'));
+      if (counters.length > 0) await redis.del(...counters);
+      const completionKeys = await redis.keys(`${config.appTag}:accreditation-completed:*`);
+      if (completionKeys.length > 0) await redis.del(...completionKeys);
+      await redis.del(
+        `${config.appTag}:rl:accred-verify:${OWNER}`,
+        `${config.appTag}:rl:accred-verify:${OTHER}`,
+      );
+      const idemKeys = await redis.keys(`${config.appTag}:idem:accred:*`);
+      if (idemKeys.length > 0) await redis.del(...idemKeys);
+    }
+  });
+
+  // The three HAF reads a fresh broadcast makes before the cap claim: the
+  // existing-accreditation gate, the sanction guard and the per-token lookup.
+  function queueFreshBroadcastHafReads() {
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
+  }
+
+  it('answers 401 without a session or signature and reads no token', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-session-${crypto.randomBytes(8).toString('hex')}`;
+    await seedPendingAccreditation(token, OWNER);
+    const digest = crypto.createHash('sha256').update(token).digest('hex');
+    const getSpy = vi.spyOn(redis, 'get');
+
+    let res;
+    let readKeys: string[];
+    try {
+      res = await request(app).post('/api/accreditation/verify').send({ token });
+      readKeys = getSpy.mock.calls.map(([key]) => String(key));
+    } finally {
+      getSpy.mockRestore();
+    }
+
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('UNAUTHORIZED');
+    expect(readKeys).not.toContain(`${config.appTag}:pending_accred:${token}`);
+    expect(readKeys).not.toContain(`${config.appTag}:accreditation-completed:${digest}`);
+    expect(hafQueryMock).not.toHaveBeenCalled();
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+    expect(await tokenExists(token)).toBe(true);
+  });
+
+  it('a session for another account answers 403 ACCREDITATION_ACCOUNT_MISMATCH; the token then verifies for its own account', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-session-${crypto.randomBytes(8).toString('hex')}`;
+    await seedPendingAccreditation(token, OWNER);
+
+    // With the admin key unset, a refusal placed after the admin-key check
+    // would delete the token on its way to the 500.
+    const adminKey = config.pevoAdminPostingKey;
+    config.pevoAdminPostingKey = '';
+    let refused;
+    try {
+      refused = await postVerify(token, OTHER);
+    } finally {
+      config.pevoAdminPostingKey = adminKey;
+    }
+
+    expect(refused.status).toBe(403);
+    expect(refused.body.error.code).toBe('ACCREDITATION_ACCOUNT_MISMATCH');
+    expect(refused.body.error.message).toBe(MISMATCH_MESSAGE);
+    expect(hafQueryMock).not.toHaveBeenCalled();
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+    expect(await tokenExists(token)).toBe(true);
+    expect(await readBroadcastAttemptsCounter(token)).toBeNull();
+
+    queueFreshBroadcastHafReads();
+    broadcastJsonMock.mockResolvedValueOnce({ id: 'tx-session-owner' });
+    const res = await postVerify(token, OWNER);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ username: OWNER, tx_id: 'tx-session-owner' });
+    expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a retry after success answers the cached 200 only to the account in the completion record', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-session-${crypto.randomBytes(8).toString('hex')}`;
+    await seedPendingAccreditation(token, OWNER);
+    queueFreshBroadcastHafReads();
+    broadcastJsonMock.mockResolvedValueOnce({ id: 'tx-session-grace' });
+
+    const firstRes = await postVerify(token, OWNER);
+    expect(firstRes.status).toBe(200);
+    expect(await tokenExists(token)).toBe(false);
+
+    const otherRes = await postVerify(token, OTHER);
+    expect(otherRes.status).toBe(400);
+    expect(otherRes.body.error.code).toBe('BAD_REQUEST');
+    expect(otherRes.body.error.message).toMatch(/invalid or expired token/i);
+    const digest = crypto.createHash('sha256').update(token).digest('hex');
+    expect(await redis.get(`${config.appTag}:accreditation-completed:${digest}`)).not.toBeNull();
+
+    const retryRes = await postVerify(token, OWNER);
+    expect(retryRes.status).toBe(200);
+    expect(retryRes.body.data).toEqual(firstRes.body.data);
+    expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
   });
 });

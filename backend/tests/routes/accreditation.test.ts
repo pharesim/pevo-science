@@ -277,6 +277,7 @@ describe('POST /api/accreditation/request — verification mail and character ga
     expect(mail.text).toContain(`\nName: ${fullName}\n`);
     expect(mail.text).toContain(`\nInstitution: ${institution}\n`);
     expect(mail.text).toMatch(/\/accreditation\/verify\?token=[0-9a-f]{64}\n/);
+    expect(mail.text).toContain(`Open the link in a browser where you are signed in to PEvO as @${username}.`);
     expect(mail.text).toContain('If you did not request this, ignore this email and do not open the link.');
     // The requester-typed name appears only on its labeled line, so it no
     // longer writes the mail's opening.
@@ -308,10 +309,24 @@ describe('POST /api/accreditation/request — verification mail and character ga
   );
 });
 
+// ──────────────────────────────────────────────
+// /verify specs in this file.
+//
+// Carve-out (root CLAUDE.md "Running Tests"): cryptographic signature
+// verification is bypassed by the file-level MOCK_VERIFY_SIGNATURE mock,
+// which takes the account from X-Hive-Username. These specs assert on token,
+// counter, broadcast, limiter and log handling, not on authentication. The
+// real `verifyHiveSignature` runs on /verify in
+// `accreditation-idempotency.test.ts`, and against signed requests on the
+// sibling PATCH /api/accreditation/metadata route in
+// `accreditation-metadata-edit.test.ts`.
+// ──────────────────────────────────────────────
+
 describe('POST /api/accreditation/verify', () => {
   it('returns 400 without token', async () => {
     const res = await request(app)
       .post('/api/accreditation/verify')
+      .set('X-Hive-Username', 'testuser')
       .send({});
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('BAD_REQUEST');
@@ -320,6 +335,7 @@ describe('POST /api/accreditation/verify', () => {
   it('returns 400 for invalid token', async () => {
     const res = await request(app)
       .post('/api/accreditation/verify')
+      .set('X-Hive-Username', 'testuser')
       .send({ token: 'nonexistent-token-12345' });
     expect(res.status).toBe(400);
     expect(res.body.error.message).toContain('Invalid');
@@ -341,14 +357,16 @@ const TIMEOUT_DETAILS = {
   timeout_ms: 30_000,
 };
 
+const VERIFY_USER = 'accred-timeout-user';
+
 // Store a pending-accreditation record directly in Redis so /verify's
 // getToken() resolves to a real pending row. Matches the shape written by
 // storeToken(): `${config.appTag}:pending_accred:${token}` → JSON blob.
-async function seedPendingAccreditation(token: string): Promise<void> {
+async function seedPendingAccreditation(token: string, username: string): Promise<void> {
   const redis = getRedis();
   if (!redis) throw new Error('Redis required for accreditation timeout specs');
   const pending = {
-    hive_username: 'accred-timeout-user',
+    hive_username: username,
     full_name: 'Accred Timeout User',
     institution: 'Test University',
     field: 'physics',
@@ -393,12 +411,13 @@ describe('POST /api/accreditation/verify — broadcast-timeout discrimination', 
     const redis = getRedis();
     if (!redis) return; // Redis-only spec; no in-memory fallback path is exercised here.
     const token = `accred-timeout-${crypto.randomBytes(8).toString('hex')}`;
-    await seedPendingAccreditation(token);
+    await seedPendingAccreditation(token, VERIFY_USER);
 
     broadcastJsonMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
 
     const res = await request(app)
       .post('/api/accreditation/verify')
+      .set('X-Hive-Username', VERIFY_USER)
       .send({ token });
 
     expect(res.status).toBe(504);
@@ -413,7 +432,7 @@ describe('POST /api/accreditation/verify — broadcast-timeout discrimination', 
     const redis = getRedis();
     if (!redis) return;
     const token = `accred-timeout-${crypto.randomBytes(8).toString('hex')}`;
-    await seedPendingAccreditation(token);
+    await seedPendingAccreditation(token, VERIFY_USER);
 
     broadcastJsonMock.mockRejectedValueOnce(new Error('RPC node rejected: insufficient RC'));
 
@@ -425,6 +444,7 @@ describe('POST /api/accreditation/verify — broadcast-timeout discrimination', 
     try {
       const res = await request(app)
         .post('/api/accreditation/verify')
+        .set('X-Hive-Username', VERIFY_USER)
         .send({ token });
 
       expect(res.status).toBe(502);
@@ -467,10 +487,6 @@ describe('POST /api/accreditation/verify — broadcast-timeout discrimination', 
   it('502 BROADCAST_FAILED path with deleteToken rejection: response stays 502, no header-sent error, cleanup-failure logged, no raw token leak', async () => {
     const redis = getRedis();
     if (!redis) return;
-    // Clear the per-IP /verify rate-limit window — prior specs in this
-    // describe consume the byIp(127.0.0.1) bucket (limit: 5/min). Without
-    // this reset the 5th-or-later request returns 429 and short-circuits the
-    // route handler before reaching the broadcast catch.
     const limitKeys = await redis.keys(`${config.appTag}:rl:accred-verify:*`);
     if (limitKeys.length > 0) await redis.del(...limitKeys);
 
@@ -481,7 +497,7 @@ describe('POST /api/accreditation/verify — broadcast-timeout discrimination', 
     // the raw token must surface as a real 64-hex match.
     const token = crypto.randomBytes(32).toString('hex');
     const tokenKey = `${config.appTag}:pending_accred:${token}`;
-    await seedPendingAccreditation(token);
+    await seedPendingAccreditation(token, VERIFY_USER);
 
     broadcastJsonMock.mockRejectedValueOnce(new Error('RPC node rejected: insufficient RC'));
 
@@ -523,6 +539,7 @@ describe('POST /api/accreditation/verify — broadcast-timeout discrimination', 
     try {
       res = await request(app)
         .post('/api/accreditation/verify')
+        .set('X-Hive-Username', VERIFY_USER)
         .send({ token });
       // Snapshot the spy calls BEFORE restoring (mockRestore clears mock state).
       delCallArgs = delSpy.mock.calls.slice();
@@ -635,8 +652,12 @@ async function broadcastAttemptCount(token: string): Promise<number> {
 }
 
 describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', () => {
+  let username: string;
+
+  // A fresh account per spec gives each spec its own /verify limiter bucket.
   beforeEach(() => {
     broadcastJsonMock.mockReset();
+    username = `accred-cap-user-${crypto.randomBytes(4).toString('hex')}`;
   });
 
   afterEach(async () => {
@@ -647,14 +668,10 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     }
   });
 
-  // Distinct synthetic IPs per spec dodge the verify-route rate limiter
-  // (5/min per IP). app.ts sets `trust proxy = 1`, so X-Forwarded-For drives
-  // req.ip. Without this, ~10 sequential calls inside this file would
-  // collectively trip 429s and obscure the cap-vs-rate-limit signal.
-  function postVerify(token: string, ip: string) {
+  function postVerify(token: string) {
     return request(app)
       .post('/api/accreditation/verify')
-      .set('X-Forwarded-For', ip)
+      .set('X-Hive-Username', username)
       .send({ token });
   }
 
@@ -663,19 +680,18 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     if (!redis) throw new Error('Redis required for cap specs');
     const cap = config.verifyBroadcastAttemptsCap;
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
-    await seedPendingAccreditation(token);
+    await seedPendingAccreditation(token, username);
     // Pre-seed the counter to `cap` so the next call's INCR pushes it to
     // `cap + 1`, tripping the cap gate. This isolates the cap-exceeded
     // branch from the timeout-decrement / rejection-delete path
     // arithmetic, giving a mutation-sensitive assertion against the gate.
     await redis.set(broadcastAttemptsKey(token), String(cap), 'EX', 24 * 60 * 60);
-    const ip = `10.5.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
 
     // Mock would reject if reached; the cap gate must short-circuit BEFORE
     // broadcast.
     broadcastJsonMock.mockRejectedValue(new Error('should not reach broadcast'));
 
-    const res = await postVerify(token, ip);
+    const res = await postVerify(token);
     expect(res.status).toBe(502);
     // the distinct error code (NOT BROADCAST_FAILED) is
     // what HTTP-only consumers and operator alerts key off.
@@ -684,11 +700,10 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     expect(res.body.error.message).toMatch(/limit exceeded/i);
     // Broadcast NOT invoked — the cap gate fires before the broadcast site.
     expect(broadcastJsonMock).not.toHaveBeenCalled();
-    // Soft-block: token is PRESERVED on the cap-exceeded path. A
-    // stolen-token attacker with cap+1 rotating XFFs cannot mount an
-    // asymmetric token-burn DoS; the legitimate user can wait for the
-    // 24h Redis TTL to drain instead of being forced into the 3/24h
-    // /request lockout. Counter and token both TTL out independently.
+    // Soft-block: token is PRESERVED on the cap-exceeded path. The
+    // legitimate user can wait for the 24h Redis TTL to drain instead of
+    // being forced into the 3/24h /request lockout. Counter and token both
+    // TTL out independently.
     expect(await tokenExists(token)).toBe(true);
     // Counter remains at the pre-seeded cap+1 since soft-block doesn't
     // delete it; it will TTL out alongside the token.
@@ -700,8 +715,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     if (!redis) throw new Error('Redis required for cap specs');
     const cap = config.verifyBroadcastAttemptsCap;
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
-    await seedPendingAccreditation(token);
-    const ip = `10.3.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
+    await seedPendingAccreditation(token, username);
 
     broadcastJsonMock.mockRejectedValue(new MockBroadcastTimeoutError(30_000));
 
@@ -710,7 +724,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     // the decrement, every call resolves to 504 and the counter stays
     // at zero between calls.
     for (let i = 0; i < cap + 2; i++) {
-      const res = await postVerify(token, ip);
+      const res = await postVerify(token);
       expect(res.status).toBe(504);
       expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
       expect(await tokenExists(token)).toBe(true);
@@ -728,13 +742,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     if (!redis) throw new Error('Redis required for cap specs');
     const cap = config.verifyBroadcastAttemptsCap;
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
-    await seedPendingAccreditation(token);
-
-    // Stage cap+1 distinct synthetic IPs to dodge the 5/min IP limiter
-    // (each parallel /verify call must originate from a different
-    // X-Forwarded-For so the limiter doesn't 429 the burst).
-    const baseOctet = crypto.randomInt(0, 250);
-    const ips = Array.from({ length: cap + 1 }, (_, i) => `10.4.${baseOctet}.${i + 1}`);
+    await seedPendingAccreditation(token, username);
 
     // Each broadcast that lands rejects with a definitive non-timeout
     // error (so the failure branch fires on the cap-bound calls and
@@ -757,15 +765,13 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     // Fire cap+1 parallel /verify calls. The cap gate must short-circuit
     // exactly one of them BEFORE the broadcast site (the one whose
     // pre-INCR pushes the counter to cap+1).
-    const responses = Promise.all(ips.map((ip) => postVerify(token, ip)));
+    const responses = Promise.all(Array.from({ length: cap + 1 }, () => postVerify(token)));
 
     // deterministic barrier — poll the counter directly
     // until every parallel /verify call has claimed its pre-INCR slot
-    // (counter == cap + 1). The prior 100ms sleep was brittle on slow CI
-    // and on operator-tuned high caps (cap=10 → 11 parallel supertest
-    // invocations tighten the window). Polling the on-disk counter
-    // converges as soon as the last pre-INCR lands, regardless of CI
-    // speed or cap value.
+    // (counter == cap + 1). The prior 100ms sleep was brittle on slow CI.
+    // Polling the on-disk counter converges as soon as the last pre-INCR
+    // lands, regardless of CI speed.
     const deadline = Date.now() + 5_000;
     while (Date.now() < deadline) {
       if ((await broadcastAttemptCount(token)) === cap + 1) break;
@@ -795,12 +801,11 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
-    await seedPendingAccreditation(token);
-    const ip = `10.1.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
+    await seedPendingAccreditation(token, username);
 
     broadcastJsonMock.mockResolvedValue({ id: 'mock-accred-tx' });
 
-    const res = await postVerify(token, ip);
+    const res = await postVerify(token);
     expect(res.status).toBe(200);
     // Token deleted on success path → counter side-key dropped with it.
     expect(await tokenExists(token)).toBe(false);
@@ -811,12 +816,11 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
-    await seedPendingAccreditation(token);
-    const ip = `10.2.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
+    await seedPendingAccreditation(token, username);
 
     broadcastJsonMock.mockRejectedValueOnce(new Error('RPC node rejected: insufficient RC'));
 
-    const res = await postVerify(token, ip);
+    const res = await postVerify(token);
     expect(res.status).toBe(502);
     // Terminal failure deletes the token → counter side-key follows.
     expect(await tokenExists(token)).toBe(false);
@@ -828,14 +832,13 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     if (!redis) throw new Error('Redis required for cap specs');
     const cap = config.verifyBroadcastAttemptsCap;
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
-    await seedPendingAccreditation(token);
+    await seedPendingAccreditation(token, username);
     await redis.set(broadcastAttemptsKey(token), String(cap), 'EX', 24 * 60 * 60);
-    const ip = `10.6.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
 
     const loggerWarnSpy = vi.spyOn(logger, 'warn');
     try {
       broadcastJsonMock.mockRejectedValue(new Error('should not reach broadcast'));
-      const res = await postVerify(token, ip);
+      const res = await postVerify(token);
       expect(res.status).toBe(502);
       expect(res.body.error.code).toBe('BROADCAST_ATTEMPT_LIMIT_EXCEEDED');
       // Call-shape assertion (NOT bare toHaveBeenCalled): pin the structured
@@ -913,8 +916,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     // `*accred-cap-*` keys for cleanup and does NOT pick up this token shape;
     // the pending row and the broadcast-attempts counter are explicitly
     // deleted in the spec's finally block at the bottom.
-    await seedPendingAccreditation(token);
-    const ip = `10.7.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
+    await seedPendingAccreditation(token, username);
 
     // Drive a 504 BROADCAST_TIMEOUT outcome on the broadcast site.
     broadcastJsonMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
@@ -943,7 +945,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     const loggerWarnSpy = vi.spyOn(logger, 'warn');
 
     try {
-      const res = await postVerify(token, ip);
+      const res = await postVerify(token);
 
       expect(res.status).toBe(504);
       expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
@@ -957,7 +959,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
       expect(loggerWarnSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           event: 'accreditation.verify.broadcast_decrement_failed',
-          username: 'accred-timeout-user',
+          username,
         }),
         expect.stringContaining('counter decrement after timeout failed'),
       );
@@ -1004,8 +1006,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
-    await seedPendingAccreditation(token);
-    const ip = `10.8.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
+    await seedPendingAccreditation(token, username);
 
     // Flip isRedisAvailable() to false once the broadcast site has been
     // reached. The mockImplementation flips the flag synchronously before
@@ -1022,7 +1023,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     const loggerWarnSpy = vi.spyOn(logger, 'warn');
 
     try {
-      const res = await postVerify(token, ip);
+      const res = await postVerify(token);
 
       expect(res.status).toBe(504);
       expect(res.body.error.code).toBe('BROADCAST_TIMEOUT');
@@ -1036,7 +1037,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
         expect.objectContaining({
           event: 'accreditation.verify.timeout_decrement_degraded',
           route: 'accreditation.verify',
-          username: 'accred-timeout-user',
+          username,
           attempt_id: expect.any(String),
           token_hash: expect.stringMatching(/^[0-9a-f]{12}$/),
         }),
@@ -1125,8 +1126,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     const redis = getRedis();
     if (!redis) throw new Error('Redis required for cap specs');
     const token = `accred-cap-${crypto.randomBytes(8).toString('hex')}`;
-    await seedPendingAccreditation(token);
-    const ip = `10.8.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
+    await seedPendingAccreditation(token, username);
 
     // Reject ONLY the cap-INCR dispatch (keyed on the broadcast-attempts
     // counter key), passing every other script through to real Redis. The
@@ -1159,7 +1159,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
     broadcastJsonMock.mockRejectedValue(new Error('should not reach broadcast'));
 
     try {
-      const res = await postVerify(token, ip);
+      const res = await postVerify(token);
 
       expect(res.status).toBe(503);
       expect(res.body.error.code).toBe('SERVICE_UNAVAILABLE');
@@ -1186,7 +1186,7 @@ describe('POST /api/accreditation/verify — per-token broadcast-attempts cap', 
       expect(loggerWarnSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           event: 'accreditation.verify.broadcast_increment_failed',
-          username: 'accred-timeout-user',
+          username,
         }),
         expect.stringContaining('pre-INCR cap counter failed'),
       );
@@ -1536,13 +1536,13 @@ describe('accreditation.ts structured-log emissions', () => {
     // passes.
     const redis = getRedis();
     if (!redis) return;
-    // Clear the per-IP rate-limit window so this spec doesn't 429 from
+    // Clear the /verify rate-limit window so this spec doesn't 429 from
     // accumulated prior /verify calls. Mirrors the sibling spec's discipline.
     const limitKeys = await redis.keys(`${config.appTag}:rl:accred-verify:*`);
     if (limitKeys.length > 0) await redis.del(...limitKeys);
     const token = `accred-tcf-${crypto.randomBytes(8).toString('hex')}`;
     const tokenKey = `${config.appTag}:pending_accred:${token}`;
-    await seedPendingAccreditation(token);
+    await seedPendingAccreditation(token, VERIFY_USER);
 
     broadcastJsonMock.mockRejectedValueOnce(new Error('RPC node rejected: insufficient RC'));
     const delSpy = vi
@@ -1553,6 +1553,7 @@ describe('accreditation.ts structured-log emissions', () => {
     try {
       const res = await request(app)
         .post('/api/accreditation/verify')
+        .set('X-Hive-Username', VERIFY_USER)
         .send({ token });
       expect(res.status).toBe(502);
       expect(res.body.error.code).toBe('BROADCAST_FAILED');
@@ -1572,7 +1573,7 @@ describe('accreditation.ts structured-log emissions', () => {
         expect.objectContaining({
           event: 'accreditation.verify.token_cleanup_failed',
           route: 'accreditation.verify',
-          username: 'accred-timeout-user',
+          username: VERIFY_USER,
           email_hash: expect.stringMatching(/^[0-9a-f]{12}$/),
           token_hash: expect.stringMatching(/^[0-9a-f]{12}$/),
         }),
@@ -1706,8 +1707,8 @@ describe('accreditation.ts structured-log emissions', () => {
 // ──────────────────────────────────────────────
 // Refund sets of the two accreditation limiters. `accreditationRequestLimiter`
 // (3 per 24 h per account) refunds only 422 and 500;
-// `accreditationVerifyLimiter` (5 per minute per IP) refunds only 503 and
-// 504. Every other outcome consumes a slot, including a client that
+// `accreditationVerifyLimiter` (5 per minute per account) refunds only 503
+// and 504. Every other outcome consumes a slot, including a client that
 // disconnects before the response ends.
 //
 // Carve-out justification (root CLAUDE.md test-mock carve-out clauses a/b/c):
@@ -1719,8 +1720,8 @@ describe('accreditation.ts structured-log emissions', () => {
 //   (b) Mock targets: `nodemailer.createTransport` (same target as the
 //       structured-log specs). `verifyHiveSignature` is mocked at the file
 //       level via MOCK_VERIFY_SIGNATURE, so cryptographic verification is
-//       bypassed on `/request`; these specs pin which outcomes consume a
-//       limiter slot, not authentication.
+//       bypassed; these specs pin which outcomes consume a limiter slot, not
+//       authentication.
 //   (c) Real-path companion: the `refundStatusCodes` refund mechanics have
 //       real-Redis coverage in `backend/tests/middleware/rateLimit.test.ts`
 //       (`refundStatusCodes refunds a 409 but not a 400`).
@@ -1941,23 +1942,20 @@ describe('accred-req limiter: 422 and 500 refund the slot, a client abort consum
 
 describe('accred-verify limiter: a 400 or the cap 502 consumes the slot, a 504 refunds it', () => {
   const VERIFY_LIMIT = 5;
-  let ip: string;
+  let username: string;
 
-  // A fresh synthetic IP per spec (and per retry) gives each spec its own
-  // limiter bucket. app.ts sets `trust proxy = 1`, so X-Forwarded-For drives
-  // req.ip.
-  beforeEach(async () => {
+  // A fresh account per spec (and per retry) gives each spec its own
+  // limiter bucket.
+  beforeEach(() => {
     broadcastJsonMock.mockReset();
-    ip = `10.7.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
-    const redis = getRedis();
-    if (redis) await redis.del(`${config.appTag}:rl:accred-verify:${ip}`);
+    username = `accred-lim-user-${crypto.randomBytes(4).toString('hex')}`;
   });
 
   afterEach(async () => {
     const redis = getRedis();
     if (redis) {
       const keys = await redis.keys(`${config.appTag}:pending_accred*accred-lim-*`);
-      keys.push(`${config.appTag}:rl:accred-verify:${ip}`);
+      keys.push(`${config.appTag}:rl:accred-verify:${username}`);
       await redis.del(...keys);
     }
   });
@@ -1965,11 +1963,11 @@ describe('accred-verify limiter: a 400 or the cap 502 consumes the slot, a 504 r
   function postVerify(token: string) {
     return request(app)
       .post('/api/accreditation/verify')
-      .set('X-Forwarded-For', ip)
+      .set('X-Hive-Username', username)
       .send({ token });
   }
 
-  // Uses all but one of this IP's slots with invalid-token 400s.
+  // Uses all but one of this account's slots with invalid-token 400s.
   async function fillAllButOneSlot() {
     for (let i = 0; i < VERIFY_LIMIT - 1; i++) {
       const res = await postVerify(`accred-lim-missing-${i}`);
@@ -1979,7 +1977,7 @@ describe('accred-verify limiter: a 400 or the cap 502 consumes the slot, a 504 r
 
   async function seedToken(): Promise<string> {
     const token = `accred-lim-${crypto.randomBytes(8).toString('hex')}`;
-    await seedPendingAccreditation(token);
+    await seedPendingAccreditation(token, username);
     return token;
   }
 
@@ -2029,5 +2027,31 @@ describe('accred-verify limiter: a 400 or the cap 502 consumes the slot, a 504 r
     // A 429 here means the 504 kept its slot.
     const res = await postVerify('accred-lim-missing-last');
     expect(res.status).toBe(400);
+  });
+
+  it("one account's invalid-token 400s do not bring another account on the same IP to 429", async () => {
+    const other = `accred-lim-other-${crypto.randomBytes(4).toString('hex')}`;
+    const ip = `10.9.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
+    const postFromIp = (token: string, account: string) =>
+      request(app)
+        .post('/api/accreditation/verify')
+        .set('X-Forwarded-For', ip)
+        .set('X-Hive-Username', account)
+        .send({ token });
+    try {
+      for (let i = 0; i < VERIFY_LIMIT; i++) {
+        const res = await postFromIp(`accred-lim-missing-${i}`, username);
+        expect(res.status).toBe(400);
+      }
+      const limited = await postFromIp('accred-lim-missing-last', username);
+      expect(limited.status).toBe(429);
+
+      const res = await postFromIp('accred-lim-missing-other', other);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+    } finally {
+      const redis = getRedis();
+      if (redis) await redis.del(`${config.appTag}:rl:accred-verify:${other}`);
+    }
   });
 });
