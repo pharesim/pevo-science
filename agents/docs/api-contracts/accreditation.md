@@ -110,7 +110,7 @@ The `X-Hive-Signature` header proves the requester controls the Hive account. Th
 **Errors:**
 - `UNAUTHORIZED`: invalid or missing Hive signature
 - `VALIDATION_ERROR` (422): non-institutional email domain
-- `BAD_REQUEST`: missing required fields
+- `BAD_REQUEST`: body fails validation: a missing required field, a field over its length bound, an invalid `email`, or a line break, another control character, or a bidi embedding, override or isolate character in `full_name` or `institution` (message `<field>: must not contain line breaks or control characters`)
 - `RATE_LIMITED`: too many requests from this account
 
 ---
@@ -183,7 +183,7 @@ This is the canonical path for filling in metadata that first-accreditation left
 }
 ```
 
-At least one of `full_name`, `institution`, `field` is required (an all-empty body is rejected). Bounds mirror `accreditationRequestSchema`: `full_name` and `institution` 1 to 200 chars, `field` 1 to 100 chars. Each supplied field overlays the prior op's value; omitted fields carry forward unchanged. `fresh_auth_proof` is required only on the JWT/light-account path.
+At least one of `full_name`, `institution`, `field` is required (an all-empty body is rejected). Bounds mirror `accreditationRequestSchema`: `full_name` and `institution` 1 to 200 chars, `field` 1 to 100 chars, and `full_name` and `institution` reject line breaks, other control characters and the bidi embedding, override and isolate characters. Each supplied field overlays the prior op's value; omitted fields carry forward unchanged. `fresh_auth_proof` is required only on the JWT/light-account path.
 
 **Response `data`:**
 
@@ -205,7 +205,7 @@ At least one of `full_name`, `institution`, `field` is required (an all-empty bo
 
 **Errors:**
 - `UNAUTHORIZED` (401): missing or invalid Hive signature.
-- `BAD_REQUEST` (400): body fails validation (all three fields absent, or a field over its length bound).
+- `BAD_REQUEST` (400): body fails validation (all three fields absent, a field over its length bound, or a rejected character in `full_name` or `institution`, message `<field>: must not contain line breaks or control characters`).
 - `FRESH_AUTH_REQUIRED` (401|403): missing, expired, or mismatched fresh-auth proof on the JWT path. 401 when no usable proof is present; 403 on a binding violation (proof for a different user or action). `details.reason` discriminates; status mapping per [custody.md](custody.md).
 - `FORBIDDEN` (403): the caller is not currently accredited (no authority `accredit` op on chain, or a WoT account below the live vouch threshold). There is nothing to edit.
 - `ACCREDITATION_SANCTIONED` (403): the account carries an un-lifted `type:"sanction"` `revoke`. A self-service metadata edit cannot lift a moderation sanction (it would otherwise re-broadcast a fresh `accredit` op and self-clear the sanction); only a deliberate admin `accredit` restores the account. Same refusal and message as the sibling `/verify` path. This check is non-cached and closes the membership-cache staleness window.
