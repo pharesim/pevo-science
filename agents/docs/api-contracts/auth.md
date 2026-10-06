@@ -479,9 +479,10 @@ The verify token expires 24 hours after phase 1.
 
 **Errors:**
 - `VALIDATION_ERROR` (400): missing or empty `token`.
-- `INVALID_TOKEN` (400): the staging row was not found, already consumed, disputed by the old email-holder, or expired. Also returned when the account was deleted or upgraded to self-custody between phase 1 and phase 2. All of these collapse to one generic message so the link is not a dispute-status or account-state oracle. There is no machine-readable `details.reason` discriminator; the SPA may string-match the message text if it needs to distinguish the expired case for copy.
+- `INVALID_TOKEN` (400): the staging row was not found, already consumed, disputed by the old email-holder, or expired. Also returned when the account was deleted or upgraded to self-custody between phase 1 and phase 2. An unknown token, a disputed row and a deleted or upgraded account share one message, so the link is not a dispute-status or account-state oracle; an already-consumed row and an expired one each have their own message. There is no machine-readable `details.reason` discriminator.
 - `DUPLICATE` (409): the new email was claimed by another account between phase 1 and phase 2.
 - `INTERNAL_ERROR` (503): the application database is unavailable. This path runs no argon2, so it has no argon2-capacity 503.
+- `INTERNAL_ERROR` (500): any other failure in the handler.
 
 ---
 
@@ -514,6 +515,7 @@ Idempotent: clicking the link twice returns the same 200 (the staging row's `dis
 - `VALIDATION_ERROR` (400): missing or empty `token`.
 - `INVALID_TOKEN` (400): dispute token not found, or past the 48-hour dispute window.
 - `INTERNAL_ERROR` (503): the application database is unavailable.
+- `INTERNAL_ERROR` (500): any other failure in the handler.
 
 **Dispute-mail PII convention.** The dispute notification mailed to the old address names only the **domain** of the new email (via the `emailDomain()` helper), never the full address. This is a deliberate data-minimization choice (CNPD-defensible under the Portugal jurisdiction): a passive attacker who staged a hostile rebind, or anyone who later reads the old mailbox, cannot confirm the exact target address from the notification. Preserve this domain-only framing in any future copy edit to the dispute email.
 
