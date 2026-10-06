@@ -128,3 +128,23 @@ From the credential-binding grounding (triage "as recommended"):
 
 If `backend-mailbox-binding-registry` lands first, its scope item 6 removes both; list them as
 already fixed in the signal block.
+
+## Architect addition (2026-10-06): the accreditation test file header
+
+From the re-review of `backend-accreditation-limiters-refund-work-already-done` (user triage: fold
+in here).
+
+17. **`backend/tests/routes/accreditation.test.ts` file header, "Mocking justification"
+    paragraph.**
+    - "The carve-out covers only broadcast error staging" is false. The file also mocks
+      `verifyHiveSignature` file-wide through `MOCK_VERIFY_SIGNATURE`, and `findExistingAccreditation`
+      through its `lib/idempotency.js` mock, and its `src/hive.js` mock stubs
+      `hiveClient.database.getAccounts`. Delete "The carve-out covers only broadcast error staging;".
+    - Root `CLAUDE.md` carve-out clause (b): a file that uses `MOCK_VERIFY_SIGNATURE` says in its
+      header that cryptographic verification is bypassed and why the focus permits it. Three
+      describe-level carve-out blocks further down name the file-level mock (verification mail,
+      structured-log emissions, the `accred-req` limiter). The file header and the first
+      `describe('POST /api/accreditation/request')` block do not. Add one sentence to the header
+      paragraph that says it. Intent only: write the sentence against the specs the file runs.
+    - This edits test prose: run `backend/tests/eslint/` alone afterwards and give the result in
+      the signal block.

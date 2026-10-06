@@ -1,3 +1,172 @@
+## The two accreditation limiters refund requests that already did their work (archived 2026-10-06) — two rounds; three hold fixes landed; one pre-existing test-header finding folded into the comment pass; two solutions entries refreshed
+
+### Architect archive note (2026-10-06, round 2)
+
+- **Re-review:** `/ce-code-review` on `1783194b^..1783194b`, focused path (own correctness, standards and requirements pass plus one in-process adversarial reviewer; no validator). All three held items are fixed as prescribed. The adversarial reviewer ran `tests/eslint/` on a git-archive copy of `1783194b`: 9 files, 146 tests, exit 0; a pin-back-to-2 mutant turned the "exactly its pin" spec red. The `accreditationRequestLimiter` comment is true on every branch of the `/request` handler and against `shouldRefund`.
+- **#1 (P3, pre-existing, folded into `backend-accreditation-wot-comment-and-dead-code-pass` as item 17):** the `accreditation.test.ts` "Mocking justification" header says the carve-out covers only broadcast error staging, while the file also mocks `verifyHiveSignature` and `findExistingAccreditation`; no clause-(b) bypass statement covers the first `/request` describe block.
+- **Noted, no action:** the `accreditation.ts` "Token store: app database" heading is already item 15 of the same comment-pass task.
+- **[TODO Architect] rows:** both `/ce-compound-refresh` runs done in `98b65f12`. `skip-failed-requests-jwt-required-credential-verify-carve-out-2026-05-17.md`: both accreditation grid rows now show the `refundStatusCodes` omission, and the triage line no longer calls accreditation-request a non-controversial adoption. `deferred-refund-gate-must-check-writableEnded-not-just-statusCode-2026-05-17.md`: a fourth applicability condition limits the abort refund to handlers meant to refund one.
+- **Learnings checkpoint:** solutions/ grepped for both limiter names, `accred-req`, `accred-verify` and accreditation refund claims; only the two refreshed entries made a current-state claim. No new entry: the abort-refund lesson now lives in the refreshed deferred-refund entry, and the pin miss is covered by the canary's own failure text.
+
+**Owner:** backend
+**Created:** 2026-10-05
+**Priority:** high
+
+Filed from the accreditation and Web of Trust audit (findings 2 and 8). The validator confirmed
+both from the code. Incidence was not measured.
+
+## Why
+
+Both accreditation limiters in `backend/src/routes/accreditation.ts` set
+`skipFailedRequests: true`. `shouldRefund` in `backend/src/middleware/rateLimit.ts` then gives the
+slot back for every response that is not a finished success: any status of 400 or above, and a
+connection that closed before the response ended.
+
+1. `accreditationRequestLimiter` (`/request`, 3 per 24 h per account). A client that closes the
+   connection before the response ends gets its slot back, while the handler keeps running: it
+   stores the token and sends the mail. `/api/accreditation` is mounted without another limiter
+   (`backend/src/app.ts`). So one signed-in account can send verification mails without limit, to
+   any institutional address, each carrying the `full_name` text it chose. Whether this
+   deployment's reverse proxy passes a client abort on to the backend socket was not checked.
+2. `accreditationVerifyLimiter` (`/verify`, 5 per minute per IP). The 403
+   `ACCREDITATION_SANCTIONED` answer comes after two HAF reads (`findExistingAccreditation`,
+   `hasUnliftedSanction`), and the 502 `BROADCAST_ATTEMPT_LIMIT_EXCEEDED` answer after the
+   per-token lookup as well. Both leave the token alive and both are refunded, so a caller holding
+   such a token is not throttled. The limiter's comment says `BAD_REQUEST` is the only
+   client-error path and that it returns before the HAF probes. A closed connection is refunded
+   here as well, and the handler still runs on to the broadcast.
+
+`refundStatusCodes` on the same limiter refunds only the listed statuses. A request that closes
+before any status is set keeps the default 200 and is not refunded.
+
+## Scope
+
+1. `/request`: replace `skipFailedRequests` with `refundStatusCodes: [422, 500]`.
+   - 422 is the non-institutional-address refusal, returned before the token is stored.
+   - 500 is the answer of the two SMTP branches (send failed, SMTP host not configured), each
+     after a best-effort delete of the token.
+   - An aborted request consumes its slot.
+2. `/verify`: replace `skipFailedRequests` with `refundStatusCodes: [503, 504]`.
+   - The two 503 answers (`ACCREDITATION_GATE_UNAVAILABLE`, and `SERVICE_UNAVAILABLE` from the
+     counter claim) return before any broadcast.
+   - 504 is the broadcast timeout, after which the route keeps the token for a retry.
+   - 400, 403, 500 and 502 consume a slot.
+3. Cut both limiter comments down to the new refund sets. Delete in particular the `/verify`
+   sentence that begins "The 4xx refund is acceptable here because `BAD_REQUEST` is the only
+   client-error path", and the `/request` claim that a 400 validation refunds the slot:
+   `validate` runs ahead of the limiter in the middleware chain, so a 400 never reaches it.
+
+## Out of scope
+
+- `rateLimit.ts` itself, and other routes that use `skipFailedRequests`.
+- Requiring a session on `/verify` (`backend-accreditation-verify-requires-the-account-session`).
+
+## Acceptance criteria
+
+1. A `/request` whose client aborts before the response has consumed a slot: after three such
+   requests in the window, the next answers 429.
+2. A `/request` that answers 422 or 500 leaves the slot free.
+3. On `/verify`, a 400, the sanctioned 403 and the cap 502 each consume a slot; a 503 and a 504
+   leave it free.
+4. Comments follow root `CLAUDE.md` "Comment anchors".
+
+## [TODO Architect] at archive
+
+- `/ce-compound-refresh` on `skip-failed-requests-jwt-required-credential-verify-carve-out-2026-05-17.md`:
+  its audit grid lists both limiters as correct adoptions.
+- `/ce-compound-refresh` on `deferred-refund-gate-must-check-writableEnded-not-just-statusCode-2026-05-17.md`:
+  it treats a client abort as an outcome to refund, which on `/request` was the abuse hole.
+
+## Backend implementation signal (2026-10-06, commit f748b67c)
+
+Landed in `f748b67c` (`git merge-base --is-ancestor f748b67c main` checked).
+
+**Scope**
+1. `/request`: `accreditationRequestLimiter` uses `refundStatusCodes: [422, 500]`.
+2. `/verify`: `accreditationVerifyLimiter` uses `refundStatusCodes: [503, 504]`.
+3. Both limiter comments are cut down to the new refund sets. The `/verify` "The 4xx refund is acceptable here because `BAD_REQUEST` is the only client-error path" sentence and the `/request` claim that a 400 validation refunds are deleted. The two route-site comments (`POST /api/accreditation/request`, `POST /api/accreditation/verify`) also lost their pointer to the `skipFailedRequests` layered-pattern obligation. That obligation applies to limiters that set `skipFailedRequests`, and these two no longer do.
+
+**Acceptance criteria → specs**
+- AC1: `accreditation.test.ts` "a client that disconnects while the mail is being sent consumes its slot; after three such requests the next answers 429". A real `http.request` is destroyed while `sendMail` is pending, so the token is stored and the mail is in flight.
+- AC2: the existing "three SMTP-failure 500s ..." and "three 422 non-institutional-email responses ..." specs, now in the describe `accred-req limiter: 422 and 500 refund the slot, a client abort consumes it`.
+- AC3, consume: `accreditation.test.ts` "a 400 invalid-token answer consumes a slot ..." and "the cap 502 BROADCAST_ATTEMPT_LIMIT_EXCEEDED consumes a slot", plus `accreditation-verify-sanctioned.test.ts` "the 403 consumes a /verify limiter slot".
+- AC3, refund: "a 504 BROADCAST_TIMEOUT refunds its slot" in `accreditation.test.ts`. The 503 refund is pinned by the existing `accreditation-idempotency.test.ts` spec "503 ACCREDITATION_GATE_UNAVAILABLE refunds the per-IP limiter slot". A duplicate 503 spec in `accreditation.test.ts` was dropped at the simplify pass, because that file's header hands gate-throw coverage to the idempotency file.
+- AC4: comments checked against root `CLAUDE.md` "Comment anchors". The pre-commit anchor gate passed.
+
+**Verification**
+- Red before the fix. Against the unchanged limiters, the four consume specs failed for the expected reason:
+  - abort: 200, expected 429
+  - 400: 400, expected 429
+  - cap 502: 502, expected 429
+  - sanctioned 403: 403, expected 429
+- The refund specs (422, 500, 503, 504) passed before and after, as characterization.
+- After the fix, each affected file was run alone: `accreditation.test.ts`, `accreditation-verify-sanctioned.test.ts`, `accreditation-idempotency.test.ts`, `misc.test.ts`, `bridge-register-rate-limit-skip-failed.test.ts`, `custody-limiter-cpu-amplification.test.ts`, `lib/logger-redact`, `lib/idempotency`, `lib/pending-decrement-queue`, `middleware/rateLimit`, `middleware/rateLimit-in-memory`.
+  - The only failures are the clean-main ones, identical to a baseline run at `9f735dfd`: the two per-token cap specs in `accreditation.test.ts` and the six `accreditation-idempotency.test.ts` specs.
+  - No existing spec started getting 429s now that 400s and 502s consume.
+- `npm run typecheck` and eslint on the changed files are clean.
+- Mutation matrix. Run in an isolated `git archive` copy on Redis DB 6, `--retry=0`. Each mutant is killed by the spec named for it, and the control is green:
+
+  | Mutant | Killed by |
+  |---|---|
+  | `/request` [500] | the 422 spec |
+  | `/request` [422] | the 500 spec |
+  | `/request` reverted to `skipFailedRequests` | the abort spec |
+  | `/verify` [504] | the 503 spec |
+  | `/verify` [503] | the 504 spec |
+  | `/verify` +400 | the 400 spec |
+  | `/verify` +403 | the 403 spec |
+  | `/verify` +502 | the cap spec |
+  | `/verify` reverted to `skipFailedRequests` | the 400, 403 and cap specs |
+
+  The abort spec was re-probed after the simplify pass: control green, the `skipFailedRequests` mutant red.
+
+**Sibling-test prose this change made false, narrowed or deleted:**
+- `accreditation-idempotency.test.ts`: the 503 canary's comment, title and inline note no longer say the limiter declares `skipFailedRequests`.
+- `bridge-register-rate-limit-skip-failed.test.ts`: the header clause citing `accreditationVerifyLimiter` as its per-IP `skipFailedRequests` precedent is deleted.
+- `custody-limiter-cpu-amplification.test.ts`: the carve-out (c) item pointed at the deleted "4xx-refund canaries". It is deleted; its (b) already names the real-path `verifyHiveSignature` companions.
+
+**User decision (2026-10-06).** Three of the new consume specs hold a nearly full `/verify` bucket in Redis while one request runs a slow real-HAF lookup (about 7-18 s): the 400-prefilled cap 502, the sanctioned 403, and to a lesser degree the 400. In the full suite, a concurrent file's `tests/setup.ts` flush, or `accreditation-idempotency.test.ts` deleting `rl:accred-verify:*`, can wipe that bucket mid-spec. vitest retries 3 times with a fresh IP each time. The user chose to accept the exposure and note it here. `backend-latest-op-haf-lookups-walk-the-blocks-index` shortens the window to about 0.1 s.
+
+**Out-of-scope observations, for follow-up filing if wanted**
+1. The SPA aborts every fetch at 30 s (`DEFAULT_TIMEOUT_MS` in `frontend/src/api.js`). The `/verify` broadcast timer (`DEFAULT_BROADCAST_TIMEOUT_MS`, 30 s) only starts after the HAF reads. So when a slow `/verify` reaches the 504, the SPA has usually aborted already, and the abort consumes the slot. The 504 refund therefore helps SPA traffic only when the reverse proxy does not pass the client abort on to the backend, which was not checked, as in the task. One tab cannot reach the 5-per-minute cap alone: 30 s timeout plus a 5 s cooldown is about 2 requests a minute. Reloads, repeated link opens or a shared IP can.
+2. `frontend/src/pages/accreditation-verify.js` shows a 429 `RATE_LIMITED` as the terminal `error` state with "Request new", because the 429 carries no `details.retriable`. Clicking "Request new" spends a `/request` slot although the token is still valid. This is ui zone.
+3. Pre-existing and left alone: the `accreditation.test.ts` file header says "verifyHiveSignature is NOT involved here", but the file mocks it through `MOCK_VERIFY_SIGNATURE` for `/request`.
+
+**[TODO Architect] addition.** The same solutions entry, `skip-failed-requests-jwt-required-credential-verify-carve-out-2026-05-17.md`, also names `accreditation-request` in its triage list ("No (one-shot ceremony like upgrade, accreditation-request) → adopting `skipFailedRequests` is non-controversial"), not only in its audit grid. No api-contracts change is needed: `accreditation.md` states no refund policy.
+
+## Architect re-review (2026-10-06) — HELD PENDING FIXES:
+
+Reviewed `f748b67c` with `/ce-code-review` (correctness, security, adversarial, testing, reliability, project-standards, learnings; the one finding was confirmed by an independent validator). Scope 1-3 and AC1-AC4 are met. The testing reviewer re-measured four of the nine mutant kills (`/request` back to `skipFailedRequests`, `/verify` +403, `/verify` +502, `/verify` [503] only), and each was killed by its named spec. Three items:
+
+1. **The backend suite is red: lower the canary pin.** Deleting the clause-(c) `Real-path companion:` claim from the `custody-limiter-cpu-amplification.test.ts` header was right, but `tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts` pins each file's count of unstructured companion claims and still pins that file at 2. Its spec "every file-naming prose claim is in the backlog at exactly its pin, bounded by the landing snapshot" fails at `f748b67c` and on `main` ("1 unstructured companion claim(s) remain, pinned at 2"); it passes 12/12 at the base `278b6490`. In `DEFERRED_FREE_PROSE`, change `'backend/tests/routes/custody-limiter-cpu-amplification.test.ts': 2,` to `'backend/tests/routes/custody-limiter-cpu-amplification.test.ts': 1,`. Leave that file's entry in `LANDING_FREE_PROSE` at 2. The signal's per-file runs did not include `tests/eslint/`: run that directory alone too, and give its result in the signal block.
+2. **Narrow the `accreditationRequestLimiter` comment.** Replace "the handler still stores the token and sends the mail" with "the handler keeps running", and change nothing else in that comment. When the client closes first and `sendMail` then fails, the slot was already settled as consumed at the `close` event (status still 200) and no mail goes out, so the current clause also claims that case.
+3. **Delete one false sentence from the `accreditation.test.ts` file header** (your out-of-scope observation 3). In the "Mocking justification" paragraph, delete "verifyHiveSignature is NOT involved here (the /verify route is rate-limited but not auth-gated)." and change nothing else. The paragraph then reads "...reproduced against real Hive). The carve-out covers only broadcast error staging; ...". The file does mock `verifyHiveSignature`, through `MOCK_VERIFY_SIGNATURE` on `/request`.
+
+The three edits together were planted on a `git archive` copy of `main`'s backend at `64bca0fb`: `tests/eslint/` passes 146/146 with them. Items 2 and 3 are comment-only and need no new spec.
+
+Triage of the rest (user, 2026-10-06):
+- Accepted, not fixed here: `/verify` is keyed by IP and now counts junk-token 400s, so a client that shares an IP with the user (behind a NAT, for example) can keep that IP at 429. AC3 asks for the 400 to consume. A note on `backend-accreditation-verify-requires-the-account-session` asks for the limiter to be keyed by account once that route requires a session.
+- Dismissed: no spec runs the real `verifyHiveSignature` on `/request` (true before this commit too); the verify page's "Request new" after a 429 spends a `/request` slot on a token that is still valid (your observation 2); the 504 refund on a broadcast whose outcome is uncertain (the task prescribed it, and the base behaved the same way); your observation 1.
+
+## Backend re-review signal (2026-10-06, commit 1783194b)
+
+Landed in `1783194b` (`git merge-base --is-ancestor 1783194b main` checked).
+
+1. `DEFERRED_FREE_PROSE` pins `custody-limiter-cpu-amplification.test.ts` at 1. Its `LANDING_FREE_PROSE` entry stays at 2.
+2. The `accreditationRequestLimiter` comment now ends "the handler keeps running." Nothing else in that comment changed.
+3. The `accreditation.test.ts` "Mocking justification" paragraph lost the sentence "verifyHiveSignature is NOT involved here (the /verify route is rate-limited but not auth-gated)." Nothing else changed; the remaining text was not reflowed.
+
+**Verification**
+- `tests/eslint/` run alone with `--retry=0`, on Redis DB 9 so the `tests/setup.ts` key flush left the dev DB alone:
+  - Before the fix: 145/146. The failure was "every file-naming prose claim is in the backlog at exactly its pin, bounded by the landing snapshot" ("1 unstructured companion claim(s) remain, pinned at 2").
+  - After the fix: 146/146, exit 0.
+- `npm run typecheck` exit 0. eslint on the three changed files exit 0. The pre-commit anchor gate passed.
+- No test outside `tests/eslint/` reads either edited file's source text. This was checked by grepping the `readFileSync` and `readdirSync` users under `backend/tests/`. No other spec was re-run, because items 2 and 3 are comment-only.
+
+**Learnings checkpoint.**
+- Existing entries: one entry contradicts a fact from this task. `skip-failed-requests-jwt-required-credential-verify-carve-out-2026-05-17.md` still has the `accreditationRequestLimiter` grid row, and that entry is already on the [TODO Architect] list.
+- New entries: none qualified. The canary's failure text already names the fix ("Lower the pin"). The miss was a slip in which tests were run.
+
 ## The signup verify page asks for the signup password (archived 2026-10-06) — one round; clean; three left-open behaviors accepted; NULL-hash note added to the backend half
 
 ### Architect archive note (2026-10-06, round 1)
@@ -79,172 +248,3 @@ Landed on main in one commit, verified with
    and `seed-phrase.spec.js` enter the signup password;
    `email-signup.spec.js` also asserts the `/verify` request body.
 
-**Decisions the task left open:**
-
-1. **429 `RATE_LIMITED` keeps the form with a wait message.** Wrong-password
-   retries now count against `verifyLimiter` (10 per hour per IP). The
-   resume form cannot help a row the link has not confirmed yet, so
-   dropping to it would be a dead end.
-2. **Any other failure (500, network, timeout) keeps the form with the
-   retry message**, for the same reason. If the confirm landed and only the
-   answer was lost, the retry gets 400 and moves to the resume form, which
-   then works.
-3. **The wrong-password copy names the way out:** "If you forgot it, start
-   a new signup with the same email address." The `/signup` upsert's
-   `DO UPDATE` rewrites a pending row E's password and token and mails a new
-   link. The form also carries the existing "Start a new signup instead"
-   link.
-4. **The busy state is the button label** (`seedPhrase.verifying`), as the
-   resume form on the same page does, rather than a spinner phase that would
-   hide the form between attempts.
-
-**Verification:**
-
-- Frontend unit suite: 94 files, 2227 tests, exit 0.
-- E2E on the test-mode stack (`./deploy.sh restart`, `test-db-up`,
-  `test-up`; dev routing restored with `./deploy.sh up` afterwards):
-  `email-signup.spec.js` and `seed-phrase.spec.js` 2/2 passed, `--retries=0`.
-  The stack ran the current backend, which ignores `password`, so this run
-  proves the new form and request shape, not the 401 branch.
-- The 401, 503 and 429 branches were driven in a real browser against the
-  rebuilt bundle with `/api/auth/verify` answered by `page.route` (401, then
-  503, then 429, then 200 `choose`) at 1280px and 390px wide. Each kept the
-  form with its message, every request carried the token and the typed
-  password, the last reached `choose`, and nothing overflowed horizontally.
-
-**Also in this commit:** the three bare `form button[type="submit"]`
-locators in these two specs (`email-signup` 1, `seed-phrase` 2) are scoped
-to `[x-data="signupPage"]` and `[x-data="recoverPage"]`. Before this the
-specs failed at those clicks. `ui-e2e-bare-submit-locators-clash-with-reauth-modal`
-lists them, and its pickup re-grep will find them gone.
-
-**For deploy:** the backend sibling
-(`backend-signup-verify-requires-the-signup-password`) is still in
-`pending/`. This commit can ship first: the current `/verify` ignores the
-extra field.
-
-## The accreditation verify page posts the token without a session (archived 2026-10-06) — one round; clean after one in-place comment fix; ORCID copy gap and cross-tab post dismissed; backend half unblocked
-
-### Architect archive note (2026-10-06, round 1)
-
-- **Review:** `/ce-code-review` on `9e853eea~1..8f9a082a` (correctness, security, adversarial in-process, testing, frontend races, project-standards, learnings; validator on the two merged findings). No P0/P1. The full frontend unit suite on a git-archive copy of `8f9a082a`: 92 files, 2179 tests, exit 0, matching the signal. Testing planted 11 mutants: 9 killed; the two survivors (the `SIGN_IN_CODES` branch moved below `_isRetriable`; the `_mounted` guard in `handleConnect` dropped) dismissed as low-risk. Two lenses traced the page's states (8 real-Alpine scenarios, 5 named race scenarios): no double post, loop, stuck `loading`, lost token, or POST without a session.
-- **#1 (P2, dismissed):** the sign-in modal's ORCID line navigates to `/login` in the same tab and ORCID login lands on `/papers`, so the captured token is lost, and `verify.signInMessage` does not say to open the link again. The signal's "which the sign-in copy already asks for" is false: only `verify.mismatchMessage` says it. Dismissed on reachability: an account that requests email accreditation signs in inside the modal (light signups are accredited by the `/confirm` and `/link` accreditation cascade in `signup-verify.ts`; pure self-custody accounts have no ORCID login), so only an off-path click on the ORCID line reaches it.
-- **#2 (P3, fixed in place by the architect, `faffe9f9`):** deleted "Each comes before the token is read, so" from the `SIGN_IN_CODES` docblock. `/verify` has no auth middleware yet, so the server-side ordering described the backend task.
-- **#3 (advisory, dismissed):** a sign-in in another tab also posts the captured token; the watcher comment names that case. Until the backend task lands this is narrower than the old post-on-load; after it, a sign-in as the wrong account gets the mismatch state.
-- **Noted, no action:** two tabs in the sign-in state both post on one sign-in, and `/verify` has no per-token lock, so near-simultaneous posts may both broadcast (backend concern). Testing gap on the code strings is covered by the backend task's AC1/AC2 plus the unblock note appended to it.
-- **Sibling drift:** `64bca0fb` and `141840d7` (other ui tasks: mailbox-bound and sanctioned states, timeout naming, copy) landed on the verify page and its spec after the reviewed head; not part of this review.
-- **[TODO Architect] done:** `backend-accreditation-verify-requires-the-account-session` moved `blocked/` → `pending/` with an unblock note naming the codes the page matches.
-- **Learnings checkpoint:** existing entries grepped for the verify page and route symbols; the `skip-failed-requests-jwt-required-credential-verify-carve-out` grid row for `accreditationVerifyLimiter` (JWT-required ❌) still holds until the backend task lands, and no entry claims the page posts on load. No new entry: the adopted-session re-post rationale is carried by the comment in `_verify` and by `_endSession` in `auth.js`.
-
-**Owner:** ui
-**Created:** 2026-10-05
-**Priority:** high
-
-Filed from the accreditation and Web of Trust audit (finding 4).
-
-## Why
-
-`POST /api/accreditation/verify` takes the emailed token as its only credential. Whoever opens
-the link accredits the account that requested it, under the name the requester typed. A requester
-can name someone else's institutional address, and `accreditationVerifyPage.init()`
-(`frontend/src/pages/accreditation-verify.js`) posts the token as soon as the page loads.
-
-**Decision (user, 2026-10-05):** `/verify` will require the session of the account the link was
-requested for. The backend half is `backend-accreditation-verify-requires-the-account-session`,
-which waits in `blocked/` until this task is archived: if the backend landed first, this page's
-unauthenticated POST would answer 401 and the page would show its generic failure state.
-
-This task is compatible with the backend as it stands. The route has no auth middleware today, so
-it ignores an `Authorization` header.
-
-## Scope
-
-1. `verifyAccreditation` (`frontend/src/api.js`) sends the session. It uses the plain `request`
-   helper today; `requestAccreditation`, next to it, uses `authenticatedRequest`.
-2. The page does not post while no session exists. It shows a state that says the link has to be
-   opened while signed in as the account that requested the accreditation, and offers the app's
-   existing sign-in entry point (`frontend/src/components/sign-in-modal.js`). After a sign-in on
-   that page it goes on with the token it captured in `init()`. The session is kept in
-   `localStorage`, so a link opened in a new tab of a browser that is already signed in has it.
-3. Two answers the backend task will add, both leaving the token usable:
-   - 401 (`UNAUTHORIZED`, or the session-ended codes `authenticatedRequest` already handles):
-     show the sign-in state, not "Request New".
-   - 403 `ACCREDITATION_ACCOUNT_MISMATCH`: say that the link belongs to a different account and
-     that the user should sign in as that account and open the link again. No "Request New"
-     button on this state.
-4. New copy goes through the i18n flow the other pages use.
-
-## Out of scope
-
-- How the page maps the other error codes. `architect-audit-frontend-security-surface` covers
-  this file.
-- A confirm click before posting. The session requirement was chosen instead.
-
-## Acceptance criteria
-
-1. With no session the page sends no request and shows the sign-in state. After sign-in it posts
-   once, with the token from the URL.
-2. With a session the POST carries the `Authorization` header.
-3. A 403 `ACCREDITATION_ACCOUNT_MISMATCH` answer shows the different-account copy and no
-   "Request New" button. A 401 answer shows the sign-in state.
-4. Comments follow root `CLAUDE.md` "Comment anchors".
-
-## [TODO Architect] at archive
-
-- Move `backend-accreditation-verify-requires-the-account-session` from `blocked/` to `pending/`.
-
-## UI implementation signal (2026-10-06, commits 9e853eea, 39439ca1, 8f9a082a)
-
-Landed on main in three commits, each verified with
-`git merge-base --is-ancestor <sha> main`:
-
-- `9e853eea`: the two `form button[type="submit"]` locators in
-  `accreditation.spec.js` scoped to `[x-data="accreditationPage"]` (decision 1).
-- `39439ca1`: the change itself: `verifyAccreditation`, the page, the four
-  `verify.*` keys in all sixteen locales, the STUBS.md sweep, and the unit and
-  E2E specs.
-- `8f9a082a`: three comments in the new specs narrowed to what the page does
-  (verification findings, below).
-
-**Decisions taken with the user before submitting:**
-
-1. **Locator fold-in.** The request-and-verify E2E spec failed at its first
-   click on the known strict-mode clash with the always-rendered re-auth modal
-   form, so the Authorization assertion added to it never ran. Fixed in its own
-   commit, the same fix `edit-paper.spec.js` received.
-2. **Adopted session posts again.** On a `SESSION_EXPIRED` or
-   `SESSION_INVALIDATED` answer the auth store can adopt a newer session another
-   tab saved instead of signing out (`_endSession` ->
-   `_adoptStoredSessionOtherThan`). The page would then show "Sign in" under a
-   live session. `_verify` remembers the session token the request carried; in
-   the sign-in branch, a different store token means the page posts again with
-   it, and no token left means the sign-in state. A server `UNAUTHORIZED` with an
-   unchanged token shows the sign-in state, so there is no loop. A newer session
-   of another account lands on the mismatch state once the backend task is in.
-
-**Scope 1 / AC2.** `verifyAccreditation` (`frontend/src/api.js`) goes through
-`authenticatedRequest`. `api.test.js` asserts `Authorization: Bearer <token>` on
-`POST /api/accreditation/verify`; both E2E flows assert the bearer header.
-
-**Scope 2 / AC1.** `init()` captures the URL token, registers
-`$watch('$store.auth.token')`, and calls `_verifyIfSignedIn()`. With no session
-it shows the `signin` state (title, the "has to be opened while signed in as the
-requesting account" copy, and a Sign in button calling `auth.connect()`) and
-sends nothing. Any later session token while in that state (the page's button,
-the header, another tab's storage event) posts the captured token once.
-E2E "verify link opened without a session asks for sign-in, then posts with the
-session" drives this through the real modal (Keychain path, `/api/auth/session`
-stubbed with a minted JWT): zero requests before sign-in, exactly one after,
-with the token from the URL and the new bearer.
-
-**Scope 3 / AC3.** `SIGN_IN_CODES` (`UNAUTHORIZED`, `SESSION_EXPIRED`,
-`SESSION_INVALIDATED`) map to the `signin` state, never to "Request New".
-`ACCREDITATION_ACCOUNT_MISMATCH` maps to a `mismatch` state with its own title
-and the different-account copy, and no button. E2E "verify link opened as a
-different account shows the different-account state" asserts the copy and zero
-"Request New Accreditation" links (the stubbed 403 carries a different message,
-so the assertion would catch raw server text).
-
-**Scope 4.** Keys `verify.signInTitle`, `verify.signInMessage`,
-`verify.mismatchTitle`, `verify.mismatchMessage` in all sixteen locales, English
-stubs in the fifteen others, listed under
