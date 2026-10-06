@@ -1,3 +1,154 @@
+## The verify, signup and request surfaces explain a mailbox that already backs another account (archived 2026-10-06) — one round; two in-place fixes; release link and refusal exits folded into the release-flow task; two decisions open with the user
+
+### Architect archive note (2026-10-06)
+
+- **Review:** `/ce-code-review` full path on `64bca0fb`, `141840d7`, `8a169708` (synthetic base excluding the unrelated `faffe9f9`), seven reviewers plus the validator. Implementer claims re-measured at `8a169708`: full frontend suite 94 files / 2251 tests, exit 0; 11 of 12 mutants killed, the survivor (handler order) equivalent because the two finalize handlers match disjoint codes; 13 keys in all 16 locales, 195 STUBS.md lines, no emdash.
+- **#1 (P1, validator confirmed), OPEN with the user:** `hasUnliftedSanction` fails closed (no HAF pool or a query error answers true), so a HAF failure at finalize answers 403 `ACCREDITATION_SANCTIONED` after the finalize UPDATE; the new `unaccredited` phase shows "not eligible" with no retry, where the old generic path reached the 1-hour stuck-resume branch on re-submit. The ui routing stays (right for a real sanction). Proposed: new backend task `backend-failed-sanction-read-is-not-a-sanction` (high): HTTP routes answer a retriable 503 on a failed read (signup finalize, `/api/accreditation/verify`, ORCID callback, metadata edit), the wot job keeps failing closed, and the accepted-tradeoff comment in `accreditation-metadata.ts` goes. Not filed until the user says yes.
+- **#2 (P3):** the `_isNetworkError` docblock and its spec comment said DOMExceptions carry no `.code`; fixed in place in `d3b7e34d`.
+- **Implementer follow-ups:** contract "AbortError-after-success" narrowed in `a3d138f7`. The deferred release link (Scope 1) and the missing "not yours" exits in `verify.mailboxBoundMessage(Unnamed)` and `seedPhrase.unaccreditedOrcidLinked` folded into `ui-accreditation-release-flow` (scope item 4, AC5). Finalize sanction fail-closed is #1.
+- **OPEN with the user (design):** signup plus login reveals a bound address. Under § 2 a bound address's signup creates no row, so a login with it answers 401, against 409 `PENDING_UNVERIFIED` for an unbound address's pending row. Proposed: amend § 2 and `backend-signup-finalize-claims-mailbox-binding` before it starts so the signup creates the same pending row in both cases and only the mail differs. Not applied until the user says yes.
+- **No change:** `common.mailboxPurpose` describes the keyed hash and the one-account rule before `backend-mailbox-binding-registry` implements them; that task makes it true.
+- **Dismissed:** timeout copy "Network connection lost" (the retry route is the fix; before this diff a timeout fell to the generic failure); `/link` refusal for an already-accredited Hive account (theoretical); finalize `bound_to` shown to a former mailbox holder (matches the design's notice mail); template-substring tests (11 of 12 mutants killed, AC5 E2E is the planned cover); the verify page's `console.warn` before its semantic branches (predates the diff).
+- **Learnings checkpoint:** solutions/ grepped for `hasUnliftedSanction`, `DOMException`, `.code` claims and the 30s timeout name; no entry is contradicted (`reviewer-discovery-error-class-stack` already names `TimeoutError`). No new entry: #1 is the consumer-side shape `new-fail-closed-outcome-must-not-reuse-an-existing-sentinel` already describes, and the DOMException code fact is in `d3b7e34d`'s message.
+
+**Owner:** ui
+**Created:** 2026-10-06
+**Priority:** high
+
+Filed from `architect-accreditation-mailbox-binding-design` (decisions with the user, 2026-10-06).
+Design: `ARCHITECTURE.md` § 2 "Credential Bindings". Backend counterpart:
+`backend-mailbox-binding-registry`, `backend-signup-finalize-claims-mailbox-binding`.
+
+## Why
+
+`frontend/src/pages/accreditation-verify.js` renders every non-retriable error as "Verification
+Failed" with a "Request New Accreditation" button, has no branch for the existing 403
+`ACCREDITATION_SANCTIONED`, and reads only `res.data.username` on success. A refusal because the
+mailbox backs another account would show as a generic failure that invites another attempt. The
+request form says nothing about what the address is used for, and the binding's legal basis needs
+the purpose stated before the address is submitted.
+
+## Scope
+
+1. **Verify page:** a state for 409 `MAILBOX_ALREADY_BOUND`: the mailbox already backs
+   `details.bound_to`; the way through is to sign in to that account and release its
+   accreditation (link to the release surface once `ui-accreditation-release-flow` lands;
+   until then "or contact PEvO"). No "Request New Accreditation" button in this state. While in
+   this file: a state for 403 `ACCREDITATION_SANCTIONED` without that button either, and treat
+   `AbortSignal.timeout`'s `TimeoutError` as retriable like the other network errors, since the
+   backend keeps the token on a timeout.
+2. **Signup finalize:** when `/confirm` or `/link` answers 409 `MAILBOX_ALREADY_BOUND` (no
+   session), the signup-verify page says the account was created but not accredited because the
+   mailbox already backs another account, with the same way through and a sign-in link; it must
+   not suggest signing up again.
+3. **Request form (`frontend/src/pages/accreditation.js`) and the signup form:** one sentence under
+   the e-mail field naming the legitimate interest and the right to object: the address is used to
+   verify an institutional affiliation and, to prevent abuse, to keep one accredited account per
+   mailbox; a keyed hash of it is stored for that purpose and the holder can object; link to the
+   privacy notice route. Nothing in the UI reveals whether an address is bound: the request answer
+   is uniform by design and the explanation arrives by mail.
+4. New strings in `en.json`, stubbed in all 15 other locales and recorded in `STUBS.md` per the
+   convention; no emdash in UI copy.
+
+## Out of scope
+
+- The release action itself and the admin console (`ui-accreditation-release-flow`).
+- The settings e-mail flows (they never bind).
+
+## Acceptance criteria
+
+1. A 409 `MAILBOX_ALREADY_BOUND` on `/verify` renders the bound-account state naming
+   `details.bound_to`, with no re-request button; the sanction code renders its own state.
+2. A `TimeoutError` from the verify POST lands in the retry state.
+3. The finalize refusal renders the created-but-unaccredited explanation.
+4. The request and signup forms carry the purpose sentence and the privacy link.
+5. Unit tests for the new branches; E2E for the verify state against the real backend once the
+   backend task is in.
+
+## UI implementation signal (2026-10-06, commits 64bca0fb, 141840d7, 8a169708)
+
+Landed on main, each verified with `git merge-base --is-ancestor <sha> main`:
+
+- `64bca0fb`: the change: both verify pages, the two form sentences, 13 keys in all sixteen
+  locales, the STUBS.md sweep `### Added 2026-10-06 (ui-accreditation-binding-refusal-states)`,
+  and the unit specs.
+- `141840d7`: fixes from the adversarial verification (below): copy narrowed to what holds, the
+  second way through, per-state copy and href pins in the specs.
+- `8a169708`: `/ce-simplify-code` pass: test tables and two comments the change made false.
+- Also: `db703b76` files `ui-request-and-signup-copy-promises-a-link-a-bound-address-never-gets`;
+  `aa2da86e` is the learnings refresh (below).
+
+**Decisions taken with the user before submitting:**
+
+1. **Privacy link.** No privacy notice route exists (the privacy task is on hold), so "You can
+   object to this." links to `/contact`. Swap in the notice once it ships.
+2. **Finalize refusals.** The signup-verify `unaccredited` phase covers 409 `MAILBOX_ALREADY_BOUND`
+   and the two finalize refusals that already exist, 409 `ORCID_ALREADY_LINKED` and 403
+   `ACCREDITATION_SANCTIONED`. Before this they showed "creation failed" and sent the user back
+   to the username step of an account that was already finalized.
+3. **Second way through.** The finalize mailbox copy also names the design's route for a holder
+   who is someone else: "If {account} is not yours, sign in to this account and request
+   accreditation with another institutional address or your ORCID iD."
+4. **Link-promising copy.** `accreditation.emailHint`, `accreditation.checkEmail` and
+   `signup.checkEmailDescription` promise a verification link that a bound address never gets.
+   Filed as a separate ui task (`db703b76`) instead of re-stubbing translated keys here.
+
+**Scope 1 / AC1, AC2.** `accreditation-verify.js`: `MAILBOX_ALREADY_BOUND` sets `boundTo` from
+`details.bound_to` (empty when absent) and shows `mailbox_bound`, which names `@<bound_to>` or
+uses the unnamed copy. `ACCREDITATION_SANCTIONED` shows `sanctioned`. Neither state has "Request
+New"; both link to `/contact`. `_isNetworkError` matches `TimeoutError` (what `AbortSignal.timeout`
+in `api.js` rejects with) and it takes the 5s cooldown; the false "AbortError = fetch timed out"
+comments in the page and its spec are narrowed.
+
+**Scope 2 / AC3.** `signup-verify.js`: `_handleFinalizeRefusal` runs after
+`_handleAmbiguousBroadcastOutcome` on `/confirm` and `/link` and moves to `unaccredited`: title
+"Account set up, but not accredited" ("created" was untrue on `/link`), the reason per code, sign-in
+(`/login`) and contact links, no session, no `/signup` link. `_clearUsernameTimer` replaces three
+inline copies. `details.bound_to` is unspecified for finalize, so the name shows only when present.
+
+**Scope 3 / AC4.** Under the e-mail field of `accreditation.js` and `signup.js`: the purpose,
+the legitimate interest, the keyed hash, and the objection link (decision 1). Hidden on the
+signup ORCID branch (`x-show="!orcidToken"`), which binds no address. Nothing reveals a binding.
+
+**Scope 4.** Keys `verify.{mailboxBoundTitle,mailboxBoundMessage,mailboxBoundMessageUnnamed,
+sanctionedTitle,sanctionedMessage}`, `seedPhrase.{unaccreditedTitle,unaccreditedMailboxBound,
+unaccreditedMailboxBoundUnnamed,unaccreditedOrcidLinked,unaccreditedSanctioned,unaccreditedSignIn}`,
+`common.{mailboxPurpose,mailboxPurposeObject}`: 195 STUBS.md lines, one heading. The rewording in
+`141840d7` stayed in place under that heading (every locale still held the English stub). No emdash.
+
+**AC5.** Unit specs for every branch. E2E deferred: no backend code sends `MAILBOX_ALREADY_BOUND`
+yet; add it with the backend task.
+
+**Verification.**
+- Unit: full frontend suite, `npx vitest run` exit 0, 94 files, 2251 tests, after each commit.
+- Adversarial workflow on `64bca0fb` (19 agents: mutation, real-Alpine render, contract, copy
+  lenses, a skeptic per finding): 15 findings, 12 confirmed (all low after the skeptics), 3 refuted.
+  The in-scope ones are fixed in `141840d7`. The five mutants that had survived (title swap,
+  message swap, form href, signup-verify href, ORCID-branch `x-show`) are killed afterwards.
+- Real Chromium (vite dev + repo Playwright): both refusal states, the `unaccredited` phase and
+  both forms at 1280 and 390 px and in Arabic; copy and links correct, no console errors.
+- `/ce-code-review` not run: architect-owned per `agents/ui/CLAUDE.md`.
+
+**Learnings checkpoint.** `/ce-compound-refresh` on `reviewer-discovery-error-class-stack` and
+`post-broadcast-grace-period-record-must-follow-permanent-rethrow-cleanup` (`aa2da86e`): both named
+the 30s timeout `AbortError`. No new entry: the `TimeoutError` fact now lives in those entries and
+in the page's comments.
+
+**Out of scope, for follow-up filing.**
+- **Backend, finalize sanction read fails closed to 403.** `hasUnliftedSanction` returns true with
+  no HAF pool or on a query error, and `broadcastAccreditationAndSeed` runs it after the finalize
+  UPDATE with no HAF gate before it. A HAF outage at signup finalize therefore answers 403
+  `ACCREDITATION_SANCTIONED`, which this page now shows as "not eligible for accreditation" (it
+  used to show "creation failed"). Suggest answering a retriable 503 when the read fails.
+- **Backend design, login reveals a bound address.** `backend-signup-finalize-claims-mailbox-binding`
+  scope 1 creates no row for a bound address. A login with that address and the chosen password
+  then answers 401, against 409 `PENDING_UNVERIFIED` for an unbound one, so signup plus login
+  reveals the binding. Needs a decision before that task starts.
+- **Architect zone.** `api-contracts/accreditation.md` (24h grace-period paragraph) says
+  "AbortError-after-success"; the client timeout is a `TimeoutError`.
+- **Release link.** When `ui-accreditation-release-flow` lands, link its surface from the verify
+  `mailbox_bound` state and the finalize mailbox copy (this task's scope item 1).
+
 ## The two accreditation limiters refund requests that already did their work (archived 2026-10-06) — two rounds; three hold fixes landed; one pre-existing test-header finding folded into the comment pass; two solutions entries refreshed
 
 ### Architect archive note (2026-10-06, round 2)
@@ -97,154 +248,3 @@ Landed in `f748b67c` (`git merge-base --is-ancestor f748b67c main` checked).
 - Red before the fix. Against the unchanged limiters, the four consume specs failed for the expected reason:
   - abort: 200, expected 429
   - 400: 400, expected 429
-  - cap 502: 502, expected 429
-  - sanctioned 403: 403, expected 429
-- The refund specs (422, 500, 503, 504) passed before and after, as characterization.
-- After the fix, each affected file was run alone: `accreditation.test.ts`, `accreditation-verify-sanctioned.test.ts`, `accreditation-idempotency.test.ts`, `misc.test.ts`, `bridge-register-rate-limit-skip-failed.test.ts`, `custody-limiter-cpu-amplification.test.ts`, `lib/logger-redact`, `lib/idempotency`, `lib/pending-decrement-queue`, `middleware/rateLimit`, `middleware/rateLimit-in-memory`.
-  - The only failures are the clean-main ones, identical to a baseline run at `9f735dfd`: the two per-token cap specs in `accreditation.test.ts` and the six `accreditation-idempotency.test.ts` specs.
-  - No existing spec started getting 429s now that 400s and 502s consume.
-- `npm run typecheck` and eslint on the changed files are clean.
-- Mutation matrix. Run in an isolated `git archive` copy on Redis DB 6, `--retry=0`. Each mutant is killed by the spec named for it, and the control is green:
-
-  | Mutant | Killed by |
-  |---|---|
-  | `/request` [500] | the 422 spec |
-  | `/request` [422] | the 500 spec |
-  | `/request` reverted to `skipFailedRequests` | the abort spec |
-  | `/verify` [504] | the 503 spec |
-  | `/verify` [503] | the 504 spec |
-  | `/verify` +400 | the 400 spec |
-  | `/verify` +403 | the 403 spec |
-  | `/verify` +502 | the cap spec |
-  | `/verify` reverted to `skipFailedRequests` | the 400, 403 and cap specs |
-
-  The abort spec was re-probed after the simplify pass: control green, the `skipFailedRequests` mutant red.
-
-**Sibling-test prose this change made false, narrowed or deleted:**
-- `accreditation-idempotency.test.ts`: the 503 canary's comment, title and inline note no longer say the limiter declares `skipFailedRequests`.
-- `bridge-register-rate-limit-skip-failed.test.ts`: the header clause citing `accreditationVerifyLimiter` as its per-IP `skipFailedRequests` precedent is deleted.
-- `custody-limiter-cpu-amplification.test.ts`: the carve-out (c) item pointed at the deleted "4xx-refund canaries". It is deleted; its (b) already names the real-path `verifyHiveSignature` companions.
-
-**User decision (2026-10-06).** Three of the new consume specs hold a nearly full `/verify` bucket in Redis while one request runs a slow real-HAF lookup (about 7-18 s): the 400-prefilled cap 502, the sanctioned 403, and to a lesser degree the 400. In the full suite, a concurrent file's `tests/setup.ts` flush, or `accreditation-idempotency.test.ts` deleting `rl:accred-verify:*`, can wipe that bucket mid-spec. vitest retries 3 times with a fresh IP each time. The user chose to accept the exposure and note it here. `backend-latest-op-haf-lookups-walk-the-blocks-index` shortens the window to about 0.1 s.
-
-**Out-of-scope observations, for follow-up filing if wanted**
-1. The SPA aborts every fetch at 30 s (`DEFAULT_TIMEOUT_MS` in `frontend/src/api.js`). The `/verify` broadcast timer (`DEFAULT_BROADCAST_TIMEOUT_MS`, 30 s) only starts after the HAF reads. So when a slow `/verify` reaches the 504, the SPA has usually aborted already, and the abort consumes the slot. The 504 refund therefore helps SPA traffic only when the reverse proxy does not pass the client abort on to the backend, which was not checked, as in the task. One tab cannot reach the 5-per-minute cap alone: 30 s timeout plus a 5 s cooldown is about 2 requests a minute. Reloads, repeated link opens or a shared IP can.
-2. `frontend/src/pages/accreditation-verify.js` shows a 429 `RATE_LIMITED` as the terminal `error` state with "Request new", because the 429 carries no `details.retriable`. Clicking "Request new" spends a `/request` slot although the token is still valid. This is ui zone.
-3. Pre-existing and left alone: the `accreditation.test.ts` file header says "verifyHiveSignature is NOT involved here", but the file mocks it through `MOCK_VERIFY_SIGNATURE` for `/request`.
-
-**[TODO Architect] addition.** The same solutions entry, `skip-failed-requests-jwt-required-credential-verify-carve-out-2026-05-17.md`, also names `accreditation-request` in its triage list ("No (one-shot ceremony like upgrade, accreditation-request) → adopting `skipFailedRequests` is non-controversial"), not only in its audit grid. No api-contracts change is needed: `accreditation.md` states no refund policy.
-
-## Architect re-review (2026-10-06) — HELD PENDING FIXES:
-
-Reviewed `f748b67c` with `/ce-code-review` (correctness, security, adversarial, testing, reliability, project-standards, learnings; the one finding was confirmed by an independent validator). Scope 1-3 and AC1-AC4 are met. The testing reviewer re-measured four of the nine mutant kills (`/request` back to `skipFailedRequests`, `/verify` +403, `/verify` +502, `/verify` [503] only), and each was killed by its named spec. Three items:
-
-1. **The backend suite is red: lower the canary pin.** Deleting the clause-(c) `Real-path companion:` claim from the `custody-limiter-cpu-amplification.test.ts` header was right, but `tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts` pins each file's count of unstructured companion claims and still pins that file at 2. Its spec "every file-naming prose claim is in the backlog at exactly its pin, bounded by the landing snapshot" fails at `f748b67c` and on `main` ("1 unstructured companion claim(s) remain, pinned at 2"); it passes 12/12 at the base `278b6490`. In `DEFERRED_FREE_PROSE`, change `'backend/tests/routes/custody-limiter-cpu-amplification.test.ts': 2,` to `'backend/tests/routes/custody-limiter-cpu-amplification.test.ts': 1,`. Leave that file's entry in `LANDING_FREE_PROSE` at 2. The signal's per-file runs did not include `tests/eslint/`: run that directory alone too, and give its result in the signal block.
-2. **Narrow the `accreditationRequestLimiter` comment.** Replace "the handler still stores the token and sends the mail" with "the handler keeps running", and change nothing else in that comment. When the client closes first and `sendMail` then fails, the slot was already settled as consumed at the `close` event (status still 200) and no mail goes out, so the current clause also claims that case.
-3. **Delete one false sentence from the `accreditation.test.ts` file header** (your out-of-scope observation 3). In the "Mocking justification" paragraph, delete "verifyHiveSignature is NOT involved here (the /verify route is rate-limited but not auth-gated)." and change nothing else. The paragraph then reads "...reproduced against real Hive). The carve-out covers only broadcast error staging; ...". The file does mock `verifyHiveSignature`, through `MOCK_VERIFY_SIGNATURE` on `/request`.
-
-The three edits together were planted on a `git archive` copy of `main`'s backend at `64bca0fb`: `tests/eslint/` passes 146/146 with them. Items 2 and 3 are comment-only and need no new spec.
-
-Triage of the rest (user, 2026-10-06):
-- Accepted, not fixed here: `/verify` is keyed by IP and now counts junk-token 400s, so a client that shares an IP with the user (behind a NAT, for example) can keep that IP at 429. AC3 asks for the 400 to consume. A note on `backend-accreditation-verify-requires-the-account-session` asks for the limiter to be keyed by account once that route requires a session.
-- Dismissed: no spec runs the real `verifyHiveSignature` on `/request` (true before this commit too); the verify page's "Request new" after a 429 spends a `/request` slot on a token that is still valid (your observation 2); the 504 refund on a broadcast whose outcome is uncertain (the task prescribed it, and the base behaved the same way); your observation 1.
-
-## Backend re-review signal (2026-10-06, commit 1783194b)
-
-Landed in `1783194b` (`git merge-base --is-ancestor 1783194b main` checked).
-
-1. `DEFERRED_FREE_PROSE` pins `custody-limiter-cpu-amplification.test.ts` at 1. Its `LANDING_FREE_PROSE` entry stays at 2.
-2. The `accreditationRequestLimiter` comment now ends "the handler keeps running." Nothing else in that comment changed.
-3. The `accreditation.test.ts` "Mocking justification" paragraph lost the sentence "verifyHiveSignature is NOT involved here (the /verify route is rate-limited but not auth-gated)." Nothing else changed; the remaining text was not reflowed.
-
-**Verification**
-- `tests/eslint/` run alone with `--retry=0`, on Redis DB 9 so the `tests/setup.ts` key flush left the dev DB alone:
-  - Before the fix: 145/146. The failure was "every file-naming prose claim is in the backlog at exactly its pin, bounded by the landing snapshot" ("1 unstructured companion claim(s) remain, pinned at 2").
-  - After the fix: 146/146, exit 0.
-- `npm run typecheck` exit 0. eslint on the three changed files exit 0. The pre-commit anchor gate passed.
-- No test outside `tests/eslint/` reads either edited file's source text. This was checked by grepping the `readFileSync` and `readdirSync` users under `backend/tests/`. No other spec was re-run, because items 2 and 3 are comment-only.
-
-**Learnings checkpoint.**
-- Existing entries: one entry contradicts a fact from this task. `skip-failed-requests-jwt-required-credential-verify-carve-out-2026-05-17.md` still has the `accreditationRequestLimiter` grid row, and that entry is already on the [TODO Architect] list.
-- New entries: none qualified. The canary's failure text already names the fix ("Lower the pin"). The miss was a slip in which tests were run.
-
-## The signup verify page asks for the signup password (archived 2026-10-06) — one round; clean; three left-open behaviors accepted; NULL-hash note added to the backend half
-
-### Architect archive note (2026-10-06, round 1)
-
-- **Review:** `/ce-code-review` on `e2334dd4~1..e2334dd4` (correctness, security, adversarial in-process, testing, frontend races, project-standards, learnings; empty validator batch). No P0/P1/P2. The full frontend unit suite on a git-archive copy of `e2334dd4`: 94 files, 2227 tests, exit 0, matching the signal. Testing planted 8 mutants: 6 killed; the two survivors (the `isVerifying` re-entry guard, which the disabled submit button masks, and the `_mounted` guard in `finally`) dismissed. The races lens was re-tasked after a shallow first pass and then checked double submit, re-navigation mid-request, stale error copy across 401 then 400, and a lost-response retry: no defect.
-- **#1 to #3 (P3, reverse check, accepted):** 429 keeps the form with a wait message; any other failure keeps the form with the retry message; the wrong-password copy points to a new signup with the same address, which holds for state E, the only state `/verify` can answer 401 for.
-- **RR1 (accepted, note appended to `backend-signup-verify-requires-the-signup-password`):** a pending row with `password_hash` NULL (an `orcid_token` that no longer resolved, no password sent) gets the wrong-password 401, not the 500 an `argon2.verify(null, ...)` TypeError would give. The same commit narrowed that task's deploy note, which still said the SPA sends no password.
-- **TG1 (dismissed):** a wrong-password E2E run against the real backend. The backend task's AC1 asserts 401 `UNAUTHORIZED` on the real route, and the unit specs pin the page's routing on that code.
-- **RR2 (noted, no action):** the account takeover stays open until the backend half deploys; the current `/verify` ignores `password`.
-- **Dismissed:** `verifyPassword` stays in component state after verify (lives only as long as the page, like `resumePassword`).
-- **Sibling drift:** `64bca0fb` and `141840d7` landed on `signup-verify.js` and its spec after the reviewed head; `handleVerify` is identical at HEAD. The three E2E locators `ui-e2e-bare-submit-locators-clash-with-reauth-modal` lists are scoped in this commit; its pickup re-grep will find them gone.
-- **Learnings checkpoint:** solutions/ grepped for the page, the error-code routing, the stub sweep and the locator symbols; no entry contradicted or overclaiming. No new entry: the NULL-hash dependency lives in the backend task note.
-
-**Owner:** ui
-**Created:** 2026-10-05
-**Priority:** high
-
-The UI half of `backend-signup-verify-requires-the-signup-password`, filed at the user's request
-on 2026-10-05. Read that task's Why first: it explains the account takeover this closes.
-
-## Why
-
-`POST /api/auth/verify` will require the password chosen at signup beside the mailed token, and
-will answer 400 `VALIDATION_ERROR` without it. Today `pages/signup-verify.js` calls
-`verifyToken(emailToken)` from `init()` as soon as the page loads with `?token=`, and
-`verifyEmail(token)` in `api.js` sends `{ token }` only. Once the backend change lands, that call
-fails and the email signup flow stops at the verify page.
-
-## Scope
-
-1. **`api.js`:** `verifyEmail(token, password)` sends `{ token, password }`.
-2. **`pages/signup-verify.js`:** landing with `?token=` shows a password field. It does not verify
-   on load. Submitting sends the token and the password.
-   - 401 `UNAUTHORIZED` means a wrong password. Show that, keep the form, and keep the token: the
-     link stays usable.
-   - The 400 `BAD_REQUEST` answers (an unknown, already used or expired token) keep today's
-     handling.
-   - A 503 from argon saturation shows a retry message.
-   - The resume path (`query.resume === RESUME_MARKER`) is unchanged.
-3. **Copy:** the prompt says this is the password chosen when signing up for PEvO, and that someone
-   who did not sign up should close the page. New strings go through the project's i18n flow.
-4. **Specs:** `tests/unit/pages-signup-verify.test.js`, plus whichever of
-   `tests/e2e/email-signup.spec.js` and `tests/e2e/seed-phrase.spec.js` drive the verify link,
-   enter the signup password. Add a unit spec: a 401 keeps the form and the token, and a retry
-   with the right password reaches the `choose` phase.
-
-## Notes
-
-- This can ship before the backend task or with it, never after. The current `/verify` ignores
-  the extra `password` field, but the backend change alone breaks the flow.
-- The E2E specs need the backend change on the test stack.
-
-## UI implementation signal (2026-10-06, commit e2334dd4)
-
-Landed on main in one commit, verified with
-`git merge-base --is-ancestor e2334dd4 main`.
-
-**Scope, item by item:**
-
-1. `api.js`: `verifyEmail(token, password)` posts `{ token, password }`.
-   `tests/unit/api.test.js` pins the body.
-2. `pages/signup-verify.js`: landing with `?token=` stores the token and
-   shows a password form (new phase `password`, which replaces the
-   verify-on-load `verifying` spinner). Nothing is sent on load. Submit
-   (`handleVerify`) sends the token and the password.
-   - 401 `UNAUTHORIZED`: the form and the token stay, with a wrong-password
-     message; a retry with the right password reaches `choose`.
-   - 400 `BAD_REQUEST`: today's resume form, no message.
-   - 503: the form stays, with a retry message.
-   - The `?resume=1` path is unchanged.
-3. Copy: six new `seedPhrase` keys (`passwordTitle`, `passwordDescription`,
-   `passwordButton`, `passwordWrong`, `verifyRetry`, `verifyRateLimited`),
-   English stubs in the 15 other locales, one STUBS.md Added sweep (90
-   lines). The prompt says the password is the one chosen when signing up
-   for PEvO and that someone who did not sign up should close the page.
-4. Specs: `pages-signup-verify.test.js` covers landing without a request,
-   token plus password sent, the 401-then-retry spec the task asks for,
-   400, 503, 429, an unexpected flow and teardown. `email-signup.spec.js`
-   and `seed-phrase.spec.js` enter the signup password;
-   `email-signup.spec.js` also asserts the `/verify` request body.
-

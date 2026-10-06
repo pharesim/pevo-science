@@ -31,11 +31,22 @@ which accounts a mailbox backed, to follow a release to its successor.
    mailbox rows by state and date and the other accounts that held the same mailbox. The sanction
    block is a disabled placeholder today; this task does not implement sanctioning.
 3. New strings in `en.json`, stubbed in the 15 other locales and recorded in `STUBS.md`; no emdash.
+4. **Refusal states** (added by the architect, 2026-10-06, from the review of
+   `ui-accreditation-binding-refusal-states`, which deferred the release link to this task): link
+   the holder release action from the verify page's `mailbox_bound` state
+   (`frontend/src/pages/accreditation-verify.js`) and from the signup-verify `unaccredited` mailbox
+   copy (`frontend/src/pages/signup-verify.js`). Each bound-credential refusal names both exits:
+   release the holding account if it is yours; otherwise request accreditation for this account
+   with another credential (another institutional address, or the ORCID iD where the mailbox is
+   the bound one). Today `verify.mailboxBoundMessage` and `verify.mailboxBoundMessageUnnamed` name
+   only release and contact, and `seedPhrase.unaccreditedOrcidLinked` names no exit of its own (the
+   sign-in line under it is shared by every reason). Changed English on existing keys follows the
+   `STUBS.md` convention.
 
 ## Out of scope
 
 - Sanction UI (the placeholder stays unless a separate task is filed).
-- The verify and signup refusal states (`ui-accreditation-binding-refusal-states`).
+- The verify and signup refusal states beyond scope item 4.
 
 ## Acceptance criteria
 
@@ -46,3 +57,5 @@ which accounts a mailbox backed, to follow a release to its successor.
 3. The admin console release and bindings view call the two endpoints and render their refusals
    (403 below tier, 422 not accredited) with specific copy.
 4. Unit tests for the new branches; E2E against the real backend once the backend tasks are in.
+5. The verify `mailbox_bound` state and the finalize mailbox copy link the release action, and each
+   bound-credential refusal names both exits.
