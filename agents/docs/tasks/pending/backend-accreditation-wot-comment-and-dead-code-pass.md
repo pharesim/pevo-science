@@ -115,3 +115,16 @@ No WoT path broadcasts a revoke any more: `/retract` broadcasts nothing.
 2. Apart from item 10, the diff changes comments only.
 3. `backend/tests/eslint/no-stale-comment-anchors.test.ts` is green, and comments follow root
    `CLAUDE.md` "Comment anchors".
+
+## Architect addition (2026-10-06): two more stale store comments
+
+From the credential-binding grounding (triage "as recommended"):
+
+15. **`routes/accreditation.ts` section header** "Token store: app database with in-memory
+    fallback" and the clause "when APP_DATABASE_URL is not configured": the pending record lives in
+    Redis (`storeToken`) with an in-process Map, and the file issues no SQL. Delete or narrow.
+16. **`lib/log-pii.ts`** cites `pending_accreditations.email NOT NULL`; no such table exists (grep
+    over `backend/src` and `backend/migrations`). Delete the citation.
+
+If `backend-mailbox-binding-registry` lands first, its scope item 6 removes both; list them as
+already fixed in the signal block.

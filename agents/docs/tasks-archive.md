@@ -1,3 +1,96 @@
+## Decide how an institutional mailbox is bound to one accredited account (archived 2026-10-06) — seven questions decided with the user; design written to ARCHITECTURE.md § 2 Credential Bindings; 8 implementation tasks and 7 defect tasks filed
+
+### Architect archive note (2026-10-06)
+
+Decisions, the task list and the dismissals are in the "Decisions (2026-10-06)" section below. Design commit 30817bbe.
+
+**Owner:** architect
+**Created:** 2026-10-05
+**Priority:** high
+
+Filed from the accreditation and Web of Trust audit (finding 3). Two reviewers reported it and the
+validator confirmed it from the code. The user chose a design task over accepting it for beta
+(2026-10-05).
+
+## Why
+
+`POST /api/accreditation/request` checks an address only with `isInstitutionalEmail`, behind a
+limiter keyed on the Hive account. `POST /api/accreditation/verify` never looks up earlier use of
+the address: `evidence_hash` is salted with the token, so two accreditations from one mailbox
+share no value on chain, and nothing in the app database records the address. A sanction is keyed
+on the Hive username.
+
+So one mailbox can accredit any number of Hive accounts, and a sanctioned researcher can accredit
+a fresh account from the same mailbox. Every accredited account can vouch, and the threshold
+number of vouches (3 by default) enrolls an account in the Web of Trust, so the WoT is only as
+strong as this binding.
+
+## Questions to settle
+
+1. **The rule.** Does one verified mailbox back at most one accredited account at a time? Does a
+   sanctioned account's mailbox stay bound, so that its holder cannot accredit another account?
+2. **Where the binding lives.** An app-database table keyed by an HMAC of the normalised address
+   needs a migration and is not reconstructible from the chain, which sits against design
+   principles 2 and 6. A value on chain is public and linkable, which sits against principle 5.
+   Name the trade and choose.
+3. **Normalisation.** Case, plus-addressing, and subdomain variants of one institution.
+4. **Rebinding.** A researcher who lost their keys, or who moves to another account.
+5. **Other entry points.** Light-account signup already refuses a duplicate `accounts.email`. How
+   do the signup-verify accredit path and the settings email add flow relate to the binding?
+6. **Existing accreditations.** Past `evidence_hash` values cannot be compared, so the binding
+   can only apply from its rollout on, apart from addresses the `accounts` table already holds.
+7. **Enforcement points.** A refusal at `/request` is cheap; the check at `/verify` is the
+   authoritative one and has to hold when two verifications race.
+
+## Deliverable
+
+Work the questions through with the user (`/ce-brainstorm`). Record the decisions in
+`ARCHITECTURE.md` § 2 and file the implementation tasks with their priorities. A schema change
+needs the user's explicit approval before any task is filed.
+
+## Related
+
+`backend-accreditation-verify-requires-the-account-session` makes a verification show control of
+both mailbox and account. It does not limit how many accounts one mailbox can accredit.
+
+## Decisions (2026-10-06)
+
+Worked through with the user in a `/ce-brainstorm` dialogue, grounded by a read-only workflow over
+the code, the open tasks and external sources (52 agents, every fact adversarially verified), and
+written into `ARCHITECTURE.md` § 2 "Credential Bindings", § 2 "Revocation (custom_json)",
+"Accreditation Lifecycle & Sanctions", § 6.4, § 7, `hive-schemas.md` § 2.1 and 2.2, `CONCEPTS.md`
+("Credential Binding", "Release"), `.env.example` (`MAILBOX_BINDING_KEY`); commit 30817bbe. The
+text passed a five-lens doc review with adversarial verification of each finding (45 applied).
+
+| Question | Decision | Chosen over |
+|---|---|---|
+| 1. The rule | One verified mailbox backs at most one accredited account; a second account is refused, sanction or not, so a sanctioned account's mailbox stays bound. Extended to the ORCID iD: each credential binds one account, a sanction keeps every credential held. The principle is one researcher, one accredited account; two credentials on two accounts is an undetected breach, not a permitted arrangement (user correction mid-session) | sanction-only refusal; record-only registry; small per-mailbox cap; mailbox only |
+| 2. Where the binding lives | Mailbox: app-database table `mailbox_bindings` keyed by HMAC-SHA256 of the canonical address under a dedicated secret, nothing on chain (schema change approved). ORCID: on chain as today, with sanction stickiness added to the read | keyed hash in the accredit op; table plus encrypted copy on chain |
+| 3. Normalisation | Trim, lowercase, strip `+tag`, keep dots, the request schema's email rule, punycode domain; subdomains and aliases not folded; one shared function; the mail recipient is never derived from the folded form (architect, from evidence; confirmed in the synthesis) | |
+| 4. Rebinding | The holder can release the account's own accreditation (new `revoke type: "release"`, admin-signed on the holder's fresh-auth request), which frees its mailboxes; lost keys go to an admin (`POST /api/admin/accreditation/release`). History of released bindings kept for admins, one year, no waiting period | admin-only; move by mailbox proof alone; no moves; waiting period |
+| 5. Other entry points | Light-account signup claims the binding at finalize for the mailbox the signup link proved; `/signup` answers uniformly after the duplicate check; ORCID-path signups bind no mailbox; settings e-mail never binds; account deletion no longer frees a mailbox | |
+| 6. Existing accreditations | Light accounts on file are bound by an operator script (mail-proven signup ops matched by hash); page-accredited Keychain accounts are left until their mailbox is next verified | asking the ten to verify again |
+| 7. Enforcement | Uniform `/request` answer with the notice delivered by mail; authoritative claim at `/verify` after the session and the existing gates, 409 `MAILBOX_ALREADY_BOUND`, row before op, kept on ambiguous outcomes, partial unique index as race arbiter, fail closed without the app database | |
+
+Tasks filed (2026-10-06): `backend-mailbox-binding-registry` (high),
+`backend-accreditation-release-op` (high), `backend-orcid-binding-sanction-sticky` (high),
+`backend-signup-finalize-claims-mailbox-binding` (high), `backend-mailbox-binding-backfill-script`
+(normal), `backend-mailbox-binding-history-and-admin-view` (normal),
+`ui-accreditation-binding-refusal-states` (high), `ui-accreditation-release-flow` (normal).
+
+Defects found while grounding, triaged by the user "as recommended": `backend-signup-email-address-list`
+(high), `backend-signup-finalize-evidence-hash-salted` (normal), `backend-verify-failure-may-have-landed`
+(normal), `backend-registration-watch-masks-addresses` (normal),
+`backend-academic-domains-case-and-stoplist` (low), `architect-accreditation-docs-drift-sweep` (low),
+`ui-signup-duplicate-and-server-strings` (low); two stale-comment items appended to
+`backend-accreditation-wot-comment-and-dead-code-pass`; `ui-light-account-vouch` moved from
+`blocked/` to `pending/` (its blocker was archived 2026-10-01). Dismissed: `/verify` skipping its
+HAF gates when HAF is unconfigured (every deployment configures HAF; the binding gate sits outside
+that block by design).
+
+The privacy and terms task (`tasks/hold/`, untracked) carries the notice items the binding needs.
+Learnings: no `/ce-compound`; the design rationale is in `ARCHITECTURE.md`.
+
 ## The sign-in modal has no way to ORCID sign-in (archived 2026-10-06) — clean review; two signal follow-ups and two residual risks triaged
 
 ### Architect archive note (2026-10-06)
@@ -155,96 +248,3 @@ template content, and finds the single link by its text key. Then:
 1. **Composer drafts on navigation.** `destroy()` on the publish and edit
    pages clears the pending 2 s draft debounce without writing it. Any in-app
    navigation away from a composer therefore drops the last 2 s of typing.
-   That includes the modal's existing sign-up link and now this link.
-   - ARCHITECTURE.md § 8 says work typed after a teardown "survives the trip
-     to the sign-in page", which this partly contradicts.
-   - It predates this task: the sign-up link did the same before.
-   - Fix it in `destroy()`, or narrow the § 8 sentence.
-2. **Overclaiming commit message.** The `dbc81a26` body says the test runs
-   the link bindings against a real modal instance. Only the click handler
-   does. `0b47e5ae` narrowed the source comment; history is left as is.
-
-## The settings email-verify handler clears verify_token on whatever row carries it (archived 2026-10-06) — re-review of the token-keyed swap fix; one comment clause cut in place
-
-### Architect archive note (2026-10-06)
-
-Full `/ce-code-review` of 02c66d99, the hold fix (correctness, security, in-process adversarial,
-testing, project-standards; one validator pass). Verdict: ready with one P3 fix. Both held items are
-fixed. The change-branch swap matches `pending_email_token = $2` and returns the swapped email; a
-miss answers the generic 400 and skips the `notification_preferences` UPDATE. The add-flow clear no
-longer carries the `username` conjunct. AC1 to AC4 hold. On a copy of 02c66d99 the in-scope spec
-file plus `settings.test.ts` gave 37/37, exit 0, and removing the add-flow SELECT's `username`
-predicate failed exactly the three wrong-flow specs (measured twice). Security and adversarial found
-nothing.
-The one finding (P3, confirmed by the validator) was fixed in place by the architect with the
-user's approval, in 6e3c3814: the comment over the add-flow clear still said a raced link gets the
-not-found answer "it would get a moment later". That is false when the interleaving re-issue's mail
-fails, because the SMTP-fail restore puts the earlier token back. The clause is cut, matching the
-swap comment.
-Not an archive gate, per the user: the signal's full backend suite (19 failed in 9 files) was not
-re-checked on clean main, and none of those files touches the settings routes. The signal's four
-pre-existing items and the locked-row repair are already filed as their own tasks. No `/ce-compound`.
-
-**Owner:** backend
-**Created:** 2026-09-14
-**Priority:** high
-
-Surfaced by the security lens during the round-4 review of the
-`accounts.updated_at` writer canary, and confirmed by an independent validation
-pass. Pre-existing and unrelated to that canary's own change, so it is filed
-here rather than held there.
-
-## Why
-
-`GET /api/settings/email/verify/:token` looks the row up by the token alone:
-
-```
-SELECT id, expires_at FROM accounts WHERE verify_token = $1
-```
-
-and then clears it:
-
-```
-UPDATE accounts SET verify_token = NULL, expires_at = NULL WHERE id = $1
-```
-
-Neither statement scopes the row to the flow that issued the token. The
-settings add flow is the intended issuer, and it writes `verify_token` only on a
-row it INSERTs for a username that had none, which is state G per
-ARCHITECTURE.md section 6.1. But the signup INSERTs in `routes/auth.ts` write
-the same column on a pending row, and the signup verify-link step writes the
-`confirmed:` form. Either of those tokens presented to this handler is accepted.
-
-The row that results is `verify_token` NULL with `username` NULL, which section
-6.1 does not enumerate, and it is terminal:
-
-- `POST /api/auth/signup` answers 409 for an existing row whose `verify_token`
-  is NULL, so the address cannot be signed up again.
-- The resend route returns before its UPDATE when the token is already NULL, so
-  no new link can be issued.
-- Signup cleanup deletes only rows whose `verify_token` is NOT NULL, so the row
-  is never reaped.
-
-So anyone holding a leaked verification link, or the `confirmed:` auth_token,
-can permanently lock that email address out of signup. That is the capability
-the signup session binding exists to deny a leaked token, reached through a
-different route. Worth tracing on the way in: the login handler's pending-state
-branch keys on the token too, so a bricked row falls through to the active
-branch, and what a session minted from a row with a NULL `username` does is part
-of the blast radius rather than a separate question.
-
-The two stuck-recovery lookups are NOT reachable from this row: both conjoin a
-`custody` value no INSERT writes. The marker is not moved either. This is an
-availability and account-state defect, not a binding bypass.
-
-## Scope
-
-1. Scope the add-flow lookup and its UPDATE to rows the add flow could have
-   created, so a signup token presented here is not accepted. The add flow's
-   rows always carry a `username` (the INSERT names it); the signup INSERTs
-   leave it NULL. Verify that separation from the code before relying on it
-   rather than from this description, and say what you verified.
-2. A token that does not match after the narrowing must answer the same generic
-   400 the not-found path already answers. Do not add a distinguishing message:
-   the difference between "no such token" and "that token is not for this flow"
-   is a signup-state oracle.
