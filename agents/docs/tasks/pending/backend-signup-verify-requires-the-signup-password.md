@@ -89,11 +89,20 @@ gate, and the request falls through to the standard email upsert. When no passwo
 
 ## Notes
 
-- Deploy this together with the UI task. The SPA's current `verifyEmail(token)` sends no
-  password, so this change alone breaks the email signup flow.
+- The UI half landed first (`e2334dd4`, archived 2026-10-06): the SPA already sends
+  `{ token, password }`.
 - A spec for the scope 3 interleave is not required.
 - **[TODO Architect] at review:** update `agents/docs/api-contracts/auth.md` (`/verify` request
   and errors, the `/signup` refusal) and the § 6.4 row for the signup verify link, if § 6.4 lists
   one.
 - Out of scope: finalized light rows that already came from a passwordless E row (no password, no
   ORCID). Report in the signal block whether the dev database has any. Do not repair them here.
+
+**Architect note (2026-10-06), from the review of the UI half:** a pending row with `password_hash`
+NULL can reach `/verify`. `/signup` writes one when an `orcid_token` no longer resolves and no
+password was sent. Scope 1 stops new ones, but a row written before it deploys keeps its mailed
+token until the row expires, 24 hours after the signup that wrote it. `argon2.verify` throws a
+`TypeError` on a NULL hash; `/resume-signup` guards the same case. Answer such a row with the
+wrong-password 401 and leave the row unchanged. On a 401 the SPA shows its wrong-password copy,
+which points to a new signup with the same address. On a 500 it shows its retry message on every
+attempt.
