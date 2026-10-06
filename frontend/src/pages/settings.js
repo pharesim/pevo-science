@@ -33,17 +33,19 @@ const METADATA_MAX = { name: 200, institution: 200, field: 100 };
 //                              `newSeedPhrase` in state so the re-derive
 //                              succeeds. (`upgrade.backendUnavailable` post-503,
 //                              `upgrade.proofRejected` first-401, and
-//                              `upgrade.sessionChangedBeforeCleanup`, where the
-//                              retry's own start guard declined to spend
-//                              anything, so a re-login as the pinned subject
-//                              that keeps this component mounted is all the
-//                              next attempt needs.)
+//                              `upgrade.sessionChangedBeforeCleanup`, where
+//                              nothing was spent, because the retry's own
+//                              start guard declined or the cleanup POST's
+//                              session had ended, so a re-login as the pinned
+//                              subject that keeps this component mounted is
+//                              all the next attempt needs.)
 //   'retryable-reset'       — pre-broadcast failure; safe to reset the wizard
 //                              to 'idle' and re-broadcast. `handleRetry`
 //                              dispatches to `resetUpgrade()`.
 //   'terminal'              — chain rotation landed AND no further retry is
 //                              meaningful (alreadyUpgraded, rateLimited, second
-//                              401, post-broadcast backendTimeout, generic
+//                              proof-rejected 401, post-broadcast
+//                              backendTimeout, generic
 //                              partialApplyFailed, and the after-cleanup half
 //                              of the session-changed pair, where the upgrade
 //                              is complete and only the local Keychain import
@@ -59,14 +61,14 @@ const UPGRADE_ERROR_KEYS = {
   partialApplyFailed: 'upgrade.partialApplyFailed',
   alreadyUpgraded: 'upgrade.alreadyUpgraded',
   rateLimited: 'upgrade.rateLimited',
-  // The two halves of "this tab stopped representing the account the upgrade
-  // started for". Both are reached only after the chain rotation landed; they
-  // differ in whether the backend cleanup also landed, which decides what is
-  // left for the user to do. The after-cleanup half is terminal: the upgrade
+  // The two halves of a session change during the upgrade. Both are reached
+  // only after the chain rotation landed; they differ in whether the backend
+  // cleanup also landed, which decides what is left for the user to do. The after-cleanup half is terminal: the upgrade
   // is complete, the seed is spent, and only the local Keychain import is
-  // missing. The before-cleanup half is retryable: it is reached only from
-  // the retry's start guard, which declines before spending anything and
-  // keeps the seed and the pin, so once the user signs back in as the
+  // missing. The before-cleanup half is retryable: it is reached from the
+  // retry's start guard, which declines before spending anything, and from
+  // a cleanup POST whose session had ended, which spends no proof attempt.
+  // Both keep the seed and the pin, so once the user signs back in as the
   // pinned subject the same Try Again runs the cleanup. Splitting them
   // is what keeps each message true: one string for both would have to lie
   // in one of the two cases. Neither name is a prefix of the other, so the
@@ -98,11 +100,10 @@ const RETRYABILITY = {
 // a hard pre-broadcast abort with `upgrade.clockSkewBlocked`.
 const UPGRADE_CLOCK_SKEW_WARN_MS = 30_000;
 
-// Retry budget for proof-rejected (post-broadcast 401). First 401 keeps
-// `newSeedPhrase` and routes to a retryable sub-case so the user can correct
-// their system clock (the most-likely 401 cause until a backend time endpoint
-// exists). Second 401 wipes — at that point the proof is genuinely broken and
-// a budget past 2 would just delay an inevitable terminal route.
+// Retry budget for proof-rejected (post-broadcast 401) answers. The first
+// keeps `newSeedPhrase` and routes to a retryable sub-case so the user can
+// correct their system clock (the most-likely 401 cause until a backend time
+// endpoint exists). The second wipes.
 const UPGRADE_PROOF_RETRY_BUDGET = 2;
 
 const template = `
@@ -110,8 +111,18 @@ const template = `
         <!-- Not signed in -->
         <template x-if="!isConnected">
           <div class="text-center py-16">
+            <!-- A key upgrade waiting for a backend-only retry is finished
+                 by this page's Try Again after an in-place sign-in, and its
+                 message otherwise renders only in the signed-in body. This
+                 tab may be signed out while it waits, so the message shows
+                 here as well. -->
+            <template x-if="upgradeRetryAwaitsSignIn">
+              <div class="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 max-w-lg mx-auto text-left">
+                <p class="text-red-700 text-sm" x-text="upgradeError"></p>
+              </div>
+            </template>
             <p class="text-ink-muted mb-4" x-text="$t('settings.signInRequired')"></p>
-            <button @click="navigate('/login')" class="btn-primary" x-text="$t('settings.signIn')"></button>
+            <button @click="signInFromSignedOutBody()" class="btn-primary" x-text="$t('settings.signIn')"></button>
           </div>
         </template>
 
@@ -628,10 +639,11 @@ export function initSettingsPage() {
     oldSeedPhrase: '',
 
     // Post-broadcast 401-proof retry counter. Increments on every
-    // post-broadcast 401 (first in executeUpgrade, subsequent ones in
-    // retryUpgradeBackend). Below UPGRADE_PROOF_RETRY_BUDGET the catch keeps
-    // `newSeedPhrase` and routes to retryable `proofRejected`; at or above
-    // the budget the catch wipes and routes to terminal `partialApplyFailed`.
+    // post-broadcast 401 the error ladder reads as a proof rejection (first
+    // in executeUpgrade, subsequent ones in retryUpgradeBackend). Below
+    // UPGRADE_PROOF_RETRY_BUDGET the catch keeps `newSeedPhrase` and routes
+    // to retryable `proofRejected`; at or above the budget the catch wipes
+    // and routes to terminal `partialApplyFailed`.
     // Reset on `resetUpgrade` (a fresh wizard run is a new budget).
     _proofRetryAttempts: 0,
 
@@ -677,10 +689,9 @@ export function initSettingsPage() {
     // semantic reasons (nothing to retry / per-account-hour budget burnt),
     // and `sessionChangedAfterCleanup` for a third: the upgrade is complete
     // and the seed is spent, so there is nothing left for a retry to do.
-    // Its before-cleanup sibling is retryable, because it is reached only
-    // from `retryUpgradeBackend`'s start guard, which spent nothing and
-    // kept the seed: after the user signs back in as the pinned subject,
-    // the same Try Again runs the cleanup.
+    // Its before-cleanup sibling is retryable, because every route into it
+    // spent no proof attempt and kept the seed: after the user signs back in
+    // as the pinned subject, the same Try Again runs the cleanup.
     // Compares discriminator keys, not translated strings, so the result
     // is invariant to mid-error-screen locale switches.
     get canRetryUpgrade() {
@@ -695,18 +706,43 @@ export function initSettingsPage() {
 
     // Dispatch retry to the right action based on the error sub-case. The
     // `retryable-backend-only` sub-cases (post-broadcast 503, first-401 proof
-    // rejection, and a retry the start guard declined for a diverged store)
-    // preserve the chain-rotated state and retry only the backend
-    // cleanup call; the `retryable-reset` sub-cases are pre-broadcast failures
-    // that reset the wizard to idle so a fresh attempt regenerates the new
-    // mnemonic and re-broadcasts cleanly. Dispatch reads RETRYABILITY (the
-    // single source of truth), not a hand-curated key comparison.
+    // rejection, and a session change before the cleanup) preserve the
+    // chain-rotated state and retry only the backend cleanup call; the
+    // `retryable-reset` sub-cases are pre-broadcast failures that reset the
+    // wizard to idle so a fresh attempt regenerates the new mnemonic and
+    // re-broadcasts cleanly. Dispatch reads RETRYABILITY (the single source
+    // of truth), not a hand-curated key comparison.
     handleRetry() {
       const r = RETRYABILITY[this.upgradeErrorKey];
       if (r === 'retryable-backend-only') {
         this.retryUpgradeBackend();
       } else {
         this.resetUpgrade();
+      }
+    },
+
+    // True while the upgrade waits in a 'retryable-backend-only' sub-case:
+    // the seed and the pin are kept for a Try Again that re-sends only the
+    // backend cleanup, and that retry needs the user signed in as the pinned
+    // subject on this page.
+    get upgradeRetryAwaitsSignIn() {
+      return RETRYABILITY[this.upgradeErrorKey] === 'retryable-backend-only';
+    },
+
+    // The signed-out body's Sign In. The login route unmounts this component,
+    // and `destroy()` then clears the seed and the pin that retry needs, so
+    // while it waits this opens the sign-in prompt in place, as the header's
+    // Sign in does. Otherwise it goes to the login route.
+    async signInFromSignedOutBody() {
+      if (!this.upgradeRetryAwaitsSignIn) {
+        this.navigate('/login');
+        return;
+      }
+      try {
+        await Alpine.store('auth').connect();
+      } catch (err) {
+        console.warn('[settings sign in]', err);
+        Alpine.store('toast').show(this.$t('common.connectionFailed'), 'error');
       }
     },
 
@@ -1347,10 +1383,8 @@ export function initSettingsPage() {
         const proof = await this._signUpgradeProof(upgradeSubject, newSeedPhrase);
 
         // Notify backend to clean up stored keys. Failure here surfaces as
-        // upgradeError. Post-broadcast 503 is retryable via
-        // `retryUpgradeBackend()` (chain rotation done, only the backend
-        // RPC lookup failed); other post-broadcast errors route to a
-        // terminal sub-case.
+        // upgradeError; `_handlePostBroadcastError` decides which sub-cases
+        // stay retryable via `retryUpgradeBackend()`.
         const result = await this._postUpgradeBackend(proof, upgradeToken);
         // Post-await unmount guard: the backend cleanup can take up to 20s
         // before resolving. Every other adoption site of loginFromResponse
@@ -1408,7 +1442,7 @@ export function initSettingsPage() {
       } catch (err) {
         // Shared post-broadcast catch ladder consuming UPGRADE_ERROR_KEYS so
         // every sub-case has exactly one source-of-truth assignment site.
-        this._handlePostBroadcastError(err, { broadcastLanded, logTag: '[custody upgrade]' });
+        this._handlePostBroadcastError(err, { broadcastLanded, logTag: '[custody upgrade]', upgradeSubject });
         return;
       }
 
@@ -1418,8 +1452,9 @@ export function initSettingsPage() {
     // Backend-cleanup retry. Reachable from the 'error' phase whenever
     // `RETRYABILITY[upgradeErrorKey] === 'retryable-backend-only'` — that's
     // post-broadcast 503 (`upgrade.backendUnavailable`), the first-401
-    // proof rejection (`upgrade.proofRejected`), and a previous retry that
-    // the start guard below declined (`upgrade.sessionChangedBeforeCleanup`).
+    // proof rejection (`upgrade.proofRejected`), and a session change before
+    // the cleanup (`upgrade.sessionChangedBeforeCleanup`: the start guard
+    // below declined, or the cleanup POST's session had ended).
     // Keeps `newSeedPhrase` from the failed attempt, re-derives a fresh proof
     // (new `signed_at` + new signature), and re-POSTs only the backend
     // cleanup call. The chain rotation already landed in `executeUpgrade`
@@ -1427,7 +1462,8 @@ export function initSettingsPage() {
     // old-seed keys would auth-fail at the chain. On success, runs the
     // keychain-import tail and transitions to 'done' just like the happy
     // path. On 503 again, stays in the retryable error state. On a second
-    // 401 (proof retry budget exhausted), terminal partialApplyFailed.
+    // proof-rejected 401 (proof retry budget exhausted), terminal
+    // partialApplyFailed.
     async retryUpgradeBackend() {
       // Concurrency gate. Flip phase to 'upgrading' immediately after the
       // two guard checks, mirroring executeUpgrade's pattern. Without this,
@@ -1524,7 +1560,7 @@ export function initSettingsPage() {
         // is the contract here — retryUpgradeBackend is only ever reached
         // after executeUpgrade's broadcast already landed, so every failure
         // is post-broadcast by construction.
-        this._handlePostBroadcastError(err, { broadcastLanded: true, logTag: '[custody upgrade retry]' });
+        this._handlePostBroadcastError(err, { broadcastLanded: true, logTag: '[custody upgrade retry]', upgradeSubject });
         return;
       }
       await this._completeUpgradeAfterBackend(upgradeSubject, newSeedPhrase);
@@ -1543,8 +1579,7 @@ export function initSettingsPage() {
     // the retry's start guard, which is the one place the flow genuinely
     // cannot act for the pinned account, because the only credential available
     // to it there belongs to whoever the store now names. Everything in
-    // between runs on values pinned before the first await and needs no
-    // permission from the live store.
+    // between runs on values pinned before the first await.
     //
     // The subject is an argument so the predicate compares against the same
     // value every other step of the calling leg uses, rather than re-reading a
@@ -1556,35 +1591,37 @@ export function initSettingsPage() {
       return !auth.isConnected || auth.username !== upgradeSubject;
     },
 
-    // Error route for a diverged subject. Every caller reaches it after the
-    // chain rotation landed, so a fresh wizard run is structurally
-    // unavailable (it would re-broadcast account_update signed with the old
-    // seed's keys and the chain would reject it). `cleanupLanded` picks the
-    // sub-case, and with it both the fate of the mnemonic and whether Try
-    // Again stays: once the backend cleanup succeeded the phrase is written
-    // down and spent, so it is wiped like every other completed path and the
-    // sub-case is terminal; before that it is the user's only key to an
-    // account whose authorities already rotated, so a guard that declines to
-    // act must not destroy it (the backendTimeout sub-case preserves it for
-    // the same reason), and the sub-case stays retryable because the decline
-    // cost nothing that a re-login as the pinned subject cannot restore.
+    // Error route for a diverged subject or an ended session. Every caller
+    // reaches it after the chain rotation landed, so a fresh wizard run is
+    // structurally unavailable (it would re-broadcast account_update signed
+    // with the old seed's keys and the chain would reject it). `cleanupLanded`
+    // picks the sub-case, and with it both the fate of the mnemonic and
+    // whether Try Again stays: once the backend cleanup succeeded the phrase
+    // is written down and spent, so it is wiped like every other completed
+    // path and the sub-case is terminal; before that it is the user's only
+    // key to an account whose authorities already rotated, so a caller that
+    // stops short of the cleanup must not destroy it (the backendTimeout
+    // sub-case preserves it for the same reason), and the sub-case stays
+    // retryable because nothing was spent that a re-login as the pinned
+    // subject cannot restore.
     //
     // The error copy is rendered by the settings page, which is itself bound
-    // to the live store: after a sign-out, or a login as a self-custody
-    // user, the surrounding sections stop rendering and the message is not
-    // seen. That is the accepted cost of leaving the store alone. What the
-    // unseen copy costs differs by half. The after-cleanup recovery (sign
-    // in as the pinned subject with the new phrase, then import to
-    // Keychain) does not depend on having read it here. The before-cleanup
-    // recovery is this component's own Try Again, so it depends on the
-    // re-login keeping this component mounted: the global header's sign-in
-    // modal and another tab's login both do, while the signed-out body's
-    // own button navigates away and takes the retry's inputs with it.
+    // to the live store: after a login as a self-custody user the surrounding
+    // sections stop rendering and the message is not seen, and after a
+    // sign-out only the before-cleanup message still renders, in the
+    // signed-out body. What the unseen copy costs differs by half. The
+    // after-cleanup recovery (sign in as the pinned subject with the new
+    // phrase, then import to Keychain) does not depend on having read it
+    // here. The before-cleanup recovery is this component's own Try Again,
+    // so it depends on the re-login keeping this component mounted: the
+    // sign-in prompt (the header's Sign in, and the signed-out body's while
+    // this retry waits) and another tab's login both do, while any route to
+    // the login page takes the retry's inputs with it.
     // That is why the before-cleanup copy scopes its retry instruction to
-    // this tab and this page, names the header's sign-in control as the one
-    // that keeps it, and then carries an out-of-band fallback: the Try Again
-    // the rest of the message is about goes with the page, so a reader who
-    // has already left needs somewhere else to be sent.
+    // this tab and this page, names the header's sign-in control, and then
+    // carries an out-of-band fallback: the Try Again the rest of the message
+    // is about goes with the page, so a reader who has already left needs
+    // somewhere else to be sent.
     _endUpgradeAsSessionChanged({ cleanupLanded, upgradeSubject }) {
       // Mirrors _handlePostBroadcastError's entry guard: most callers reach
       // this after at least one await (the retry's start guard is the one
@@ -1610,11 +1647,12 @@ export function initSettingsPage() {
     // mis-classification. The `wipe` choice is encoded per sub-case here, not
     // taken from the caller: timeout never wipes (user needs the mnemonic to
     // recover), 409/429 always wipe, proof-rejected wipes only on the SECOND
-    // consecutive 401 (proof retry budget), 503 never wipes (retry needs the
-    // seed). The pre-broadcast catch-all and the post-broadcast generic
-    // catch-all diverge only in upgradeErrorKey ('failed' vs
-    // 'partialApplyFailed') and wipe (no-op on pre vs wipe on post).
-    _handlePostBroadcastError(err, { broadcastLanded, logTag }) {
+    // 401 it counts (proof retry budget), 503 never wipes (retry needs the
+    // seed), and neither does a session that ended before the cleanup. The
+    // pre-broadcast catch-all and the post-broadcast generic catch-all
+    // diverge only in upgradeErrorKey ('failed' vs 'partialApplyFailed') and
+    // wipe (no-op on pre vs wipe on post).
+    _handlePostBroadcastError(err, { broadcastLanded, logTag, upgradeSubject }) {
       // Both callers (executeUpgrade, retryUpgradeBackend) reach this helper
       // after at least one await. If the component unmounted during that
       // suspension, abort: writing upgradeError/upgradeErrorKey/upgradePhase
@@ -1654,21 +1692,42 @@ export function initSettingsPage() {
         return;
       }
 
+      // Post-broadcast session ended: the cleanup POST's bearer was revoked
+      // (`401 SESSION_INVALIDATED`), or it had expired and the POST was not
+      // sent (`SESSION_EXPIRED`, raised in `_postUpgradeBackend`, which has
+      // already reported either one to the auth store). Neither says anything
+      // about the proof, so neither spends the proof-retry budget or wipes the
+      // seed: the cleanup has not run, and the seed is still the only key to
+      // the rotated account. Try Again stays available for once the user is
+      // signed in as the pinned subject again.
+      if (broadcastLanded && (err?.code === 'SESSION_INVALIDATED' || err?.code === 'SESSION_EXPIRED')) {
+        console.warn(`${logTag} session ended before cleanup`, err);
+        this._endUpgradeAsSessionChanged({ cleanupLanded: false, upgradeSubject });
+        return;
+      }
+
       // Post-broadcast 401: proof rejected (signature recovery fail,
       // derived_pubkey mismatch, OR signed_at outside backend's 60s
       // freshness window — the backend deliberately returns 401 uniformly
       // for these to avoid disclosure). Distinguish first 401 (likely clock
-      // skew) from second 401 (proof is genuinely broken). On first 401,
-      // KEEP newSeedPhrase, route to retryable `proofRejected`; on second,
-      // wipe and route to terminal `partialApplyFailed`. The counter resets
-      // in `resetUpgrade` so a fresh wizard run gets a fresh budget. Without
-      // this split, a single clock-skew-induced 401 wipes the only retry
-      // surface for the most recoverable post-broadcast failure mode.
+      // skew) from second 401. On first 401, KEEP newSeedPhrase, route to
+      // retryable `proofRejected`; on second, wipe and route to terminal
+      // `partialApplyFailed`. The counter resets in `resetUpgrade` so a fresh
+      // wizard run gets a fresh budget. Without this split, a single
+      // clock-skew-induced 401 wipes the only retry surface for the most
+      // recoverable post-broadcast failure mode.
+      //
+      // The proof rejections answer `UNAUTHORIZED`, and so do failures that
+      // are not about the proof: a bearer the server cannot verify (an expired
+      // one included) and an account row the route can no longer read. Those
+      // spend the budget too, until the backend gives the proof rejections a
+      // code of their own, which this branch should then match instead of the
+      // bare status.
       if (broadcastLanded && status === 401) {
         this._proofRetryAttempts += 1;
         console.warn(`${logTag} proof rejected (attempt ${this._proofRetryAttempts}/${UPGRADE_PROOF_RETRY_BUDGET})`, err);
         if (this._proofRetryAttempts >= UPGRADE_PROOF_RETRY_BUDGET) {
-          // Budget exhausted — proof is genuinely broken. Wipe + terminal.
+          // Budget exhausted. Wipe + terminal.
           this._clearSensitiveUpgradeState();
           this.upgradeError = this.$t(UPGRADE_ERROR_KEYS.partialApplyFailed);
           this.upgradeErrorKey = UPGRADE_ERROR_KEYS.partialApplyFailed;
@@ -1810,9 +1869,8 @@ export function initSettingsPage() {
 
     // POST the proof to /api/custody/upgrade. Throws an Error with
     // `.status` and `.code` attached on non-2xx responses so the caller's
-    // catch can branch on status (503 retryable, 409/429 terminal-sub-case,
-    // rest terminal). 20s budget guards against a hung backend after the
-    // on-chain rotation; TimeoutError DOMException surfaces via err.name
+    // catch can branch on them. 20s budget guards against a hung backend after
+    // the on-chain rotation; TimeoutError DOMException surfaces via err.name
     // in the caller's catch.
     //
     // The bearer is an argument rather than a store read at fetch time. It is
@@ -1820,7 +1878,25 @@ export function initSettingsPage() {
     // several awaits deep by the time they get here; a live read would send
     // whatever credential the store holds at that moment, which after a
     // cross-tab login is another user's.
+    //
+    // The session checks the api.js bearer helper and the custody broadcast
+    // make are made here too, against the pinned token. Before sending, and
+    // only while the store still holds that token (the store compares its own
+    // `expiresAt`, which is then the pinned token's): when the store reports
+    // the session expired, the request is not sent and this throws
+    // `SESSION_EXPIRED` instead, because the server would answer an expired
+    // bearer with the bare 401 UNAUTHORIZED that the proof rejections share,
+    // and the error ladder would spend the proof-retry budget on it. A store
+    // that signed out or moved to another session holds no expiry for the
+    // pinned token, so the request goes out. After: a
+    // `401 SESSION_INVALIDATED` is reported to the store as a revoked session.
     async _postUpgradeBackend(proof, upgradeToken) {
+      const auth = Alpine.store('auth');
+      if (auth.token === upgradeToken && auth.endSessionIfExpired?.(upgradeToken)) {
+        const err = new Error('Session expired');
+        err.code = 'SESSION_EXPIRED';
+        throw err;
+      }
       const res = await fetch('/api/custody/upgrade', {
         method: 'POST',
         headers: {
@@ -1835,6 +1911,7 @@ export function initSettingsPage() {
         const err = new Error('Upgrade backend rejected');
         err.status = res.status;
         err.code = body?.error?.code ?? null;
+        if (err.code === 'SESSION_INVALIDATED') auth.handleRevokedSession?.(upgradeToken);
         throw err;
       }
       return res.json();

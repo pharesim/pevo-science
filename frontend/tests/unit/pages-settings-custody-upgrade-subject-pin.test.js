@@ -527,17 +527,16 @@ describe('custody-upgrade re-login subject pin', () => {
 });
 
 // Among the sub-cases `RETRYABILITY` leaves non-terminal, the before-cleanup
-// one is set apart by needing a re-login before its Try Again can act.
+// one is entered on a session change.
 // `_endUpgradeAsSessionChanged` sets it with `cleanupLanded: false`,
-// `canRetryUpgrade` keeps Try Again visible, and `retryUpgradeBackend`'s
-// start guard declined without spending the proof attempt or the seed, so
-// signing back in as the pinned subject and pressing that button finishes
-// the upgrade. But the button belongs to the settings page: a re-login that
-// unmounts it (the signed-out body's own button navigates to the login
-// route) runs `destroy()`, which clears the seed and the pin the retry
-// needs. So the copy has three jobs at once: scope the retry to the page it
-// lives on, name the sign-in control that keeps that page, and give a reader
-// who has already left somewhere else to go.
+// `canRetryUpgrade` keeps Try Again visible, and the route that set it spent
+// neither the proof attempt nor the seed, so signing back in as the pinned
+// subject and pressing that button finishes the upgrade. But the button
+// belongs to the settings page: a re-login that unmounts it (any route to
+// the login page) runs `destroy()`, which clears the seed and the pin the
+// retry needs. So the copy has three jobs at once: scope the retry to the
+// page it lives on, name the sign-in control that keeps that page, and give
+// a reader who has already left somewhere else to go.
 //
 // These assertions are on the source `en.json`, not on a rendered component:
 // the sibling tests here stub `$t` to echo the key, which is what makes their
@@ -572,15 +571,12 @@ describe('custody-upgrade session-changed copy contract', () => {
     expect(parts[retryIndex]).toContain(messages.common.tryAgain);
 
     // The re-login that retry needs has to keep this page mounted, and in
-    // the state that shows this message another account holds the header,
-    // so the reader signs out first and then sees two controls that both
-    // read as sign in: the header's keeps the page, the signed-out body's
-    // navigates away and takes the seed and the pin with it. So the same
-    // sentence says to sign out, names the header's control by the label
-    // the header renders, and says where it is. The label followed by
-    // "button" is what separates naming that control from the bare verb
-    // "sign in", which the sentence also uses ("to sign in again") and
-    // which an earlier revision opened with.
+    // one state that shows this message another account holds the header,
+    // so the same sentence says to sign out first in that case. It names
+    // the header's control, which keeps the page, by the label the header
+    // renders, and says where it is. The label followed by "button" is what
+    // separates naming that control from the bare verb "sign in", which the
+    // sentence also uses ("to sign in as").
     expect(parts[retryIndex]).toMatch(/sign out/i);
     expect(parts[retryIndex]).toContain(`${messages.signIn.signInButton} button`);
     expect(parts[retryIndex]).toMatch(/header/i);
@@ -598,8 +594,8 @@ describe('custody-upgrade session-changed copy contract', () => {
     // makes it read as a condition on the retry rather than a separate route.
     expect(fallbackIndex).not.toBe(retryIndex);
 
-    // The account is still named, twice: once for what the browser is no
-    // longer signed in as, once for what to sign back in as.
+    // The account is still named, twice: once for the sign-in that ended or
+    // changed, once for what to sign back in as.
     expect(value.match(/\{username\}/g)).toHaveLength(2);
   });
 

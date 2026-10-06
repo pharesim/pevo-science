@@ -2579,11 +2579,15 @@ describe('settingsPage', () => {
   //         // production code path. R5's unmount-after-post case proves the
   //         // shared "early-return short-circuits _completeUpgradeAfterBackend"
   //         // invariant the R6 site also relies on.
-  //     R7. catch TimeoutError/AbortError → wipe + backendTimeout (terminal)
+  //     R7. catch TimeoutError/AbortError → backendTimeout (terminal)
   //     R8. catch status===503 → KEEP state + backendUnavailable (still retryable)
+  //     R8a. catch code SESSION_INVALIDATED / SESSION_EXPIRED → KEEP state +
+  //          sessionChangedBeforeCleanup (still retryable)
+  //     R8b. catch status===401 → first: KEEP state + proofRejected (still
+  //          retryable); second: wipe + partialApplyFailed
   //     R9. catch status===409 → wipe + alreadyUpgraded (terminal)
   //     R10. catch status===429 → wipe + rateLimited (terminal)
-  //     R11. catch-all (no status / other status / network drop) → wipe + partialApplyFailed
+  //     R11. catch-all (other status / network drop) → wipe + partialApplyFailed
   describe('UI-RETRY-UPGRADE-BACKEND-TEST-COVERAGE: handleRetry + retryUpgradeBackend', () => {
     // Pre-existing tests in this file override the module-level
     // `deriveHiveKeys` mock via `vi.mocked(deriveHiveKeys).mockImplementation(...)`

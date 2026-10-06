@@ -1088,7 +1088,7 @@
     "proofRejected": "Could not verify upgrade proof. If your clock is off, correct it and try again.",
     "navigationGuardConfirm": "Your account upgrade is in progress. Leaving now could leave your account in a broken state. Are you sure you want to navigate away?",
     "sessionChangedAfterCleanup": "Your account upgrade finished, but this browser is no longer signed in as {username}. Sign in again with your new recovery phrase to finish setting up Hive Keychain.",
-    "sessionChangedBeforeCleanup": "Your account keys were updated, but this browser is no longer signed in as {username}, so the upgrade stopped before it could finish. Sign out, then use the Sign in button in the page header to sign in again as {username} in this tab, without leaving this page, and press Try Again to finish the upgrade. If you have already left this page, contact support with your account name. Keep your new recovery phrase safe and do not share it."
+    "sessionChangedBeforeCleanup": "Your account keys were updated, but the upgrade stopped before it could finish because this browser's sign-in as {username} ended or changed. Without leaving this page, use the Sign in button in the page header to sign in as {username} in this tab (sign out first if another account is signed in), then press Try Again to finish the upgrade. If you have already left this page, contact support with your account name. Keep your new recovery phrase safe and do not share it."
   },
   "resetPassword": {
     "requestTitle": "איפוס סיסמה",

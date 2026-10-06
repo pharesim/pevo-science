@@ -3846,16 +3846,12 @@ screen. "Try Again" must read exactly as this locale renders
 `common.tryAgain`; if the two drift apart, the reader is told to press
 something they cannot find. The "Sign in" immediately before the word
 "button" must read exactly as this locale renders `signIn.signInButton`.
-The other imperatives, "Sign out" and "sign in again", are ordinary verbs
-and should read naturally.
+The other imperatives, "sign in as" and "sign out first", are ordinary
+verbs and should read naturally.
 
 Keep the placement, "in the page header". Two controls read as sign in, and
 in every locale their labels are already identical or differ only by case,
-so placement is the only thing that separates them. The header control
-keeps the settings page mounted; the one in the signed-out settings body
-navigates away and destroys the state the retry needs. The reader acts from
-memory: signing out hides this message, and only then are both controls on
-screen.
+so placement is what names the one this message means.
 
 Keep the retry scoped to this tab and this page, because Try Again belongs
 to the settings page. Keep the fallback its own sentence: it is the route

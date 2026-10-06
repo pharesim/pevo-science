@@ -255,10 +255,10 @@ export function initAuth() {
 
     // A bearer request was answered `401 SESSION_INVALIDATED`: the server
     // revoked `sentToken` because the account's credentials changed on
-    // another browser or device. The api.js bearer helper and the custody
-    // broadcast in signer.js report here, so the revoked-session teardown has
-    // one home. The key-upgrade request in pages/settings.js does not: it
-    // sends a token pinned before its first await and reads its own 401s.
+    // another browser or device. The api.js bearer helper, the custody
+    // broadcast in signer.js and the key-upgrade cleanup request in
+    // pages/settings.js report here, so the revoked-session teardown has one
+    // home.
     //
     // The custody upgrade reissues a token, which reaches every tab of the
     // browser through the storage event, and a request sent just before that
@@ -280,12 +280,15 @@ export function initAuth() {
 
     // A bearer request is about to leave with `sentToken`, and the session has
     // reached its own expiry. The api.js bearer helper and the custody
-    // broadcast in signer.js ask here before every send. Past `expiresAt` the
-    // backend cannot verify the token and answers a bare 401 UNAUTHORIZED,
-    // which the password-mint flows read as a wrong password and every other
-    // caller reports as an unexplained failure. Ending the session here
-    // instead says what happened, once, and the abandoned fresh-auth flows
-    // unwind through their teardown guards, never as a rejected password.
+    // broadcast in signer.js ask here before every send, and the key-upgrade
+    // cleanup request in pages/settings.js before its send while the store
+    // still holds the token it pinned. Past `expiresAt` the backend cannot
+    // verify the token and answers a bare 401 UNAUTHORIZED, which the
+    // password-mint flows read as a wrong password, the key-upgrade cleanup as
+    // a rejected upgrade proof, and every other caller reports as an
+    // unexplained failure. Ending the session here instead says what
+    // happened, once, and the abandoned fresh-auth flows unwind through their
+    // teardown guards, never as a rejected password.
     //
     // Clock skew is accepted, not corrected: `expiresAt` is the server's
     // timestamp and `isUnexpired` reads the client clock. A client clock that

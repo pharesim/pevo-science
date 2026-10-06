@@ -5,7 +5,7 @@
 //   - beforeunload registration/deregistration during upgradePhase='upgrading'
 //   - retryUpgradeBackend _mounted guard after _postUpgradeBackend await
 //   - retryUpgradeBackend concurrency gate (phase flip first synchronous statement)
-//   - first 401 keeps newSeedPhrase + retryable proofRejected; second 401 wipes
+//   - first proof-rejected 401 keeps newSeedPhrase + retryable proofRejected; the second wipes
 //   - backendTimeout no longer wipes newSeedPhrase (covered in sibling file's update)
 //   - UPGRADE_ERROR_KEYS hoist + RETRYABILITY annotation drives canRetryUpgrade + handleRetry
 //   - _handlePostBroadcastError helper consumed by both executeUpgrade and retryUpgradeBackend
@@ -210,9 +210,9 @@ describe('settingsPage round-2 hold-block findings', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // First post-broadcast 401 keeps newSeedPhrase and routes to retryable
-  // proofRejected so user can correct clock + retry; second 401 wipes and
-  // routes to terminal partialApplyFailed.
+  // First post-broadcast proof-rejected 401 keeps newSeedPhrase and routes
+  // to retryable proofRejected so user can correct clock + retry; the second
+  // wipes and routes to terminal partialApplyFailed.
   // ─────────────────────────────────────────────────────────────────────────
   describe('round-2 #5: 401 retry budget', () => {
     it('first post-broadcast 401 → upgrade.proofRejected, retryable, newSeedPhrase preserved', async () => {
