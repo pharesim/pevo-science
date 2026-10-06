@@ -1,3 +1,169 @@
+## Guard a whole publish or edit submit against a subject teardown between its legs (archived 2026-10-06) — one round, clean review; three follow-ups filed; one solutions entry refreshed
+
+### Architect archive note (2026-10-06)
+
+- **Review:** `/ce-code-review` full path on `4781efac` (branch-remote, read from a `git archive` snapshot because HEAD had moved to unrelated recover/accreditation commits), seven reviewers: correctness, project-standards, testing, security, adversarial (in-process), julik-frontend-races, learnings. No finding survived synthesis and the validator batch was empty; triage: user, "as recommended". Re-measured at `4781efac`: full frontend unit suite 96 files / 2262 tests, exit 0; build exit 0; red at base, 8 teardown cases fail and 3 controls pass; all 11 claimed mutants killed (9 by the testing reviewer, the two guard-after-entry-gate mutants by the architect). The three user-approved Scope departures hold against the code.
+- **Follow-ups filed** in `acbc16ff`: `ui-confirm-dialog-answered-after-subject-teardown` (normal; signal follow-up 1 plus review residual R1, a decline after a teardown unwinds with no message; the signal's reason for not checking after the publish confirmation does not hold, since a `sha256File` stub that awaits a macrotask pins the post-hash check on its own), `ui-keychain-broadcast-subject-teardown` (low; follow-up 3), `ui-teardown-message-and-mapper-mock-wording` (low; follow-ups 2 and 4).
+- **Dismissed:** no case for a sign-out-only teardown (the code stops it per probe; preemptive); an upload that fails for an unrelated reason after a teardown shows "Upload failed" instead of the teardown message (rare, no credential spent); the publish suite header's reason for stubbing `sha256File` (a fixture choice, not false).
+- **Learnings checkpoint:** `de4deb57` refreshed `guard-report-dedupes-per-event-not-per-holder-2026-09-02.md` (its snippets predated `reportTeardownOnce()` and `tearDownSessionWithMessage`). The other six matched entries are honored by the diff and not contradicted. No new entry: the placement rule is the `subjectTeardownGuard` docblock's own, and the CONCEPTS.md Subject Teardown entry already states the narrate-once rule.
+
+**Owner:** ui
+**Created:** 2026-09-02
+**Priority:** normal
+
+Routed out of the architect round-2 review of `ui-consent-op-teardown-guard`
+(`01347275` + `646c23bb`). Not held there: the round-1 hold marked a batch-level guard
+optional, and the gap sits outside that commit's lines. Four reviewers converged on it
+independently this round (security, correctness, adversarial, and the frontend-races
+lens), which is why it is filed rather than left as a recorded residual.
+
+## Why
+
+`uploadFile` now opens its own teardown guard at entry and threads it through the
+pre-flight and both retry legs, so a subject teardown landing anywhere inside ONE call
+is caught. A submit is many calls: the publish page uploads the PDF, then each
+supplementary file, then broadcasts; the edit page does the same around its
+supplementary loop. Each call opens a fresh guard, and a guard opened after a teardown
+snapshots the already-bumped generation, so it compares that value against itself and
+never fires.
+
+A cross-tab login landing between two legs is therefore invisible to every guard in the
+batch. The next leg acquires a window for whoever the tab now represents: the new
+subject is prompted with the generic re-auth message, their credential mints an upload
+token, and the departed subject's remaining files pin under their account. The submit
+then broadcasts with the username captured at submit entry, which the backend refuses
+because it no longer matches the JWT subject, and that mismatch tears the new subject's
+session down.
+
+Fail-closed at the chain, so nothing is published for the wrong account. But the client
+has spent a credential and run part of a captured action for a subject the tab no longer
+represents, which is the invariant the consent-op teardown work exists to hold. The
+per-leg guards are sound for the boundaries they span; the hole is between legs.
+
+## Scope
+
+1. Open one guard per submit, at each submit entry, after the existing pre-upload window
+   gate. Thread it into `uploadFile` as an option defaulting to the guard that function
+   opens for itself today, so every existing caller (the editor's inline image upload
+   included) keeps working unchanged.
+2. Check it before each upload leg and again immediately before the broadcast. On a
+   teardown, report once through the guard's cancel and unwind to idle with the
+   already-reported silent upload code, matching how a single leg unwinds now.
+3. One teardown in a batch is one message. Do not report per remaining file.
+
+Interaction to check before starting: `ui-light-account-reauth-window` item 6 proposes
+moving the broadcast confirm ahead of the upload legs. If that lands first the
+pre-broadcast check moves with it. The condition to satisfy is that no leg of a submit
+runs for a subject the tab stopped representing, wherever the legs end up ordered.
+
+## Acceptance criteria
+
+1. A teardown between two supplementary uploads in one submit stops the batch: no
+   further upload, no prompt, no mint, exactly one message.
+2. A teardown between the last upload and the broadcast stops the submit before the
+   broadcast is issued.
+3. Single-leg behaviour is unchanged, pinned by the existing upload and page tests
+   staying green with no edits.
+4. One test per page (publish, edit) for AC1 and AC2, each observed red at base.
+
+UI implementation signal (2026-10-06, commit 4781efac):
+
+Landed in `4781efac` (`ui(upload): one teardown guard spans each publish and edit submit`),
+verified an ancestor of `main`. Files: `frontend/src/pages/publish.js`,
+`frontend/src/pages/edit.js`, and two new suites
+`frontend/tests/unit/pages-publish-batch-teardown.test.js` and
+`frontend/tests/unit/pages-edit-batch-teardown.test.js`. `lib/ipfs-upload.js` and
+`lib/fresh-auth.js` are untouched; no existing test was edited.
+
+What changed. Each `handleSubmit` opens one `subjectTeardownGuard()` ("the upload batch
+guard", the name the `_remountWhenSettled` docblocks already defer to) before its first
+await, and a local `unwindIfSubjectChanged()` checks it immediately ahead of each leg with
+nothing awaited in between: publish checks after the entry gate (ahead of the publish
+confirmation), after `sha256File` (ahead of the PDF upload), at the top of each
+supplementary iteration, and ahead of the pre-broadcast `_windowReady` gate; edit checks at
+the top of each supplementary iteration and once ahead of the `isContinuation` split (ahead
+of both arms' pre-broadcast gates). On a teardown it calls the guard's `cancel()` (one
+message per teardown, deduped by `reportTeardownOnce`) and unwinds to idle.
+
+Departures from Scope, asked and approved by the user before implementation (option
+"Page checks, guard at start"):
+1. The guard opens at submit entry, not "after the existing pre-upload window gate". The
+   entry gate's navigation-cost offer (`_confirmNavigationCost` inside
+   `freshAuthWindowReady`) can answer ready for a new subject after a cross-tab login lands
+   while it is open; a guard opened after the gate never fires, and every leg and the
+   broadcast then ran for the new account (probed at base on both pages).
+2. The guard is not threaded into `uploadFile`. Passing a second argument fails the existing
+   `pages-edit.test.js` assertion `toHaveBeenCalledWith(file)`, which AC3 forbids editing.
+   A page check placed immediately before the call is equivalent: `uploadFile`'s own guard is
+   its first statement, so it snapshots the same generation the check just compared.
+3. The pre-broadcast check sits ahead of the pre-broadcast gate rather than "immediately
+   before the broadcast". Past a teardown that gate acquires for the new account and prompts
+   it and spends its mint; a check after the gate would only cross microtask hops (see
+   `await-is-not-a-teardown-boundary-unless-it-yields-to-a-macrotask-2026-09-03.md`).
+
+The "Interaction to check" paragraph is stale: the publish confirmation already precedes the
+upload legs, and the edit page has no confirmation; the pre-broadcast gate did not move, so
+the pre-broadcast check stays at the end, ahead of that gate.
+
+Acceptance criteria:
+- AC1: "a subject change between two supplementary uploads stops the batch" on both pages
+  asserts 1 transfer, 0 prompts, 0 mints, 0 broadcasts, exactly one teardown message, step
+  idle, no error surface, no row error, no row left uploading.
+- AC2: "a subject change between the last upload and the broadcast" on publish (PDF only)
+  and on both edit arms asserts the same outcome with no broadcast issued.
+- AC3: `pages-publish`, `pages-edit`, `lib-ipfs-upload`, `lib-ipfs-upload-real-window` and
+  `editor` suites green and unedited (314 tests).
+- AC4: the two new suites (11 cases: 3 controls, 8 teardown cases) run the real auth store and
+  its storage-event scrub, the real fresh-auth window and the real `uploadFile`. All 8
+  teardown cases fail against the HEAD pages; the 3 controls pass. Extra cases beyond the ACs
+  pin the publish confirmation dwell and the entry-gate offer path.
+
+Verification: full frontend unit suite 96 files / 2262 tests, exit 0; `npm run build` clean
+(built in an isolated copy; standing dhive eval warning only); pre-commit anchor gate zero
+hits on the added lines, control line fires. Eleven single-site mutants (each check removed,
+the guard moved after the entry gate on each page, the publish pre-broadcast check moved
+after its gate, the loop check moved after `sf.uploading = true` on each page) are each killed
+by their own case. A `ce-simplify-code` pass (reuse, quality, efficiency) and a four-lens
+adversarial review with two refuters per finding ran before commit; upheld findings were all
+comment or test-header narrowings plus the `uploading` assertion, and are in the commit.
+
+Considered and not built: a check between the publish confirmation and `sha256File`. A
+teardown during the confirmation costs one local hash and spends no credential; the
+post-hash check stops the PDF upload, and an extra check there would leave the post-hash
+check unpinned by any case.
+
+Out-of-scope findings for follow-up filing:
+1. The navigation-cost offer in `freshAuthWindowReady` (normal priority suggested). The
+   subject scrub dismisses the re-auth modal but not the `broadcastConfirm` offer dialog, and
+   a yes runs `freshAuthWindowReady({ ...acquireOpts, allowRedirect: true })` for whoever the
+   tab now represents: a password account is prompted and its mint spent, a passwordless one
+   gets an ORCID start. This happens inside the gate, before any page check. In a submit the
+   batch guard then stops every leg (pinned by the entry-gate offer cases), but the prompt
+   and mint have already happened, and if the new account dismisses that prompt the submit
+   unwinds with no teardown message. The same path reaches the file-selection gates, outside
+   any submit: publish `handlePdfChange` and `handleSupplementaryFiles`, edit
+   `handleSupplementaryFiles`. Reviewers converged on the fix layer being
+   `freshAuthWindowReady` itself (a guard opened at its entry, consulted after
+   `onReauthRequired()` resolves, refusing the recursion and reporting through `cancel()`),
+   not the two submit pages.
+2. The `describeUploadError` mocks in `pages-publish.test.js` and `pages-edit.test.js` say they
+   mirror the real mapper but return `common.uploadFailed` for `UPLOAD_SUBJECT_CHANGED`, which
+   the real one maps to null (low; mock and comment fix, left alone here under AC3).
+3. `broadcastWithFreshAuth`'s non-light branch calls `broadcastOps` with no guard, so a
+   teardown landing during the Keychain prompt itself is not detected there. That is an
+   in-leg gap, not a between-leg one (low).
+4. The teardown message reads "Your session changed, so the confirmation was cancelled." On
+   the edit page, and on publish when a leg rather than a dialog was cancelled, no
+   confirmation was on screen. This copy is shared with the existing single-leg upload
+   cancels (low; copy follow-up candidate).
+
+Learnings checkpoint: grepped `agents/docs/solutions/` for `subjectTeardownGuard`,
+`uploadFile`, `onReauthRequired`, `_confirmNavigationCost` and "batch guard"; no entry is
+contradicted by this work. Nothing new qualifies: the placement rule is the
+`subjectTeardownGuard` docblock's own "open the guard before the first await of the
+stretch", the check-adjacency argument is carried by the new opener comment, and the
+offer-path hole is a defect for follow-up 1, not a learning.
+
 ## The accreditation mail does not say which account the link accredits (archived 2026-10-06) — one round; the metadata-edit regression it exposed filed as a ui task; one solutions overclaim refreshed; contract and § 6.4 updated
 
 ### Architect archive note (2026-10-06)
@@ -81,170 +247,3 @@ What landed:
   U+202E and U+2066 to U+2069, with 400 `BAD_REQUEST` `<field>: must not contain line breaks or
   control characters`. LRM and RLM stay allowed. `accreditationMetadataEditSchema` inherits the
   rule through `.pick()` and still accepts ordinary values.
-
-User decisions (2026-10-06), beyond the task text:
-1. Also reject the bidi embedding, override and isolate characters (U+202A to U+202E, U+2066 to
-   U+2069); keep the left-to-right and right-to-left marks allowed.
-2. The subject names the account (the task scoped the body only), because "Verify your
-   accreditation" reads as the recipient's own pending accreditation.
-
-Acceptance criteria:
-1. "names the requesting account, the name and the institution, and tells a non-requester to
-   ignore it".
-2. "a line break in full_name|institution answers 400 BAD_REQUEST and sends no mail" (it.each).
-3. The mail spec asserts no U+2014 in subject and body; the pre-commit anchor gate passed.
-
-Verification:
-- Red first: 39 new specs failed on the parent code (14 accept-case specs passed).
-- Each file alone, `--retry=0`: `validation-accreditation-text-fields.test.ts` 50/50,
-  `accreditation-metadata-edit.test.ts` 11/11, `accreditation.test.ts` 2 failed / 38 passed.
-  The 2 are the per-token broadcast-attempts-cap specs; the parent commit run alone in a
-  scratchpad copy fails the same 2 (2 failed / 35 passed). They are the HAF blocks-index walk
-  that `backend-latest-op-haf-lookups-walk-the-blocks-index` fixes. `npm run typecheck` and lint
-  on the changed files are clean.
-- A verification workflow (six lenses, one refuter per finding) over `85429ce5`: enumerating
-  U+0000 to U+10FFFF through both schemas rejects exactly the intended 76 code points; 17 named
-  mutants were killed, including both user decisions; the regex is linear on 1 MB bodies.
-
-Triage (user, 2026-10-06, approved as recommended). Dismissed:
-- Widening a bidi range by one code point is not caught by the accept table (not a realistic
-  refactor).
-- `MOCK_VERIFY_SIGNATURE` equates `X-Hive-Username` with the session account, so the mail spec
-  cannot tell a header-sourced mention from `req.hiveUsername`.
-- Moving `validate()` after the `/request` limiter goes unnoticed by every spec.
-
-Out-of-scope findings for follow-up filing:
-- (backend, medium) Other paths put typed `full_name` / `institution` on chain without this
-  rule: `SignupBodySchema` in `backend/src/routes/auth.ts` (bare `z.string().optional()`,
-  broadcast at signup finalize, printed by the registration watch) and
-  `adminAccreditationGrantSchema` in `backend/src/validation.ts`. `field` in
-  `accreditationRequestSchema` is broadcast too and has no rule. Suggest exporting
-  `NO_CONTROL_CHARACTERS` and applying it there.
-- (ui, low) `handleMetadataSubmit` in `frontend/src/pages/settings.js` re-sends all three
-  prefilled fields, so an account whose on-chain name or institution already holds a now-rejected
-  character gets 400 on every SPA metadata edit with the generic "Please try again" (retyping the
-  field clears it). `frontend/src/pages/accreditation.js` shows only "Accreditation request
-  failed" for the new 400. Suggest sending only changed fields, or mapping a `full_name:` /
-  `institution:` 400 to a specific message.
-- (backend, low) The `backend/tests/setup.ts` docblock says "Global test setup, runs
-  before/after all test files"; it is a `setupFiles` entry that runs in every test file. Narrow
-  it.
-
-## [TODO Architect] at archive
-
-- `api-contracts/accreditation.md`, PATCH /metadata: the "Bounds mirror
-  `accreditationRequestSchema`" sentence and the BAD_REQUEST bullet ("all three fields absent, or
-  a field over its length bound") gain the character rule: `full_name` and `institution` reject
-  line breaks, control characters and bidi embedding/override/isolate characters, message
-  `<field>: must not contain line breaks or control characters`.
-- `ARCHITECTURE.md` § 6.4 metadata-edit row: the same bounds addition.
-- Optional: `api-contracts/accreditation.md` POST /request Errors, `BAD_REQUEST` bullet ("missing
-  required fields"). It already omitted the length and email-format 400s.
-
-Learnings checkpoint: `/ce-compound` wrote
-`agents/docs/solutions/conventions/per-file-setup-redis-flush-wipes-concurrent-test-files.md`
-and `/ce-compound-refresh` narrowed the determinism claim in
-`cross-file-singleton-redis-key-test-isolation-2026-06-15.md` (both `e553b3a6`). The mail
-content, the character set, the `.pick()` inheritance and the `validate()` envelope are carried
-by the code and tests; the two broadcast-cap failures are covered by
-`haf-custom-json-latest-op-materialized-fence-2026-06-14.md`. Also recommended, not run:
-`/ce-compound-refresh` for `test-teardown-wildcard-delete-shared-id-band-parallel-workers-2026-06-14.md`
-(scope names only per-file cleanup hooks over DB tables) and
-`vitest-retry-fire-and-forget-side-effect-poisoning-2026-05-04.md` (states `retry: 1`; config
-now has `retry: 3`).
-
-## The verify, signup and request surfaces explain a mailbox that already backs another account (archived 2026-10-06) — one round; two in-place fixes; release link and refusal exits folded into the release-flow task; HAF outage rule set with the user
-
-### Architect archive note (2026-10-06)
-
-- **Review:** `/ce-code-review` full path on `64bca0fb`, `141840d7`, `8a169708` (synthetic base excluding the unrelated `faffe9f9`), seven reviewers plus the validator. Implementer claims re-measured at `8a169708`: full frontend suite 94 files / 2251 tests, exit 0; 11 of 12 mutants killed, the survivor (handler order) equivalent because the two finalize handlers match disjoint codes; 13 keys in all 16 locales, 195 STUBS.md lines, no emdash.
-- **#1 (P1, validator confirmed), filed after the user's yes:** `hasUnliftedSanction` fails closed (no HAF pool or a query error answers true), so a HAF failure at finalize answers 403 `ACCREDITATION_SANCTIONED` after the finalize UPDATE; the new `unaccredited` phase shows "not eligible" with no retry, where the old generic path reached the 1-hour stuck-resume branch on re-submit. The ui routing stays (right for a real sanction). Proposed: new backend task `backend-failed-sanction-read-is-not-a-sanction` (high): HTTP routes answer a retriable 503 on a failed read (signup finalize, `/api/accreditation/verify`, ORCID callback, metadata edit), the wot job keeps failing closed, and the accepted-tradeoff comment in `accreditation-metadata.ts` goes. Filed. The user widened the principle: every HAF outage shows an error with a retry, since without HAF data the site cannot answer. `ARCHITECTURE.md` "Data Source Policy" item 1 now says so (it used to allow empty results), and `architect-haf-outage-sweep` (normal) inventories the reads that still substitute an answer.
-- **#2 (P3):** the `_isNetworkError` docblock and its spec comment said DOMExceptions carry no `.code`; fixed in place in `d3b7e34d`.
-- **Implementer follow-ups:** contract "AbortError-after-success" narrowed in `a3d138f7`. The deferred release link (Scope 1) and the missing "not yours" exits in `verify.mailboxBoundMessage(Unnamed)` and `seedPhrase.unaccreditedOrcidLinked` folded into `ui-accreditation-release-flow` (scope item 4, AC5). Finalize sanction fail-closed is #1.
-- **Design, applied after the user's yes:** signup plus login reveals a bound address. Under § 2 a bound address's signup creates no row, so a login with it answers 401, against 409 `PENDING_UNVERIFIED` for an unbound address's pending row. Proposed: amend § 2 and `backend-signup-finalize-claims-mailbox-binding` before it starts so the signup creates the same pending row in both cases and only the mail differs. Applied: § 2 "Light-account signup" and the task's scope 1 and AC1 (a resend sends the notice again).
-- **No change:** `common.mailboxPurpose` describes the keyed hash and the one-account rule before `backend-mailbox-binding-registry` implements them; that task makes it true.
-- **Dismissed:** timeout copy "Network connection lost" (the retry route is the fix; before this diff a timeout fell to the generic failure); `/link` refusal for an already-accredited Hive account (theoretical); finalize `bound_to` shown to a former mailbox holder (matches the design's notice mail); template-substring tests (11 of 12 mutants killed, AC5 E2E is the planned cover); the verify page's `console.warn` before its semantic branches (predates the diff).
-- **Learnings checkpoint:** solutions/ grepped for `hasUnliftedSanction`, `DOMException`, `.code` claims and the 30s timeout name; no entry is contradicted (`reviewer-discovery-error-class-stack` already names `TimeoutError`). No new entry: #1 is the consumer-side shape `new-fail-closed-outcome-must-not-reuse-an-existing-sentinel` already describes, and the DOMException code fact is in `d3b7e34d`'s message.
-
-**Owner:** ui
-**Created:** 2026-10-06
-**Priority:** high
-
-Filed from `architect-accreditation-mailbox-binding-design` (decisions with the user, 2026-10-06).
-Design: `ARCHITECTURE.md` § 2 "Credential Bindings". Backend counterpart:
-`backend-mailbox-binding-registry`, `backend-signup-finalize-claims-mailbox-binding`.
-
-## Why
-
-`frontend/src/pages/accreditation-verify.js` renders every non-retriable error as "Verification
-Failed" with a "Request New Accreditation" button, has no branch for the existing 403
-`ACCREDITATION_SANCTIONED`, and reads only `res.data.username` on success. A refusal because the
-mailbox backs another account would show as a generic failure that invites another attempt. The
-request form says nothing about what the address is used for, and the binding's legal basis needs
-the purpose stated before the address is submitted.
-
-## Scope
-
-1. **Verify page:** a state for 409 `MAILBOX_ALREADY_BOUND`: the mailbox already backs
-   `details.bound_to`; the way through is to sign in to that account and release its
-   accreditation (link to the release surface once `ui-accreditation-release-flow` lands;
-   until then "or contact PEvO"). No "Request New Accreditation" button in this state. While in
-   this file: a state for 403 `ACCREDITATION_SANCTIONED` without that button either, and treat
-   `AbortSignal.timeout`'s `TimeoutError` as retriable like the other network errors, since the
-   backend keeps the token on a timeout.
-2. **Signup finalize:** when `/confirm` or `/link` answers 409 `MAILBOX_ALREADY_BOUND` (no
-   session), the signup-verify page says the account was created but not accredited because the
-   mailbox already backs another account, with the same way through and a sign-in link; it must
-   not suggest signing up again.
-3. **Request form (`frontend/src/pages/accreditation.js`) and the signup form:** one sentence under
-   the e-mail field naming the legitimate interest and the right to object: the address is used to
-   verify an institutional affiliation and, to prevent abuse, to keep one accredited account per
-   mailbox; a keyed hash of it is stored for that purpose and the holder can object; link to the
-   privacy notice route. Nothing in the UI reveals whether an address is bound: the request answer
-   is uniform by design and the explanation arrives by mail.
-4. New strings in `en.json`, stubbed in all 15 other locales and recorded in `STUBS.md` per the
-   convention; no emdash in UI copy.
-
-## Out of scope
-
-- The release action itself and the admin console (`ui-accreditation-release-flow`).
-- The settings e-mail flows (they never bind).
-
-## Acceptance criteria
-
-1. A 409 `MAILBOX_ALREADY_BOUND` on `/verify` renders the bound-account state naming
-   `details.bound_to`, with no re-request button; the sanction code renders its own state.
-2. A `TimeoutError` from the verify POST lands in the retry state.
-3. The finalize refusal renders the created-but-unaccredited explanation.
-4. The request and signup forms carry the purpose sentence and the privacy link.
-5. Unit tests for the new branches; E2E for the verify state against the real backend once the
-   backend task is in.
-
-## UI implementation signal (2026-10-06, commits 64bca0fb, 141840d7, 8a169708)
-
-Landed on main, each verified with `git merge-base --is-ancestor <sha> main`:
-
-- `64bca0fb`: the change: both verify pages, the two form sentences, 13 keys in all sixteen
-  locales, the STUBS.md sweep `### Added 2026-10-06 (ui-accreditation-binding-refusal-states)`,
-  and the unit specs.
-- `141840d7`: fixes from the adversarial verification (below): copy narrowed to what holds, the
-  second way through, per-state copy and href pins in the specs.
-- `8a169708`: `/ce-simplify-code` pass: test tables and two comments the change made false.
-- Also: `db703b76` files `ui-request-and-signup-copy-promises-a-link-a-bound-address-never-gets`;
-  `aa2da86e` is the learnings refresh (below).
-
-**Decisions taken with the user before submitting:**
-
-1. **Privacy link.** No privacy notice route exists (the privacy task is on hold), so "You can
-   object to this." links to `/contact`. Swap in the notice once it ships.
-2. **Finalize refusals.** The signup-verify `unaccredited` phase covers 409 `MAILBOX_ALREADY_BOUND`
-   and the two finalize refusals that already exist, 409 `ORCID_ALREADY_LINKED` and 403
-   `ACCREDITATION_SANCTIONED`. Before this they showed "creation failed" and sent the user back
-   to the username step of an account that was already finalized.
-3. **Second way through.** The finalize mailbox copy also names the design's route for a holder
-   who is someone else: "If {account} is not yours, sign in to this account and request
-   accreditation with another institutional address or your ORCID iD."
-4. **Link-promising copy.** `accreditation.emailHint`, `accreditation.checkEmail` and
-   `signup.checkEmailDescription` promise a verification link that a bound address never gets.
-   Filed as a separate ui task (`db703b76`) instead of re-stubbing translated keys here.
-
