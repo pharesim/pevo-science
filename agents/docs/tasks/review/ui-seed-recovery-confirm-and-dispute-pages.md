@@ -201,7 +201,8 @@ on a destroyed page.
 6. Pre-existing E2E failures, unchanged by this work:
    `password-recovery.spec.js` and `seed-phrase.spec.js` fail at their first
    `form button[type="submit"]` click on the known strict-mode clash with the
-   always-rendered reauth modal form.
+   always-rendered reauth modal form. Filed with the user's go-ahead as
+   `ui-e2e-bare-submit-locators-clash-with-reauth-modal` (all twelve sites).
 7. Pre-existing: on a cold load (every mailed link) `initI18n` replaces the
    route title with `metadata.title`, so route titles show only after
    in-app navigation.
