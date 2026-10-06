@@ -80,7 +80,7 @@ it('pipeline rejection → 200 envelope; warn fires; in-memory fallback satisfie
     }),
   } as unknown as ReturnType<typeof redis.multi>);
 
-  const res1 = await request(app).post('/api/accreditation/verify').send({ token });
+  const res1 = await postVerify(token, username);
   expect(res1.status).toBe(200);
   expect(warnSpy).toHaveBeenCalledWith(
     expect.objectContaining({ event: 'accreditation.verify.completion_record_pipeline_failed' }),
@@ -96,7 +96,7 @@ it('pipeline rejection → 200 envelope; warn fires; in-memory fallback satisfie
   const isAvailableSpy = vi.spyOn(redisModule, 'isRedisAvailable').mockReturnValue(false);
   try {
     const broadcastBefore = broadcastJsonMock.mock.calls.length;
-    const res2 = await request(app).post('/api/accreditation/verify').send({ token });
+    const res2 = await postVerify(token, username);
     expect(res2.status).toBe(200);
     expect(res2.body.data).toMatchObject(res1.body.data);
     expect(broadcastJsonMock.mock.calls.length).toBe(broadcastBefore);  // no re-broadcast
@@ -107,18 +107,6 @@ it('pipeline rejection → 200 envelope; warn fires; in-memory fallback satisfie
 ```
 
 The `isRedisAvailable` spy must be set **after** the first call and **before** the retry. Setting it before the first call would prevent the pipeline branch from running at all and the test would silently exercise the no-Redis path instead of the pipeline-rejection path. Use `mockReturnValue(false)` (not `mockReturnValueOnce`) so internal availability checks during the retry are all covered without ordering sensitivity.
-
-The stub's `as unknown as ReturnType<typeof redis.multi>` cast erases the structural type check for the entire pipeline value. If the production `recordAccreditationCompletion` grows a new step (a second `.set`, an `.expire`, etc.) the stub's nested plain object will have no matching method and the cast will silently allow the spec to pass against an incomplete code path. Prefer a self-referential pipeline stub cast to `ChainableCommander` so any production-chain growth requires the stub to grow too:
-
-```typescript
-import type { ChainableCommander } from 'ioredis';
-const fakePipeline = {
-  set(..._args: unknown[]) { return this as unknown as ChainableCommander; },
-  del(..._args: unknown[]) { return this as unknown as ChainableCommander; },
-  exec: () => Promise.reject(new Error('pipeline boom')),
-} as unknown as ChainableCommander;
-vi.spyOn(redis, 'multi').mockReturnValueOnce(fakePipeline);
-```
 
 ### Rule 3 — Architect hold-block acceptance for in-memory-fallback paths must name the Redis-availability precondition explicitly
 
@@ -138,7 +126,7 @@ The incorrect form generates a round-trip in one of two failure modes: (1) the i
 
 Three failure modes follow from missing the MULTI rejection semantic:
 
-1. **Silent re-broadcast on healthy-Redis retry.** Pipeline rejection leaves `pendingKey` alive. If `/verify` runs again on healthy Redis before the 24h TTL expires, `getToken` finds the row, treats the operation as not-yet-complete, and re-broadcasts to the chain. In PEvO's current architecture the HAF idempotency gate and per-token dedup catch the duplicate at the rare intersection of pipeline-rejection-followed-by-healthy-Redis-retry, so the user-facing impact is contained — but the inner-catch fallback alone does not prevent re-broadcast in that window. (The architect-considered alternative of adding a best-effort `deleteToken(token)` to the inner catch would close the window, but was dismissed at round-4 triage as out-of-scope given the existing HAF backstop and PEvO's single-instance scale per [[project_single_instance_only]].)
+1. **Silent re-broadcast on healthy-Redis retry.** Pipeline rejection leaves `pendingKey` alive. If `/verify` runs again on healthy Redis before the 24h TTL expires, `getToken` finds the row, treats the operation as not-yet-complete, and re-broadcasts to the chain. In PEvO's current architecture the HAF idempotency gate and per-token dedup catch the duplicate at the rare intersection of pipeline-rejection-followed-by-healthy-Redis-retry, so the user-facing impact is contained — but the inner-catch fallback alone does not prevent re-broadcast in that window. (The architect-considered alternative of adding a best-effort `deleteToken(token)` to the inner catch would close the window, but was dismissed at round-4 triage as out-of-scope given the existing HAF backstop and PEvO's single-instance scale.)
 
 2. **Test exercises the wrong path; regression class missed.** A spec that stubs the pipeline once and then issues a healthy-Redis retry achieves the 200-status assertion via re-broadcast, not via the in-memory fallback. The spec appears green; the regression-kill claim of the spec ("the in-memory fallback satisfies the retry") is false. A later change that removes the inner catch entirely would still let the test pass via re-broadcast.
 
@@ -179,7 +167,7 @@ After (round-3 implementer correction, precondition named — accepted at round-
 const isAvailableSpy = vi.spyOn(redisModule, 'isRedisAvailable').mockReturnValue(false);
 try {
   const broadcastBefore = broadcastJsonMock.mock.calls.length;
-  const res2 = await request(app).post('/api/accreditation/verify').send({ token });
+  const res2 = await postVerify(token, username);
   expect(res2.status).toBe(200);
   expect(res2.body.data).toMatchObject(res1.body.data);
   expect(broadcastJsonMock.mock.calls.length).toBe(broadcastBefore);

@@ -126,6 +126,7 @@ const loginLimiter = rateLimit({
   // credential enumeration.
 });
 
+// backend/src/routes/recover.ts
 const recoverLimiter = rateLimit({
   name: 'auth-recover',
   windowMs: 3_600_000,
@@ -148,7 +149,7 @@ const recoverLimiter = rateLimit({
 | `custody.ts freshAuthLimiter` | account | ✓ | ✓ (argon2) | ✓ | **Carve-out adoption — this convention** |
 | `custody.ts sessionAuthLimiter` | account | ✓ | ✓ (argon2) | ✓ | **Carve-out adoption — this convention** |
 | `accreditation.ts accreditationRequestLimiter` | account | ❌ | ❌ | ✓ | Correct omission, `refundStatusCodes: [422, 500]`. Under `skipFailedRequests` a client abort was refunded while the handler kept running to the mail send, so an aborting client could send mails without limit |
-| `accreditation.ts accreditationVerifyLimiter` | IP | ❌ | ❌ (token claim, not credential probe) | ❌ | Correct omission, `refundStatusCodes: [503, 504]`. Under `skipFailedRequests` the 400, the sanctioned 403 and the cap 502 were refunded, so a caller repeating them was not throttled |
+| `accreditation.ts accreditationVerifyLimiter` | account | ❌ | ❌ (token claim, not credential probe) | ✓ | Correct omission, `refundStatusCodes: [503, 504]`. Under `skipFailedRequests` the 400, the sanctioned 403 and the cap 502 were refunded, so a caller repeating them was not throttled |
 
 The grid is the discriminator-in-practice: every site with `skipFailedRequests: true` is JWT-required AND has a concrete legitimate-user-lockout DoS surface that motivates the adoption.
 
