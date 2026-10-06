@@ -4,6 +4,7 @@ import { uploadFile, describeUploadError } from '../lib/ipfs-upload.js';
 import {
   broadcastWithFreshAuth,
   freshAuthWindowReady,
+  subjectTeardownGuard,
   FRESH_AUTH_REDIRECT_PENDING,
 } from '../lib/fresh-auth.js';
 import { sha256File, slugify } from '../crypto.js';
@@ -1562,6 +1563,19 @@ export function initEditPage() {
       // await like isContinuation and userPostInChain.
       const draftKey = this._draftKey;
 
+      // The upload batch guard: one teardown guard for the whole submit,
+      // opened before its first await. `uploadFile` opens a guard of its own
+      // at entry, which cannot see a teardown that landed before it.
+      // `unwindIfSubjectChanged()` runs ahead of each upload and the
+      // pre-broadcast gates, with nothing awaited in between.
+      const batchGuard = subjectTeardownGuard();
+      const unwindIfSubjectChanged = () => {
+        if (!batchGuard.tornDown()) return false;
+        batchGuard.cancel();
+        this.step = 'idle';
+        return true;
+      };
+
       // Leave 'idle' synchronously, before the first await. `isSubmitting`
       // derives from `step`, and it is what disables the submit button — across
       // an await taken while still idle the button stays live, a second click
@@ -1694,6 +1708,7 @@ export function initEditPage() {
           // Every file rides the session window acquired above, so a whole batch
           // costs no re-auth act of its own.
           for (const sf of this.supplementaryFiles) {
+            if (unwindIfSubjectChanged()) return;
             sf.uploading = true;
             try {
               const res = await uploadFile(sf.file);
@@ -1728,6 +1743,11 @@ export function initEditPage() {
           }
         }
 
+        // Ahead of both arms' pre-broadcast gates, not after them: past a
+        // teardown a gate acquires for whoever the tab now represents and can
+        // prompt that account and spend its mint. Only synchronous code runs
+        // between here and either gate.
+        if (unwindIfSubjectChanged()) return;
         if (isContinuation) {
           // Continuation post: new post with full body
           const newPermlink = slugify(this.title) + '-' + Date.now().toString(36);

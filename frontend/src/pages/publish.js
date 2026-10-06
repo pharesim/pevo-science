@@ -3,6 +3,7 @@ import { uploadFile, describeUploadError } from '../lib/ipfs-upload.js';
 import {
   broadcastWithFreshAuth,
   freshAuthWindowReady,
+  subjectTeardownGuard,
   FRESH_AUTH_REDIRECT_PENDING,
 } from '../lib/fresh-auth.js';
 import { sha256File, slugify } from '../crypto.js';
@@ -1254,6 +1255,19 @@ export function initPublishPage() {
         return;
       }
 
+      // The upload batch guard: one teardown guard for the whole submit,
+      // opened before its first await. `uploadFile` opens a guard of its own
+      // at entry, which cannot see a teardown that landed before it.
+      // `unwindIfSubjectChanged()` runs ahead of the publish confirmation, each
+      // upload and the pre-broadcast gate, with nothing awaited in between.
+      const batchGuard = subjectTeardownGuard();
+      const unwindIfSubjectChanged = () => {
+        if (!batchGuard.tornDown()) return false;
+        batchGuard.cancel();
+        this.step = 'idle';
+        return true;
+      };
+
       // Leave 'idle' synchronously, before the first await. `isSubmitting`
       // derives from `step`, and it is what disables the submit button — across
       // an await taken while still idle the button stays live, a second click
@@ -1270,6 +1284,7 @@ export function initPublishPage() {
         // has been paid for is exactly the loss this ordering exists to prevent.
         if (!await this._windowReady()) { this.step = 'idle'; return; }
         if (!this._mounted) return;
+        if (unwindIfSubjectChanged()) return;
 
         // Confirm before the upload legs, not after. The dialog confirms an
         // intent to publish, not an intent to upload, so asking first also
@@ -1296,6 +1311,7 @@ export function initPublishPage() {
         if (this.pdfFile) {
           documentHash = await sha256File(this.pdfFile);
           if (!this._mounted) return;
+          if (unwindIfSubjectChanged()) return;
           this.step = 'uploading';
           let uploadRes;
           try {
@@ -1326,6 +1342,7 @@ export function initPublishPage() {
         if (this.supplementaryFiles.length > 0) {
           this.step = 'uploading';
           for (const sf of this.supplementaryFiles) {
+            if (unwindIfSubjectChanged()) return;
             sf.uploading = true;
             sf.error = null;
             try {
@@ -1417,6 +1434,11 @@ export function initPublishPage() {
         // earlier gates can ask because a yes costs re-picking files, while a
         // yes here would spend pins the user has already paid for, so the
         // refusal is the whole answer and the toast is what carries it.
+        //
+        // This `unwindIfSubjectChanged()` check sits ahead of the gate, not
+        // after it: past a teardown the gate acquires for whoever the tab now
+        // represents and can prompt that account and spend its mint.
+        if (unwindIfSubjectChanged()) return;
         if (!await this._windowReady({ allowRedirect: false, onReauthRequired: null })) { this.step = 'idle'; return; }
         if (!this._mounted) return;
 
