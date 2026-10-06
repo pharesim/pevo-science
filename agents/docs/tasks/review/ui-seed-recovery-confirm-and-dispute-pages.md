@@ -261,3 +261,72 @@ a signed-out browser in to the sender's account (the confirm press is
 required and signed-out adoption is the task's rule), `recover.verifyInvalid`
 not naming a deleted or upgraded account, and no test rendering the
 `duplicate` and `failed` templates.
+
+## UI re-review signal (2026-10-06, commit ba103a7d)
+
+Landed on main in one commit, `ba103a7d`
+(`git merge-base --is-ancestor ba103a7d main`: yes).
+
+1. **Item 1.** All three sites now say the answer goes to
+   `adoptRecoveredSession`, with no take-up claim: the comment in
+   `recoverVerifyPage.submit()` ("so the answer goes to
+   adoptRecoveredSession even if the page has gone"), the comment above the
+   teardown test, and its title, now `still hands the answer to
+   adoptRecoveredSession when it lands after the page is gone`.
+2. **Item 2.** In both pages' `submit()` catch, `console.warn` sits in the
+   `failed` arm only, as in `signup-verify.js`. Tests: the confirm page has
+   `it.each([INVALID_TOKEN, DUPLICATE])` asserting no warn (and no
+   `adoptRecoveredSession` call). The stop page has one `it` for
+   `INVALID_TOKEN` asserting no warn, since it maps only one code. Both keep
+   `it.each([INTERNAL_ERROR, RATE_LIMITED])` with the raw-error pin. The
+   three no-warn cases were red against the pre-fix source before the move.
+3. **Beyond the hold, self-caused by item 2.** The confirm page's teardown
+   test `leaves the page state alone when a refusal lands after the page is
+   gone` rejected with `INVALID_TOKEN`, which no longer warns, so its no-warn
+   assertion pinned nothing (its state assertion still pinned the
+   `_mounted` check). It now rejects with `INTERNAL_ERROR` and is titled
+   `... when a failure lands after the page is gone`. The commit message
+   calls both test changes "tables"; on the stop page the no-warn half is
+   one `it`.
+
+**Verification run.** Six recovery suites (recover-verify,
+recover-dispute, recover-session, recover, router, api): 6 files, 178
+passed, exit 0. Full frontend unit suite at `ba103a7d`, in an isolated
+`git archive` copy: 96 files, 2262 tests, exit 0. No E2E run: the change
+moves a console line and edits test prose only, no DOM, route or request
+changes, and no E2E spec listens for console output; switching the shared
+stack to test mode would also interrupt sibling agents.
+
+**Verification pass at `ba103a7d`** (four lenses: prose-truth,
+hold-compliance, mutation, adversarial; probes only in scratchpad copies;
+none died). Zero findings, so no refuters ran. All twelve planned mutants
+were killed (warn back before the branch on either page, a warn in each
+mapped arm, the failed-arm warn deleted on either page, the confirm catch's
+`_mounted` check deleted, `adoptRecoveredSession` moved after the
+try's `_mounted` check, each mapped code sent to `failed`). Mutants that
+survive, none in the hold's scope:
+- the stop page's catch `_mounted` check deleted (survives at the parent
+  commit too, disclosed in the first signal; after this commit its only
+  effect is a warn from a destroyed page for a failed-arm error);
+- the confirm page's guard moved into the `failed` arm only, so a mapped
+  code would write state on a destroyed component. The `INVALID_TOKEN` form
+  of the teardown test killed this one; the `INTERNAL_ERROR` form instead
+  kills a warn placed before the guard;
+- the failed-arm warn made conditional on `err?.code`, so code-less network
+  failures stop warning. The network-failure tests spy on `console.warn`
+  without asserting it, which predates this commit.
+
+**Simplify.** `ce-simplify-code` (reuse, quality, efficiency) on
+`ba103a7d`: nothing to apply.
+
+**Code review.** Not run by the UI agent, per `agents/ui/CLAUDE.md`; the
+architect reviews at intake.
+
+**Learnings checkpoint.** Grepped `agents/docs/solutions/` for
+`recover-verify`, `recoverVerifyPage`, `recover-dispute`,
+`recoverDisputePage`, `adoptRecoveredSession` and the two API paths: one hit,
+`carve-out-clause-c-companion-citations-are-unverified-prose-2026-09-02.md`,
+about a backend test, which this work does not contradict.
+`frontend-error-sanitization-2026-04-21.md` matches the fix. No new entry:
+the one non-obvious point (moving the warn left a sibling no-warn assertion
+vacuous) is recorded in the `ba103a7d` commit message and in this block.
