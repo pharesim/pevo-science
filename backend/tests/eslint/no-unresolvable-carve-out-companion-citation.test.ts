@@ -691,7 +691,7 @@ const DEFERRED_FREE_PROSE: Readonly<Record<string, number>> = {
   'backend/tests/routes/citations-lateral-guard-canary.test.ts': 1,
   'backend/tests/routes/custody-consent-ops.test.ts': 1,
   'backend/tests/routes/custody-credit-ops.test.ts': 1,
-  'backend/tests/routes/custody-limiter-cpu-amplification.test.ts': 2,
+  'backend/tests/routes/custody-limiter-cpu-amplification.test.ts': 1,
   'backend/tests/routes/custody-session-auth-argon-errors.test.ts': 1,
   'backend/tests/routes/custody-session-auth.test.ts': 1,
   'backend/tests/routes/custody-upgrade.test.ts': 1,

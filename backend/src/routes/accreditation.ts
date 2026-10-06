@@ -27,8 +27,7 @@ const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 // Refunds 422 (non-institutional address, refused before the token is stored)
 // and 500 (the SMTP branches answer it after a best-effort token delete).
 // Every other outcome consumes a slot, including a client that closes the
-// connection before the response ends: the handler still stores the token
-// and sends the mail.
+// connection before the response ends: the handler keeps running.
 const accreditationRequestLimiter = rateLimit({ name: 'accred-req', windowMs: 24 * 60 * 60_000, max: 3, keyFn: byAccount, refundStatusCodes: [422, 500] });
 // Refunds 503 (`ACCREDITATION_GATE_UNAVAILABLE` and the counter claim's
 // `SERVICE_UNAVAILABLE`, both before any broadcast) and 504

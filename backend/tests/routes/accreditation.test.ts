@@ -15,8 +15,7 @@
  * Mocking justification (per root CLAUDE.md carve-out): vi.mock replaces
  * `broadcastJsonWithTimeout` and `BroadcastTimeoutError` so we can stage
  * deterministic failure modes (a hanging broadcast cannot be reliably
- * reproduced against real Hive). verifyHiveSignature is NOT involved here
- * (the /verify route is rate-limited but not auth-gated). The carve-out
+ * reproduced against real Hive). The carve-out
  * covers only broadcast error staging; getToken / deleteToken run against
  * real Redis (or in-memory fallback), so the token-lifecycle assertions
  * exercise the real persistence layer.
