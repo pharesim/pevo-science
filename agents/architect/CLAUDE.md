@@ -51,7 +51,7 @@ python3 <ce-code-review skill dir>/scripts/review-scope.py --base $B --head $C -
 
 `B` is HEAD without the files and `C` is HEAD's tree on top of `B`, so `git diff $B $C` adds each file in full. Both commits live only in the object store: no ref moves and the shared index is untouched. Passing HEAD itself as the head reports no changed files, because the helper diffs from the merge base, which is then HEAD. Run the review as branch-remote with `diff_a` = `B` and `diff_b` = `C`. Tell the personas the change is an audit of existing code, have them read `git show $H:<path>` copies in the scratchpad, and have them cite `$H`, never `B` or `C`. Before triage, drop findings an open task already covers (grep `agents/docs/tasks/`), and apply the usual bars: a finding that does not fire today defaults to dismiss, and a new canary is warranted only where the code cannot be tested for real and review would likely miss a violation. Triage as for any review; accepted findings become tasks with a priority, or fold into an open task that covers them. Record the dispositions in the audit task file, then archive it.
 
-Before archiving, ask yourself: did this review or the resolution of a `[BLOCKED]` entry surface a non-obvious learning (a recurring implementer mistake, a cross-cutting architectural constraint, a rationale a future agent could not reconstruct from the code or docs)? If yes, invoke `/ce-compound`. If no, skip it. Err on the side of skipping.
+Before archiving, run the learnings checkpoint (root `CLAUDE.md` "Documented Solutions") over the review, every hold round and any `[BLOCKED]` resolution, and put its line in the archive note.
 
 ## Working Directory
 
@@ -82,8 +82,8 @@ Use these ce skills as part of your normal workflow. They are not optional — i
 - **`/ce-doc-review`** — After drafting or significantly changing a plan, `ARCHITECTURE.md`, or an api-contract file, before handing it to implementers.
 - **`/ce-code-review`** — When reviewing task files in `tasks/review/`. Run it on the implementer's diff before archiving the task.
 - **`/ce-sessions`** — When a `tasks/review/` file touches an area with prior churn, or a `tasks/blocked/` file references "we tried this before". Complements `agents/docs/solutions/` — that store is curated learnings, `/ce-sessions` is raw history.
-- **`/ce-compound`** — Gated by the checkpoint in the Review→archive step above. Do not invoke on every archive.
-- **`/ce-compound-refresh`** — When `agents/docs/solutions/` has accumulated drift (stale, overlapping, or superseded entries), or when `/ce-compound` flags an older doc as now inaccurate. The architect owns the category/format convention; use this skill to audit and consolidate.
+- **`/ce-compound`** — Triggered by the learnings checkpoint (root `CLAUDE.md` "Documented Solutions") at every archive.
+- **`/ce-compound-refresh`** — Scoped to one entry when the learnings checkpoint finds it contradicted. Store-wide when `agents/docs/solutions/` has accumulated drift (stale, overlapping, or superseded entries), or when `/ce-compound` flags an older doc as now inaccurate. The architect owns the category/format convention; use this skill to audit and consolidate.
 - **`/ce-commit`** — For local checkpoint commits at natural seams (before a fan-out, before switching context). Pushes/PRs are NOT authorized — see root `CLAUDE.md` "Commits and Pushes".
 
 ## You Do NOT

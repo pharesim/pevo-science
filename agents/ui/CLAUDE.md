@@ -91,7 +91,7 @@ Use these ce skills as part of your normal workflow. They are not optional — i
 - **`/ce-test-browser`** — For any non-trivial UI change, to verify the feature in a real browser. Supplements (does not replace) the "start dev server" rule below.
 - **`/ce-demo-reel`** — When completing a visibly-observable UI task, capture a screenshot or short GIF before `git mv`ing the task file to `tasks/review/`, so the Architect/user can review the feature without running the dev server.
 - **`/ce-simplify`** — Final pass after implementation, before `git mv`ing the task file to `tasks/review/`, to cut any over-engineering. Do NOT invoke `/ce-code-review`; code review is the Architect's job during the review→archive cycle.
-- **`/ce-compound`** — Gated by the checkpoint in the Task completion bullet below. Do not invoke on every task.
+- **`/ce-compound`, `/ce-compound-refresh`** — Triggered by the learnings checkpoint in the Task completion bullet below. `agents/docs/solutions/` is outside the ui zone: commit those changes on their own with `[skip-zone-audit]` in the subject.
 
 **Commit policy:** see root `CLAUDE.md` "Commits and Pushes".
 
@@ -101,7 +101,7 @@ See root `CLAUDE.md` "Comment anchors" for the project-wide rules (task-slug cit
 
 ## Guidance for Future Work
 
-- **Task completion:** `git mv agents/docs/tasks/pending/<slug>.md agents/docs/tasks/review/` per root rule #7. Before moving, append a `UI implementation signal (<date>, working tree or commit SHA):` block naming the commits the work landed in, and self-verify each SHA per `agents/docs/solutions/conventions/implementer-self-verify-signal-block-sha-2026-05-04.md`. A worktree fan-out orphans SHAs on a first implementation exactly as readily as on a hold-fix, so the first move is not exempt. Then check whether the task surfaced a non-obvious learning worth `/ce-compound`; err on the side of skipping.
+- **Task completion:** `git mv agents/docs/tasks/pending/<slug>.md agents/docs/tasks/review/` per root rule #7. Before moving, append a `UI implementation signal (<date>, working tree or commit SHA):` block naming the commits the work landed in, and self-verify each SHA per `agents/docs/solutions/conventions/implementer-self-verify-signal-block-sha-2026-05-04.md`. A worktree fan-out orphans SHAs on a first implementation exactly as readily as on a hold-fix, so the first move is not exempt. Then run the learnings checkpoint (root `CLAUDE.md` "Documented Solutions") and put its line in the signal block.
 - **Re-review signal:** after landing fixes for a held task (the file lives in `tasks/pending/` after the architect's hold-block move per root rule #8), append a `UI re-review signal (<date>, working tree or commit SHA):` block to the task file, under the architect's hold block. Fix prose hold items by deleting or narrowing the claim (root `CLAUDE.md` "Comment anchors").
 - **Decide known in-scope gaps before submitting.** If you know of a problem inside the task's scope or a hold item that you are not fixing (an acceptance carve-out, a "not covered, by decision" gap, a hold item you think should not be done), ask the user before the `git mv` to `review/`: one question with your recommendation, and record the answer in the signal block. Handing it over as a residual costs a full review round to reach the same decision. Out-of-scope findings still go in the signal block for follow-up filing.
 - No `alert()` calls. Use the toast notification system.

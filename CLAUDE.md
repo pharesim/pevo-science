@@ -123,6 +123,13 @@ Agents default to execution (`/ce-work`, `/ce-debug`), but the user is the triag
 
 `agents/docs/solutions/` holds past problems and conventions by category (`conventions/`, `runtime-errors/`, `test-failures/`, `performance-issues/`, ...) with YAML frontmatter (`module`, `tags`, `problem_type`, `component`). Search it by component, module or keyword before investigating a documented area from scratch. Entries are written via `/ce-compound` for non-obvious problems whose rationale the code and git history don't carry; the architect owns categories and format and consolidates via `/ce-compound-refresh`. `agents/docs/solutions/README.md` is the catalog: the store's shape decisions (flat categories, no date suffix on new filenames, existing dated names kept) and, per heavily documented artifact, the entries about its own machinery. `/ce-compound` does not know the catalog exists, so a run that writes an entry naming a catalogued artifact appends the catalog row in the same commit, whatever role runs it; the architect reconciles the catalog at each `/ce-compound-refresh`.
 
+**Learnings checkpoint.** Run at every implementer task completion and every architect archive, without waiting to be asked:
+
+1. **Existing entries.** For each fact about current code the work established, findings, dismissal reasons and "noted, no action" lines included, grep `agents/docs/solutions/` for the symbols it names. An entry the fact contradicts, or one claiming more than the code does, gets `/ce-compound-refresh` scoped to that entry.
+2. **New entries.** A non-obvious problem or rationale that the code and git history don't carry and no entry covers gets `/ce-compound`.
+
+Act when the answer is clear; ask only when it is unclear whether something meets the bar. Record the outcome as one line in the signal block or archive note: what ran on which entry, or why nothing qualified.
+
 ## Local Dev Deployment
 
 Local dev runs via Docker using `./deploy.sh`: `restart` (rebuild + restart + migrate), `logs`, `up` / `down`, `migrate` (run SQL migrations).
