@@ -1,3 +1,158 @@
+## The accreditation mail does not say which account the link accredits (archived 2026-10-06) — one round; the metadata-edit regression it exposed filed as a ui task; one solutions overclaim refreshed; contract and § 6.4 updated
+
+### Architect archive note (2026-10-06)
+
+- **Review:** `/ce-code-review` full path on `85429ce5` + `e553b3a6` (synthetic head excluding the sibling limiter commit `1783194b`), seven reviewers plus the validator; triage: user, "as recommended". Re-measured at `85429ce5`, each file alone with `--retry=0`: text-fields spec 50/50, metadata-edit 11/11, `accreditation.test.ts` 38 passed plus the 2 known broadcast-cap failures; red first on base (36 failed, 14 passed); 7 of 8 mutants killed, the survivor (account read from a body field) equivalent because zod strips unknown keys; the regex rejects exactly the 76 intended code points. `tests/eslint` alone: one failure identical on base (the custody-limiter companion pin, fixed by `1783194b`).
+- **#1 (P2, validator confirmed):** the settings metadata edit re-sends all three prefilled values, so a stored name or institution holding a newly rejected character gets 400 on every edit. Filed `ui-accreditation-metadata-edit-sends-only-changed-fields` (normal) in `cf5254e5`, with the accreditation page's generic error and the false "backend's trim-before-validate" comment.
+- **#2 (P3, validator confirmed):** the sentence `e553b3a6` narrowed in `cross-file-singleton-redis-key-test-isolation-2026-06-15.md` still said the read-pin removes `calc:version` interference; `reputation-prefix.test.ts` runs the batch unpinned. Refreshed in `7b2f1f8a`.
+- **Implementer follow-ups:** filed in `cf5254e5`: `backend-accreditation-character-rule-on-other-chain-writes` (normal; signup, admin grant, `field`, plus the ORCID name the security reviewer found) and `backend-tests-setup-docblock-runs-per-file` (low). `[TODO Architect]` contract and § 6.4 edits applied in `f0717089`.
+- **Dismissed:** the requester picks the account named in the subject (user decision 2; the `/verify` account-session gate, `8c5ba436`, removes the gain); space runs wrapping onto lines that look unlabeled (client-dependent, cannot precede the account sentence); "the contract does not describe the mail content" (that section never did).
+- **Learnings checkpoint:** `a738f115` refreshed `vitest-retry-fire-and-forget-side-effect-poisoning-2026-05-04.md` (`retry: 1` stated, config has `retry: 3`); `test-teardown-wildcard-delete-shared-id-band-parallel-workers-2026-06-14.md` is not contradicted (it covers wildcard DB-row cleanup only). No new entry: the character set, the `.pick()` inheritance and the mail text are carried by the code and specs. The learnings reviewer's line that the body gate runs after the `/request` limiter was wrong (`validate()` runs first).
+
+**Owner:** backend
+**Created:** 2026-10-05
+**Priority:** high
+
+Filed from the accreditation and Web of Trust audit (finding 4, the part that needs no other
+change first). The session requirement on `/verify` is a separate, sequenced task:
+`backend-accreditation-verify-requires-the-account-session`.
+
+## Why
+
+The verification mail sent by `POST /api/accreditation/request` (the `sendMail` call in
+`backend/src/routes/accreditation.ts`) greets the reader with the requester-supplied `full_name`
+and carries the link. It does not name the Hive account the link accredits, and it does not say
+that opening the link accredits an account at all. `full_name` is any 1 to 200 characters
+(`accreditationRequestSchema` in `backend/src/validation.ts`), line breaks included, so the
+requester writes up to 200 characters of the mail's opening.
+
+A requester can enter someone else's institutional address and name. The recipient then gets a
+mail that reads as their own pending accreditation, and opening the link accredits the
+requester's account under the recipient's name.
+
+## Scope
+
+1. The mail body states:
+   - the Hive account the request came from, written `@<hive_username>`;
+   - that opening the link accredits that account on PEvO under the name and institution given
+     in the request, and it shows both;
+   - that a recipient who did not request this should ignore the mail and not open the link.
+
+   This is user-facing text: no emdash.
+2. `full_name` and `institution` then both appear in the mail, and both are broadcast on chain.
+   Reject line breaks and other control characters in them in `accreditationRequestSchema`.
+   `accreditationMetadataEditSchema` picks its field bounds from the same schema, so confirm the
+   metadata edit inherits the rule and still accepts ordinary values.
+
+## Out of scope
+
+- Requiring a session on `/verify`, and the mail sentence that tells the reader to open the link
+  while signed in. Both belong to the sequenced task named above.
+- The request limiter (`backend-accreditation-limiters-refund-work-already-done`).
+
+## Acceptance criteria
+
+1. A spec pins that the mail body carries the requesting account, the name and the institution,
+   and the ignore-if-not-yours sentence.
+2. `/request` with a `full_name` or an `institution` that contains a line break answers 400
+   `BAD_REQUEST` and sends no mail.
+3. No emdash in the mail text. Comments follow root `CLAUDE.md` "Comment anchors".
+
+## Backend implementation signal (2026-10-06, commits 85429ce5, e553b3a6)
+
+Both SHAs verified on `main` with `git merge-base --is-ancestor`.
+
+- `85429ce5` backend(accreditation): the verification mail names the account it accredits.
+  `backend/src/routes/accreditation.ts` (mail subject and body), `backend/src/validation.ts`
+  (`NO_CONTROL_CHARACTERS` on `full_name` and `institution`),
+  `backend/tests/routes/accreditation.test.ts` (new describe "verification mail and character
+  gate"), `backend/tests/validation-accreditation-text-fields.test.ts` (new).
+- `e553b3a6` backend(solutions) [skip-zone-audit]: learnings checkpoint, see the last line below.
+
+What landed:
+- Subject `PEvO - Accreditation request for @<account>`. The body opens "The Hive account
+  @<account> asked PEvO to accredit it and gave this email address for verification.", then
+  "Opening the link below accredits @<account> on PEvO under this name and institution:" with
+  `Name:` and `Institution:` lines, the link, the 24-hour expiry, and "If you did not request
+  this, ignore this email and do not open the link." `<account>` is `req.hiveUsername`, never a
+  body field. The requester-typed name appears only on its labeled line. No emdash in the
+  subject, the body or the new 400 message.
+- `full_name` and `institution` reject Unicode Cc (C0, DEL, C1), U+2028, U+2029, U+202A to
+  U+202E and U+2066 to U+2069, with 400 `BAD_REQUEST` `<field>: must not contain line breaks or
+  control characters`. LRM and RLM stay allowed. `accreditationMetadataEditSchema` inherits the
+  rule through `.pick()` and still accepts ordinary values.
+
+User decisions (2026-10-06), beyond the task text:
+1. Also reject the bidi embedding, override and isolate characters (U+202A to U+202E, U+2066 to
+   U+2069); keep the left-to-right and right-to-left marks allowed.
+2. The subject names the account (the task scoped the body only), because "Verify your
+   accreditation" reads as the recipient's own pending accreditation.
+
+Acceptance criteria:
+1. "names the requesting account, the name and the institution, and tells a non-requester to
+   ignore it".
+2. "a line break in full_name|institution answers 400 BAD_REQUEST and sends no mail" (it.each).
+3. The mail spec asserts no U+2014 in subject and body; the pre-commit anchor gate passed.
+
+Verification:
+- Red first: 39 new specs failed on the parent code (14 accept-case specs passed).
+- Each file alone, `--retry=0`: `validation-accreditation-text-fields.test.ts` 50/50,
+  `accreditation-metadata-edit.test.ts` 11/11, `accreditation.test.ts` 2 failed / 38 passed.
+  The 2 are the per-token broadcast-attempts-cap specs; the parent commit run alone in a
+  scratchpad copy fails the same 2 (2 failed / 35 passed). They are the HAF blocks-index walk
+  that `backend-latest-op-haf-lookups-walk-the-blocks-index` fixes. `npm run typecheck` and lint
+  on the changed files are clean.
+- A verification workflow (six lenses, one refuter per finding) over `85429ce5`: enumerating
+  U+0000 to U+10FFFF through both schemas rejects exactly the intended 76 code points; 17 named
+  mutants were killed, including both user decisions; the regex is linear on 1 MB bodies.
+
+Triage (user, 2026-10-06, approved as recommended). Dismissed:
+- Widening a bidi range by one code point is not caught by the accept table (not a realistic
+  refactor).
+- `MOCK_VERIFY_SIGNATURE` equates `X-Hive-Username` with the session account, so the mail spec
+  cannot tell a header-sourced mention from `req.hiveUsername`.
+- Moving `validate()` after the `/request` limiter goes unnoticed by every spec.
+
+Out-of-scope findings for follow-up filing:
+- (backend, medium) Other paths put typed `full_name` / `institution` on chain without this
+  rule: `SignupBodySchema` in `backend/src/routes/auth.ts` (bare `z.string().optional()`,
+  broadcast at signup finalize, printed by the registration watch) and
+  `adminAccreditationGrantSchema` in `backend/src/validation.ts`. `field` in
+  `accreditationRequestSchema` is broadcast too and has no rule. Suggest exporting
+  `NO_CONTROL_CHARACTERS` and applying it there.
+- (ui, low) `handleMetadataSubmit` in `frontend/src/pages/settings.js` re-sends all three
+  prefilled fields, so an account whose on-chain name or institution already holds a now-rejected
+  character gets 400 on every SPA metadata edit with the generic "Please try again" (retyping the
+  field clears it). `frontend/src/pages/accreditation.js` shows only "Accreditation request
+  failed" for the new 400. Suggest sending only changed fields, or mapping a `full_name:` /
+  `institution:` 400 to a specific message.
+- (backend, low) The `backend/tests/setup.ts` docblock says "Global test setup, runs
+  before/after all test files"; it is a `setupFiles` entry that runs in every test file. Narrow
+  it.
+
+## [TODO Architect] at archive
+
+- `api-contracts/accreditation.md`, PATCH /metadata: the "Bounds mirror
+  `accreditationRequestSchema`" sentence and the BAD_REQUEST bullet ("all three fields absent, or
+  a field over its length bound") gain the character rule: `full_name` and `institution` reject
+  line breaks, control characters and bidi embedding/override/isolate characters, message
+  `<field>: must not contain line breaks or control characters`.
+- `ARCHITECTURE.md` § 6.4 metadata-edit row: the same bounds addition.
+- Optional: `api-contracts/accreditation.md` POST /request Errors, `BAD_REQUEST` bullet ("missing
+  required fields"). It already omitted the length and email-format 400s.
+
+Learnings checkpoint: `/ce-compound` wrote
+`agents/docs/solutions/conventions/per-file-setup-redis-flush-wipes-concurrent-test-files.md`
+and `/ce-compound-refresh` narrowed the determinism claim in
+`cross-file-singleton-redis-key-test-isolation-2026-06-15.md` (both `e553b3a6`). The mail
+content, the character set, the `.pick()` inheritance and the `validate()` envelope are carried
+by the code and tests; the two broadcast-cap failures are covered by
+`haf-custom-json-latest-op-materialized-fence-2026-06-14.md`. Also recommended, not run:
+`/ce-compound-refresh` for `test-teardown-wildcard-delete-shared-id-band-parallel-workers-2026-06-14.md`
+(scope names only per-file cleanup hooks over DB tables) and
+`vitest-retry-fire-and-forget-side-effect-poisoning-2026-05-04.md` (states `retry: 1`; config
+now has `retry: 3`).
+
 ## The verify, signup and request surfaces explain a mailbox that already backs another account (archived 2026-10-06) — one round; two in-place fixes; release link and refusal exits folded into the release-flow task; two decisions open with the user
 
 ### Architect archive note (2026-10-06)
@@ -93,158 +248,3 @@ Landed on main, each verified with `git merge-base --is-ancestor <sha> main`:
    `signup.checkEmailDescription` promise a verification link that a bound address never gets.
    Filed as a separate ui task (`db703b76`) instead of re-stubbing translated keys here.
 
-**Scope 1 / AC1, AC2.** `accreditation-verify.js`: `MAILBOX_ALREADY_BOUND` sets `boundTo` from
-`details.bound_to` (empty when absent) and shows `mailbox_bound`, which names `@<bound_to>` or
-uses the unnamed copy. `ACCREDITATION_SANCTIONED` shows `sanctioned`. Neither state has "Request
-New"; both link to `/contact`. `_isNetworkError` matches `TimeoutError` (what `AbortSignal.timeout`
-in `api.js` rejects with) and it takes the 5s cooldown; the false "AbortError = fetch timed out"
-comments in the page and its spec are narrowed.
-
-**Scope 2 / AC3.** `signup-verify.js`: `_handleFinalizeRefusal` runs after
-`_handleAmbiguousBroadcastOutcome` on `/confirm` and `/link` and moves to `unaccredited`: title
-"Account set up, but not accredited" ("created" was untrue on `/link`), the reason per code, sign-in
-(`/login`) and contact links, no session, no `/signup` link. `_clearUsernameTimer` replaces three
-inline copies. `details.bound_to` is unspecified for finalize, so the name shows only when present.
-
-**Scope 3 / AC4.** Under the e-mail field of `accreditation.js` and `signup.js`: the purpose,
-the legitimate interest, the keyed hash, and the objection link (decision 1). Hidden on the
-signup ORCID branch (`x-show="!orcidToken"`), which binds no address. Nothing reveals a binding.
-
-**Scope 4.** Keys `verify.{mailboxBoundTitle,mailboxBoundMessage,mailboxBoundMessageUnnamed,
-sanctionedTitle,sanctionedMessage}`, `seedPhrase.{unaccreditedTitle,unaccreditedMailboxBound,
-unaccreditedMailboxBoundUnnamed,unaccreditedOrcidLinked,unaccreditedSanctioned,unaccreditedSignIn}`,
-`common.{mailboxPurpose,mailboxPurposeObject}`: 195 STUBS.md lines, one heading. The rewording in
-`141840d7` stayed in place under that heading (every locale still held the English stub). No emdash.
-
-**AC5.** Unit specs for every branch. E2E deferred: no backend code sends `MAILBOX_ALREADY_BOUND`
-yet; add it with the backend task.
-
-**Verification.**
-- Unit: full frontend suite, `npx vitest run` exit 0, 94 files, 2251 tests, after each commit.
-- Adversarial workflow on `64bca0fb` (19 agents: mutation, real-Alpine render, contract, copy
-  lenses, a skeptic per finding): 15 findings, 12 confirmed (all low after the skeptics), 3 refuted.
-  The in-scope ones are fixed in `141840d7`. The five mutants that had survived (title swap,
-  message swap, form href, signup-verify href, ORCID-branch `x-show`) are killed afterwards.
-- Real Chromium (vite dev + repo Playwright): both refusal states, the `unaccredited` phase and
-  both forms at 1280 and 390 px and in Arabic; copy and links correct, no console errors.
-- `/ce-code-review` not run: architect-owned per `agents/ui/CLAUDE.md`.
-
-**Learnings checkpoint.** `/ce-compound-refresh` on `reviewer-discovery-error-class-stack` and
-`post-broadcast-grace-period-record-must-follow-permanent-rethrow-cleanup` (`aa2da86e`): both named
-the 30s timeout `AbortError`. No new entry: the `TimeoutError` fact now lives in those entries and
-in the page's comments.
-
-**Out of scope, for follow-up filing.**
-- **Backend, finalize sanction read fails closed to 403.** `hasUnliftedSanction` returns true with
-  no HAF pool or on a query error, and `broadcastAccreditationAndSeed` runs it after the finalize
-  UPDATE with no HAF gate before it. A HAF outage at signup finalize therefore answers 403
-  `ACCREDITATION_SANCTIONED`, which this page now shows as "not eligible for accreditation" (it
-  used to show "creation failed"). Suggest answering a retriable 503 when the read fails.
-- **Backend design, login reveals a bound address.** `backend-signup-finalize-claims-mailbox-binding`
-  scope 1 creates no row for a bound address. A login with that address and the chosen password
-  then answers 401, against 409 `PENDING_UNVERIFIED` for an unbound one, so signup plus login
-  reveals the binding. Needs a decision before that task starts.
-- **Architect zone.** `api-contracts/accreditation.md` (24h grace-period paragraph) says
-  "AbortError-after-success"; the client timeout is a `TimeoutError`.
-- **Release link.** When `ui-accreditation-release-flow` lands, link its surface from the verify
-  `mailbox_bound` state and the finalize mailbox copy (this task's scope item 1).
-
-## The two accreditation limiters refund requests that already did their work (archived 2026-10-06) — two rounds; three hold fixes landed; one pre-existing test-header finding folded into the comment pass; two solutions entries refreshed
-
-### Architect archive note (2026-10-06, round 2)
-
-- **Re-review:** `/ce-code-review` on `1783194b^..1783194b`, focused path (own correctness, standards and requirements pass plus one in-process adversarial reviewer; no validator). All three held items are fixed as prescribed. The adversarial reviewer ran `tests/eslint/` on a git-archive copy of `1783194b`: 9 files, 146 tests, exit 0; a pin-back-to-2 mutant turned the "exactly its pin" spec red. The `accreditationRequestLimiter` comment is true on every branch of the `/request` handler and against `shouldRefund`.
-- **#1 (P3, pre-existing, folded into `backend-accreditation-wot-comment-and-dead-code-pass` as item 17):** the `accreditation.test.ts` "Mocking justification" header says the carve-out covers only broadcast error staging, while the file also mocks `verifyHiveSignature` and `findExistingAccreditation`; no clause-(b) bypass statement covers the first `/request` describe block.
-- **Noted, no action:** the `accreditation.ts` "Token store: app database" heading is already item 15 of the same comment-pass task.
-- **[TODO Architect] rows:** both `/ce-compound-refresh` runs done in `98b65f12`. `skip-failed-requests-jwt-required-credential-verify-carve-out-2026-05-17.md`: both accreditation grid rows now show the `refundStatusCodes` omission, and the triage line no longer calls accreditation-request a non-controversial adoption. `deferred-refund-gate-must-check-writableEnded-not-just-statusCode-2026-05-17.md`: a fourth applicability condition limits the abort refund to handlers meant to refund one.
-- **Learnings checkpoint:** solutions/ grepped for both limiter names, `accred-req`, `accred-verify` and accreditation refund claims; only the two refreshed entries made a current-state claim. No new entry: the abort-refund lesson now lives in the refreshed deferred-refund entry, and the pin miss is covered by the canary's own failure text.
-
-**Owner:** backend
-**Created:** 2026-10-05
-**Priority:** high
-
-Filed from the accreditation and Web of Trust audit (findings 2 and 8). The validator confirmed
-both from the code. Incidence was not measured.
-
-## Why
-
-Both accreditation limiters in `backend/src/routes/accreditation.ts` set
-`skipFailedRequests: true`. `shouldRefund` in `backend/src/middleware/rateLimit.ts` then gives the
-slot back for every response that is not a finished success: any status of 400 or above, and a
-connection that closed before the response ended.
-
-1. `accreditationRequestLimiter` (`/request`, 3 per 24 h per account). A client that closes the
-   connection before the response ends gets its slot back, while the handler keeps running: it
-   stores the token and sends the mail. `/api/accreditation` is mounted without another limiter
-   (`backend/src/app.ts`). So one signed-in account can send verification mails without limit, to
-   any institutional address, each carrying the `full_name` text it chose. Whether this
-   deployment's reverse proxy passes a client abort on to the backend socket was not checked.
-2. `accreditationVerifyLimiter` (`/verify`, 5 per minute per IP). The 403
-   `ACCREDITATION_SANCTIONED` answer comes after two HAF reads (`findExistingAccreditation`,
-   `hasUnliftedSanction`), and the 502 `BROADCAST_ATTEMPT_LIMIT_EXCEEDED` answer after the
-   per-token lookup as well. Both leave the token alive and both are refunded, so a caller holding
-   such a token is not throttled. The limiter's comment says `BAD_REQUEST` is the only
-   client-error path and that it returns before the HAF probes. A closed connection is refunded
-   here as well, and the handler still runs on to the broadcast.
-
-`refundStatusCodes` on the same limiter refunds only the listed statuses. A request that closes
-before any status is set keeps the default 200 and is not refunded.
-
-## Scope
-
-1. `/request`: replace `skipFailedRequests` with `refundStatusCodes: [422, 500]`.
-   - 422 is the non-institutional-address refusal, returned before the token is stored.
-   - 500 is the answer of the two SMTP branches (send failed, SMTP host not configured), each
-     after a best-effort delete of the token.
-   - An aborted request consumes its slot.
-2. `/verify`: replace `skipFailedRequests` with `refundStatusCodes: [503, 504]`.
-   - The two 503 answers (`ACCREDITATION_GATE_UNAVAILABLE`, and `SERVICE_UNAVAILABLE` from the
-     counter claim) return before any broadcast.
-   - 504 is the broadcast timeout, after which the route keeps the token for a retry.
-   - 400, 403, 500 and 502 consume a slot.
-3. Cut both limiter comments down to the new refund sets. Delete in particular the `/verify`
-   sentence that begins "The 4xx refund is acceptable here because `BAD_REQUEST` is the only
-   client-error path", and the `/request` claim that a 400 validation refunds the slot:
-   `validate` runs ahead of the limiter in the middleware chain, so a 400 never reaches it.
-
-## Out of scope
-
-- `rateLimit.ts` itself, and other routes that use `skipFailedRequests`.
-- Requiring a session on `/verify` (`backend-accreditation-verify-requires-the-account-session`).
-
-## Acceptance criteria
-
-1. A `/request` whose client aborts before the response has consumed a slot: after three such
-   requests in the window, the next answers 429.
-2. A `/request` that answers 422 or 500 leaves the slot free.
-3. On `/verify`, a 400, the sanctioned 403 and the cap 502 each consume a slot; a 503 and a 504
-   leave it free.
-4. Comments follow root `CLAUDE.md` "Comment anchors".
-
-## [TODO Architect] at archive
-
-- `/ce-compound-refresh` on `skip-failed-requests-jwt-required-credential-verify-carve-out-2026-05-17.md`:
-  its audit grid lists both limiters as correct adoptions.
-- `/ce-compound-refresh` on `deferred-refund-gate-must-check-writableEnded-not-just-statusCode-2026-05-17.md`:
-  it treats a client abort as an outcome to refund, which on `/request` was the abuse hole.
-
-## Backend implementation signal (2026-10-06, commit f748b67c)
-
-Landed in `f748b67c` (`git merge-base --is-ancestor f748b67c main` checked).
-
-**Scope**
-1. `/request`: `accreditationRequestLimiter` uses `refundStatusCodes: [422, 500]`.
-2. `/verify`: `accreditationVerifyLimiter` uses `refundStatusCodes: [503, 504]`.
-3. Both limiter comments are cut down to the new refund sets. The `/verify` "The 4xx refund is acceptable here because `BAD_REQUEST` is the only client-error path" sentence and the `/request` claim that a 400 validation refunds are deleted. The two route-site comments (`POST /api/accreditation/request`, `POST /api/accreditation/verify`) also lost their pointer to the `skipFailedRequests` layered-pattern obligation. That obligation applies to limiters that set `skipFailedRequests`, and these two no longer do.
-
-**Acceptance criteria → specs**
-- AC1: `accreditation.test.ts` "a client that disconnects while the mail is being sent consumes its slot; after three such requests the next answers 429". A real `http.request` is destroyed while `sendMail` is pending, so the token is stored and the mail is in flight.
-- AC2: the existing "three SMTP-failure 500s ..." and "three 422 non-institutional-email responses ..." specs, now in the describe `accred-req limiter: 422 and 500 refund the slot, a client abort consumes it`.
-- AC3, consume: `accreditation.test.ts` "a 400 invalid-token answer consumes a slot ..." and "the cap 502 BROADCAST_ATTEMPT_LIMIT_EXCEEDED consumes a slot", plus `accreditation-verify-sanctioned.test.ts` "the 403 consumes a /verify limiter slot".
-- AC3, refund: "a 504 BROADCAST_TIMEOUT refunds its slot" in `accreditation.test.ts`. The 503 refund is pinned by the existing `accreditation-idempotency.test.ts` spec "503 ACCREDITATION_GATE_UNAVAILABLE refunds the per-IP limiter slot". A duplicate 503 spec in `accreditation.test.ts` was dropped at the simplify pass, because that file's header hands gate-throw coverage to the idempotency file.
-- AC4: comments checked against root `CLAUDE.md` "Comment anchors". The pre-commit anchor gate passed.
-
-**Verification**
-- Red before the fix. Against the unchanged limiters, the four consume specs failed for the expected reason:
-  - abort: 200, expected 429
-  - 400: 400, expected 429
