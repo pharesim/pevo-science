@@ -49,3 +49,8 @@ route (`ARCHITECTURE.md` § 6.4, the non-consent broadcast row, which now names 
 Until `backend-custody-admits-vouch-and-retract` lands, a light account that submits a vouch gets
 403 from the custody route and sees "Vouch failed". The architect moves this file to `pending/`
 once that task is archived.
+
+## Architect note (2026-10-06): unblocked
+
+`backend-custody-admits-vouch-and-retract` was archived on 2026-10-01 (commit 269297e9). Moved to
+`pending/`.
