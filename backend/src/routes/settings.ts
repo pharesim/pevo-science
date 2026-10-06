@@ -538,7 +538,7 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
       // on an unverified row replaces its token, and a link for the earlier
       // address must not verify the later one if that write lands between
       // the lookup and this clear. When it does, the link's token is gone
-      // and it gets the not-found answer it would get a moment later.
+      // and it gets the not-found answer.
       const cleared = await pool.query(
         `UPDATE accounts SET verify_token = NULL, expires_at = NULL
           WHERE id = $1 AND verify_token = $2`,
