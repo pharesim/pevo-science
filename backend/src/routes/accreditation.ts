@@ -24,39 +24,18 @@ import metadataRouter from './accreditation-metadata.js';
 /** How long a verification token stays valid before it expires. */
 const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-// Consume-on-success-only: the 3/24h cap exists to bound the email-send
-// expense (one SMTP roundtrip + one issued verification token per allowed
-// slot), not to penalize transient SMTP/mail-provider failures. Without this
-// flag, a `sendMail` throw or an empty-smtpHost 500 burns one of the user's
-// three daily slots; three transient outages in 24h lock them out of
-// accreditation requests entirely. Per `RateLimitConfig.skipFailedRequests`
-// JSDoc, the refund branch keys on ANY `res.statusCode >= 400` — 4xx
-// responses (400 validation, 422 non-institutional email) ALSO refund the
-// slot. That is acceptable here because every 4xx path short-circuits before
-// `storeToken` and `sendMail`, so probing only costs Redis-rate-limit ops
-// with no SMTP/token side effects. A future change that inserts an expensive
-// operation BEFORE the institutional-email check must add its own throttle —
-// the limiter's symmetric refund will not rate-limit pre-handler probes.
-// Mirrors the `upgradeLimiter` shape in `custody.ts`.
-const accreditationRequestLimiter = rateLimit({ name: 'accred-req', windowMs: 24 * 60 * 60_000, max: 3, keyFn: byAccount, skipFailedRequests: true });
-// The /verify limiter caps per-IP requests but must refund the slot on
-// failure responses. During a HAF outage the existing-accreditation gate
-// returns 503 `ACCREDITATION_GATE_UNAVAILABLE` with `details.retriable:
-// true`; the user's expected behaviour is to refresh-and-retry once HAF
-// recovers. Without `skipFailedRequests`, each 503 burns one of the 5
-// slots per 60s and the legitimate user trips 429 RATE_LIMITED before
-// HAF comes back. Per `RateLimitConfig.skipFailedRequests` JSDoc the
-// refund branch keys on ANY `res.statusCode >= 400`, including 4xx:
-// `BAD_REQUEST` (invalid/expired token), `INTERNAL_ERROR` (missing admin
-// key), `BROADCAST_ATTEMPT_LIMIT_EXCEEDED` / `POST_BROADCAST_OPERATOR_REQUIRED`
-// (502), `ACCREDITATION_GATE_UNAVAILABLE` / `SERVICE_UNAVAILABLE` (503,
-// pre-INCR counter failed), `BROADCAST_TIMEOUT` (504). The 4xx refund is
-// acceptable here because `BAD_REQUEST` is the only client-error path on
-// /verify and it short-circuits BEFORE any expensive work (HAF probes,
-// broadcast), so probing only costs Redis-rate-limit ops with no chain
-// side effects. Mirrors the `accreditationRequestLimiter` shape and
-// `upgradeLimiter` in `custody.ts`.
-const accreditationVerifyLimiter = rateLimit({ name: 'accred-verify', windowMs: 60_000, max: 5, keyFn: byIp, skipFailedRequests: true });
+// Refunds 422 (non-institutional address, refused before the token is stored)
+// and 500 (the SMTP branches answer it after a best-effort token delete).
+// Every other outcome consumes a slot, including a client that closes the
+// connection before the response ends: the handler still stores the token
+// and sends the mail.
+const accreditationRequestLimiter = rateLimit({ name: 'accred-req', windowMs: 24 * 60 * 60_000, max: 3, keyFn: byAccount, refundStatusCodes: [422, 500] });
+// Refunds 503 (`ACCREDITATION_GATE_UNAVAILABLE` and the counter claim's
+// `SERVICE_UNAVAILABLE`, both before any broadcast) and 504
+// (`BROADCAST_TIMEOUT`, after which the token is kept for a retry). Every
+// other outcome consumes a slot, including a client that closes the
+// connection before the response ends.
+const accreditationVerifyLimiter = rateLimit({ name: 'accred-verify', windowMs: 60_000, max: 5, keyFn: byIp, refundStatusCodes: [503, 504] });
 
 
 const router = Router();
@@ -557,8 +536,7 @@ async function cleanupExpiredTokens(): Promise<void> {
 // POST /api/accreditation/request
 // ──────────────────────────────────────────────
 
-// Body-validation BEFORE the limiter: see `RateLimitConfig.skipFailedRequests`
-// JSDoc's layered-pattern obligation. Malformed/empty bodies short-circuit
+// Body-validation BEFORE the limiter. Malformed/empty bodies short-circuit
 // at the zod gate without paying the `verifyHiveSignature` ECDSA cost a
 // second time, the `storeToken` Redis write, or the SMTP send. The limiter
 // itself sits after auth (so `byAccount` keying has a verified username)
@@ -658,8 +636,7 @@ router.post('/request', verifyHiveSignature, validate(accreditationRequestSchema
 // POST /api/accreditation/verify
 // ──────────────────────────────────────────────
 
-// Body-validation BEFORE the limiter: see `RateLimitConfig.skipFailedRequests`
-// JSDoc's layered-pattern obligation. Malformed/empty bodies (missing
+// Body-validation BEFORE the limiter. Malformed/empty bodies (missing
 // `token`, wrong type, length > 128) short-circuit at the zod gate without
 // pre-broadcast-attempt counter INCR, HAF lookups, or chain reads. The
 // limiter is IP-keyed and sits after body validation so the per-IP slot

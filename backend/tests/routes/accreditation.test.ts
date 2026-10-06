@@ -70,6 +70,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import crypto from 'node:crypto';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { PrivateKey } from '@hiveio/dhive';
 import nodemailer from 'nodemailer';
 
@@ -1613,41 +1615,34 @@ describe('accreditation.ts structured-log emissions', () => {
 });
 
 // ──────────────────────────────────────────────
-// Canary pinning the accred-req limiter's slot-refund behaviour: the
-// `accreditationRequestLimiter` declaration uses `skipFailedRequests: true`
-// so a 5xx SMTP-failure response refunds the per-account slot. Without it,
-// transient SMTP outages burn the user's 3/24h budget; three failures lock
-// the account out for a full day with no recourse. Mirrors the sibling
-// `Hive getAccounts throws then recovers: 503 refunds limiter slot so the
-// retry succeeds` canary against `upgradeLimiter` in
-// `backend/tests/routes/custody-upgrade.test.ts`.
+// Refund sets of the two accreditation limiters. `accreditationRequestLimiter`
+// (3 per 24 h per account) refunds only 422 and 500;
+// `accreditationVerifyLimiter` (5 per minute per IP) refunds only 503 and
+// 504. Every other outcome consumes a slot, including a client that
+// disconnects before the response ends.
 //
 // Carve-out justification (root CLAUDE.md test-mock carve-out clauses a/b/c):
-//   (a) Real-path impracticality: driving 3 deterministic SMTP failures
-//       against a real relay is slow + non-deterministic; the nodemailer
-//       transporter spy used by the sibling structured-log-emission specs
-//       is the canonical pattern for this surface in this file.
-//   (b) Mock targets: `nodemailer.createTransport` (same target as
-//       sibling specs). `verifyHiveSignature` is mocked at the file level
-//       via MOCK_VERIFY_SIGNATURE (file-header carve-out); this test's
-//       focus is rate-limit slot-refund mechanics, not cryptographic
-//       verification.
-//   (c) Real-path companion: the rate-limit primitive's slot-refund
-//       semantics have real-Redis coverage in the sibling
-//       `Hive getAccounts throws then recovers: 503 refunds limiter slot so
-//       the retry succeeds` canary in
-//       `backend/tests/routes/custody-upgrade.test.ts` against the
-//       upgradeLimiter; that canary exercises the same skipFailedRequests
-//       path through the rateLimit middleware against a different transient-
-//       failure source (Hive RPC throw → 503).
+//   (a) Real-path impracticality: SMTP failures, a mail send still pending
+//       when the client disconnects and a broadcast timeout cannot be
+//       produced on demand against real infrastructure. The nodemailer
+//       transporter spy and the file-level `broadcastJsonMock` stage them;
+//       the limiters run against real Redis.
+//   (b) Mock targets: `nodemailer.createTransport` (same target as the
+//       structured-log specs). `verifyHiveSignature` is mocked at the file
+//       level via MOCK_VERIFY_SIGNATURE, so cryptographic verification is
+//       bypassed on `/request`; these specs pin which outcomes consume a
+//       limiter slot, not authentication.
+//   (c) Real-path companion: the `refundStatusCodes` refund mechanics have
+//       real-Redis coverage in `backend/tests/middleware/rateLimit.test.ts`
+//       (`refundStatusCodes refunds a 409 but not a 400`).
 // ──────────────────────────────────────────────
 
-describe('accred-req limiter refunds slot on transient SMTP failure', () => {
+describe('accred-req limiter: 422 and 500 refund the slot, a client abort consumes it', () => {
+  const REQUEST_LIMIT = 3;
+
   it('three SMTP-failure 500s do NOT exhaust the 3/24h budget; fourth request succeeds (not 429)', async () => {
-    // Three failures then a success — without skipFailedRequests, the
-    // first three calls consume all three slots and the fourth 429s.
-    // With skipFailedRequests the failed slots are refunded, so the
-    // fourth call sees an empty bucket and succeeds.
+    // Three failures then a success. If a 500 consumed its slot, the first
+    // three calls would use the whole budget and the fourth would 429.
     const sendMailSpy = vi
       .fn()
       .mockRejectedValueOnce(new Error('SMTP connection refused'))
@@ -1674,7 +1669,7 @@ describe('accred-req limiter refunds slot on transient SMTP failure', () => {
     if (redis) await redis.del(limiterKey);
 
     try {
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < REQUEST_LIMIT; i++) {
         const failRes = await request(app)
           .post('/api/accreditation/request')
           .set('X-Hive-Username', username)
@@ -1690,13 +1685,12 @@ describe('accred-req limiter refunds slot on transient SMTP failure', () => {
 
       // Slot-refund timing: the rateLimit middleware INCRs atomically up-front
       // via the RATE_LIMIT_CHECK_AND_CONSUME Lua script BEFORE next() runs.
-      // On `res.on('finish')`, if `res.statusCode >= 400` it fires an
-      // unconditional DECR to refund the slot (this is the REFUND branch, not
-      // a no-op early-out). Supertest awaits the response body, which resolves
-      // after res.end → the `finish` event has already fired and the DECR has
-      // been scheduled (microtask) by the time the await returns; in practice
-      // the DECR completes well before the next supertest call, so no explicit
-      // wait is needed.
+      // On `res.on('finish')`, a status in the limiter's refund set fires an
+      // unconditional DECR to refund the slot. Supertest awaits the response
+      // body, which resolves after res.end → the `finish` event has already
+      // fired and the DECR has been scheduled (microtask) by the time the
+      // await returns; in practice the DECR completes well before the next
+      // supertest call, so no explicit wait is needed.
 
       const successRes = await request(app)
         .post('/api/accreditation/request')
@@ -1708,11 +1702,7 @@ describe('accred-req limiter refunds slot on transient SMTP failure', () => {
           field: 'physics',
           email: `${username}@harvard.edu`,
         });
-      // Without skipFailedRequests this would be 429. The 200 is the
-      // load-bearing assertion that the express-rate-limit
-      // `skipFailedRequests: true` setting on `accreditationRequestLimiter`
-      // refunds the slot when the upstream returns non-2xx, so a transient
-      // SMTP failure does not burn the user's per-IP slot.
+      // A 429 here means a 500 consumed its slot.
       expect(successRes.status).toBe(200);
     } finally {
       transportSpy.mockRestore();
@@ -1722,18 +1712,6 @@ describe('accred-req limiter refunds slot on transient SMTP failure', () => {
     }
   });
 
-  // Pin the symmetric 4xx-refund contract: the `RateLimitConfig.skipFailedRequests`
-  // primitive refunds on ANY res.statusCode >= 400 (not just 5xx). The
-  // /api/accreditation/request 4xx paths (422 non-institutional email, 400 zod
-  // validation) short-circuit before storeToken/sendMail so refund-on-4xx is
-  // acceptable today, but a mutation flipping the middleware's threshold to
-  // `>= 500` would silently break the upstream user-experience contract
-  // documented at the limiter declaration. This canary drives three 422
-  // non-institutional-email responses, then asserts the fourth request is NOT
-  // 429 — pins the symmetric refund. If a future change adds an expensive
-  // pre-handler op before the institutional-email gate, that route MUST get
-  // its own throttle (the limiter's symmetric refund will not rate-limit
-  // pre-handler probes); see the comment block on `accreditationRequestLimiter`.
   it('three 422 non-institutional-email responses do NOT exhaust the 3/24h budget; fourth request not 429', async () => {
     const username = `aclim4xxrefnd${Date.now() % 1000}${Math.floor(Math.random() * 1000)}`;
     const redis = getRedis();
@@ -1741,7 +1719,7 @@ describe('accred-req limiter refunds slot on transient SMTP failure', () => {
     if (redis) await redis.del(limiterKey);
 
     try {
-      for (let i = 0; i < 3; i++) {
+      for (let i = 0; i < REQUEST_LIMIT; i++) {
         const failRes = await request(app)
           .post('/api/accreditation/request')
           .set('X-Hive-Username', username)
@@ -1758,13 +1736,8 @@ describe('accred-req limiter refunds slot on transient SMTP failure', () => {
         expect(failRes.status).toBe(422);
       }
 
-      // Fourth request with an institutional domain. If the limiter is NOT
-      // refunding 4xx slots, the bucket is exhausted and this returns 429.
-      // If the limiter IS refunding 4xx symmetrically (current behaviour
-      // per the rateLimit primitive's >= 400 refund branch), the bucket is
-      // empty and the request proceeds — status is whatever the route would
-      // return for a valid request (200 in the SMTP-configured-and-working
-      // path; tests share the default mock transport that resolves OK).
+      // Fourth request with an institutional domain. If a 422 consumed its
+      // slot, the bucket is exhausted and this returns 429.
       const followUpRes = await request(app)
         .post('/api/accreditation/request')
         .set('X-Hive-Username', username)
@@ -1776,12 +1749,196 @@ describe('accred-req limiter refunds slot on transient SMTP failure', () => {
           email: `${username}@harvard.edu`,
         });
       // Load-bearing assertion: NOT 429. The exact non-429 status (200 vs
-      // some other 4xx/5xx from downstream) is not the contract this canary
-      // pins — only that the 4xx-refund is symmetric so the bucket isn't
-      // exhausted.
+      // some other 4xx/5xx from downstream) is not the contract this spec
+      // pins.
       expect(followUpRes.status).not.toBe(429);
     } finally {
       if (redis) await redis.del(limiterKey);
     }
+  });
+
+  it('a client that disconnects while the mail is being sent consumes its slot; after three such requests the next answers 429', async () => {
+    const username = `aclimabort${crypto.randomBytes(4).toString('hex')}`;
+    const redis = getRedis();
+    const limiterKey = `${config.appTag}:rl:accred-req:${username}`;
+    if (redis) await redis.del(limiterKey);
+
+    // The first REQUEST_LIMIT sends stay pending until the spec releases
+    // them, so each of those requests is inside the handler (token stored,
+    // mail in flight) when its client disconnects. A later send resolves at
+    // once, so a request the limiter wrongly lets through answers 200
+    // instead of hanging.
+    let releaseMail: () => void = () => {};
+    const mailGate = new Promise<void>((resolve) => {
+      releaseMail = resolve;
+    });
+    let onMailEntered: () => void = () => {};
+    let mailCalls = 0;
+    const sendMailSpy = vi.fn(async () => {
+      mailCalls += 1;
+      if (mailCalls <= REQUEST_LIMIT) {
+        onMailEntered();
+        await mailGate;
+      }
+      return { messageId: 'ok' };
+    });
+    const transportSpy = vi
+      .spyOn(nodemailer, 'createTransport')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .mockReturnValue({ sendMail: sendMailSpy } as any);
+    const prevHost = config.smtpHost;
+    config.smtpHost = 'smtp-abort-test.invalid';
+
+    const server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const { port } = server.address() as AddressInfo;
+    const payload = {
+      full_name: 'Limiter Abort Tester',
+      institution: 'MIT',
+      field: 'physics',
+      email: `${username}@harvard.edu`,
+    };
+    const body = JSON.stringify(payload);
+
+    try {
+      for (let i = 0; i < REQUEST_LIMIT; i++) {
+        const mailEntered = new Promise<void>((resolve) => {
+          onMailEntered = resolve;
+        });
+        const serverSocketClosed = new Promise<void>((resolve) => {
+          server.once('connection', (socket) => socket.once('close', () => resolve()));
+        });
+        const req = http.request({
+          host: '127.0.0.1',
+          port,
+          path: '/api/accreditation/request',
+          method: 'POST',
+          agent: false,
+          headers: {
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(body),
+            'x-hive-username': username,
+            'x-hive-signature': 'mock',
+          },
+        });
+        req.on('error', () => {});
+        req.end(body);
+        await mailEntered;
+        req.destroy();
+        await serverSocketClosed;
+        // Give a refund DECR, if one were issued, time to land before the
+        // next request.
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(sendMailSpy).toHaveBeenCalledTimes(REQUEST_LIMIT);
+
+      const res = await request(server)
+        .post('/api/accreditation/request')
+        .set('X-Hive-Username', username)
+        .set('X-Hive-Signature', 'mock')
+        .send(payload);
+      expect(res.status).toBe(429);
+      expect(res.body.error.code).toBe('RATE_LIMITED');
+      expect(sendMailSpy).toHaveBeenCalledTimes(REQUEST_LIMIT);
+    } finally {
+      releaseMail();
+      transportSpy.mockRestore();
+      config.smtpHost = prevHost;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      if (redis) await redis.del(limiterKey);
+    }
+  });
+});
+
+describe('accred-verify limiter: a 400 or the cap 502 consumes the slot, a 504 refunds it', () => {
+  const VERIFY_LIMIT = 5;
+  let ip: string;
+
+  // A fresh synthetic IP per spec (and per retry) gives each spec its own
+  // limiter bucket. app.ts sets `trust proxy = 1`, so X-Forwarded-For drives
+  // req.ip.
+  beforeEach(async () => {
+    broadcastJsonMock.mockReset();
+    ip = `10.7.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
+    const redis = getRedis();
+    if (redis) await redis.del(`${config.appTag}:rl:accred-verify:${ip}`);
+  });
+
+  afterEach(async () => {
+    const redis = getRedis();
+    if (redis) {
+      const keys = await redis.keys(`${config.appTag}:pending_accred*accred-lim-*`);
+      keys.push(`${config.appTag}:rl:accred-verify:${ip}`);
+      await redis.del(...keys);
+    }
+  });
+
+  function postVerify(token: string) {
+    return request(app)
+      .post('/api/accreditation/verify')
+      .set('X-Forwarded-For', ip)
+      .send({ token });
+  }
+
+  // Uses all but one of this IP's slots with invalid-token 400s.
+  async function fillAllButOneSlot() {
+    for (let i = 0; i < VERIFY_LIMIT - 1; i++) {
+      const res = await postVerify(`accred-lim-missing-${i}`);
+      expect(res.status).toBe(400);
+    }
+  }
+
+  async function seedToken(): Promise<string> {
+    const token = `accred-lim-${crypto.randomBytes(8).toString('hex')}`;
+    await seedPendingAccreditation(token);
+    return token;
+  }
+
+  it('a 400 invalid-token answer consumes a slot; after five the next request answers 429', async () => {
+    for (let i = 0; i < VERIFY_LIMIT; i++) {
+      const res = await postVerify(`accred-lim-missing-${i}`);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+    }
+    const res = await postVerify('accred-lim-missing-last');
+    expect(res.status).toBe(429);
+    expect(res.body.error.code).toBe('RATE_LIMITED');
+  });
+
+  it('the cap 502 BROADCAST_ATTEMPT_LIMIT_EXCEEDED consumes a slot', async () => {
+    const redis = getRedis();
+    if (!redis) throw new Error('Redis required for limiter specs');
+    const token = await seedToken();
+    // A counter already at the cap makes the next claim exceed it.
+    await redis.set(
+      broadcastAttemptsKey(token),
+      String(config.verifyBroadcastAttemptsCap),
+      'EX',
+      24 * 60 * 60,
+    );
+    await fillAllButOneSlot();
+
+    const capRes = await postVerify(token);
+    expect(capRes.status).toBe(502);
+    expect(capRes.body.error.code).toBe('BROADCAST_ATTEMPT_LIMIT_EXCEEDED');
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+
+    const res = await postVerify(token);
+    expect(res.status).toBe(429);
+    expect(res.body.error.code).toBe('RATE_LIMITED');
+  });
+
+  it('a 504 BROADCAST_TIMEOUT refunds its slot', async () => {
+    const token = await seedToken();
+    await fillAllButOneSlot();
+    broadcastJsonMock.mockRejectedValueOnce(new MockBroadcastTimeoutError(30_000));
+
+    const timeoutRes = await postVerify(token);
+    expect(timeoutRes.status).toBe(504);
+    expect(timeoutRes.body.error.code).toBe('BROADCAST_TIMEOUT');
+
+    // A 429 here means the 504 kept its slot.
+    const res = await postVerify('accred-lim-missing-last');
+    expect(res.status).toBe(400);
   });
 });

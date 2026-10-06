@@ -14,8 +14,7 @@
  * Mirrors the sibling `Hive getAccounts throws then recovers: 503 refunds
  * limiter slot so the retry succeeds` canary against `upgradeLimiter` in
  * `backend/tests/routes/custody-upgrade.test.ts` (transient-failure-then-
- * recovery → retry succeeds) and the per-IP precedent set by
- * `accreditationVerifyLimiter` in `backend/src/routes/accreditation.ts`.
+ * recovery → retry succeeds).
  *
  * Carve-out justification (root CLAUDE.md test-mock carve-out clauses a/b/c):
  *   (a) Real-path impracticality: driving 10 deterministic HAF-503

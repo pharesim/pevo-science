@@ -34,10 +34,6 @@
  *       routes; the risk class "auth gate plumbing on /upgrade,
  *       /fresh-auth, /session-auth" is covered there with real
  *       cryptography.
- *   (c) Real-path companion: `accreditation.test.ts` covers the symmetric
- *       layered-pattern observable behaviour for `/accreditation/request`
- *       and `/accreditation/verify` against real Redis (the existing
- *       4xx-refund canaries).
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';

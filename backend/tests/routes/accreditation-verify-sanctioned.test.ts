@@ -3,7 +3,8 @@
  * account. A self-service /verify must NOT lift a moderation sanction (only a
  * deliberate admin accredit lifts it), so the guard returns 403
  * ACCREDITATION_SANCTIONED before the broadcast-attempt cap claim and the
- * admin broadcast, without leaking the moderation reason.
+ * admin broadcast, without leaking the moderation reason. The 403 also
+ * consumes a slot of the per-IP `/verify` limiter.
  *
  * Carve-out (root CLAUDE.md "Running Tests"): `hasUnliftedSanction` is mocked to
  * true because the read-only public HAF has no sanctioned `pevotest` account to
@@ -95,5 +96,41 @@ describe('POST /api/accreditation/verify — ever-sanctioned guard', () => {
 
     // Cleanup
     await redis.del(`${config.appTag}:pending_accred:${token}`);
+  });
+
+  it('the 403 consumes a /verify limiter slot', async ({ skip }) => {
+    const redis = getRedis();
+    if (!redis || !isHafConfigured()) return skip(); // needs Redis + the HAF gate
+
+    // A fresh synthetic IP gives this spec its own bucket of the 5-per-minute
+    // per-IP limiter; app.ts sets `trust proxy = 1`, so X-Forwarded-For
+    // drives req.ip.
+    const ip = `10.8.${crypto.randomInt(0, 255)}.${crypto.randomInt(1, 254)}`;
+    const limiterKey = `${config.appTag}:rl:accred-verify:${ip}`;
+    const username = `sanctioned-verify-${crypto.randomBytes(6).toString('hex')}`;
+    const token = `sanctioned-verify-${crypto.randomBytes(8).toString('hex')}`;
+    await redis.del(limiterKey);
+    await seedPendingAccreditation(token, username);
+    const postVerify = (t: string) =>
+      request(app).post('/api/accreditation/verify').set('X-Forwarded-For', ip).send({ token: t });
+
+    try {
+      // Four invalid-token 400s use all but one of the five slots.
+      for (let i = 0; i < 4; i++) {
+        const res = await postVerify(`sanctioned-verify-missing-${i}`);
+        expect(res.status).toBe(400);
+      }
+
+      const refused = await postVerify(token);
+      expect(refused.status).toBe(403);
+      expect(refused.body.error.code).toBe('ACCREDITATION_SANCTIONED');
+
+      // A 403 here means the refusal gave its slot back.
+      const res = await postVerify(token);
+      expect(res.status).toBe(429);
+      expect(res.body.error.code).toBe('RATE_LIMITED');
+    } finally {
+      await redis.del(`${config.appTag}:pending_accred:${token}`, limiterKey);
+    }
   });
 });

@@ -593,11 +593,11 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     }
   });
 
-  // Pin the per-IP slot-refund behaviour: the `accreditationVerifyLimiter`
-  // declares `skipFailedRequests: true` so a 503 ACCREDITATION_GATE_UNAVAILABLE
-  // response refunds the per-IP slot. Without it, a HAF outage burns the
-  // IP's 5 slots/60s in 5 retries and the legitimate user trips 429
-  // RATE_LIMITED for the next ~60s — locked out even after HAF recovers.
+  // Pin the per-IP slot-refund behaviour: a 503 ACCREDITATION_GATE_UNAVAILABLE
+  // response refunds its `accreditationVerifyLimiter` slot. Without the
+  // refund, a HAF outage burns the IP's 5 slots/60s in 5 retries and the
+  // legitimate user trips 429 RATE_LIMITED for the next ~60s — locked out
+  // even after HAF recovers.
   // Mirrors the sibling `Hive getAccounts throws then recovers: 503
   // refunds limiter slot so the retry succeeds` canary against the
   // `upgradeLimiter` in `backend/tests/routes/custody-upgrade.test.ts`.
@@ -605,12 +605,12 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
   // 127.0.0.1 so every request in this file shares the same bucket. The
   // afterEach hook clears `rl:accred-verify:*` keys so this spec starts
   // at an empty bucket.
-  it('503 ACCREDITATION_GATE_UNAVAILABLE refunds the per-IP limiter slot (skipFailedRequests canary)', async () => {
+  it('503 ACCREDITATION_GATE_UNAVAILABLE refunds the per-IP limiter slot', async () => {
     const redis = getRedis();
     if (!redis) return;
-    // Drive the limiter's max (5/60s) consecutive 503s. With
-    // `skipFailedRequests: true`, every 503 refunds; without it, the
-    // 6th request 429s before the handler runs.
+    // Drive the limiter's max (5/60s) consecutive 503s. Every 503 refunds
+    // its slot; if one did not, the 6th request would 429 before the
+    // handler runs.
     for (let i = 0; i < 5; i++) {
       const token = `accred-idem-refund-${i}-${crypto.randomBytes(8).toString('hex')}`;
       const username = `slotrefund${i}user`;
