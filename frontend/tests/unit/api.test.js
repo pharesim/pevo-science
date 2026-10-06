@@ -430,8 +430,7 @@ describe('verifyAccreditation', () => {
   });
 });
 
-// The mailed recovery links are opened signed out, or signed in to a session
-// the confirmation revokes, so neither request carries one.
+// Neither endpoint takes a session, so neither request sends the stored one.
 describe.each([
   ['verifyRecovery', verifyRecovery, '/api/auth/recover/verify'],
   ['disputeRecovery', disputeRecovery, '/api/auth/recover/dispute'],

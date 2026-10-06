@@ -112,7 +112,7 @@ test('the link to the previous address stops a staged recovery, so the other lin
     const stopped = page.waitForResponse(postTo('/api/auth/recover/dispute').response);
     await page.getByRole('button', { name: 'Stop the recovery' }).click();
     expect((await stopped).status()).toBe(200);
-    await expect(page.getByRole('heading', { name: 'Recovery stopped' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Request received' })).toBeVisible();
 
     await page.goto(linkPath(await waitForMailText({ to: id.newEmail }), '/recover/verify'));
     const refused = page.waitForResponse(verifyPost.response);

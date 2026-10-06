@@ -4,8 +4,8 @@
  * Mailpit runs only under `./deploy.sh test-up`, which points the backend's
  * SMTP at it and publishes its HTTP API on 127.0.0.1:8025. MAILPIT_URL
  * overrides that address; it carries no secret. The API is called from the
- * Node test process, never from the page: the SPA's CSP limits the page's
- * fetches to its own origin.
+ * Node test process, never from the page: the SPA's CSP does not let the
+ * page fetch the Mailpit address.
  */
 
 const MAILPIT_URL = process.env.MAILPIT_URL || 'http://127.0.0.1:8025';
@@ -37,8 +37,8 @@ export async function waitForMailText({ to, timeoutMs = 15_000 }) {
 
 /**
  * The path and query of the link in `text` whose path is `path`. The mail
- * carries the backend's APP_URL origin, which is not the Playwright base
- * URL, so specs open the path on their own origin.
+ * carries the backend's APP_URL origin, which need not be the Playwright
+ * base URL, so specs open the path on their own origin.
  */
 export function linkPath(text, path) {
   for (const raw of text.match(/https?:\/\/\S+/g) ?? []) {

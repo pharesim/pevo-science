@@ -4328,8 +4328,8 @@ recovery form, which now says nothing has changed yet and that a link went to
 the new address; they replace recover.doneDescription, removed from every
 locale. The verify keys are the page the link to the new address opens, where
 a button confirms the recovery. The dispute keys are the page the link to the
-previous address opens, where a button stops it. The link keys and startAgain
-are shared by both pages.
+previous address opens, where a button stops it. The link keys are shared by
+both pages; startAgain is the verify page's link back to the recovery form.
 
 ar: recover.seedPendingTitle
 cs: recover.seedPendingTitle

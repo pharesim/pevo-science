@@ -6,7 +6,7 @@
  * which also creates the account on chain, so specs insert it directly in
  * pevo_app_test, encrypted with the same algorithm and key as
  * `encryptKey` in backend/src/custody-crypto.ts. If the two ever drift, the
- * recovery's first step answers 401.
+ * recovery's first step fails.
  */
 
 import crypto from 'node:crypto';
@@ -54,7 +54,7 @@ function encryptCustodyKey(username, privateKey) {
 export async function seedRecoverableAccount(pool, { username, email, mnemonic }) {
   const { memo } = await deriveAllKeys(mnemonic, username);
   const { ciphertext, iv } = encryptCustodyKey(username, memo.private);
-  await seedLightAccount(pool, { username, email });
+  await seedLightAccount(pool, { username, email, fullName: 'E2E Recovery Tester' });
   await pool.query(
     'UPDATE accounts SET memo_key_enc = $1, iv_memo = $2 WHERE username = $3',
     [ciphertext, iv, username],
