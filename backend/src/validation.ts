@@ -4,9 +4,17 @@ import { sendError } from './response.js';
 
 // ─── Schemas ──────────────────────────────────────────────────────
 
+// Rejects the C0 and C1 control characters (line feed, carriage return, tab,
+// NEL and the rest), the line and paragraph separators, and the bidi
+// embedding, override and isolate characters. The left-to-right and
+// right-to-left marks stay allowed. Applied to full_name and institution,
+// which the verification mail prints and the accredit op broadcasts.
+const NO_CONTROL_CHARACTERS = /^[^\p{Cc}\u2028\u2029\u202a-\u202e\u2066-\u2069]*$/u;
+const NO_CONTROL_CHARACTERS_MESSAGE = 'must not contain line breaks or control characters';
+
 export const accreditationRequestSchema = z.object({
-  full_name: z.string().min(1).max(200),
-  institution: z.string().min(1).max(200),
+  full_name: z.string().min(1).max(200).regex(NO_CONTROL_CHARACTERS, NO_CONTROL_CHARACTERS_MESSAGE),
+  institution: z.string().min(1).max(200).regex(NO_CONTROL_CHARACTERS, NO_CONTROL_CHARACTERS_MESSAGE),
   field: z.string().min(1).max(100),
   email: z.string().email().max(254),
   orcid: z.string().max(50).optional().default(''),

@@ -579,8 +579,8 @@ router.post('/request', verifyHiveSignature, validate(accreditationRequestSchema
       await transporter.sendMail({
         from: config.smtpFrom,
         to: email,
-        subject: 'PEvO - Verify your accreditation',
-        text: `Hello ${full_name},\n\nPlease verify your email to complete your PEvO accreditation:\n\n${verifyUrl}\n\nThis link expires in 24 hours.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
+        subject: `PEvO - Accreditation request for @${hive_username}`,
+        text: `The Hive account @${hive_username} asked PEvO to accredit it and gave this email address for verification.\n\nOpening the link below accredits @${hive_username} on PEvO under this name and institution:\n\nName: ${full_name}\nInstitution: ${institution}\n\n${verifyUrl}\n\nThis link expires in 24 hours.\n\nIf you did not request this, ignore this email and do not open the link.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
       });
     } catch (mailErr) {
       logger.error(

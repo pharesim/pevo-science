@@ -219,6 +219,96 @@ describe('POST /api/accreditation/request', () => {
   });
 });
 
+// ──────────────────────────────────────────────
+// /request verification mail and the full_name / institution character gate.
+//
+// Carve-out (root CLAUDE.md "Running Tests"):
+//   (a) `nodemailer.createTransport` is spied to return a `sendMail` spy, so
+//       the specs read the mail the route hands to the transport; a real send
+//       would go to an institutional address the suite does not own.
+//       Cryptographic signature verification is bypassed by the file-level
+//       MOCK_VERIFY_SIGNATURE mock: these specs assert on the mail and the
+//       body gate, not on authentication.
+//   (c) Transport options are pinned in `auth-smtp-transporter.test.ts`.
+//       The real `verifyHiveSignature` runs against signed requests on the
+//       sibling PATCH /api/accreditation/metadata route in
+//       `accreditation-metadata-edit.test.ts`.
+// ──────────────────────────────────────────────
+
+describe('POST /api/accreditation/request — verification mail and character gate', () => {
+  let sendMailSpy: ReturnType<typeof vi.fn>;
+  let transportSpy: { mockRestore: () => void };
+  let prevHost: string;
+
+  beforeEach(() => {
+    sendMailSpy = vi.fn().mockResolvedValue({ messageId: 'accred-mail-test' });
+    transportSpy = vi
+      .spyOn(nodemailer, 'createTransport')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .mockReturnValue({ sendMail: sendMailSpy } as any);
+    prevHost = config.smtpHost;
+    // Non-empty host so the route takes the sendMail branch.
+    config.smtpHost = 'smtp-mail-body-test.invalid';
+  });
+
+  afterEach(() => {
+    transportSpy.mockRestore();
+    config.smtpHost = prevHost;
+  });
+
+  it('names the requesting account, the name and the institution, and tells a non-requester to ignore it', async () => {
+    // Distinct username per run dodges the per-account `accred-req` limiter.
+    const username = `acmailbody${Date.now() % 100000}`;
+    const fullName = "Dr. Zoë Núñez-O'Brien";
+    const institution = 'Universidade do Porto';
+    const res = await request(app)
+      .post('/api/accreditation/request')
+      .set('X-Hive-Username', username)
+      .set('X-Hive-Signature', 'mock')
+      .send({ full_name: fullName, institution, field: 'physics', email: `${username}@harvard.edu` });
+
+    expect(res.status).toBe(200);
+    expect(sendMailSpy).toHaveBeenCalledTimes(1);
+    const mail = sendMailSpy.mock.calls[0][0] as { subject: string; text: string };
+    expect(mail.subject).toBe(`PEvO - Accreditation request for @${username}`);
+    expect(mail.text).toContain(`The Hive account @${username} asked PEvO to accredit it`);
+    expect(mail.text).toContain(
+      `Opening the link below accredits @${username} on PEvO under this name and institution:`,
+    );
+    expect(mail.text).toContain(`\nName: ${fullName}\n`);
+    expect(mail.text).toContain(`\nInstitution: ${institution}\n`);
+    expect(mail.text).toMatch(/\/accreditation\/verify\?token=[0-9a-f]{64}\n/);
+    expect(mail.text).toContain('If you did not request this, ignore this email and do not open the link.');
+    // The requester-typed name appears only on its labeled line, so it no
+    // longer writes the mail's opening.
+    expect(mail.text.split(fullName)).toHaveLength(2);
+    expect(`${mail.subject}\n${mail.text}`).not.toContain('\u2014');
+  });
+
+  it.each(['full_name', 'institution'] as const)(
+    'a line break in %s answers 400 BAD_REQUEST and sends no mail',
+    async (fieldName) => {
+      const username = `acmailnl${Date.now() % 100000}`;
+      const res = await request(app)
+        .post('/api/accreditation/request')
+        .set('X-Hive-Username', username)
+        .set('X-Hive-Signature', 'mock')
+        .send({
+          full_name: 'Test User',
+          institution: 'MIT',
+          field: 'physics',
+          email: `${username}@harvard.edu`,
+          [fieldName]: 'Line one\nLine two',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+      expect(res.body.error.message).toContain(fieldName);
+      expect(sendMailSpy).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe('POST /api/accreditation/verify', () => {
   it('returns 400 without token', async () => {
     const res = await request(app)
