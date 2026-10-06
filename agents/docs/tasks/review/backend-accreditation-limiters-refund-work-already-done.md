@@ -139,3 +139,22 @@ The three edits together were planted on a `git archive` copy of `main`'s backen
 Triage of the rest (user, 2026-10-06):
 - Accepted, not fixed here: `/verify` is keyed by IP and now counts junk-token 400s, so a client that shares an IP with the user (behind a NAT, for example) can keep that IP at 429. AC3 asks for the 400 to consume. A note on `backend-accreditation-verify-requires-the-account-session` asks for the limiter to be keyed by account once that route requires a session.
 - Dismissed: no spec runs the real `verifyHiveSignature` on `/request` (true before this commit too); the verify page's "Request new" after a 429 spends a `/request` slot on a token that is still valid (your observation 2); the 504 refund on a broadcast whose outcome is uncertain (the task prescribed it, and the base behaved the same way); your observation 1.
+
+## Backend re-review signal (2026-10-06, commit 1783194b)
+
+Landed in `1783194b` (`git merge-base --is-ancestor 1783194b main` checked).
+
+1. `DEFERRED_FREE_PROSE` pins `custody-limiter-cpu-amplification.test.ts` at 1. Its `LANDING_FREE_PROSE` entry stays at 2.
+2. The `accreditationRequestLimiter` comment now ends "the handler keeps running." Nothing else in that comment changed.
+3. The `accreditation.test.ts` "Mocking justification" paragraph lost the sentence "verifyHiveSignature is NOT involved here (the /verify route is rate-limited but not auth-gated)." Nothing else changed; the remaining text was not reflowed.
+
+**Verification**
+- `tests/eslint/` run alone with `--retry=0`, on Redis DB 9 so the `tests/setup.ts` key flush left the dev DB alone:
+  - Before the fix: 145/146. The failure was "every file-naming prose claim is in the backlog at exactly its pin, bounded by the landing snapshot" ("1 unstructured companion claim(s) remain, pinned at 2").
+  - After the fix: 146/146, exit 0.
+- `npm run typecheck` exit 0. eslint on the three changed files exit 0. The pre-commit anchor gate passed.
+- No test outside `tests/eslint/` reads either edited file's source text. This was checked by grepping the `readFileSync` and `readdirSync` users under `backend/tests/`. No other spec was re-run, because items 2 and 3 are comment-only.
+
+**Learnings checkpoint.**
+- Existing entries: one entry contradicts a fact from this task. `skip-failed-requests-jwt-required-credential-verify-carve-out-2026-05-17.md` still has the `accreditationRequestLimiter` grid row, and that entry is already on the [TODO Architect] list.
+- New entries: none qualified. The canary's failure text already names the fix ("Lower the pin"). The miss was a slip in which tests were run.
