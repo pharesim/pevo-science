@@ -45,6 +45,8 @@ import {
   uploadFileToIpfs,
   promoteAdmin,
   verifyAccreditation,
+  verifyRecovery,
+  disputeRecovery,
 } from '../../src/api.js';
 import { signRequest } from '../../src/sign-request.js';
 
@@ -425,6 +427,43 @@ describe('verifyAccreditation', () => {
     expect(init.method).toBe('POST');
     expect(init.headers).toMatchObject({ Authorization: 'Bearer jwt-verify-1', 'Content-Type': 'application/json' });
     expect(JSON.parse(init.body)).toEqual({ token: 'tok-1' });
+  });
+});
+
+// The mailed recovery links are opened signed out, or signed in to a session
+// the confirmation revokes, so neither request carries one.
+describe.each([
+  ['verifyRecovery', verifyRecovery, '/api/auth/recover/verify'],
+  ['disputeRecovery', disputeRecovery, '/api/auth/recover/dispute'],
+])('%s', (_name, client, url) => {
+  let fetchSpy;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      mockJsonResponse(200, { status: 'ok', data: {} }),
+    );
+  });
+
+  afterEach(() => fetchSpy.mockRestore());
+
+  it('POSTs the token without a session', async () => {
+    authStore = { token: 'jwt-signed-in' };
+    await client('tok-1');
+
+    const [calledUrl, init] = fetchSpy.mock.calls[0];
+    expect(calledUrl).toBe(url);
+    expect(init.method).toBe('POST');
+    expect(init.headers).toEqual({ 'Content-Type': 'application/json' });
+    expect(JSON.parse(init.body)).toEqual({ token: 'tok-1' });
+  });
+
+  it('throws the error envelope as an ApiRequestError', async () => {
+    fetchSpy.mockResolvedValue(mockJsonResponse(400, {
+      status: 'error',
+      error: { code: 'INVALID_TOKEN', message: 'Invalid or expired recovery link' },
+    }));
+
+    await expect(client('tok-1')).rejects.toMatchObject({ name: 'ApiRequestError', code: 'INVALID_TOKEN' });
   });
 });
 

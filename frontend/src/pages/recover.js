@@ -121,9 +121,10 @@ const template = `
           <template x-if="phase === 'done'">
             <div class="text-center py-16">
               <div class="w-16 h-16 bg-pevo-green/10 rounded-full flex items-center justify-center mx-auto mb-6">
-                <svg class="w-8 h-8 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                <svg x-show="method === 'seed'" class="w-8 h-8 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                <svg x-show="method !== 'seed'" class="w-8 h-8 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
               </div>
-              <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('recover.doneTitle')"></h2>
+              <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t(doneCopy.title)"></h2>
               <p class="text-ink-muted mb-6" x-text="$t(doneCopy.description)"></p>
               <button @click="doneAction()" class="btn-primary" x-text="$t(doneCopy.action)"></button>
             </div>
@@ -175,15 +176,17 @@ export function initRecoverPage() {
       return this.username.trim() && this.seedPhrase.trim() && this.newEmail.trim() && this.passwordValid && this.passwordsMatch;
     },
 
-    // The done screen's text and button label; `doneAction` is the button.
+    // The done screen's title, text and button label; `doneAction` is the
+    // button. The seed-phrase arm changes nothing yet: the link mailed to the
+    // new address applies the recovery.
     get doneCopy() {
       if (this.method === 'seed') {
-        return { description: 'recover.doneDescription', action: 'recover.goToLogin' };
+        return { title: 'recover.seedPendingTitle', description: 'recover.seedPendingDescription', action: 'recover.goToLogin' };
       }
       if (this.signedIn) {
-        return { description: 'recover.orcidDoneSignedIn', action: 'recover.goToSettings' };
+        return { title: 'recover.doneTitle', description: 'recover.orcidDoneSignedIn', action: 'recover.goToSettings' };
       }
-      return { description: 'recover.orcidDoneOtherAccount', action: 'recover.switchAccount' };
+      return { title: 'recover.doneTitle', description: 'recover.orcidDoneOtherAccount', action: 'recover.switchAccount' };
     },
 
     // When the ORCID arm left another account signed in, the button switches

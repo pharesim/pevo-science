@@ -229,6 +229,30 @@ describe('recoverPage', () => {
       expect(comp.phase).toBe('done');
     });
 
+    // Nothing has changed on the account yet, so there is no session to take up.
+    it('says the recovery waits for the link sent to the new address', async () => {
+      mockRecoverWithSeedPhrase.mockResolvedValue({
+        status: 'ok',
+        data: { recovery: 'pending_verification', message: 'Confirm the recovery by clicking the link sent to a***@x.com.' },
+      });
+      const comp = createComponent();
+      comp.method = 'seed';
+      comp.username = 'alice';
+      comp.seedPhrase = 'word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12';
+      comp.newEmail = 'a@x.com';
+      comp.newPassword = 'Abcdefgh1x';
+      comp.newPasswordConfirm = 'Abcdefgh1x';
+
+      await comp.handleSubmit();
+
+      expect(comp.doneCopy).toEqual({
+        title: 'recover.seedPendingTitle',
+        description: 'recover.seedPendingDescription',
+        action: 'recover.goToLogin',
+      });
+      expect(mockAuthStore.adoptRecoveredSession).not.toHaveBeenCalled();
+    });
+
     it('sets error when mnemonic invalid', async () => {
       mockValidateMnemonic.mockReturnValueOnce(false);
       const comp = createComponent();

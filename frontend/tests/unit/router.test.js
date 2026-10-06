@@ -198,6 +198,28 @@ describe('router', () => {
       expect(store.route).toBe('recover');
     });
 
+    // The two links a seed-phrase recovery mails; the backend's locale
+    // redirect hands them over with the locale prefix and the query intact.
+    it('matches the mailed recovery confirmation link with its token', () => {
+      const store = initAt('/en/recover/verify', '?token=' + 'a'.repeat(64));
+      expect(store.route).toBe('recover-verify');
+      expect(store.query).toEqual({ token: 'a'.repeat(64) });
+    });
+
+    it('matches the mailed recovery stop link with its token', () => {
+      const store = initAt('/de/recover/dispute', '?token=' + 'b'.repeat(64));
+      expect(store.route).toBe('recover-dispute');
+      expect(store.query).toEqual({ token: 'b'.repeat(64) });
+    });
+
+    it('titles the recovery link pages without an em-dash', () => {
+      const store = initAt('/');
+      store.navigate('/recover/verify?token=abc');
+      expect(document.title).toBe('Confirm Recovery - PEvO');
+      store.navigate('/recover/dispute?token=abc');
+      expect(document.title).toBe('Stop Recovery - PEvO');
+    });
+
     it('matches settings route', () => {
       const store = initAt('/settings');
       expect(store.route).toBe('settings');

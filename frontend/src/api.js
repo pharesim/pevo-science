@@ -731,6 +731,25 @@ export function recoverWithOrcid(username, orcidToken, newEmail, newPassword) {
   });
 }
 
+// The two links a seed-phrase recovery mails. Neither request carries a
+// session: the link may be opened signed out, or signed in to a session the
+// confirmation revokes.
+export function verifyRecovery(token) {
+  return request('/auth/recover/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
+}
+
+export function disputeRecovery(token) {
+  return request('/auth/recover/dispute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
+}
+
 // ─── Account Search ─────────────────────────────────────────────
 
 export async function searchAccounts(q) {

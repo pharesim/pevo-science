@@ -1,11 +1,12 @@
 // A recovery submitted from this browser settles this browser's session.
 //
-// Test focus: an ORCID recovery revokes every earlier session of the account
-// and answers with a reissued one the server spares. The recover page hands
-// that answer to the auth store, which takes the reissued session up unless
-// the browser is signed in to another account. Seed-phrase recovery's first
-// step changes nothing on the account, so it leaves the session alone. Every
-// case drives the REAL recover page component into the REAL auth store
+// Test focus: an ORCID recovery, and the confirmation link of a seed-phrase
+// recovery, each revoke every earlier session of the account and answer with
+// a reissued one the server spares. The page hands that answer to the auth
+// store, which takes the reissued session up unless the browser is signed in
+// to another account. Seed-phrase recovery's first step changes nothing on
+// the account, so it leaves the session alone. Every case drives the REAL
+// recover or recover-verify page component into the REAL auth store
 // (`initAuth`) through the REAL api.js request path, then reads what the
 // browser holds afterwards: the stored session, the subject-bound tab state,
 // what a later bearer request sends and meets, and what a second tab of the
@@ -15,13 +16,14 @@
 // deterministic edge-case coverage): only the network boundary is stubbed
 // (`fetch` answers with the backend's envelopes), plus the `alpinejs` store
 // registry every unit suite replaces and the Keychain probe the store's
-// module imports. A unit test has no backend to run the ORCID round-trip and
-// the revocation against. Clause (b): no auth
+// module imports. A unit test has no backend to run the ORCID round-trip, the
+// mailed confirmation link and the revocation against. Clause (b): no auth
 // middleware is mocked and no cryptographic verification is bypassed; the
 // cases assert what the client does with the server's answers. Clause (c):
-// the real-path companion is the ORCID recovery round-trip in
-// e2e/orcid-no-password.spec.js, which asserts the browser holds the reissued
-// session after a real recovery.
+// the real-path companions are the ORCID recovery round-trip in
+// e2e/orcid-no-password.spec.js and the mailed-link round-trip in
+// e2e/seed-recovery-links.spec.js, which each assert the browser holds the
+// reissued session after a real recovery.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import enMessages from '../../public/messages/en.json';
 
@@ -47,6 +49,7 @@ vi.mock('../../src/keychain.js', () => ({
 import { initAuth } from '../../src/auth.js';
 import { initToast } from '../../src/toast.js';
 import { initRecoverPage } from '../../src/pages/recover.js';
+import { initRecoverVerifyPage } from '../../src/pages/recover-verify.js';
 import { fetchNotifications } from '../../src/api.js';
 import { cacheSessionProof, clearCachedSessionProof } from '../../src/lib/fresh-auth.js';
 
@@ -87,6 +90,14 @@ const revokedResponse = () => ({
 // The ORCID path's answer: the recovery applied and a session reissued.
 const orcidRecovered = () =>
   okResponse({ token: 'new-jwt', expires_at: FUTURE, custody: 'light', username: 'alice' });
+
+// The token in the seed-phrase confirmation link this browser opens.
+const LINK_TOKEN = 'f'.repeat(64);
+
+// The seed-phrase confirmation link's answer: the recovery applied and a
+// session reissued.
+const linkConfirmed = () =>
+  okResponse({ token: 'link-jwt', expires_at: FUTURE, custody: 'light', username: 'alice' });
 
 // The seed-phrase path's first-step answer: nothing applied yet.
 const seedStaged = () =>
@@ -140,8 +151,9 @@ beforeEach(() => {
   initToast();
   initAuth();
   initRecoverPage();
+  initRecoverVerifyPage();
   stores.i18n = { locale: 'en', messages: enMessages };
-  stores.router = { navigate: vi.fn() };
+  stores.router = { navigate: vi.fn(), query: { token: LINK_TOKEN } };
   clearCachedSessionProof();
   recoverAnswer = orcidRecovered;
   // The server has revoked alice's pre-recovery token and nothing else.
@@ -149,6 +161,7 @@ beforeEach(() => {
     const path = String(url);
     if (path.startsWith('/api/accreditations/')) return okResponse(null);
     if (path === '/api/auth/recover') return recoverAnswer();
+    if (path === '/api/auth/recover/verify') return linkConfirmed();
     return bearerOf([url, init]) === 'Bearer old-jwt' ? revokedResponse() : okResponse({ notifications: [] });
   });
 });
@@ -203,6 +216,7 @@ describe('ORCID recovery in a signed-out browser', () => {
     expect(stores.auth.token).toBe('new-jwt');
     expect(storedSession()).toMatchObject({ token: 'new-jwt', username: 'alice' });
     expect(comp.doneCopy).toEqual({
+      title: 'recover.doneTitle',
       description: 'recover.orcidDoneSignedIn',
       action: 'recover.goToSettings',
     });
@@ -266,6 +280,7 @@ describe('ORCID recovery in a browser signed in to another account', () => {
     const comp = await recoverWithOrcid();
 
     expect(comp.doneCopy).toEqual({
+      title: 'recover.doneTitle',
       description: 'recover.orcidDoneOtherAccount',
       action: 'recover.switchAccount',
     });
@@ -317,5 +332,65 @@ describe('the first step of a seed-phrase recovery', () => {
 
     expect(stores.auth.isConnected).toBe(false);
     expect(localStorage.getItem(SESSION_KEY)).toBeNull();
+  });
+});
+
+describe('the confirmation link of a seed-phrase recovery', () => {
+  async function confirmFromLink() {
+    const comp = dataDefs.recoverVerifyPage();
+    comp.$t = (key) => key;
+    comp.init();
+    await comp.submit();
+    expect(comp.state).toBe('done');
+    return comp;
+  }
+
+  it('replaces the revoked session of the recovered account and drops its proof window', async () => {
+    signInAs('old-jwt', 'alice');
+    openWindow();
+
+    const comp = await confirmFromLink();
+
+    expect(stores.auth.token).toBe('link-jwt');
+    expect(storedSession()).toMatchObject({ token: 'link-jwt', username: 'alice', custody: 'light' });
+    expect(sessionStorage.getItem(WINDOW_KEY)).toBeNull();
+    expect(comp.doneCopy.description).toBe('recover.verifyDoneSignedIn');
+
+    await fetchNotifications(0);
+    const bearerCalls = fetchSpy.mock.calls.filter((call) => bearerOf(call));
+    expect(bearerCalls.map(bearerOf)).toEqual(['Bearer link-jwt']);
+    expect(stores.auth.isConnected).toBe(true);
+  });
+
+  it('signs a signed-out browser in, and sends the token without a bearer', async () => {
+    const comp = await confirmFromLink();
+
+    const verifyCall = fetchSpy.mock.calls.find(([url]) => String(url) === '/api/auth/recover/verify');
+    expect(bearerOf(verifyCall)).toBeUndefined();
+    expect(JSON.parse(verifyCall[1].body)).toEqual({ token: LINK_TOKEN });
+    expect(stores.auth.isConnected).toBe(true);
+    expect(storedSession()).toMatchObject({ token: 'link-jwt', username: 'alice' });
+    comp.doneAction();
+    expect(stores.router.navigate).toHaveBeenCalledWith('/settings');
+  });
+
+  it('leaves another signed-in account alone until the user switches', async () => {
+    signInAs('bob-jwt', 'bob');
+    openWindow();
+
+    const comp = await confirmFromLink();
+
+    expect(stores.auth.token).toBe('bob-jwt');
+    expect(storedSession()).toMatchObject({ token: 'bob-jwt', username: 'bob' });
+    expect(sessionStorage.getItem(WINDOW_KEY)).not.toBeNull();
+    expect(comp.doneCopy.description).toBe('recover.verifyDoneOtherAccount');
+
+    comp.doneAction();
+
+    expect(stores.auth.username).toBe('alice');
+    expect(stores.auth.token).toBe('link-jwt');
+    expect(storedSession()).toMatchObject({ token: 'link-jwt', username: 'alice' });
+    expect(sessionStorage.getItem(WINDOW_KEY)).toBeNull();
+    expect(comp.doneCopy.description).toBe('recover.verifyDoneSignedIn');
   });
 });

@@ -26,6 +26,8 @@ import { initSignupVerifyPage, signupVerifyPageTemplate } from './signup-verify.
 import { initLoginPage, loginPageTemplate } from './login.js';
 import { initResetPasswordPage, resetPasswordPageTemplate } from './reset-password.js';
 import { initRecoverPage, recoverPageTemplate } from './recover.js';
+import { initRecoverVerifyPage, recoverVerifyPageTemplate } from './recover-verify.js';
+import { initRecoverDisputePage, recoverDisputePageTemplate } from './recover-dispute.js';
 import { initSettingsPage, settingsPageTemplate } from './settings.js';
 import { initSettingsVerifyEmailPage, settingsVerifyEmailPageTemplate } from './settings-verify-email.js';
 import { initMyImportsPage, myImportsPageTemplate } from './my-imports.js';
@@ -57,6 +59,8 @@ export const pages = {
   'login':                       { init: initLoginPage, template: loginPageTemplate },
   'reset-password':              { init: initResetPasswordPage, template: resetPasswordPageTemplate },
   'recover':                     { init: initRecoverPage, template: recoverPageTemplate },
+  'recover-verify':              { init: initRecoverVerifyPage, template: recoverVerifyPageTemplate },
+  'recover-dispute':             { init: initRecoverDisputePage, template: recoverDisputePageTemplate },
   'settings':                    { init: initSettingsPage, template: settingsPageTemplate },
   'settings-verify-email':       { init: initSettingsVerifyEmailPage, template: settingsVerifyEmailPageTemplate },
   'my-imports':                  { init: initMyImportsPage, template: myImportsPageTemplate },

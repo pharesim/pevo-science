@@ -29,6 +29,8 @@ const ROUTE_TITLES = {
   // Hyphen, not em-dash: the project forbids em-dashes in user-facing text and a
   // browser title is user-facing (sibling em-dash entries are a separate sweep).
   'admin':                 'Admin Console - PEvO',
+  'recover-verify':        'Confirm Recovery - PEvO',
+  'recover-dispute':       'Stop Recovery - PEvO',
 };
 
 function updateTitle(routeName) {
@@ -63,6 +65,8 @@ const ROUTES = [
   { pattern: /^\/login$/,                              name: 'login' },
   { pattern: /^\/reset-password$/,                     name: 'reset-password' },
   { pattern: /^\/recover$/,                            name: 'recover' },
+  { pattern: /^\/recover\/verify$/,                    name: 'recover-verify' },
+  { pattern: /^\/recover\/dispute$/,                   name: 'recover-dispute' },
   { pattern: /^\/settings$/,                           name: 'settings' },
   { pattern: /^\/settings\/verify-email\/([^/]+)$/,   name: 'settings-verify-email', params: ['token'] },
   { pattern: /^\/my-imports$/,                         name: 'my-imports' },
