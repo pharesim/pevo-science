@@ -83,9 +83,13 @@ export function initRecoverDisputePage() {
         this.state = 'done';
       } catch (err) {
         if (!this._mounted) return;
-        // Sanitization pattern (see executeUpgrade() in settings.js).
-        console.warn('[recover dispute]', err);
-        this.state = err?.code === 'INVALID_TOKEN' ? 'invalid' : 'failed';
+        if (err?.code === 'INVALID_TOKEN') {
+          this.state = 'invalid';
+        } else {
+          // Sanitization pattern (see executeUpgrade() in settings.js).
+          console.warn('[recover dispute]', err);
+          this.state = 'failed';
+        }
       }
     },
 

@@ -124,9 +124,20 @@ describe('recoverVerifyPage', () => {
     it.each([
       ['INVALID_TOKEN', 'invalid'],
       ['DUPLICATE', 'duplicate'],
-      ['INTERNAL_ERROR', 'failed'],
-      ['RATE_LIMITED', 'failed'],
-    ])('maps %s to the %s state, with the raw error to console.warn only', async (code, state) => {
+    ])('maps %s to the %s state without a console warning', async (code, state) => {
+      mockVerifyRecovery.mockRejectedValue(makeApiError(code));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+
+      await comp.submit();
+
+      expect(comp.state).toBe(state);
+      expect(mockAuthStore.adoptRecoveredSession).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it.each(['INTERNAL_ERROR', 'RATE_LIMITED'])('maps %s to the failed state, with the raw error to console.warn only', async (code) => {
       const err = makeApiError(code);
       mockVerifyRecovery.mockRejectedValue(err);
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -134,7 +145,7 @@ describe('recoverVerifyPage', () => {
 
       await comp.submit();
 
-      expect(comp.state).toBe(state);
+      expect(comp.state).toBe('failed');
       expect(mockAuthStore.adoptRecoveredSession).not.toHaveBeenCalled();
       expect(warnSpy.mock.calls[0][1]).toBe(err);
       warnSpy.mockRestore();
@@ -177,7 +188,7 @@ describe('recoverVerifyPage', () => {
   });
 
   describe('teardown', () => {
-    it('leaves the page state alone when a refusal lands after the page is gone', async () => {
+    it('leaves the page state alone when a failure lands after the page is gone', async () => {
       let rejectFn;
       mockVerifyRecovery.mockImplementationOnce(() => new Promise((_, reject) => { rejectFn = reject; }));
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -185,7 +196,7 @@ describe('recoverVerifyPage', () => {
 
       const pending = comp.submit();
       comp.destroy();
-      rejectFn(makeApiError('INVALID_TOKEN'));
+      rejectFn(makeApiError('INTERNAL_ERROR'));
       await pending;
 
       expect(comp.state).toBe('submitting');
@@ -194,8 +205,9 @@ describe('recoverVerifyPage', () => {
     });
 
     // The server has spent the link and revoked the account's other sessions
-    // by the time it answers, so the reissued session is still taken up.
-    it('still takes up the reissued session when the answer lands after the page is gone', async () => {
+    // by the time it answers, so the answer still goes to
+    // adoptRecoveredSession.
+    it('still hands the answer to adoptRecoveredSession when it lands after the page is gone', async () => {
       let resolveFn;
       mockVerifyRecovery.mockImplementationOnce(() => new Promise((resolve) => { resolveFn = resolve; }));
       const comp = createComponent();

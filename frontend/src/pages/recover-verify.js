@@ -110,8 +110,8 @@ export function initRecoverVerifyPage() {
       try {
         const res = await verifyRecovery(this._token);
         // The link is spent and the account's other sessions are revoked
-        // once the server answers, so the reissued session is taken up even
-        // if the page has gone.
+        // once the server answers, so the answer goes to
+        // adoptRecoveredSession even if the page has gone.
         const signedIn = Alpine.store('auth').adoptRecoveredSession(res.data);
         if (!this._mounted) return;
         this._recovered = res.data;
@@ -119,11 +119,15 @@ export function initRecoverVerifyPage() {
         this.state = 'done';
       } catch (err) {
         if (!this._mounted) return;
-        // Sanitization pattern (see executeUpgrade() in settings.js).
-        console.warn('[recover verify]', err);
-        if (err?.code === 'INVALID_TOKEN') this.state = 'invalid';
-        else if (err?.code === 'DUPLICATE') this.state = 'duplicate';
-        else this.state = 'failed';
+        if (err?.code === 'INVALID_TOKEN') {
+          this.state = 'invalid';
+        } else if (err?.code === 'DUPLICATE') {
+          this.state = 'duplicate';
+        } else {
+          // Sanitization pattern (see executeUpgrade() in settings.js).
+          console.warn('[recover verify]', err);
+          this.state = 'failed';
+        }
       }
     },
 

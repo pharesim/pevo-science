@@ -83,11 +83,19 @@ describe('recoverDisputePage', () => {
       expect(comp.state).toBe('done');
     });
 
-    it.each([
-      ['INVALID_TOKEN', 'invalid'],
-      ['INTERNAL_ERROR', 'failed'],
-      ['RATE_LIMITED', 'failed'],
-    ])('maps %s to the %s state, with the raw error to console.warn only', async (code, state) => {
+    it('maps INVALID_TOKEN to the invalid state without a console warning', async () => {
+      mockDisputeRecovery.mockRejectedValue(makeApiError('INVALID_TOKEN'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+
+      await comp.submit();
+
+      expect(comp.state).toBe('invalid');
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it.each(['INTERNAL_ERROR', 'RATE_LIMITED'])('maps %s to the failed state, with the raw error to console.warn only', async (code) => {
       const err = makeApiError(code);
       mockDisputeRecovery.mockRejectedValue(err);
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -95,7 +103,7 @@ describe('recoverDisputePage', () => {
 
       await comp.submit();
 
-      expect(comp.state).toBe(state);
+      expect(comp.state).toBe('failed');
       expect(warnSpy.mock.calls[0][1]).toBe(err);
       warnSpy.mockRestore();
     });
