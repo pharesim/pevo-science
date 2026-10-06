@@ -93,13 +93,21 @@ function broadcastTimeoutError() {
   return err;
 }
 
-// A coded-but-terminal error (the cross-account durable-binding 409): must NOT
-// borrow the ambiguous-outcome affordance — it stays on the generic path.
+// An error carrying only an API error code.
 function codedError(code) {
   const err = new Error(`terminal error ${code}`);
   err.code = code;
   return err;
 }
+
+// Finalize refusals that leave the account set up but unaccredited:
+// [code, details, reason key, bound account the page shows].
+const FINALIZE_REFUSALS = [
+  ['MAILBOX_ALREADY_BOUND', { bound_to: 'olderaccount' }, 'seedPhrase.unaccreditedMailboxBound', 'olderaccount'],
+  ['MAILBOX_ALREADY_BOUND', undefined, 'seedPhrase.unaccreditedMailboxBoundUnnamed', ''],
+  ['ORCID_ALREADY_LINKED', undefined, 'seedPhrase.unaccreditedOrcidLinked', ''],
+  ['ACCREDITATION_SANCTIONED', undefined, 'seedPhrase.unaccreditedSanctioned', ''],
+];
 
 // Mirrors the ApiRequestError shape api.js throws for the POST_BROADCAST_* 502
 // envelopes on signup finalize (auth.md /confirm + /link error lists). With
@@ -653,12 +661,7 @@ describe('signupVerifyPage', () => {
 
     // A finalize refusal comes after the account is set up: the page moves to
     // the unaccredited phase and takes up no session.
-    it.each([
-      ['MAILBOX_ALREADY_BOUND', { bound_to: 'olderaccount' }, 'seedPhrase.unaccreditedMailboxBound', 'olderaccount'],
-      ['MAILBOX_ALREADY_BOUND', undefined, 'seedPhrase.unaccreditedMailboxBoundUnnamed', ''],
-      ['ORCID_ALREADY_LINKED', undefined, 'seedPhrase.unaccreditedOrcidLinked', ''],
-      ['ACCREDITATION_SANCTIONED', undefined, 'seedPhrase.unaccreditedSanctioned', ''],
-    ])('%s with details %o shows the created-but-unaccredited state', async (code, details, reasonKey, boundTo) => {
+    it.each(FINALIZE_REFUSALS)('%s with details %o shows the unaccredited phase', async (code, details, reasonKey, boundTo) => {
       const err = codedError(code);
       err.details = details;
       mockConfirmAccount.mockRejectedValue(err);
@@ -678,35 +681,18 @@ describe('signupVerifyPage', () => {
       expect(comp.error).toBeNull();
       expect(comp.isSubmitting).toBe(false);
       expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
+      // Expected wire shape, not an unexpected failure: no console.warn noise.
+      expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
     });
 
-    it('clears the username debounce timer when routing to the created-but-unaccredited state', async () => {
-      mockConfirmAccount.mockRejectedValue(codedError('MAILBOX_ALREADY_BOUND'));
-      const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
-
-      const comp = createComponent();
-      enterChooseState(comp);
-      comp.chooseCreate();
-      comp.username = 'alice';
-      comp.usernameStatus = 'available';
-      const handle = setTimeout(() => {}, 100000);
-      comp._usernameTimer = handle;
-
-      await comp.submitCreateAccount();
-
-      expect(comp.phase).toBe('unaccredited');
-      expect(clearSpy).toHaveBeenCalledWith(handle);
-      expect(comp._usernameTimer).toBeNull();
-      clearSpy.mockRestore();
-    });
-
-    // Entering the affordance clears the username debounce timer so a stale
+    // Leaving the username step clears the username debounce timer so a stale
     // _checkUsername dhive call cannot fire ~400ms after the phase transition.
-    // The clear lives in the shared helper, so it covers every routed code; the
-    // BROADCAST_TIMEOUT path exercises it here.
-    it('clears the username debounce timer when routing to broadcast-pending', async () => {
-      mockConfirmAccount.mockRejectedValue(broadcastTimeoutError());
+    it.each([
+      ['broadcast-pending', broadcastTimeoutError],
+      ['unaccredited', () => codedError('MAILBOX_ALREADY_BOUND')],
+    ])('clears the username debounce timer when routing to %s', async (phase, makeError) => {
+      mockConfirmAccount.mockRejectedValue(makeError());
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
 
@@ -722,7 +708,7 @@ describe('signupVerifyPage', () => {
 
       await comp.submitCreateAccount();
 
-      expect(comp.phase).toBe('broadcast-pending');
+      expect(comp.phase).toBe(phase);
       expect(clearSpy).toHaveBeenCalledWith(handle);
       expect(comp._usernameTimer).toBeNull();
       clearSpy.mockRestore();
@@ -932,7 +918,7 @@ describe('signupVerifyPage', () => {
       warnSpy.mockRestore();
     });
 
-    it('MAILBOX_ALREADY_BOUND on the link path shows the created-but-unaccredited state', async () => {
+    it('MAILBOX_ALREADY_BOUND on the link path shows the unaccredited phase', async () => {
       mockIsKeychainInstalled.mockReturnValue(true);
       const err = codedError('MAILBOX_ALREADY_BOUND');
       err.details = { bound_to: 'olderaccount' };
@@ -954,7 +940,7 @@ describe('signupVerifyPage', () => {
     });
   });
 
-  describe('created-but-unaccredited state', () => {
+  describe('unaccredited phase', () => {
     const start = signupVerifyPageTemplate.indexOf(`x-show="phase === 'unaccredited'"`);
     const block = signupVerifyPageTemplate.slice(start, signupVerifyPageTemplate.indexOf('<!-- Done -->', start));
 
@@ -973,12 +959,7 @@ describe('signupVerifyPage', () => {
       const keys = [...signupVerifyPageTemplate.matchAll(/\$t\('([^']+)'/g)].map((m) => m[1]);
       expect(keys).toEqual(expect.arrayContaining(['seedPhrase.unaccreditedTitle', 'seedPhrase.unaccreditedSignIn']));
       expect(keys.filter((key) => !resolves(key))).toEqual([]);
-      const reasonKeys = [
-        'seedPhrase.unaccreditedMailboxBound',
-        'seedPhrase.unaccreditedMailboxBoundUnnamed',
-        'seedPhrase.unaccreditedOrcidLinked',
-        'seedPhrase.unaccreditedSanctioned',
-      ];
+      const reasonKeys = FINALIZE_REFUSALS.map(([, , reasonKey]) => reasonKey);
       expect(reasonKeys.filter((key) => !resolves(key))).toEqual([]);
     });
   });

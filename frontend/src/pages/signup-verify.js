@@ -404,7 +404,7 @@ export function initSignupVerifyPage() {
     destroy() {
       // _teardownTimers flips _mounted so in-flight verifyEmail / resumeSignup
       // / confirmAccount / linkExistingAccount continuations bail before
-      // touching reactive state. Also clears the debounce username timer.
+      // touching reactive state.
       this._teardownTimers();
       this._clearUsernameTimer();
     },

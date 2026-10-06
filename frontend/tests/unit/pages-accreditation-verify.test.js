@@ -217,37 +217,18 @@ describe('accreditationVerifyPage', () => {
       return accreditationVerifyPageTemplate.slice(start, accreditationVerifyPageTemplate.indexOf('</template>', start));
     }
 
-    it('MAILBOX_ALREADY_BOUND shows the bound-mailbox state naming the holding account', async () => {
-      mockVerifyAccreditation.mockRejectedValue(
-        makeApiError('MAILBOX_ALREADY_BOUND', { details: { bound_to: 'olderaccount' } }),
-      );
+    it.each([
+      ['MAILBOX_ALREADY_BOUND', { bound_to: 'olderaccount' }, 'mailbox_bound', 'olderaccount'],
+      ['MAILBOX_ALREADY_BOUND', undefined, 'mailbox_bound', ''],
+      ['ACCREDITATION_SANCTIONED', undefined, 'sanctioned', ''],
+    ])('%s with details %o shows the %s state', async (code, details, state, boundTo) => {
+      mockVerifyAccreditation.mockRejectedValue(makeApiError(code, { details }));
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const comp = createComponent();
       comp.init();
 
-      await vi.waitFor(() => expect(comp.state).toBe('mailbox_bound'));
-      expect(comp.boundTo).toBe('olderaccount');
-      warnSpy.mockRestore();
-    });
-
-    it('MAILBOX_ALREADY_BOUND without details.bound_to shows the state without a name', async () => {
-      mockVerifyAccreditation.mockRejectedValue(makeApiError('MAILBOX_ALREADY_BOUND'));
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const comp = createComponent();
-      comp.init();
-
-      await vi.waitFor(() => expect(comp.state).toBe('mailbox_bound'));
-      expect(comp.boundTo).toBe('');
-      warnSpy.mockRestore();
-    });
-
-    it('ACCREDITATION_SANCTIONED shows the sanctioned state', async () => {
-      mockVerifyAccreditation.mockRejectedValue(makeApiError('ACCREDITATION_SANCTIONED'));
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const comp = createComponent();
-      comp.init();
-
-      await vi.waitFor(() => expect(comp.state).toBe('sanctioned'));
+      await vi.waitFor(() => expect(comp.state).toBe(state));
+      expect(comp.boundTo).toBe(boundTo);
       warnSpy.mockRestore();
     });
 
@@ -527,14 +508,14 @@ describe('accreditationVerifyPage', () => {
     // teardown of the Retry button would fire a second verifyAccreditation
     // call — the user-driven entry point into the concurrent-flight race the
     // generation guard defends against.
-    // Network-layer errors (`TypeError` from fetch failure, `AbortError`
-    // from the 30s fetch timeout in `api.js`) never reach `ApiRequestError`
+    // Network-layer errors (`TypeError` from fetch failure, `TimeoutError`
+    // from the 30s timeout in `api.js`, `AbortError`) never reach `ApiRequestError`
     // — `api.js` constructs `ApiRequestError` from the response body, so a
-    // fetch that never produces a response throws raw. Both carry no
+    // fetch that never produces a response throws raw. None carries
     // `.code`/`.details`, so without an explicit branch they would fall
     // through to the generic `'error'` state with the Request New CTA and
-    // burn a 3/24h `/api/accreditation/request` slot against a still-valid
-    // token. The network-error branch routes them to the Retry CTA instead,
+    // burn a 3/24h `/api/accreditation/request` slot when a retry of the
+    // same link can still succeed. The network-error branch routes them to the Retry CTA instead,
     // sharing the existing `_startCooldown`/`_cooldownId`/`_tickCooldown`
     // machinery — no new timer scaffolding.
     describe('network-layer error handling', () => {
@@ -555,23 +536,6 @@ describe('accreditationVerifyPage', () => {
         return new DOMException('The operation timed out.', 'TimeoutError');
       }
 
-      it('TimeoutError routes to retriable_error with networkUnavailable copy and 5s cooldown', async () => {
-        vi.useFakeTimers();
-        try {
-          mockVerifyAccreditation.mockRejectedValue(makeTimeoutError());
-          const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-          const comp = createComponent();
-          comp.init();
-
-          await vi.waitFor(() => expect(comp.state).toBe('retriable_error'));
-          expect(comp.errorMessage).toBe('verify.networkUnavailable');
-          expect(comp.retryCooldownRemaining).toBe(5);
-          warnSpy.mockRestore();
-        } finally {
-          vi.useRealTimers();
-        }
-      });
-
       it('TypeError routes to retriable_error with networkUnavailable copy and 0s cooldown', async () => {
         mockVerifyAccreditation.mockRejectedValue(makeTypeError());
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -585,10 +549,13 @@ describe('accreditationVerifyPage', () => {
         warnSpy.mockRestore();
       });
 
-      it('AbortError routes to retriable_error with networkUnavailable copy and 5s cooldown', async () => {
+      it.each([
+        ['TimeoutError', makeTimeoutError],
+        ['AbortError', makeAbortError],
+      ])('%s routes to retriable_error with networkUnavailable copy and 5s cooldown', async (_name, makeError) => {
         vi.useFakeTimers();
         try {
-          mockVerifyAccreditation.mockRejectedValue(makeAbortError());
+          mockVerifyAccreditation.mockRejectedValue(makeError());
           const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
           const comp = createComponent();
           comp.init();
