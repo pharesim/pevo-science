@@ -651,9 +651,8 @@ describe('signupVerifyPage', () => {
       warnSpy.mockRestore();
     });
 
-    // A finalize refusal arrives after the account was created: the page says
-    // so and offers sign-in, with no session and no way back to the username
-    // step.
+    // A finalize refusal comes after the account is set up: the page moves to
+    // the unaccredited phase and takes up no session.
     it.each([
       ['MAILBOX_ALREADY_BOUND', { bound_to: 'olderaccount' }, 'seedPhrase.unaccreditedMailboxBound', 'olderaccount'],
       ['MAILBOX_ALREADY_BOUND', undefined, 'seedPhrase.unaccreditedMailboxBoundUnnamed', ''],
@@ -959,14 +958,14 @@ describe('signupVerifyPage', () => {
     const start = signupVerifyPageTemplate.indexOf(`x-show="phase === 'unaccredited'"`);
     const block = signupVerifyPageTemplate.slice(start, signupVerifyPageTemplate.indexOf('<!-- Done -->', start));
 
-    it('names the bound account only when the answer carries it', () => {
+    it('passes the bound account to the reason string', () => {
       expect(start).toBeGreaterThan(-1);
       expect(block).toContain("$t(unaccreditedReasonKey, { account: '@' + boundTo })");
     });
 
     it('links to sign-in and the contact page, never to a new signup', () => {
-      expect(block).toContain("navigate('/login')");
-      expect(block).toContain("navigate('/contact')");
+      expect(block).toContain(":href=\"$lp('/login')\" @click.prevent=\"navigate('/login')\"");
+      expect(block).toContain(":href=\"$lp('/contact')\" @click.prevent=\"navigate('/contact')\"");
       expect(block).not.toContain('/signup');
     });
 

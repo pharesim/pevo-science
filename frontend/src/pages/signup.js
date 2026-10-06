@@ -43,7 +43,7 @@ const template = `
                        class="w-full border border-parchment-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-pevo-teal focus:border-pevo-teal"
                        :placeholder="$t('signup.emailPlaceholder')">
                 <p class="text-xs text-ink-muted mt-1" x-text="$t('signup.emailHint')"></p>
-                <p class="text-xs text-ink-muted mt-1">
+                <p x-show="!orcidToken" class="text-xs text-ink-muted mt-1">
                   <span x-text="$t('common.mailboxPurpose')"></span>
                   <a :href="$lp('/contact')" @click.prevent="navigate('/contact')" class="text-pevo-teal hover:underline" x-text="$t('common.mailboxPurposeObject')"></a>
                 </p>

@@ -251,6 +251,17 @@ describe('accreditationVerifyPage', () => {
       warnSpy.mockRestore();
     });
 
+    it.each([
+      ['mailbox_bound', 'verify.mailboxBoundTitle'],
+      ['sanctioned', 'verify.sanctionedTitle'],
+    ])('the %s state shows its own title', (state, titleKey) => {
+      expect(stateBlock(state)).toContain(`$t('${titleKey}')`);
+    });
+
+    it('the sanctioned state shows the sanctioned message', () => {
+      expect(stateBlock('sanctioned')).toContain("$t('verify.sanctionedMessage')");
+    });
+
     it('the bound-mailbox state names the account only when the answer carries it', () => {
       const block = stateBlock('mailbox_bound');
       expect(block).toContain("boundTo ? $t('verify.mailboxBoundMessage', { account: '@' + boundTo }) : $t('verify.mailboxBoundMessageUnnamed')");
@@ -258,7 +269,7 @@ describe('accreditationVerifyPage', () => {
 
     it.each(['mailbox_bound', 'sanctioned'])('the %s state links to the contact page and not to a new request', (state) => {
       const block = stateBlock(state);
-      expect(block).toContain("navigate('/contact')");
+      expect(block).toContain(":href=\"$lp('/contact')\" @click.prevent=\"navigate('/contact')\"");
       expect(block).not.toContain('verify.requestNew');
       expect(block).not.toContain('/accreditation');
     });

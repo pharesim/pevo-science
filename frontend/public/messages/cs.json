@@ -450,8 +450,8 @@
     "mismatchTitle": "Signed in as a different account",
     "mismatchMessage": "This verification link belongs to a different account. Sign in as that account and open the link again.",
     "mailboxBoundTitle": "This email address is already in use",
-    "mailboxBoundMessage": "This email address is already linked to the accredited account {account}, and an address can be linked to only one accredited account. To use it for this account, sign in as {account} and release its accreditation, then open this link again. You can also contact PEvO.",
-    "mailboxBoundMessageUnnamed": "This email address is already linked to another accredited account, and an address can be linked to only one accredited account. To use it for this account, sign in to that account and release its accreditation, then open this link again. You can also contact PEvO.",
+    "mailboxBoundMessage": "This email address is already linked to the account {account}, and an address can be linked to only one accredited account. To use it for this account, sign in as {account} and release its accreditation, then open this link again while signed in to this account. You can also contact PEvO.",
+    "mailboxBoundMessageUnnamed": "This email address is already linked to another account, and an address can be linked to only one accredited account. To use it for this account, sign in to that account and release its accreditation, then open this link again while signed in to this account. You can also contact PEvO.",
     "sanctionedTitle": "This account cannot be accredited",
     "sanctionedMessage": "This account is not eligible for accreditation at this time. If you believe this is an error, contact PEvO."
   },
@@ -804,7 +804,7 @@
     "confirm": "Confirm",
     "uploadCancelled": "Upload cancelled.",
     "reauthPromptOpen": "Finish the confirmation already open, then try again.",
-    "mailboxPurpose": "This address is used to verify your institutional affiliation and, to prevent abuse (our legitimate interest), to keep one accredited account per address: once it accredits an account, a keyed hash of it is stored for that purpose.",
+    "mailboxPurpose": "This address is used to verify your institutional affiliation and, to prevent abuse (our legitimate interest), to keep one accredited account per address; for that, a keyed hash of it is stored.",
     "mailboxPurposeObject": "You can object to this."
   },
   "reauth": {
@@ -1029,12 +1029,12 @@
     "broadcastOperatorTitle": "Account set up",
     "broadcastOperatorDescription": "Your account is ready and your accreditation is recorded. A follow-up step needs manual attention. Please contact support if your accreditation does not appear after you log in.",
     "broadcastPendingLogin": "Go to login",
-    "unaccreditedTitle": "Account created, but not accredited",
-    "unaccreditedMailboxBound": "This email address is already linked to the accredited account {account}, and an address can be linked to only one accredited account. To use it for this account, sign in as {account} and release its accreditation, then request accreditation from this account.",
-    "unaccreditedMailboxBoundUnnamed": "This email address is already linked to another accredited account, and an address can be linked to only one accredited account. To use it for this account, sign in to that account and release its accreditation, then request accreditation from this account.",
+    "unaccreditedTitle": "Account set up, but not accredited",
+    "unaccreditedMailboxBound": "This email address is already linked to the account {account}, and an address can be linked to only one accredited account. To use it for this account, sign in as {account} and release its accreditation, then request accreditation from this account. If {account} is not yours, sign in to this account and request accreditation with another institutional address or your ORCID iD.",
+    "unaccreditedMailboxBoundUnnamed": "This email address is already linked to another account, and an address can be linked to only one accredited account. To use it for this account, sign in to that account and release its accreditation, then request accreditation from this account. If that account is not yours, sign in to this account and request accreditation with another institutional address or your ORCID iD.",
     "unaccreditedOrcidLinked": "Your ORCID iD is already linked to another accredited account.",
     "unaccreditedSanctioned": "This account is not eligible for accreditation at this time.",
-    "unaccreditedSignIn": "Your account was created and you can sign in to it now. If you need help, contact PEvO."
+    "unaccreditedSignIn": "Your account is set up and you can sign in to it now. If you need help, contact PEvO."
   },
   "confirm": {
     "publishTitle": "Publikovat článek",

@@ -742,7 +742,12 @@ describe('email field purpose notice', () => {
   it('sits under the email field and links the objection to the contact page', () => {
     expect(block).toContain("$t('common.mailboxPurpose')");
     expect(block).toContain("$t('common.mailboxPurposeObject')");
-    expect(block).toContain("navigate('/contact')");
+    expect(block).toContain(":href=\"$lp('/contact')\" @click.prevent=\"navigate('/contact')\"");
+  });
+
+  // ORCID-path signups bind no address, so the sentence would not hold there.
+  it('is hidden on the ORCID branch', () => {
+    expect(block).toContain('<p x-show="!orcidToken"');
   });
 
   it('resolves both strings in en.json', () => {
