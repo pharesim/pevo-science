@@ -272,14 +272,14 @@ The only path from a hive-less display credit to a consented Hive identity is an
 The on-chain attestation that a Hive account belongs to a verified researcher, which gates the write path (publishing, reviewing, commenting, voting) while reads stay open to anyone.
 *Avoid:* accredit op, accreditation attestation.
 
-Accreditation status is computed live from authority-signed attestation and revocation operations plus the live vouch graph; it is an orthogonal dimension that applies to every account and is computed live rather than persisted as a stored account attribute. The grant operation is re-broadcastable: the earliest one anchors tenure, the latest supplies current profile metadata, and a later grant can re-admit a previously revoked account. An account is accredited only if it is not sanctioned and either its latest grant is authority-pinned or its latest grant is vouch-derived and currently meets the vouch threshold.
+Accreditation status is computed live from authority-signed attestation and revocation operations plus the live vouch graph; it is an orthogonal dimension that applies to every account and is computed live rather than persisted as a stored account attribute. The grant operation is re-broadcastable: the earliest one anchors tenure, the latest supplies current profile metadata, and a later grant can re-admit a previously revoked account. An account is accredited only if it is not sanctioned, not released, and either its latest grant is authority-pinned or its latest grant is vouch-derived and currently meets the vouch threshold.
 
 ### Accreditation Method
 
 The provenance tag on an accreditation grant recording how trust was established, splitting grants into authority-pinned (a deliberate platform attestation such as email, ORCID, or manual verification) versus vouch-derived (granted automatically once the vouch threshold is crossed).
 *Avoid:* verification method.
 
-Authority-pinned grants hold status on their own and keep it unless the account is deliberately sanctioned; the vouch-derived method makes status conditional on continuing to meet the live vouch threshold, so the method determines whether an account's standing can silently lapse. A vouch-derived account drops out of membership the instant it falls below the threshold, with no revocation operation, and re-enters automatically when support returns.
+Authority-pinned grants hold status on their own and keep it unless the account is sanctioned or releases; the vouch-derived method makes status conditional on continuing to meet the live vouch threshold, so the method determines whether an account's standing can silently lapse. A vouch-derived account drops out of membership the instant it falls below the threshold, with no revocation operation, and re-enters automatically when support returns.
 
 ### Web of Trust
 
@@ -321,19 +321,26 @@ Because membership is live, a below-threshold account is simply absent from the 
 A deliberate authority action against a bad actor, broadcast as a revocation marked as a sanction, that suppresses accreditation regardless of any vouch support.
 *Avoid:* moderation sanction.
 
-A sanction is sticky: while un-lifted, the account is unaccredited no matter what, and only a deliberate authority grant lifts it. No self-service path (re-verifying email or ORCID) and no amount of vouching can re-admit a sanctioned account. On lift, the account's full pre-sanction history counts again, so tenure is preserved across the sanction gap. It is distinct from a threshold drop, which is ordinary, non-sticky loss of standing.
+A sanction is sticky: while un-lifted, the account is unaccredited no matter what, and only a deliberate authority grant lifts it. No self-service path (re-verifying email or ORCID) and no amount of vouching can re-admit a sanctioned account, and the account's credential bindings stay held, so the credentials it holds cannot back another account while the sanction stands. On lift, the account's full pre-sanction history counts again, so tenure is preserved across the sanction gap. It is distinct from a threshold drop, which is ordinary, non-sticky loss of standing, and from a release, which the holder chooses.
+
+### Release
+
+The account giving up its own accreditation, broadcast as a revocation marked as a release, which ends the account's standing and frees its mailbox bindings and the chain binding of its ORCID so the holder can accredit another account.
+*Avoid:* self-revoke, unaccredit, resign accreditation.
+
+A release is ordinary, not sticky: any accreditation path re-admits the released account, and no authority decision is needed. The holder requests it as a critical action from the account itself; an admin requests it for a holder who lost their keys. The released account keeps its chain history, and the platform keeps its released mailbox bindings on record for admins.
 
 ### Revocation
 
-The on-chain operation that withdraws an accreditation, broadcast only as a sanction (a deliberate moderation action) rather than for routine loss of standing.
+The on-chain operation that withdraws an accreditation, broadcast as a sanction (a deliberate moderation action) or as a release (the holder's own choice), never for routine loss of standing.
 *Avoid:* accreditation revoke op.
 
-A revocation carrying the sanction marker is sticky and suppresses membership; a revocation lacking that marker is a legacy revoke, treated as a non-sanction and ignored for stickiness. Routine loss of web-of-trust standing produces no revocation at all, so a revocation here always signals deliberate intent or a historical artifact.
+A revocation carrying the sanction marker is sticky and suppresses membership; one carrying the release marker suppresses membership until any later grant; a revocation lacking either marker is a legacy revoke, treated as a non-sanction and ignored for stickiness. Routine loss of web-of-trust standing produces no revocation at all, so a revocation here always signals deliberate intent, the holder's choice, or a historical artifact.
 
 ### Legacy Revoke
 
-A historical revocation that lacks the sanction marker (carrying a threshold-no-longer-met reason), which membership evaluation treats as a non-sanction and ignores for stickiness.
-*Avoid:* non-sanction revoke, threshold-drop revoke.
+A historical revocation that lacks a type marker (carrying a threshold-no-longer-met reason), which membership evaluation treats as a non-sanction and ignores for stickiness.
+*Avoid:* threshold-drop revoke.
 
 A legacy-revoked account reverts to ordinary evaluation: a vouch-derived account falls back to live-threshold evaluation, and an authority-pinned account falls back to its latest grant. The presence of a legacy revoke never suppresses membership on its own.
 
@@ -346,10 +353,10 @@ The whitelist gates authority operations (grants and revocations) by signer and 
 
 ### Active Accreditations
 
-The computed live-membership view of currently accredited accounts that encodes the full membership rule: sanction stickiness, live vouch-threshold gating, and legacy revokes reclassified as non-sanctions.
+The computed live-membership view of currently accredited accounts that encodes the full membership rule: sanction stickiness, release, live vouch-threshold gating, and legacy revokes reclassified as non-sanctions.
 *Avoid:* live-membership view, sanction-aware membership view.
 
-A non-member (sanctioned, or vouch-derived below threshold) is absent from the view entirely; this is the authoritative reference for deciding whether an account is accredited right now, including vouch eligibility and authorship and ORCID resolution.
+A non-member (sanctioned, released, or vouch-derived below threshold) is absent from the view entirely; this is the authoritative reference for deciding whether an account is accredited right now, including vouch eligibility and authorship and ORCID resolution.
 
 ### Tenure Anchor
 
@@ -357,6 +364,13 @@ The "accredited since" reference point read from an account's earliest accredita
 *Avoid:* accredited since, tenure.
 
 Tenure derives from the earliest grant's chain block time, not the re-broadcastable payload timestamp; it is purely a display dimension and does not feed reputation scoring, which is present-tense membership only.
+
+### Credential Binding
+
+The rule that each verified credential, an institutional mailbox or an ORCID iD, backs at most one accredited account at a time, together with the record that enforces it.
+*Avoid:* mailbox lock, identity binding, one-account rule.
+
+The principle is one researcher, one accredited account; the binding enforces it per credential, which is what the platform can verify. A person who presents a mailbox on one account and an ORCID on another is not detected by the binding and is in breach of the terms, sanctionable when found. One account may hold several mailboxes. The ORCID binding is read from the chain, where the ORCID iD is already public; the mailbox binding is a row in the app database keyed by a keyed hash of the canonical address, not on the chain. A verification that would bind a credential held by another account is refused; a sanction keeps the bindings held; a release frees them. The record also keeps which accounts a mailbox backed before, for admins.
 
 ## Reputation
 
@@ -758,7 +772,7 @@ The companion does not need to assert what the mocked test asserts; it needs to 
 ## Flagged ambiguities
 
 - **Fail-closed in two areas.** The data-availability area uses it for a read path that refuses rather than degrades when its source is unavailable; the engineering-guards area uses it for a scan whose unattributable match becomes a red bar rather than passing as benign. Settled: one principle, two subjects, and neither reading is a synonym for the other. Both say that the uncertain case takes the loud outcome, which for a read is refusing to answer and for a guard is refusing to clear.
-- **Revocation vs sanction.** Earlier usage treated any "revoke" as withdrawing accreditation. Settled: a revocation is broadcast only as a sanction (sticky, lifted only by a deliberate authority grant); routine loss of vouch-derived standing produces no revocation at all, and a markerless revocation is a legacy revoke treated as a non-sanction.
+- **Revocation vs sanction.** Earlier usage treated any "revoke" as withdrawing accreditation. Settled: a revocation is broadcast only as a sanction (sticky, lifted only by a deliberate authority grant) or as a release (ordinary, the holder's own choice); routine loss of vouch-derived standing produces no revocation at all, and a markerless revocation is a legacy revoke treated as a non-sanction.
 - **Fresh-auth proof across areas.** The account-security area and the admin-authority area both reference the same per-action step-up proof. Settled: it is one concept, Fresh-auth Proof; authority operations consume it as a co-gate alongside the roster-level check.
 - **Authority whitelist vs admin roster.** Both are chain-trust concepts about who is trusted, but they answer different questions. Settled: the Accreditation Authority Whitelist gates whose on-chain signatures a reader trusts (it contains the single signer); the Admin Roster gates which human may ask the platform to make the signer act. They are orthogonal and must not be conflated.
 - **Burn vs consume.** Both were used for presenting a fresh-auth proof. Settled: consuming is the broader act of presenting a proof and having it validated; a burn is specifically the spend of a consent-op proof, and session proofs are consumed but never burned. Unrelated to token burning in the crypto sense, which does not arise here because PEvO issues no custom token.

@@ -129,7 +129,7 @@ An entry resolving none of the above names no one and is dropped from the displa
 
 **Name-supersession is silent — this is the key contrast with ORCID.** When the attested name differs from the broadcaster claim, surfaces render NO discrepancy indicator and emit NO audit event. Name variation (Rob/Robert, maiden names, transliterations, initials, diacritics) is benign and high-noise, so a "claimed vs verified" badge would be pure noise; ORCID divergence, by contrast, is a potential identity-spoof signal and is audited (`orcid_claim_mismatch`). No new on-chain field is introduced — supersession operates on the existing `{hive, name, orcid}` fields at read time. Only the **currently-accredited** arm is active (a non-member account's last-attested name does NOT supersede), matching the JS `resolveAuthorName` / SQL `authorsWithSupersessionSelect` `name`-arm parity. See `agents/docs/ARCHITECTURE.md § 2 "Display construction (cumulative union)"` for how supersession composes with the cumulative author union.
 
-**Canonical SQL pattern.** Backends resolving `authors[i]` for display MUST LEFT JOIN per-author against the `active_accreditations` CTE (defined in `backend/src/hafsql.ts:activeAccreditationsCteBody`). The CTE encodes the full membership rule (sanction-aware, live-WoT-threshold-gated, with legacy revokes reclassified as non-sanctions) and exposes the attested `orcid` per accredited account. There is no separate query to author; reuse the existing CTE and project the supersession fields:
+**Canonical SQL pattern.** Backends resolving `authors[i]` for display MUST LEFT JOIN per-author against the `active_accreditations` CTE (defined in `backend/src/hafsql.ts:activeAccreditationsCteBody`). The CTE encodes the full membership rule (sanction-aware, release-aware, live-WoT-threshold-gated, with legacy revokes reclassified as non-sanctions) and exposes the attested `orcid` per accredited account. There is no separate query to author; reuse the existing CTE and project the supersession fields:
 
 ```sql
 WITH ${activeAccreditationsCteBody(...).sql}
@@ -156,7 +156,7 @@ ORDER BY a.ordinality;
 
 Notes on the canonical pattern:
 - The LEFT JOIN handles all four supersession cases naturally: no `hive` value yields no JOIN match (`aa.orcid` is NULL → `orcid_verified` is NULL → consumer falls back to chain `orcid`); a `hive` value with no current accreditation also yields no match (same fallback); a `hive` value with a current accreditation carrying NULL `orcid` projects `aa.orcid = NULL` (still falls back); only when the accreditation carries a non-empty `orcid` does `orcid_verified` populate.
-- `active_accreditations` is the full membership view (sanction-aware, live-WoT-threshold-gated). A non-member account — sanctioned, or a WoT account below the live threshold — is absent from the CTE entirely, which is the correct semantics for supersession (non-members contribute no attested ORCID). A legacy-revoked account that still satisfies the membership rule (e.g. a WoT account back above threshold) remains present and does contribute.
+- `active_accreditations` is the full membership view (sanction-aware, release-aware, live-WoT-threshold-gated). A non-member account — sanctioned, released, or a WoT account below the live threshold — is absent from the CTE entirely, which is the correct semantics for supersession (non-members contribute no attested ORCID). A legacy-revoked account that still satisfies the membership rule (e.g. a WoT account back above threshold) remains present and does contribute.
 - ORDER BY `ordinality` preserves the `authors[]` array order from chain. Without it, the row order is undefined and the response shape may flip authors between requests.
 
 **Body Format:**
@@ -359,8 +359,10 @@ Broadcast by the admin account to attest that a Hive user is a verified scientis
   "institution": "University of X",
   "field": "neuroscience",
   "method": "email" | "wot" | "orcid" | "manual",
-  "orcid": "0000-0001-2345-6789" | absent,
-  "evidence_hash": "<sha256 of verification evidence>",
+  "orcid": "0000-0001-2345-6789" | "" | absent,
+  "evidence_hash": "<path-specific, see Field Notes>",
+  "issued_by": "<acting_admin_hive_account>" | "<HIVE_ADMIN_ACCOUNT>" | "wot",
+  "idempotency_key": "<sha256>" | absent,
   "timestamp": "<ISO 8601>"
 }
 ```
@@ -375,26 +377,28 @@ Broadcast by the admin account to attest that a Hive user is a verified scientis
 | `json` | Stringified JSON above |
 
 **Field Notes:**
-- `method` — verification method used. `email` = university email confirmation, `wot` = web of trust, `orcid` = ORCID verification, `manual` = manual admin verification (broadcast directly, no automated route).
-- `orcid` — verified ORCID iD, present when the user has completed ORCID OAuth verification (either during accreditation or later via settings). ORCID iDs are public identifiers. A new `accredit` custom_json with `orcid` overwrites the previous accreditation record (the CTE takes the most recent by `block_num`). Used for authorship claim auto-acceptance.
-- `evidence_hash` — hash of the verification evidence (email confirmation, signed document, etc.). The evidence itself is NOT stored on-chain.
+- `method` — verification method used. `email` = the email `/verify` path and the signup finalize (today the finalize also stamps ORCID-path signups `email`, which the Credential Bindings design corrects to `orcid`), `wot` = web of trust, `orcid` = ORCID verification, `manual` = admin grant (`POST /api/admin/accreditation/grant`, which may also write `email` or `orcid`).
+- `orcid` — verified ORCID iD, non-empty when the user has completed ORCID OAuth verification (either during accreditation or later via settings); the signup finalize writes `""` when there is none. ORCID iDs are public identifiers; the latest authority `accredit` op carrying an ORCID is its binding to the account (ARCHITECTURE.md § 2 "Credential Bindings"). A new `accredit` custom_json with `orcid` overwrites the previous accreditation record (the CTE takes the most recent by `block_num`). Anchors authorship slots by ORCID (ARCHITECTURE.md § 2 "Author Accept").
+- `evidence_hash` — path-specific: the email `/verify` path hashes the submitted address, the account and the one-time token; the signup finalize hashes the stored address, the account and a fixed suffix; the ORCID paths hash the ORCID iD and the account; the WoT path writes the sorted voucher names; the admin grant writes an empty string. The evidence itself is NOT stored on-chain.
+- `issued_by` — the acting admin for operator actions, the signer account (`HIVE_ADMIN_ACCOUNT`) on the self-service paths, `"wot"` for auto-grants; a backend-attributed audit claim, not a proof (ARCHITECTURE.md § 7).
+- `idempotency_key` — carried only by the email `/verify` path: sha256 of the one-time token and the account, for per-token duplicate detection; free of the address.
 
 ### 2.2 Revocation
 
-Revokes a previously issued accreditation. A backend-broadcast `revoke` carries `type: "sanction"` — a deliberate, sticky moderation sanction. (A WoT threshold drop no longer broadcasts a revoke; see § 2.6.)
+Revokes a previously issued accreditation. A backend-broadcast `revoke` carries `type: "sanction"` (a deliberate, sticky moderation sanction) or `type: "release"` (the account giving up its own accreditation, not sticky; it frees the account's mailbox bindings, ARCHITECTURE.md § 2 "Credential Bindings"). (A WoT threshold drop no longer broadcasts a revoke; see § 2.6.)
 
 ```json
 {
   "action": "revoke",
   "account": "<hive_username>",
-  "type": "sanction",
+  "type": "sanction" | "release",
   "reason": "Repeated misconduct after warning",
-  "issued_by": "<acting_admin_hive_account>",
+  "issued_by": "<hive_username>" | "<acting_admin_hive_account>",
   "timestamp": "<ISO 8601>"
 }
 ```
 
-`type` is an optional discriminator. `type: "sanction"` marks a deliberate authority sanction (the only kind the backend now broadcasts). A `revoke` lacking `type` is a **legacy** op (historical WoT threshold-drops, typically `reason: "WoT threshold no longer met"`) and is treated as a non-sanction.
+`type` is an optional discriminator. `type: "sanction"` marks a deliberate authority sanction. `type: "release"` marks a release, broadcast on the holder's authenticated request or on an admin's for a holder who lost their keys; `issued_by` is the account itself in the first case and the acting admin in the second. A `revoke` lacking `type` is a **legacy** op (historical WoT threshold-drops, typically `reason: "WoT threshold no longer met"`) and is treated as neither.
 
 **Hive Operation:**
 
@@ -405,7 +409,7 @@ Revokes a previously issued accreditation. A backend-broadcast `revoke` carries 
 | `required_posting_auths` | `["<HIVE_ADMIN_ACCOUNT>"]` |
 | `json` | Stringified JSON above |
 
-An account's accreditation status is determined by its membership rule (latest `accredit` op, live WoT threshold, and sanction stickiness), not by a bare "latest action wins". A `type: "sanction"` revoke suppresses membership until a later **deliberate admin** `accredit` lifts it. A legacy revoke (no `type`) does NOT suppress membership: a WoT account reverts to live-threshold evaluation and an authority-pinned account reverts to its latest `accredit`. See ARCHITECTURE.md § 2 "Accreditation Lifecycle & Sanctions".
+An account's accreditation status is determined by its membership rule (latest `accredit` op, live WoT threshold, sanction stickiness, release), not by a bare "latest action wins". A `type: "sanction"` revoke suppresses membership until a later **deliberate admin** `accredit` lifts it. A `type: "release"` revoke suppresses membership until any later `accredit`. A legacy revoke (no `type`) does NOT suppress membership: a WoT account reverts to live-threshold evaluation and an authority-pinned account reverts to its latest `accredit`. See ARCHITECTURE.md § 2 "Accreditation Lifecycle & Sanctions".
 
 ### 2.3 Anonymous Review Attestation
 
@@ -749,13 +753,8 @@ WHERE (c.json_metadata -> $1 ->> 'type') = 'review'
 SELECT * FROM hafsql.operation_custom_json_view cj
 WHERE cj.custom_id = $1;                                  -- APP_TAG
 
--- Accreditation status for a user (most recent action wins)
-SELECT * FROM hafsql.operation_custom_json_view cj
-WHERE cj.custom_id = $1
-  AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
-  AND cj.json::jsonb ->> 'account' = $2
-ORDER BY cj.block_num DESC
-LIMIT 1;
+-- Accreditation status for a user: the active_accreditations CTE.
+-- Source of truth: activeAccreditationsCteBody() in backend/src/hafsql.ts; rule in § 2.2.
 
 -- Authorship claims on a paper (most recent action per claimer wins)
 WITH claim_events AS (
