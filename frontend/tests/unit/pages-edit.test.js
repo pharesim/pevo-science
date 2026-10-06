@@ -808,50 +808,79 @@ describe('editPage handleSubmit sanitization', () => {
         .toEqual({ author: 'alice', permlink: 'p1' });
     });
 
-    it('head native edit of a continuation post keeps the post it continues when the latest op is the root\'s', async () => {
+    describe('a head continuation whose latest op is the root\'s', () => {
       // alice/p1 <- bob/cont-1 <- carol/cont-2, and alice edited p1 between
       // the two continuations and again after carol's, so the served metadata
       // is p1's and names nothing to continue, and p1 has a version listed
-      // between cont-1's and cont-2's.
-      const { invalidatePaperCache } = await import('../../src/api.js');
-      broadcastOps.mockResolvedValue({ tx_id: 'tx' });
-      invalidatePaperCache.mockResolvedValue({});
+      // between cont-1's and cont-2's. The served body is p1's latest text,
+      // and the form holds it as loaded.
+      const ROOT_ABSTRACT = 'alice abstract';
+      const ROOT_BODY = 'alice latest body, long enough that the patch of a small change is shorter than the full body it applies to.';
 
-      const comp = createComponent();
-      mockStores.auth.username = 'carol';
-      comp.paper = {
-        author: 'alice', permlink: 'p1',
-        head_author: 'carol', head_permlink: 'cont-2',
-        canonical_author: 'alice', canonical_permlink: 'p1',
-        body: 'carol current body',
-        json_metadata: { pevotest: { version: 5 } },
-        title: 'Carol version',
-        versions: [
-          { version_number: 1, author: 'alice', permlink: 'p1' },
-          { version_number: 2, author: 'bob', permlink: 'cont-1' },
-          { version_number: 3, author: 'alice', permlink: 'p1' },
-          { version_number: 4, author: 'carol', permlink: 'cont-2' },
-          { version_number: 5, author: 'alice', permlink: 'p1' },
-        ],
-      };
-      comp._originalBody = '## Abstract\n\ncarol abstract\n\n---\n\ncarol current body';
-      comp.title = 'Carol version, retitled';
-      comp.abstract = 'carol abstract';
-      comp.body = 'carol current body';
-      comp.discipline = 'Physics';
-      comp.authorName = 'Carol';
-      comp.authorAffiliation = 'Oxford';
-      comp.authorOrcid = '';
-      comp.keywordsText = 'quantum';
+      function rootLatestChain() {
+        const comp = createComponent();
+        mockStores.auth.username = 'carol';
+        comp.paper = {
+          author: 'alice', permlink: 'p1',
+          head_author: 'carol', head_permlink: 'cont-2',
+          canonical_author: 'alice', canonical_permlink: 'p1',
+          body: `## Abstract\n\n${ROOT_ABSTRACT}\n\n---\n\n${ROOT_BODY}`,
+          json_metadata: { pevotest: { version: 5 } },
+          title: 'Alice version',
+          versions: [
+            { version_number: 1, author: 'alice', permlink: 'p1' },
+            { version_number: 2, author: 'bob', permlink: 'cont-1' },
+            { version_number: 3, author: 'alice', permlink: 'p1' },
+            { version_number: 4, author: 'carol', permlink: 'cont-2' },
+            { version_number: 5, author: 'alice', permlink: 'p1' },
+          ],
+        };
+        comp._originalBody = `## Abstract\n\n${ROOT_ABSTRACT}\n\n---\n\n${ROOT_BODY}`;
+        comp.title = 'Alice version';
+        comp.abstract = ROOT_ABSTRACT;
+        comp.body = ROOT_BODY;
+        comp.discipline = 'Physics';
+        comp.authorName = 'Carol';
+        comp.authorAffiliation = 'Oxford';
+        comp.authorOrcid = '';
+        comp.keywordsText = 'quantum';
+        return comp;
+      }
 
-      await comp.handleSubmit();
+      beforeEach(async () => {
+        const { invalidatePaperCache } = await import('../../src/api.js');
+        broadcastOps.mockResolvedValue({ tx_id: 'tx' });
+        invalidatePaperCache.mockResolvedValue({});
+      });
 
-      expect(comp.step).toBe('success');
-      const commentOp = broadcastOps.mock.calls[0][1][0];
-      expect(commentOp[1].author).toBe('carol');
-      expect(commentOp[1].permlink).toBe('cont-2');
-      expect(JSON.parse(commentOp[1].json_metadata).pevotest.continues)
-        .toEqual({ author: 'bob', permlink: 'cont-1' });
+      it('head native edit of a continuation post keeps the post it continues when the latest op is the root\'s', async () => {
+        const comp = rootLatestChain();
+        comp.title = 'Alice version, retitled';
+
+        await comp.handleSubmit();
+
+        expect(comp.step).toBe('success');
+        const commentOp = broadcastOps.mock.calls[0][1][0];
+        expect(commentOp[1].author).toBe('carol');
+        expect(commentOp[1].permlink).toBe('cont-2');
+        expect(JSON.parse(commentOp[1].json_metadata).pevotest.continues)
+          .toEqual({ author: 'bob', permlink: 'cont-1' });
+        // The served body is p1's, and a patch would be applied to cont-2's
+        // own, so the unchanged body goes out whole.
+        expect(commentOp[1].body).toBe(`## Abstract\n\n${ROOT_ABSTRACT}\n\n---\n\n${ROOT_BODY}`);
+      });
+
+      it('a changed body is sent whole, not as a patch', async () => {
+        const comp = rootLatestChain();
+        comp.body = `${ROOT_BODY} CAROL`;
+
+        await comp.handleSubmit();
+
+        expect(comp.step).toBe('success');
+        const commentOp = broadcastOps.mock.calls[0][1][0];
+        expect(commentOp[1].permlink).toBe('cont-2');
+        expect(commentOp[1].body).toBe(`## Abstract\n\n${ROOT_ABSTRACT}\n\n---\n\n${ROOT_BODY} CAROL`);
+      });
     });
 
     it('native edit of a continuation post served as a paper of its own keeps the post it continues', async () => {
@@ -2118,6 +2147,21 @@ describe('editPage native edit with an unchanged body', () => {
     expect(comp.step).toBe('success');
     const commentOp = broadcastOps.mock.calls[0][1][0];
     expect(commentOp[1].author).toBe('alice');
+    expect(commentOp[1].permlink).toBe('p1');
+    expect(commentOp[1].body).toBe('@@ -0,0 +0,0 @@\n');
+  });
+
+  it('a version entry that names no post keeps the no-op patch', async () => {
+    const comp = unchangedBodyComponent();
+    // The single entry the detail endpoint serves when it reconstructs no
+    // version: it carries no author/permlink.
+    comp.paper.versions = [{ version_number: 1 }];
+    comp.title = 'A New Title';
+
+    await comp.handleSubmit();
+
+    expect(comp.step).toBe('success');
+    const commentOp = broadcastOps.mock.calls[0][1][0];
     expect(commentOp[1].permlink).toBe('p1');
     expect(commentOp[1].body).toBe('@@ -0,0 +0,0 @@\n');
   });

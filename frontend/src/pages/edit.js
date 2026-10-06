@@ -57,8 +57,8 @@ const NO_OP_PATCH = '@@ -0,0 +0,0 @@\n';
 // The `continues` a native edit keeps: its target's own. A response that holds
 // one post carries that post's own metadata, so its served `continues` is the
 // target's. In a longer chain the served metadata is the latest op's, so the
-// target's predecessor is read from the chain: the canonical root first, which
-// continues nothing, then the other posts in the order of their first version.
+// target's predecessor is read from the chain: the canonical root first, then
+// the other posts in the order of their first version.
 // versions[] is in block order, and the composer publishes a continuation
 // against a head already on chain, so for links it published that order is the
 // chain's.
@@ -1637,6 +1637,12 @@ export function initEditPage() {
         const targetAuthor = ownPost ? ownPost.author : this.paper.author;
         const targetPermlink = ownPost ? ownPost.permlink : this.paper.permlink;
         const targetIsHead = targetAuthor === headAuthor && targetPermlink === headPermlink;
+        // In a chain the served body is the latest version's, so a patch
+        // computed against it fits only that version's post. An entry
+        // without author/permlink names no post.
+        const latestVersion = this.paper.versions?.[this.paper.versions.length - 1];
+        const latestIsTarget = !latestVersion?.author || !latestVersion?.permlink
+          || (latestVersion.author === targetAuthor && latestVersion.permlink === targetPermlink);
         // Where the cache invalidation and the post-success navigate point,
         // whichever arm runs: the paper-detail endpoint resolves any chain
         // entry to its canonical root before reading. Captured here with the
@@ -1801,14 +1807,14 @@ export function initEditPage() {
         } else {
           // Same-author native edit against the post resolved above.
           //
-          // Diff base correctness: the form pre-fills from the chain head
+          // Diff base correctness: the form pre-fills from the served body
           // (paper.body), but Hive applies diffs against the post's own
-          // current body. The diff is only correct when the target IS the
-          // chain head (or when no chain exists, head ≡ root). Otherwise
-          // we broadcast full body — Hive accepts it, just uses more chain
+          // current body. A patch is sent only when the target is the chain
+          // head and the latest version is the target's. Otherwise we
+          // broadcast full body — Hive accepts it, just uses more chain
           // space than a diff would.
           let broadcastBody;
-          if (targetIsHead) {
+          if (targetIsHead && latestIsTarget) {
             const diffText = computeDiff(this._originalBody, newPostBody);
             if (diffText === '') {
               broadcastBody = NO_OP_PATCH;
@@ -1816,10 +1822,10 @@ export function initEditPage() {
               broadcastBody = diffText.length >= newPostBody.length ? newPostBody : diffText;
             }
           } else {
-            // Non-head target (e.g. root author native-editing their own
-            // post while a co-author's continuation is currently the head):
-            // pre-fill body differs from target post body, so a diff would
-            // be applied to the wrong base. Broadcast full body.
+            // A non-head target (e.g. root author native-editing their own
+            // post while a co-author's continuation is currently the head),
+            // or a head target the latest version does not belong to.
+            // Broadcast full body, changed or not.
             broadcastBody = newPostBody;
           }
 
