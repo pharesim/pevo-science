@@ -66,6 +66,8 @@ before any status is set keeps the default 200 and is not refunded.
 
 - `/ce-compound-refresh` on `skip-failed-requests-jwt-required-credential-verify-carve-out-2026-05-17.md`:
   its audit grid lists both limiters as correct adoptions.
+- `/ce-compound-refresh` on `deferred-refund-gate-must-check-writableEnded-not-just-statusCode-2026-05-17.md`:
+  it treats a client abort as an outcome to refund, which on `/request` was the abuse hole.
 
 ## Backend implementation signal (2026-10-06, commit f748b67c)
 
@@ -123,3 +125,17 @@ Landed in `f748b67c` (`git merge-base --is-ancestor f748b67c main` checked).
 3. Pre-existing and left alone: the `accreditation.test.ts` file header says "verifyHiveSignature is NOT involved here", but the file mocks it through `MOCK_VERIFY_SIGNATURE` for `/request`.
 
 **[TODO Architect] addition.** The same solutions entry, `skip-failed-requests-jwt-required-credential-verify-carve-out-2026-05-17.md`, also names `accreditation-request` in its triage list ("No (one-shot ceremony like upgrade, accreditation-request) → adopting `skipFailedRequests` is non-controversial"), not only in its audit grid. No api-contracts change is needed: `accreditation.md` states no refund policy.
+
+## Architect re-review (2026-10-06) — HELD PENDING FIXES:
+
+Reviewed `f748b67c` with `/ce-code-review` (correctness, security, adversarial, testing, reliability, project-standards, learnings; the one finding was confirmed by an independent validator). Scope 1-3 and AC1-AC4 are met. The testing reviewer re-measured four of the nine mutant kills (`/request` back to `skipFailedRequests`, `/verify` +403, `/verify` +502, `/verify` [503] only), and each was killed by its named spec. Three items:
+
+1. **The backend suite is red: lower the canary pin.** Deleting the clause-(c) `Real-path companion:` claim from the `custody-limiter-cpu-amplification.test.ts` header was right, but `tests/eslint/no-unresolvable-carve-out-companion-citation.test.ts` pins each file's count of unstructured companion claims and still pins that file at 2. Its spec "every file-naming prose claim is in the backlog at exactly its pin, bounded by the landing snapshot" fails at `f748b67c` and on `main` ("1 unstructured companion claim(s) remain, pinned at 2"); it passes 12/12 at the base `278b6490`. In `DEFERRED_FREE_PROSE`, change `'backend/tests/routes/custody-limiter-cpu-amplification.test.ts': 2,` to `'backend/tests/routes/custody-limiter-cpu-amplification.test.ts': 1,`. Leave that file's entry in `LANDING_FREE_PROSE` at 2. The signal's per-file runs did not include `tests/eslint/`: run that directory alone too, and give its result in the signal block.
+2. **Narrow the `accreditationRequestLimiter` comment.** Replace "the handler still stores the token and sends the mail" with "the handler keeps running", and change nothing else in that comment. When the client closes first and `sendMail` then fails, the slot was already settled as consumed at the `close` event (status still 200) and no mail goes out, so the current clause also claims that case.
+3. **Delete one false sentence from the `accreditation.test.ts` file header** (your out-of-scope observation 3). In the "Mocking justification" paragraph, delete "verifyHiveSignature is NOT involved here (the /verify route is rate-limited but not auth-gated)." and change nothing else. The paragraph then reads "...reproduced against real Hive). The carve-out covers only broadcast error staging; ...". The file does mock `verifyHiveSignature`, through `MOCK_VERIFY_SIGNATURE` on `/request`.
+
+The three edits together were planted on a `git archive` copy of `main`'s backend at `64bca0fb`: `tests/eslint/` passes 146/146 with them. Items 2 and 3 are comment-only and need no new spec.
+
+Triage of the rest (user, 2026-10-06):
+- Accepted, not fixed here: `/verify` is keyed by IP and now counts junk-token 400s, so a client that shares an IP with the user (behind a NAT, for example) can keep that IP at 429. AC3 asks for the 400 to consume. A note on `backend-accreditation-verify-requires-the-account-session` asks for the limiter to be keyed by account once that route requires a session.
+- Dismissed: no spec runs the real `verifyHiveSignature` on `/request` (true before this commit too); the verify page's "Request new" after a 429 spends a `/request` slot on a token that is still valid (your observation 2); the 504 refund on a broadcast whose outcome is uncertain (the task prescribed it, and the base behaved the same way); your observation 1.
