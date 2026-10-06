@@ -84,7 +84,7 @@ Where PEvO reads the column in the current tree:
 - **Paper detail.** `fetchPaperDetailFromHaf` in `backend/src/routes/papers.ts` selects `c.body`
   from `T.comments` and swaps in the latest replayed version only inside its
   `if (chain.length > 1)` continuation-chain branch. Every PEvO paper is a single post (as of
-  2026-10-01), so the detail always serves the creation body.
+  2026-10-01), so `fetchPaperDetailFromHaf` always serves the creation body.
 - **Edit page diff base.** `_prefillForm` in `frontend/src/pages/edit.js` fills the form from that
   detail body and sets `_originalBody` from it; the broadcast builds its patch with
   `computeDiff(this._originalBody, newPostBody)`. Every patch broadcast after the first edit is
@@ -102,7 +102,10 @@ Where PEvO reads the column in the current tree:
   more than one op).
 
 Not affected: `injectPaperMeta` in `backend/src/app.ts` and the blog route in
-`backend/src/routes/blog.ts`, which read through the Hive API.
+`backend/src/routes/blog.ts`, which read through the Hive API; and the detail route's
+metadata-restored fallback in `papers.ts`, which serves the last version of
+`reconstructVersionsFromHaf` (with `metadata_restored: true`) when `fetchPaperDetailFromHaf`
+returns null, as it does for a post whose PEvO metadata another frontend stripped.
 
 **Status, pending as of 2026-10-01.** The rule is recorded in `agents/docs/ARCHITECTURE.md` § 2
 "Body, edits and versions", which describes the target; the code does not meet it yet. A backend task
@@ -262,7 +265,7 @@ column 13711 and not equal.
 **Through PEvO's own API:** compare `GET /api/papers/<author>/<permlink>` with
 `GET /api/papers/<author>/<permlink>?version=<latest version_number>`. The `?version=N` branch of
 the detail route reads `reconstructVersionsFromHaf`; the default detail reads the column for a
-single-post paper. Differing bodies is this defect (and once the pending detail task lands, the two
+single-post paper unless it carries `metadata_restored: true`. Differing bodies is this defect (and once the pending detail task lands, the two
 must agree). The signature at a glance: `last_edited` moves while `body` stays put.
 
 **Prevention for a new reader.** Read only edit-safe columns from `T.comments`; take the text from
