@@ -241,3 +241,61 @@ nested loop for all seven.
    does not protect it.
 4. Scaling note: the fenced form reads every appTag candidate before it sorts. That is trivial at
    22 ops. Re-measure if appTag custom_json volume grows by orders of magnitude.
+
+## Architect re-review (2026-10-07) — HELD PENDING FIXES:
+
+Reviewed `3c76c235` and `10888287` via `/ce-code-review` (full: correctness, security,
+adversarial in-process, performance, testing, project-standards, learnings; one validator).
+Reviewers read a `git archive` copy of `10888287`. The SQL change is correct: four reviewers
+compared all seven literals with `52ad6a26` and found the same predicates, `$N` positions,
+params, projected column names, sort keys and directions, the authority filter inside every
+CTE, and no `block_num` floor. Caller branches and the 503 and throw paths are unchanged. Scope
+1 to 3 and AC 1 to 3 are met. Two items hold the task.
+
+1. **No test fails if the fence is removed.** The testing reviewer replaced `AS MATERIALIZED`
+   with `AS` in a scratch copy: `tests/lib/idempotency.test.ts` stayed green for all three
+   `idempotency.ts` lookups, and no `pevo/*` lint rule fired in any of the four source files.
+   The edited shape pins match only the `ORDER BY` text. `backend-verify-gate-treats-wot-enrollee-as-accredited`
+   rewrites `findExistingAccreditation`'s SQL next.
+   Fix: in `backend/tests/lib/idempotency.test.ts`, add `toMatch(/\bAS\s+MATERIALIZED\b/i)` on the
+   captured SQL in the three specs that capture these lookups' SQL: "scopes the custom_json query
+   by required_posting_auths containing username and joins haf_operations", "filters by
+   accreditationAuthorities + appTag + accredit action and joins haf_operations; orders by
+   (block_num, id) DESC", and "filters by appTag + action IN (accredit,revoke) +
+   account=$username + accreditationAuthorities; orders by (block_num, id) DESC".
+   `wot-threshold-signer-gate.test.ts` makes the same assertion for `loadWotThreshold`. Red
+   first: each new assertion fails when its lookup's `AS MATERIALIZED` is replaced by `AS`. No
+   new spec for the other four lookups.
+
+2. **The fence entry's text, via `/ce-compound-refresh` scoped to
+   `haf-custom-json-latest-op-materialized-fence-2026-06-14.md`:**
+   - The SQL snippet under "Wrap the row match in a `WITH candidates AS MATERIALIZED (...)`
+     optimization fence" still selects `json, block_num` and orders by `block_num DESC` alone.
+     Give it the shape of the entry's own Examples "After" block: `id` in the CTE's select list
+     and `ORDER BY block_num DESC, id DESC`.
+   - In the paragraph "A non-empty match set does not make the unfenced form safe", delete "and
+     returned identical rows" from the last sentence. The unfenced form never ran on a
+     non-matching input.
+   - In the sentence "The fence is verified on live HAF for `loadWotThreshold` and, on
+     2026-10-06, for ...", delete `findCustodyBroadcastByIdempotencyKey` (custom_json arm) and
+     `findAccreditationBroadcastByIdempotencyKey`. Their match path ran only with `'action'` in
+     place of `'idempotency_key'`.
+   Delete or narrow only; add no qualifying sentences.
+
+Triage of the rest (user, 2026-10-07, as recommended):
+
+- The latest-action-wins entry's claim that `wot.ts:347` produces revoke ops (false; the admin
+  sanction route broadcasts them): folded into the `/ce-compound-refresh` already listed under
+  "[TODO Architect] at archive" in `backend-verify-gate-treats-wot-enrollee-as-accredited`.
+- Pre-existing: `accreditationRequestSchema.field` has no character check, and a `\u0000` or
+  lone-surrogate escape in an on-chain op makes every `cj.json::jsonb` cast of that row throw.
+  Folded into `backend-accreditation-character-rule-on-other-chain-writes`, raised to high, with
+  lone surrogates added. The read side (any Hive account can broadcast under the app tag's
+  custom_json id) is filed as `backend-custom-json-unicode-escape-breaks-jsonb-casts`.
+- Signal note 3 (`update_weights`): one line added to `architect-audit-reputation`.
+- `fetchConsentOpsForPaper` and the `revoteResult` read in `routes/papers.ts` were never
+  plan-checked: noted in `architect-audit-paper-routes-and-consent`.
+- Dismissed: SQL-shape specs for the other four lookups and for the custody arm's sort order (no
+  consequence today); signal note 4 (scaling, 22 ops). Signal notes 1 and 2 are already covered
+  by `backend-verify-gate-treats-wot-enrollee-as-accredited` and
+  `backend-idempotency-real-haf-discovery-walks-the-chain`.
