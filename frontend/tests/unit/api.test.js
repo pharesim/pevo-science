@@ -44,6 +44,7 @@ import {
   mintSessionAuthProof,
   uploadFileToIpfs,
   promoteAdmin,
+  verifyAccreditation,
 } from '../../src/api.js';
 import { signRequest } from '../../src/sign-request.js';
 
@@ -401,6 +402,29 @@ describe('completeOrcid mode-based auth', () => {
 
     const [, init] = fetchSpy.mock.calls[0];
     expect(init.headers?.Authorization).toBeUndefined();
+  });
+});
+
+describe('verifyAccreditation', () => {
+  let fetchSpy;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      mockJsonResponse(200, { status: 'ok', data: { username: 'alice' } }),
+    );
+  });
+
+  afterEach(() => fetchSpy.mockRestore());
+
+  it('POSTs the token with the session as Authorization: Bearer <token>', async () => {
+    authStore = { token: 'jwt-verify-1' };
+    await verifyAccreditation('tok-1');
+
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe('/api/accreditation/verify');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer jwt-verify-1', 'Content-Type': 'application/json' });
+    expect(JSON.parse(init.body)).toEqual({ token: 'tok-1' });
   });
 });
 

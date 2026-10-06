@@ -7,12 +7,16 @@ vi.mock('../../src/api.js', () => ({
 }));
 
 const mockRouterStore = { query: { token: 'tok123' }, navigate: vi.fn() };
+const mockAuthStore = { token: 'jwt-1', connect: vi.fn() };
+const mockToastStore = { show: vi.fn() };
 
 vi.mock('alpinejs', () => ({
   default: {
     data: vi.fn(),
     store: vi.fn((name) => {
       if (name === 'router') return mockRouterStore;
+      if (name === 'auth') return mockAuthStore;
+      if (name === 'toast') return mockToastStore;
       return {};
     }),
   },
@@ -26,13 +30,32 @@ function createComponent() {
   const factory = Alpine.data.mock.calls[Alpine.data.mock.calls.length - 1][1];
   const comp = factory();
   comp.$t = (key) => key;
+  comp.$watch = vi.fn();
   return comp;
+}
+
+function makeApiError(code, { details, retryAfterSeconds = null } = {}) {
+  const e = new Error('mock');
+  e.code = code;
+  e.details = details;
+  e.retryAfterSeconds = retryAfterSeconds;
+  return e;
+}
+
+// A sign-in, sign-out or session swap: the store's token changes, and Alpine
+// reports it to every watcher of `$store.auth.token`.
+function changeSession(comp, token) {
+  mockAuthStore.token = token;
+  for (const [expression, callback] of comp.$watch.mock.calls) {
+    if (expression === '$store.auth.token') callback(token);
+  }
 }
 
 describe('accreditationVerifyPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRouterStore.query = { token: 'tok123' };
+    mockAuthStore.token = 'jwt-1';
   });
 
   it('shows noToken when token missing', () => {
@@ -49,6 +72,138 @@ describe('accreditationVerifyPage', () => {
     comp.init();
     await vi.waitFor(() => expect(comp.state).toBe('success'));
     expect(comp.resultUsername).toBe('alice');
+  });
+
+  // The verification is accepted only from the session of the account that
+  // requested it, so the page never posts the token without a session.
+  describe('session requirement', () => {
+    it('with no session, sends nothing and shows the sign-in state', () => {
+      mockAuthStore.token = null;
+      const comp = createComponent();
+      comp.init();
+
+      expect(comp.state).toBe('signin');
+      expect(mockVerifyAccreditation).not.toHaveBeenCalled();
+    });
+
+    it('a sign-in on the page posts the captured token once', async () => {
+      mockAuthStore.token = null;
+      mockVerifyAccreditation.mockResolvedValue({ data: { username: 'alice' } });
+      const comp = createComponent();
+      comp.init();
+      expect(comp.state).toBe('signin');
+
+      changeSession(comp, 'jwt-new');
+      expect(comp.state).toBe('loading');
+      expect(mockVerifyAccreditation).toHaveBeenCalledTimes(1);
+      expect(mockVerifyAccreditation).toHaveBeenCalledWith('tok123');
+
+      // A further session change while that request is out posts nothing.
+      changeSession(comp, 'jwt-other');
+      await vi.waitFor(() => expect(comp.state).toBe('success'));
+      expect(mockVerifyAccreditation).toHaveBeenCalledTimes(1);
+    });
+
+    it('a sign-out on the sign-in state posts nothing', () => {
+      mockAuthStore.token = null;
+      const comp = createComponent();
+      comp.init();
+
+      changeSession(comp, null);
+      expect(comp.state).toBe('signin');
+      expect(mockVerifyAccreditation).not.toHaveBeenCalled();
+    });
+
+    it('a session change after a final answer posts nothing', async () => {
+      mockVerifyAccreditation.mockRejectedValue(makeApiError('BAD_REQUEST'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.init();
+      await vi.waitFor(() => expect(comp.state).toBe('error'));
+
+      changeSession(comp, 'jwt-new');
+      expect(comp.state).toBe('error');
+      expect(mockVerifyAccreditation).toHaveBeenCalledTimes(1);
+      warnSpy.mockRestore();
+    });
+
+    it.each(['UNAUTHORIZED', 'SESSION_EXPIRED', 'SESSION_INVALIDATED'])(
+      '%s shows the sign-in state, and a sign-in posts the same token again',
+      async (code) => {
+        mockVerifyAccreditation
+          .mockRejectedValueOnce(makeApiError(code))
+          .mockResolvedValueOnce({ data: { username: 'alice' } });
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const comp = createComponent();
+        comp.init();
+
+        await vi.waitFor(() => expect(comp.state).toBe('signin'));
+        expect(comp.errorMessage).toBe('');
+
+        changeSession(comp, 'jwt-new');
+        await vi.waitFor(() => expect(comp.state).toBe('success'));
+        expect(mockVerifyAccreditation).toHaveBeenCalledTimes(2);
+        expect(mockVerifyAccreditation).toHaveBeenNthCalledWith(2, 'tok123');
+        warnSpy.mockRestore();
+      },
+    );
+
+    it('a session-ended answer after the store took up a newer session posts again with it', async () => {
+      mockVerifyAccreditation
+        .mockImplementationOnce(() => {
+          // The auth store adopts the session another tab saved.
+          mockAuthStore.token = 'jwt-adopted';
+          return Promise.reject(makeApiError('SESSION_INVALIDATED'));
+        })
+        .mockResolvedValueOnce({ data: { username: 'alice' } });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.init();
+
+      await vi.waitFor(() => expect(comp.state).toBe('success'));
+      expect(mockVerifyAccreditation).toHaveBeenCalledTimes(2);
+      expect(mockVerifyAccreditation).toHaveBeenNthCalledWith(2, 'tok123');
+      warnSpy.mockRestore();
+    });
+
+    it('a session-ended answer after the store signed out shows the sign-in state', async () => {
+      mockVerifyAccreditation.mockImplementationOnce(() => {
+        mockAuthStore.token = null;
+        return Promise.reject(makeApiError('SESSION_INVALIDATED'));
+      });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.init();
+
+      await vi.waitFor(() => expect(comp.state).toBe('signin'));
+      expect(mockVerifyAccreditation).toHaveBeenCalledTimes(1);
+      warnSpy.mockRestore();
+    });
+
+    it('ACCREDITATION_ACCOUNT_MISMATCH shows the different-account state', async () => {
+      mockVerifyAccreditation.mockRejectedValue(makeApiError('ACCREDITATION_ACCOUNT_MISMATCH'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.init();
+
+      await vi.waitFor(() => expect(comp.state).toBe('mismatch'));
+      warnSpy.mockRestore();
+    });
+
+    it('the sign-in button opens the app sign-in and reports a failed one', async () => {
+      mockAuthStore.token = null;
+      const failure = new Error('Authentication failed');
+      mockAuthStore.connect.mockRejectedValue(failure);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.init();
+
+      await comp.handleConnect();
+      expect(mockAuthStore.connect).toHaveBeenCalledTimes(1);
+      expect(mockToastStore.show).toHaveBeenCalledWith('common.connectionFailed', 'error');
+      expect(comp.state).toBe('signin');
+      warnSpy.mockRestore();
+    });
   });
 
   // Failure surfaces a generic localized message; raw err reaches
@@ -102,14 +257,6 @@ describe('accreditationVerifyPage', () => {
   // a Retry affordance instead of a Request New CTA that would burn one of
   // their 3/24h `/api/accreditation/request` slots.
   describe('retriable error handling', () => {
-    function makeApiError(code, { details, retryAfterSeconds = null } = {}) {
-      const e = new Error('mock');
-      e.code = code;
-      e.details = details;
-      e.retryAfterSeconds = retryAfterSeconds;
-      return e;
-    }
-
     it('ACCREDITATION_GATE_UNAVAILABLE with retriable=true routes to retriable_error state', async () => {
       mockVerifyAccreditation.mockRejectedValue(
         makeApiError('ACCREDITATION_GATE_UNAVAILABLE', { details: { retriable: true } })

@@ -33,6 +33,25 @@ const template = `
             <a :href="$lp('/accreditation')" @click.prevent="navigate('/accreditation')" class="btn-primary no-underline" x-text="$t('verify.requestNew')"></a>
           </div>
         </template>
+        <template x-if="state === 'signin'">
+          <div>
+            <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-pevo-teal-light mb-6">
+              <svg class="h-8 w-8 text-pevo-teal" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 1a4.5 4.5 0 00-4.5 4.5V9H5a2 2 0 00-2 2v6a2 2 0 002 2h10a2 2 0 002-2v-6a2 2 0 00-2-2h-.5V5.5A4.5 4.5 0 0010 1zm3 8V5.5a3 3 0 10-6 0V9h6z" clip-rule="evenodd" /></svg>
+            </div>
+            <h1 class="text-2xl font-bold text-ink mb-2" x-text="$t('verify.signInTitle')"></h1>
+            <p class="text-ink-muted mb-6" x-text="$t('verify.signInMessage')"></p>
+            <button type="button" @click="handleConnect()" class="btn-primary" x-text="$t('signIn.signInButton')"></button>
+          </div>
+        </template>
+        <template x-if="state === 'mismatch'">
+          <div>
+            <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-pevo-teal-light mb-6">
+              <svg class="h-8 w-8 text-pevo-teal" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd" /></svg>
+            </div>
+            <h1 class="text-2xl font-bold text-ink mb-2" x-text="$t('verify.mismatchTitle')"></h1>
+            <p class="text-ink-muted" x-text="$t('verify.mismatchMessage')"></p>
+          </div>
+        </template>
         <template x-if="state === 'retriable_error'">
           <div>
             <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-pevo-teal-light mb-6">
@@ -54,6 +73,11 @@ const template = `
 
 export { template as accreditationVerifyPageTemplate };
 
+// The answers that mean the request carried no session the server accepts:
+// none at all, or one that has ended. Each comes before the token is read, so
+// the page asks for a sign-in instead of offering a new request.
+const SIGN_IN_CODES = ['UNAUTHORIZED', 'SESSION_EXPIRED', 'SESSION_INVALIDATED'];
+
 export function initAccreditationVerifyPage() {
   Alpine.data('accreditationVerifyPage', () => ({
     // Lifecycle guard. See frontend/src/lib/timer-guard.js. The .then/.catch
@@ -62,7 +86,7 @@ export function initAccreditationVerifyPage() {
     // write to torn-down reactive state.
     ...createTimerGuard(),
 
-    state: 'loading', // loading | success | error | retriable_error
+    state: 'loading', // loading | signin | mismatch | success | error | retriable_error
     resultUsername: '',
     errorMessage: '',
     retryCooldownRemaining: 0,
@@ -97,7 +121,31 @@ export function initAccreditationVerifyPage() {
         return;
       }
       this._token = token;
+      // The token is posted only with a session. A sign-in from this page's
+      // button, the header or another tab arrives here as a new session token.
+      this.$watch('$store.auth.token', () => {
+        if (this.state === 'signin') this._verifyIfSignedIn();
+      });
+      this._verifyIfSignedIn();
+    },
+
+    _verifyIfSignedIn() {
+      if (!Alpine.store('auth').token) {
+        this.state = 'signin';
+        return;
+      }
+      this.state = 'loading';
       this._verify();
+    },
+
+    async handleConnect() {
+      try {
+        await Alpine.store('auth').connect();
+      } catch (err) {
+        if (!this._mounted) return;
+        console.warn('[accreditation verify connect]', err);
+        Alpine.store('toast').show(this.$t('common.connectionFailed'), 'error');
+      }
     },
 
     retryVerification() {
@@ -120,6 +168,7 @@ export function initAccreditationVerifyPage() {
       // even a same-tick second `_verify()` invocation captures a higher
       // generation than the first flight's closures.
       const generation = ++this._verifyGeneration;
+      const sessionToken = Alpine.store('auth').token;
       verifyAccreditation(this._token)
         .then((res) => {
           if (!this._mounted) return;
@@ -143,6 +192,14 @@ export function initAccreditationVerifyPage() {
             // see connectivity restored, so allow immediate click.
             const cooldown = err?.name === 'AbortError' ? 5 : 0;
             this._startCooldown(cooldown);
+          } else if (SIGN_IN_CODES.includes(err?.code)) {
+            // The auth store can take up a newer session another tab saved
+            // instead of ending the one this request carried. Post again
+            // with it; with no session left, this shows the sign-in state.
+            if (Alpine.store('auth').token !== sessionToken) this._verifyIfSignedIn();
+            else this.state = 'signin';
+          } else if (err?.code === 'ACCREDITATION_ACCOUNT_MISMATCH') {
+            this.state = 'mismatch';
           } else if (this._isRetriable(err)) {
             this.state = 'retriable_error';
             this.errorMessage = this.$t('verify.serviceTemporarilyUnavailable');

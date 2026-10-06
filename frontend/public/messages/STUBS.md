@@ -4253,3 +4253,70 @@ pt: signup.orcidSignup
 sv: signup.orcidSignup
 tr: signup.orcidSignup
 zh: signup.orcidSignup
+
+### Added 2026-10-06 (ui-accreditation-verify-page-signs-in-first)
+
+The accreditation verify page: the state that asks for a sign-in before the
+link is used, and the state for a link opened while signed in as another
+account.
+
+ar: verify.signInTitle
+cs: verify.signInTitle
+da: verify.signInTitle
+de: verify.signInTitle
+es: verify.signInTitle
+fa: verify.signInTitle
+fr: verify.signInTitle
+he: verify.signInTitle
+it: verify.signInTitle
+nl: verify.signInTitle
+pl: verify.signInTitle
+pt: verify.signInTitle
+sv: verify.signInTitle
+tr: verify.signInTitle
+zh: verify.signInTitle
+ar: verify.signInMessage
+cs: verify.signInMessage
+da: verify.signInMessage
+de: verify.signInMessage
+es: verify.signInMessage
+fa: verify.signInMessage
+fr: verify.signInMessage
+he: verify.signInMessage
+it: verify.signInMessage
+nl: verify.signInMessage
+pl: verify.signInMessage
+pt: verify.signInMessage
+sv: verify.signInMessage
+tr: verify.signInMessage
+zh: verify.signInMessage
+ar: verify.mismatchTitle
+cs: verify.mismatchTitle
+da: verify.mismatchTitle
+de: verify.mismatchTitle
+es: verify.mismatchTitle
+fa: verify.mismatchTitle
+fr: verify.mismatchTitle
+he: verify.mismatchTitle
+it: verify.mismatchTitle
+nl: verify.mismatchTitle
+pl: verify.mismatchTitle
+pt: verify.mismatchTitle
+sv: verify.mismatchTitle
+tr: verify.mismatchTitle
+zh: verify.mismatchTitle
+ar: verify.mismatchMessage
+cs: verify.mismatchMessage
+da: verify.mismatchMessage
+de: verify.mismatchMessage
+es: verify.mismatchMessage
+fa: verify.mismatchMessage
+fr: verify.mismatchMessage
+he: verify.mismatchMessage
+it: verify.mismatchMessage
+nl: verify.mismatchMessage
+pl: verify.mismatchMessage
+pt: verify.mismatchMessage
+sv: verify.mismatchMessage
+tr: verify.mismatchMessage
+zh: verify.mismatchMessage

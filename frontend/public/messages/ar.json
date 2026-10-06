@@ -444,7 +444,11 @@
     "serviceTemporarilyUnavailable": "Verification is temporarily unavailable. Your link is still valid, please try again in a moment.",
     "networkUnavailable": "Network connection lost. Your link is still valid, please check your connection and try again.",
     "retry": "Retry",
-    "retryAvailableIn": "Retry available in {seconds}s"
+    "retryAvailableIn": "Retry available in {seconds}s",
+    "signInTitle": "Sign in to confirm your accreditation",
+    "signInMessage": "This link works only while you are signed in as the account that requested the accreditation. Sign in as that account to continue.",
+    "mismatchTitle": "Signed in as a different account",
+    "mismatchMessage": "This verification link belongs to a different account. Sign in as that account and open the link again."
   },
   "about": {
     "title": "حول PEvO",

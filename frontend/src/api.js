@@ -321,7 +321,7 @@ export function requestAccreditation(data) {
 }
 
 export function verifyAccreditation(token) {
-  return request('/accreditation/verify', {
+  return authenticatedRequest('/accreditation/verify', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token }),
