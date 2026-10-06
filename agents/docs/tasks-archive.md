@@ -8,7 +8,7 @@ Round 3 clean (`/ce-code-review`, lite path: comment only, zero findings). `1d26
 - Carried by `ui-composer-landing-wait-and-served-diff-base` (blocked): a non-head target whose own op is the latest sends the full body for an unchanged body; a stale cached detail can name an older latest op.
 - Dismissed: `reconstructVersionsFromHaf` same-block ordering; the unpinned skip of a `versions[]` entry without `author`/`permlink`.
 - Noted, no action: the round-3 hold's premise ("serves `latest.body` only when the chain holds more than one post") overlooks the metadata-restored fallback, which serves `latest.body` for a single post too. The comment carries no "only", so it stays true.
-- No `/ce-compound`: no hold-time solutions entry cites this task, and the round-3 lesson (hold prose overclaims, then gets copied) is already recorded.
+- Learnings: `/ce-compound-refresh` on `hafsql-comments-body-never-follows-an-edit-read-the-replay.md` (`6460d6ea`), whose "the detail always serves the creation body" the metadata-restored fallback contradicts. No new entry: the round-3 lesson (hold prose overclaims, then gets copied) is already recorded.
 
 **Owner:** ui
 **Created:** 2026-10-01
