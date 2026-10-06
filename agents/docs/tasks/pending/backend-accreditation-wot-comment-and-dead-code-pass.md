@@ -148,3 +148,26 @@ in here).
       paragraph that says it. Intent only: write the sentence against the specs the file runs.
     - This edits test prose: run `backend/tests/eslint/` alone afterwards and give the result in
       the signal block.
+
+## Architect addition (2026-10-06): three more test-prose items
+
+From the review of `backend-accreditation-verify-requires-the-account-session` (user triage: fold
+in here). All three edit test prose: run `backend/tests/eslint/` alone afterwards and give the
+result in the signal block.
+
+18. **`backend/tests/routes/accreditation.test.ts`, "INTENTIONAL RED".** The file header has a
+    paragraph starting "INTENTIONAL RED in this file", and the redaction-negative assertion in the
+    cleanup-failure spec carries "INTENTIONAL RED until pino redact covers `err.command.args`
+    (deferred follow-up)." Both specs the paragraph names pass at `ef1cbdbd` (the review ran the
+    file; only the two cap specs fail). Delete the paragraph and that sentence.
+19. **`backend/tests/routes/accreditation-idempotency.test.ts`, the comment above `fakePipeline`.**
+    Delete the sentence starting "Typed as `ChainableCommander` so a future pipeline step". The
+    stub is cast with `as unknown as ChainableCommander`, so the compiler checks no method on it,
+    and the route's `try` catches a missing method's TypeError the same way it catches the
+    stub's rejection.
+20. **`backend/tests/routes/misc.test.ts` has no carve-out header.** The file mocks
+    `verifyHiveSignature` with `MOCK_VERIFY_SIGNATURE` for every spec. Root `CLAUDE.md` "Running
+    Tests" clause (b) requires a header that says cryptographic verification is bypassed, why the
+    focus permits it, and the real-path companion (clause (c)). For the `/verify` specs the
+    companion is `accreditation-idempotency.test.ts`. Intent only: write the header against the
+    specs the file runs.
