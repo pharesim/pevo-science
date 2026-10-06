@@ -187,7 +187,7 @@ describe('password reset rotates an existing password and never adds one', () =>
 
       const reset = await postReset(issued.reset_token!);
       expect(reset.status, JSON.stringify(reset.body)).toBe(200);
-      expect(reset.body.data.message).toBe(RESET_OK_MESSAGE);
+      expect(reset.body.data).toEqual({ message: RESET_OK_MESSAGE, session_ended: false });
 
       const after = await rowByEmail(id.email);
       expect(await argon2.verify(after.password_hash!, NEW_PASSWORD)).toBe(true);

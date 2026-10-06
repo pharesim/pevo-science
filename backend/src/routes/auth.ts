@@ -1189,6 +1189,24 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
   }
 });
 
+/**
+ * Whether the request carries a session token for `username`. `/reset`
+ * answers this instead of naming the account, so a browser signed in to the
+ * reset account learns that its session has ended, and a caller holding only
+ * the mailed token learns nothing about whose password it set. Revocation is
+ * not read: the reset has just revoked every session of the account.
+ */
+function bearerNamesAccount(req: Request, username: string | null): boolean {
+  const authHeader = req.headers['authorization'];
+  if (!username || !authHeader?.startsWith('Bearer ')) return false;
+  try {
+    const payload = jwt.verify(authHeader.slice(7), config.sessionSecret) as { sub?: unknown };
+    return payload.sub === username;
+  } catch {
+    return false;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────
 // POST /api/auth/reset — Set new password using reset token (LA13)
 // ─────────────────────────────────────────────────────────────
@@ -1210,10 +1228,9 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
     // Look up the token
     const { rows } = await pool.query<{
       id: number;
-      username: string | null;
       reset_token_expires_at: Date;
     }>(
-      'SELECT id, username, reset_token_expires_at FROM accounts WHERE reset_token = $1',
+      'SELECT id, reset_token_expires_at FROM accounts WHERE reset_token = $1',
       [token],
     );
 
@@ -1237,39 +1254,46 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
     const passwordHash = await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS), { signal: abortSignal });
 
     // Update password, clear reset token, invalidate all existing sessions.
+    // `reset_token = $3` spends the token once: a second redemption of it,
+    // even one that read the token before this write, finds it cleared.
     // `password_hash IS NOT NULL` is the never-adds-a-password gate. It also
     // refuses a token that outlived its row's password: ORCID recovery
     // without a new password drops the hash and leaves the token in place.
-    const updated = await pool.query(
+    const updated = await pool.query<{ username: string | null }>(
       `UPDATE accounts
        SET password_hash = $1,
            reset_token = NULL,
            reset_token_expires_at = NULL,
            sessions_invalidated_at = NOW()
-       WHERE id = $2 AND password_hash IS NOT NULL`,
-      [passwordHash, account.id],
+       WHERE id = $2 AND reset_token = $3 AND password_hash IS NOT NULL
+       RETURNING username`,
+      [passwordHash, account.id, token],
     );
     if (updated.rowCount === 0) {
       return sendError(res, 400, 'INVALID_TOKEN', RESET_TOKEN_INVALID_MESSAGE);
     }
+    const { username } = updated.rows[0];
 
-    if (account.username) {
+    if (username) {
       // Close any open session-proof window alongside the JWT revocation the
       // UPDATE above just stamped. Revoking bearer tokens without this leaves a
       // live broadcast window standing, which is not actually cutting off the
       // compromised session (ARCH.md § 6.4.1, § 6.7). The helper never throws:
       // the password change has already committed and the caller has earned its
       // 200, so a Redis blip must not surface as a reset failure.
-      await invalidateSessionFreshAuthTokens(account.username);
+      await invalidateSessionFreshAuthTokens(username);
 
       // Audit log (non-blocking)
       pool.query(
         'INSERT INTO custody_audit_log (username, operation_type) VALUES ($1, $2)',
-        [account.username, 'password_reset'],
+        [username, 'password_reset'],
       ).catch(() => {});
     }
 
-    sendOk(res, { message: 'Password has been reset. Please log in with your new password.' });
+    sendOk(res, {
+      message: 'Password has been reset. Please log in with your new password.',
+      session_ended: bearerNamesAccount(req, username),
+    });
   } catch (err) {
     if (handleArgonError(res, err) === ARGON_HANDLED) return;
     logger.error(
