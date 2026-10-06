@@ -63,15 +63,18 @@ cancel: () => {
 
 // After: the first flight to unwind under this generation speaks; the rest are silent.
 cancel: () => {
-  if (_reportedTeardownGeneration !== _acquireGeneration) {
-    claimTeardownReport();
-    toastLocalized('auth', 'reauthCancelled', 'Your session changed, so the confirmation was cancelled.');
-  }
+  reportTeardownOnce();
   return FRESH_AUTH_CANCELLED;
 },
+
+function reportTeardownOnce() {
+  if (_reportedTeardownGeneration === _acquireGeneration) return;
+  claimTeardownReport();
+  toastLocalized('auth', 'reauthCancelled', 'Your session changed, so the confirmation was cancelled.');
+}
 ```
 
-`_reportedTeardownGeneration` starts below every real generation so nothing is pre-suppressed, and `claimTeardownReport()` stamps it with the current counter.
+`_reportedTeardownGeneration` starts below every real generation so nothing is pre-suppressed, and `claimTeardownReport()` stamps it with the current counter. `reportTeardownOnce()` is also called by `tearDownSessionWithMessage`, the session-ending teardown, when it finds the store already disconnected, so both paths key on the same claim.
 
 The comparison is against the **live** counter, not against the generation the unwinding flight captured. So the mark suppresses every flight that unwinds while that generation is current, whichever teardown abandoned it. The unit is the teardown *horizon*, not the individual teardown: a flight parked across two rapid subject changes unwinds silently once any party has claimed the newer generation, and the earlier change is folded into that one message rather than narrated on its own. That is deliberate and is the behaviour to preserve, not a rounding error in the dedup — the user has just been told their session changed, and a second message about the change before it would only stack. Past the horizon the next scrub bumps the counter beyond the mark and the first flight to unwind under it speaks again. The return value is unchanged either way, so no caller grows a branch.
 
@@ -88,15 +91,23 @@ export function handleSessionInconsistency() {
 }
 
 // After: claim the teardown, then speak - but only when there was one to claim.
-export function handleSessionInconsistency() {
+// handleSessionInconsistency, handleSessionRevoked and handleSessionExpired each
+// call this with their own message key and fallback.
+function tearDownSessionWithMessage(name, fallback) {
   const auth = Alpine.store('auth');
   if (auth) {
+    if (!auth.isConnected) {
+      reportTeardownOnce();
+      return;
+    }
     auth.disconnect();
     claimTeardownReport();
   }
-  toastLocalized('auth', 'sessionInconsistency', 'Session inconsistency detected. Please sign in again.');
+  toastLocalized('auth', name, fallback);
 }
 ```
+
+A detection that finds the store already disconnected does not disconnect again or repeat its own message: it goes through `reportTeardownOnce()`, so it speaks only if the current teardown has not been narrated yet.
 
 The ordering is load-bearing in both directions. The claim must come **after** the call that moves the counter, or it stamps the pre-teardown generation and suppresses nothing; and **before** the message, so the abandoned flights that resume later find the event already narrated. `disconnect()` is synchronous, so the disconnect and the claim are one uninterruptible block and the flights cannot interleave between them.
 
@@ -168,7 +179,7 @@ Every row after the first is a decision that is right. The table is what makes t
 
 Counting is the point. `toHaveBeenCalled()` passes under the duplication defect; `toHaveBeenCalledTimes(1)` fails under both defects, and pairing it with an assertion on *which* message fired is what kills the "talked over" mutant, whose count is also one before the claim is added but whose text is wrong.
 
-**Probe discipline.** Six probes were run, each removing one target and expected to redden exactly its own test: the two acquisition reports, both torn-down-gated cache clears, the per-teardown claim in `cancel()`, and the claim in `handleSessionInconsistency`. A probe that reddens more than its own test means the tests are entangled; one that reddens nothing means the assertion cannot see the property it names.
+**Probe discipline.** Six probes were run, each removing one target and expected to redden exactly its own test: the two acquisition reports, both torn-down-gated cache clears, the per-teardown claim in `cancel()` (now inside `reportTeardownOnce()`), and the claim in `handleSessionInconsistency` (now inside `tearDownSessionWithMessage`). A probe that reddens more than its own test means the tests are entangled; one that reddens nothing means the assertion cannot see the property it names.
 
 ## Related
 
