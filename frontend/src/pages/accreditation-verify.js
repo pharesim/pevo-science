@@ -94,8 +94,8 @@ const template = `
 export { template as accreditationVerifyPageTemplate };
 
 // The answers that mean the request carried no session the server accepts:
-// none at all, or one that has ended. Each comes before the token is read, so
-// the page asks for a sign-in instead of offering a new request.
+// none at all, or one that has ended. The page asks for a sign-in instead of
+// offering a new request.
 const SIGN_IN_CODES = ['UNAUTHORIZED', 'SESSION_EXPIRED', 'SESSION_INVALIDATED'];
 
 export function initAccreditationVerifyPage() {
