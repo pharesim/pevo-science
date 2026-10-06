@@ -1822,10 +1822,6 @@ export function initEditPage() {
               broadcastBody = diffText.length >= newPostBody.length ? newPostBody : diffText;
             }
           } else {
-            // A non-head target (e.g. root author native-editing their own
-            // post while a co-author's continuation is currently the head),
-            // or a head target the latest version does not belong to.
-            // Broadcast full body, changed or not.
             broadcastBody = newPostBody;
           }
 

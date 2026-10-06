@@ -816,6 +816,7 @@ describe('editPage handleSubmit sanitization', () => {
       // and the form holds it as loaded.
       const ROOT_ABSTRACT = 'alice abstract';
       const ROOT_BODY = 'alice latest body, long enough that the patch of a small change is shorter than the full body it applies to.';
+      const ROOT_POST_BODY = `## Abstract\n\n${ROOT_ABSTRACT}\n\n---\n\n${ROOT_BODY}`;
 
       function rootLatestChain() {
         const comp = createComponent();
@@ -824,7 +825,7 @@ describe('editPage handleSubmit sanitization', () => {
           author: 'alice', permlink: 'p1',
           head_author: 'carol', head_permlink: 'cont-2',
           canonical_author: 'alice', canonical_permlink: 'p1',
-          body: `## Abstract\n\n${ROOT_ABSTRACT}\n\n---\n\n${ROOT_BODY}`,
+          body: ROOT_POST_BODY,
           json_metadata: { pevotest: { version: 5 } },
           title: 'Alice version',
           versions: [
@@ -835,7 +836,7 @@ describe('editPage handleSubmit sanitization', () => {
             { version_number: 5, author: 'alice', permlink: 'p1' },
           ],
         };
-        comp._originalBody = `## Abstract\n\n${ROOT_ABSTRACT}\n\n---\n\n${ROOT_BODY}`;
+        comp._originalBody = ROOT_POST_BODY;
         comp.title = 'Alice version';
         comp.abstract = ROOT_ABSTRACT;
         comp.body = ROOT_BODY;
@@ -867,7 +868,7 @@ describe('editPage handleSubmit sanitization', () => {
           .toEqual({ author: 'bob', permlink: 'cont-1' });
         // The served body is p1's, and a patch would be applied to cont-2's
         // own, so the unchanged body goes out whole.
-        expect(commentOp[1].body).toBe(`## Abstract\n\n${ROOT_ABSTRACT}\n\n---\n\n${ROOT_BODY}`);
+        expect(commentOp[1].body).toBe(ROOT_POST_BODY);
       });
 
       it('a changed body is sent whole, not as a patch', async () => {
@@ -879,7 +880,7 @@ describe('editPage handleSubmit sanitization', () => {
         expect(comp.step).toBe('success');
         const commentOp = broadcastOps.mock.calls[0][1][0];
         expect(commentOp[1].permlink).toBe('cont-2');
-        expect(commentOp[1].body).toBe(`## Abstract\n\n${ROOT_ABSTRACT}\n\n---\n\n${ROOT_BODY} CAROL`);
+        expect(commentOp[1].body).toBe(`${ROOT_POST_BODY} CAROL`);
       });
     });
 
