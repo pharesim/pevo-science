@@ -511,8 +511,8 @@ describe('accreditationVerifyPage', () => {
     // Network-layer errors (`TypeError` from fetch failure, `TimeoutError`
     // from the 30s timeout in `api.js`, `AbortError`) never reach `ApiRequestError`
     // — `api.js` constructs `ApiRequestError` from the response body, so a
-    // fetch that never produces a response throws raw. None carries
-    // `.code`/`.details`, so without an explicit branch they would fall
+    // fetch that never produces a response throws raw. Without an
+    // explicit branch they would fall
     // through to the generic `'error'` state with the Request New CTA and
     // burn a 3/24h `/api/accreditation/request` slot when a retry of the
     // same link can still succeed. The network-error branch routes them to the Retry CTA instead,

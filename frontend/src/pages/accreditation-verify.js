@@ -248,8 +248,8 @@ export function initAccreditationVerifyPage() {
     // constructs `ApiRequestError` from the response body, so a fetch
     // that never produces a response throws raw `TypeError` (offline /
     // DNS / connection refused / CORS), `TimeoutError` (the timeout in
-    // api.js) or `AbortError`. None carries `.code`/`.details`, so
-    // `_isRetriable` is blind to them. Without this branch the user
+    // api.js) or `AbortError`. `_isRetriable` is blind to them. Without
+    // this branch the user
     // would burn one of their 3/24h `/api/accreditation/request` slots
     // clicking "Request New" when a retry of the same link can still
     // succeed.
