@@ -9,6 +9,7 @@ severity: medium
 applies_when:
   - "Reading the latest matching row from operation_custom_json_view with ORDER BY block_num DESC LIMIT n"
   - "The WHERE predicates can select a sparse or empty match set (e.g. a custom_id whose op may not exist on chain yet)"
+  - "Reading the latest op for one account or ORCID, even when matches exist (a subject with a single matching op still walks the whole blocks index)"
   - "Any HAF view where block_num is a function over the operation id (hafd.operation_id_to_block_num) rather than a stored column"
   - "A short statement_timeout silently degrades the result to a hardcoded default when the query is slow"
 root_cause: missing_index
@@ -123,25 +124,30 @@ Apply when **all** of these hold:
   `block_num` via a function rather than storing it).
 - The query uses `ORDER BY block_num DESC LIMIT n`.
 - The match set can be **sparse or empty** — the `WHERE` predicates select rows
-  that may not exist yet or exist only rarely.
+  that may not exist yet or exist only rarely — or a matching subject can have a
+  single matching op. Per-account and per-ORCID latest-op reads qualify.
 
-Do **not** reach for the fence when:
+Do **not** reach for the fence when the ordering is a window function,
+`ROW_NUMBER() OVER (... ORDER BY block_num DESC)`. The set is gathered first and
+ordered within it, so the pathological backward scan does not arise the same way.
 
-- The query is also filtered on a Hive **account** column *and that account
-  reliably has matching ops*. The real safety criterion is a **non-empty** match
-  set, not the account filter itself: a selective filter that usually returns rows
-  lets the backward scan find its row and stop early. A filter over an account
-  with zero or near-zero matching ops is just as sparse as the `update_params`
-  case and can hit the same pathology — prefer the fence there too.
-- The ordering is a window function, `ROW_NUMBER() OVER (... ORDER BY block_num
-  DESC)`. The set is gathered first and ordered within it, so the pathological
-  backward scan does not arise the same way.
-- The match set is reliably non-empty (a well-established `custom_id` with many
-  ops). The nested-loop probe terminates early and the fence only adds overhead.
+**A non-empty match set does not make the unfenced form safe.** Measured on
+2026-10-06 with `EXPLAIN ANALYZE` on the account- and ORCID-filtered accreditation
+lookups (authority-signed `accredit`/`revoke` ops): the unfenced plan walks the
+blocks index backward from the head even when the subject has matches. For a
+subject with three matching ops, the newest about 564k blocks below the head, it
+read 564,212 block rows in 259 ms. For a subject with one matching op it read
+110,548,040 rows, the whole index, in 26.2 s. Wall-clock for the other single-op
+accounts was 12 to 14 s per lookup. So a selective filter that returns a row is
+not a reason to skip the fence; the cost depends on how old the matches are and
+whether more than one exists. The fenced form ran in 0.2 to 18 ms on matching and
+non-matching inputs for all of these lookups and returned identical rows.
 
-Only the `loadWotThreshold` case was verified empirically against live HAF. Treat
-the guidance as confirmed for the sparse/empty `DESC + LIMIT` pattern; use judgment
-for other shapes and EXPLAIN before generalizing.
+The fence is verified on live HAF for `loadWotThreshold` and, on 2026-10-06, for
+`findCustodyBroadcastByIdempotencyKey` (custom_json arm),
+`findAccreditationBroadcastByIdempotencyKey`, `findExistingAccreditation`,
+`getLatestAccreditOp`, both reads in `findAccreditedAccountWithOrcid`, and
+`getExistingAccreditation`. For other shapes, EXPLAIN before generalizing.
 
 **Verification methodology** (for anyone re-confirming): the HAF node has no `psql`
 binary available, and pgbouncer rejects a `statement_timeout` startup parameter.
@@ -162,14 +168,16 @@ WHERE custom_id = $1
 ORDER BY block_num DESC LIMIT 1
 
 -- After: materialization fence (~15ms; blocks index scan never executed).
+-- Current code also projects id and breaks same-block ties on it (custom_json Rule 2).
 WITH candidates AS MATERIALIZED (
-  SELECT json, block_num FROM operation_custom_json_view
+  SELECT json, block_num, id FROM operation_custom_json_view
   WHERE custom_id = $1
     AND json::jsonb ->> 'action' = 'update_params'
     AND required_posting_auths ?| $2::text[]
 )
 SELECT json FROM candidates
-ORDER BY block_num DESC LIMIT 1
+ORDER BY block_num DESC, id DESC
+LIMIT 1
 ```
 
 `backend/tests/wot-threshold-signer-gate.test.ts` — the SQL-shape canary that pins
@@ -177,10 +185,11 @@ the fence (captures the SQL the query issues through a stubbed pool and asserts 
 keyword is present):
 
 ```ts
-it('wraps the row match in an AS MATERIALIZED CTE', async () => {
+it('wraps the row match in an AS MATERIALIZED CTE and orders by the (block_num, id) tiebreaker', async () => {
   stubSelect([{ json: JSON.stringify({ action: 'update_params', params: { min_accreditations_for_wot: 5 } }) }]);
   await getWotThreshold();
   expect(capturedSql).toMatch(/\bAS\s+MATERIALIZED\b/i);
+  expect(capturedSql).toMatch(/ORDER\s+BY\s+block_num\s+DESC\s*,\s*id\s+DESC/i);
 });
 ```
 

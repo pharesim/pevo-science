@@ -42,24 +42,29 @@ Sibling read sites that already encode the correct pattern:
 Any HAF query that answers "is this account currently accredited?" must use latest-action-wins semantics over both action values:
 
 1. The `WHERE` clause must match both action values: `cj.json::jsonb ->> 'action' IN ('accredit','revoke')`. Never filter to only `'accredit'` in a state-read query.
-2. Order by block number descending, then HAF op id descending as the tiebreaker per `hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md` Rule 2: `ORDER BY cj.block_num DESC, cj.id DESC`.
+2. Order by block number descending, then HAF op id descending as the tiebreaker per `hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md` Rule 2: `ORDER BY block_num DESC, id DESC`, applied outside the `AS MATERIALIZED` candidate CTE (see `haf-custom-json-latest-op-materialized-fence-2026-06-14.md`).
 3. Fetch exactly one row: `LIMIT 1`.
 4. The caller inspects the returned row's `action` field. `'accredit'` means currently accredited. `'revoke'` means not currently accredited. No row means never accredited.
 
-Canonical SQL pattern (using the project's `T.customJson` view alias and the `hafsql.haf_operations` join required for `trx_id` recovery):
+Canonical SQL pattern, as `findExistingAccreditation` runs it (the project's `T.customJson` view alias, and the `hafsql.haf_operations` join for `included_trx_id`, the transaction id):
 
 ```sql
-SELECT op.trx_id, cj.block_num, cj.json::jsonb ->> 'action' AS action
-FROM ${T.customJson} cj
-JOIN hafsql.haf_operations op ON op.id = cj.id
-WHERE cj.custom_id = $1                                         -- ${config.appTag} binding
-  AND cj.required_posting_auths ?| $2::text[]                   -- accreditationAuthorities (Rule 5)
-  AND cj.json::jsonb ->> 'action' IN ('accredit','revoke')      -- both actions, not just accredit
-  AND cj.json::jsonb ->> 'account' = $3                         -- target account
-  AND cj.block_num >= $4                                         -- genesis floor
-ORDER BY cj.block_num DESC, cj.id DESC                          -- latest wins (Rule 2)
+WITH candidates AS MATERIALIZED (
+  SELECT cj.id, cj.block_num, cj.json::jsonb ->> 'action' AS action
+  FROM ${T.customJson} cj
+  WHERE cj.custom_id = $1                                       -- ${config.appTag} binding
+    AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')   -- both actions, not just accredit
+    AND cj.json::jsonb ->> 'account' = $2                       -- target account
+    AND cj.required_posting_auths ?| $3::text[]                 -- accreditationAuthorities (Rule 5)
+)
+SELECT op.included_trx_id AS trx_id, c.block_num, c.action
+FROM candidates c
+JOIN hafsql.haf_operations op ON op.id = c.id
+ORDER BY c.block_num DESC, c.id DESC                            -- latest wins (Rule 2)
 LIMIT 1
 ```
+
+Two shape rules come from the view, not from latest-action-wins. Keep the row match inside the `AS MATERIALIZED` CTE: unfenced, `ORDER BY block_num DESC LIMIT 1` walks the blocks index backward. Add no `block_num >=` floor: `pevo/no-custom-id-block-num-floor` bans it on this view.
 
 Caller-side branching:
 
@@ -110,29 +115,17 @@ LIMIT 1
 
 A revoked account still has an older `accredit` op in the chain. This query finds it and incorrectly reports the account as accredited.
 
-**RIGHT — latest-action-wins over both action values:**
-
-```sql
-SELECT op.trx_id, cj.block_num, cj.json::jsonb ->> 'action' AS action
-FROM ${T.customJson} cj
-JOIN hafsql.haf_operations op ON op.id = cj.id
-WHERE cj.custom_id = $1
-  AND cj.required_posting_auths ?| $2::text[]
-  AND cj.json::jsonb ->> 'action' IN ('accredit','revoke')  -- include both
-  AND cj.json::jsonb ->> 'account' = $3
-  AND cj.block_num >= $4
-ORDER BY cj.block_num DESC, cj.id DESC
-LIMIT 1
-```
+**RIGHT — latest-action-wins over both action values:** the canonical pattern in Guidance, with `action IN ('accredit', 'revoke')` inside the candidate CTE.
 
 ```typescript
-// Caller (backend/src/routes/accreditation.ts, /verify gate):
-const row = await findExistingAccreditation(pool, hiveUsername);
-if (row && row.action === 'accredit') {
-  return sendOk(res, { message: 'Accreditation confirmed', username: hiveUsername,
-                       tx_id: row.tx_id, outcome: 'already_accredited' });
+// Caller (backend/src/routes/accreditation.ts, /verify gate). The helper applies
+// latest-action-wins itself and returns null when the latest op is a revoke.
+const existingForUser = await findExistingAccreditation(hafPool, pending.hive_username);
+if (existingForUser) {
+  return sendOk(res, { message: 'Accreditation confirmed', username: pending.hive_username,
+                       tx_id: existingForUser.tx_id, outcome: 'already_accredited' });
 }
-// row is null OR row.action === 'revoke' — fall through to per-token check + broadcast
+// null: never accredited, or the latest op is a revoke. Fall through to the per-token check + broadcast.
 ```
 
 **ALSO RIGHT (for contrast) — per-token idempotency dedup, strict equality is correct here:**
@@ -141,15 +134,18 @@ if (row && row.action === 'accredit') {
 -- findAccreditationBroadcastByIdempotencyKey
 -- Key is sha256(token:username); the key space has no revoke concept.
 -- Strict equality on action='accredit' is correct; do NOT "fix" this query.
-SELECT op.trx_id, cj.block_num
-FROM ${T.customJson} cj
-JOIN hafsql.haf_operations op ON op.id = cj.id
-WHERE cj.custom_id = $1
-  AND cj.required_posting_auths ?| $2::text[]
-  AND cj.json::jsonb ->> 'action' = 'accredit'
-  AND cj.json::jsonb ->> 'idempotency_key' = $3
-  AND cj.block_num >= $4
-ORDER BY cj.block_num DESC, cj.id DESC
+WITH candidates AS MATERIALIZED (
+  SELECT cj.id, cj.block_num
+  FROM ${T.customJson} cj
+  WHERE cj.custom_id = $1
+    AND cj.json::jsonb ->> 'action' = 'accredit'
+    AND (cj.json::jsonb ->> 'idempotency_key') = $2
+    AND cj.required_posting_auths ?| $3::text[]
+)
+SELECT op.included_trx_id AS trx_id, c.block_num
+FROM candidates c
+JOIN hafsql.haf_operations op ON op.id = c.id
+ORDER BY c.block_num DESC, c.id DESC
 LIMIT 1
 ```
 
