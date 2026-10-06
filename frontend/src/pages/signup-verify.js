@@ -252,6 +252,21 @@ const template = `
             <button @click="navigate('/login')" class="btn-primary" x-text="$t('seedPhrase.broadcastPendingLogin')"></button>
           </div>
 
+          <!-- Finalize refused accreditation: the account exists and can sign
+               in, unaccredited, with no session from this page -->
+          <div x-show="phase === 'unaccredited'" class="text-center py-16">
+            <div class="w-16 h-16 bg-pevo-teal/10 rounded-full flex items-center justify-center mx-auto mb-6">
+              <svg class="w-8 h-8 text-pevo-teal" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            </div>
+            <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t('seedPhrase.unaccreditedTitle')"></h2>
+            <p class="text-ink-muted mb-3" x-text="$t(unaccreditedReasonKey, { account: '@' + boundTo })"></p>
+            <p class="text-ink-muted mb-6" x-text="$t('seedPhrase.unaccreditedSignIn')"></p>
+            <div class="flex gap-3 justify-center">
+              <a :href="$lp('/login')" @click.prevent="navigate('/login')" class="btn-primary no-underline" x-text="$t('signIn.signInButton')"></a>
+              <a :href="$lp('/contact')" @click.prevent="navigate('/contact')" class="btn-secondary no-underline" x-text="$t('contact.title')"></a>
+            </div>
+          </div>
+
           <!-- Done -->
           <div x-show="phase === 'done'" class="text-center py-16">
             <div class="w-16 h-16 bg-pevo-green/10 rounded-full flex items-center justify-center mx-auto mb-6">
@@ -291,9 +306,14 @@ function isValidUsername(u) {
 export function initSignupVerifyPage() {
   Alpine.data('signupVerifyPage', () => ({
     ...createTimerGuard(),
-    // Phases: 'password' | 'choose' | 'create-seed' | 'create-confirm' | 'create-username' | 'create-submitting' | 'link-keychain' | 'broadcast-pending' | 'done' | 'error'
+    // Phases: 'password' | 'choose' | 'create-seed' | 'create-confirm' | 'create-username' | 'create-submitting' | 'link-keychain' | 'broadcast-pending' | 'unaccredited' | 'done' | 'error'
     phase: 'password',
     error: null,
+
+    // The unaccredited phase: the i18n key saying why finalize refused the
+    // accreditation, and the account a MAILBOX_ALREADY_BOUND answer names.
+    unaccreditedReasonKey: '',
+    boundTo: '',
 
     // i18n keys rendered by the broadcast-pending phase. Default to the
     // give-it-a-moment-to-sync copy (BROADCAST_TIMEOUT + POST_BROADCAST_FAILED
@@ -386,10 +406,7 @@ export function initSignupVerifyPage() {
       // / confirmAccount / linkExistingAccount continuations bail before
       // touching reactive state. Also clears the debounce username timer.
       this._teardownTimers();
-      if (this._usernameTimer) {
-        clearTimeout(this._usernameTimer);
-        this._usernameTimer = null;
-      }
+      this._clearUsernameTimer();
     },
 
     async handleVerify() {
@@ -540,6 +557,7 @@ export function initSignupVerifyPage() {
         // is already finalized, so do not bounce to the username entry phase or
         // imply creation failed. See _handleAmbiguousBroadcastOutcome.
         if (this._handleAmbiguousBroadcastOutcome(err)) return;
+        if (this._handleFinalizeRefusal(err)) return;
         // Sanitization pattern (see executeUpgrade() in settings.js). The
         // create-account path derives keys from the BIP39 mnemonic, so
         // surfacing raw err.message risks leaking key-adjacent material
@@ -591,14 +609,7 @@ export function initSignupVerifyPage() {
         return false;
       }
 
-      // Leaving the username-entry flow: clear the debounce timer so a stale
-      // _checkUsername dhive call cannot fire ~400ms after the phase transition.
-      // Mirrors destroy(). The link path never arms the timer, so this is a
-      // harmless no-op there.
-      if (this._usernameTimer) {
-        clearTimeout(this._usernameTimer);
-        this._usernameTimer = null;
-      }
+      this._clearUsernameTimer();
 
       this.broadcastPendingTitleKey = operatorRequired
         ? 'seedPhrase.broadcastOperatorTitle'
@@ -609,6 +620,43 @@ export function initSignupVerifyPage() {
 
       this.phase = 'broadcast-pending';
       return true;
+    },
+
+    // Finalize answers that refuse the accreditation once the account is
+    // finalized: the account exists and can sign in, unaccredited, and the
+    // answer carries no session, so neither the entry phase nor a new signup
+    // helps. Returns true when it handled the error.
+    _handleFinalizeRefusal(err) {
+      const code = err?.code;
+      const boundTo = err?.details?.bound_to || '';
+      let reasonKey;
+      if (code === 'MAILBOX_ALREADY_BOUND') {
+        reasonKey = boundTo
+          ? 'seedPhrase.unaccreditedMailboxBound'
+          : 'seedPhrase.unaccreditedMailboxBoundUnnamed';
+      } else if (code === 'ORCID_ALREADY_LINKED') {
+        reasonKey = 'seedPhrase.unaccreditedOrcidLinked';
+      } else if (code === 'ACCREDITATION_SANCTIONED') {
+        reasonKey = 'seedPhrase.unaccreditedSanctioned';
+      } else {
+        return false;
+      }
+
+      this._clearUsernameTimer();
+      this.boundTo = boundTo;
+      this.unaccreditedReasonKey = reasonKey;
+      this.phase = 'unaccredited';
+      return true;
+    },
+
+    // Leaving the username-entry flow: clear the debounce timer so a stale
+    // _checkUsername dhive call cannot fire ~400ms after the phase transition.
+    // The link path never arms the timer, so this is a harmless no-op there.
+    _clearUsernameTimer() {
+      if (this._usernameTimer) {
+        clearTimeout(this._usernameTimer);
+        this._usernameTimer = null;
+      }
     },
 
     // ─── Link flow ─────────────────────────────────────────────
@@ -654,6 +702,7 @@ export function initSignupVerifyPage() {
         // is already activated, so do not imply the link failed. See
         // _handleAmbiguousBroadcastOutcome.
         if (this._handleAmbiguousBroadcastOutcome(err)) return;
+        if (this._handleFinalizeRefusal(err)) return;
         // Sanitization pattern (see executeUpgrade() in settings.js).
         console.warn('[signup verify link account]', err);
         this.error = this.$t('seedPhrase.linkAccountFailed');

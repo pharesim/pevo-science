@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import enMessages from '../../public/messages/en.json';
 
 const mockVerifyAccreditation = vi.fn();
 
@@ -23,7 +24,9 @@ vi.mock('alpinejs', () => ({
 }));
 
 import Alpine from 'alpinejs';
-import { initAccreditationVerifyPage } from '../../src/pages/accreditation-verify.js';
+import { initAccreditationVerifyPage, accreditationVerifyPageTemplate } from '../../src/pages/accreditation-verify.js';
+
+const resolves = (key) => typeof key.split('.').reduce((node, part) => node?.[part], enMessages) === 'string';
 
 function createComponent() {
   initAccreditationVerifyPage();
@@ -202,6 +205,68 @@ describe('accreditationVerifyPage', () => {
       expect(mockToastStore.show).toHaveBeenCalledWith('common.connectionFailed', 'error');
       expect(comp.state).toBe('signin');
       warnSpy.mockRestore();
+    });
+  });
+
+  // Answers a new accreditation request cannot change: the page shows why and
+  // offers the contact page, never the "Request New Accreditation" link.
+  describe('refusals a new request cannot fix', () => {
+    function stateBlock(state) {
+      const start = accreditationVerifyPageTemplate.indexOf(`x-if="state === '${state}'"`);
+      expect(start).toBeGreaterThan(-1);
+      return accreditationVerifyPageTemplate.slice(start, accreditationVerifyPageTemplate.indexOf('</template>', start));
+    }
+
+    it('MAILBOX_ALREADY_BOUND shows the bound-mailbox state naming the holding account', async () => {
+      mockVerifyAccreditation.mockRejectedValue(
+        makeApiError('MAILBOX_ALREADY_BOUND', { details: { bound_to: 'olderaccount' } }),
+      );
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.init();
+
+      await vi.waitFor(() => expect(comp.state).toBe('mailbox_bound'));
+      expect(comp.boundTo).toBe('olderaccount');
+      warnSpy.mockRestore();
+    });
+
+    it('MAILBOX_ALREADY_BOUND without details.bound_to shows the state without a name', async () => {
+      mockVerifyAccreditation.mockRejectedValue(makeApiError('MAILBOX_ALREADY_BOUND'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.init();
+
+      await vi.waitFor(() => expect(comp.state).toBe('mailbox_bound'));
+      expect(comp.boundTo).toBe('');
+      warnSpy.mockRestore();
+    });
+
+    it('ACCREDITATION_SANCTIONED shows the sanctioned state', async () => {
+      mockVerifyAccreditation.mockRejectedValue(makeApiError('ACCREDITATION_SANCTIONED'));
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const comp = createComponent();
+      comp.init();
+
+      await vi.waitFor(() => expect(comp.state).toBe('sanctioned'));
+      warnSpy.mockRestore();
+    });
+
+    it('the bound-mailbox state names the account only when the answer carries it', () => {
+      const block = stateBlock('mailbox_bound');
+      expect(block).toContain("boundTo ? $t('verify.mailboxBoundMessage', { account: '@' + boundTo }) : $t('verify.mailboxBoundMessageUnnamed')");
+    });
+
+    it.each(['mailbox_bound', 'sanctioned'])('the %s state links to the contact page and not to a new request', (state) => {
+      const block = stateBlock(state);
+      expect(block).toContain("navigate('/contact')");
+      expect(block).not.toContain('verify.requestNew');
+      expect(block).not.toContain('/accreditation');
+    });
+
+    it('every string the template names resolves in en.json', () => {
+      const keys = [...accreditationVerifyPageTemplate.matchAll(/\$t\('([^']+)'/g)].map((m) => m[1]);
+      expect(keys).toEqual(expect.arrayContaining(['verify.mailboxBoundTitle', 'verify.sanctionedTitle']));
+      expect(keys.filter((key) => !resolves(key))).toEqual([]);
     });
   });
 
@@ -469,15 +534,32 @@ describe('accreditationVerifyPage', () => {
         return e;
       }
       function makeAbortError() {
-        // `AbortSignal.timeout()` rejects with a `DOMException` whose
-        // `name === 'AbortError'`. jsdom has DOMException; if a future
-        // runtime omits it the discriminator still matches a plain
-        // `Error` with `name = 'AbortError'`, so synthesize the simplest
-        // shape the discriminator must accept.
         const e = new Error('The operation was aborted');
         e.name = 'AbortError';
         return e;
       }
+      // The 30s timeout in api.js is `AbortSignal.timeout()`, whose expiry
+      // rejects the fetch with a `DOMException` named `TimeoutError`.
+      function makeTimeoutError() {
+        return new DOMException('The operation timed out.', 'TimeoutError');
+      }
+
+      it('TimeoutError routes to retriable_error with networkUnavailable copy and 5s cooldown', async () => {
+        vi.useFakeTimers();
+        try {
+          mockVerifyAccreditation.mockRejectedValue(makeTimeoutError());
+          const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+          const comp = createComponent();
+          comp.init();
+
+          await vi.waitFor(() => expect(comp.state).toBe('retriable_error'));
+          expect(comp.errorMessage).toBe('verify.networkUnavailable');
+          expect(comp.retryCooldownRemaining).toBe(5);
+          warnSpy.mockRestore();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
 
       it('TypeError routes to retriable_error with networkUnavailable copy and 0s cooldown', async () => {
         mockVerifyAccreditation.mockRejectedValue(makeTypeError());
@@ -502,10 +584,8 @@ describe('accreditationVerifyPage', () => {
 
           await vi.waitFor(() => expect(comp.state).toBe('retriable_error'));
           expect(comp.errorMessage).toBe('verify.networkUnavailable');
-          // AbortError = fetch timed out: 5s fixed cooldown so the backend
-          // has time to recover before the next attempt re-arms the 30s
-          // timeout. Pin the cooldown initial value and one decrement to
-          // confirm it shares the existing _tickCooldown machinery.
+          // Pin the cooldown initial value and one decrement to confirm it
+          // shares the existing _tickCooldown machinery.
           expect(comp.retryCooldownRemaining).toBe(5);
           await vi.advanceTimersByTimeAsync(1000);
           expect(comp.retryCooldownRemaining).toBe(4);

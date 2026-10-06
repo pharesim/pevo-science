@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import enMessages from '../../public/messages/en.json';
 
 const mockRequestAccreditation = vi.fn();
 const mockStartOrcid = vi.fn();
@@ -379,5 +380,23 @@ describe('accreditationPage', () => {
       win.fire('pageshow', { persisted: true });
       expect(comp.orcidLoading).toBe(true);
     });
+  });
+});
+
+// The purpose of keeping the address, and the right to object, stated before
+// the address is submitted.
+describe('email field purpose notice', () => {
+  const field = accreditationPageTemplate.slice(accreditationPageTemplate.indexOf('id="email"'));
+  const block = field.slice(0, field.indexOf('</div>'));
+
+  it('sits under the email field and links the objection to the contact page', () => {
+    expect(block).toContain("$t('common.mailboxPurpose')");
+    expect(block).toContain("$t('common.mailboxPurposeObject')");
+    expect(block).toContain("navigate('/contact')");
+  });
+
+  it('resolves both strings in en.json', () => {
+    expect(typeof enMessages.common.mailboxPurpose).toBe('string');
+    expect(typeof enMessages.common.mailboxPurposeObject).toBe('string');
   });
 });

@@ -448,7 +448,12 @@
     "signInTitle": "Sign in to confirm your accreditation",
     "signInMessage": "This link works only while you are signed in as the account that requested the accreditation. Sign in as that account to continue.",
     "mismatchTitle": "Signed in as a different account",
-    "mismatchMessage": "This verification link belongs to a different account. Sign in as that account and open the link again."
+    "mismatchMessage": "This verification link belongs to a different account. Sign in as that account and open the link again.",
+    "mailboxBoundTitle": "This email address is already in use",
+    "mailboxBoundMessage": "This email address is already linked to the accredited account {account}, and an address can be linked to only one accredited account. To use it for this account, sign in as {account} and release its accreditation, then open this link again. You can also contact PEvO.",
+    "mailboxBoundMessageUnnamed": "This email address is already linked to another accredited account, and an address can be linked to only one accredited account. To use it for this account, sign in to that account and release its accreditation, then open this link again. You can also contact PEvO.",
+    "sanctionedTitle": "This account cannot be accredited",
+    "sanctionedMessage": "This account is not eligible for accreditation at this time. If you believe this is an error, contact PEvO."
   },
   "about": {
     "title": "O PEvO",
@@ -798,7 +803,9 @@
     "goToPapers": "Przejdź do artykułów",
     "confirm": "Confirm",
     "uploadCancelled": "Upload cancelled.",
-    "reauthPromptOpen": "Finish the confirmation already open, then try again."
+    "reauthPromptOpen": "Finish the confirmation already open, then try again.",
+    "mailboxPurpose": "This address is used to verify your institutional affiliation and, to prevent abuse (our legitimate interest), to keep one accredited account per address: once it accredits an account, a keyed hash of it is stored for that purpose.",
+    "mailboxPurposeObject": "You can object to this."
   },
   "reauth": {
     "title": "Confirm your password",
@@ -1021,7 +1028,13 @@
     "broadcastPendingDescription": "This can take a moment. Your account is set up. Log in shortly to check your accreditation status.",
     "broadcastOperatorTitle": "Account set up",
     "broadcastOperatorDescription": "Your account is ready and your accreditation is recorded. A follow-up step needs manual attention. Please contact support if your accreditation does not appear after you log in.",
-    "broadcastPendingLogin": "Go to login"
+    "broadcastPendingLogin": "Go to login",
+    "unaccreditedTitle": "Account created, but not accredited",
+    "unaccreditedMailboxBound": "This email address is already linked to the accredited account {account}, and an address can be linked to only one accredited account. To use it for this account, sign in as {account} and release its accreditation, then request accreditation from this account.",
+    "unaccreditedMailboxBoundUnnamed": "This email address is already linked to another accredited account, and an address can be linked to only one accredited account. To use it for this account, sign in to that account and release its accreditation, then request accreditation from this account.",
+    "unaccreditedOrcidLinked": "Your ORCID iD is already linked to another accredited account.",
+    "unaccreditedSanctioned": "This account is not eligible for accreditation at this time.",
+    "unaccreditedSignIn": "Your account was created and you can sign in to it now. If you need help, contact PEvO."
   },
   "confirm": {
     "publishTitle": "Opublikuj artykuł",

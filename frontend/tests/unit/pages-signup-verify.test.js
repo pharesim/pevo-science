@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import enMessages from '../../public/messages/en.json';
 import { mockLoginFromResponse } from './fixtures/mock-auth.js';
 
 const mockVerifyEmail = vi.fn();
@@ -58,7 +59,9 @@ vi.mock('alpinejs', () => ({
 }));
 
 import Alpine from 'alpinejs';
-import { initSignupVerifyPage } from '../../src/pages/signup-verify.js';
+import { initSignupVerifyPage, signupVerifyPageTemplate } from '../../src/pages/signup-verify.js';
+
+const resolves = (key) => typeof key.split('.').reduce((node, part) => node?.[part], enMessages) === 'string';
 
 function createComponent(query = {}) {
   mockRouterStore.query = query;
@@ -648,11 +651,18 @@ describe('signupVerifyPage', () => {
       warnSpy.mockRestore();
     });
 
-    // Discriminator guard: a coded-but-terminal error (cross-account durable
-    // binding 409) must still take the generic failure path + bounce, not the
-    // ambiguous affordance.
-    it('keeps terminal ORCID_ALREADY_LINKED on the generic failure path', async () => {
-      mockConfirmAccount.mockRejectedValue(codedError('ORCID_ALREADY_LINKED'));
+    // A finalize refusal arrives after the account was created: the page says
+    // so and offers sign-in, with no session and no way back to the username
+    // step.
+    it.each([
+      ['MAILBOX_ALREADY_BOUND', { bound_to: 'olderaccount' }, 'seedPhrase.unaccreditedMailboxBound', 'olderaccount'],
+      ['MAILBOX_ALREADY_BOUND', undefined, 'seedPhrase.unaccreditedMailboxBoundUnnamed', ''],
+      ['ORCID_ALREADY_LINKED', undefined, 'seedPhrase.unaccreditedOrcidLinked', ''],
+      ['ACCREDITATION_SANCTIONED', undefined, 'seedPhrase.unaccreditedSanctioned', ''],
+    ])('%s with details %o shows the created-but-unaccredited state', async (code, details, reasonKey, boundTo) => {
+      const err = codedError(code);
+      err.details = details;
+      mockConfirmAccount.mockRejectedValue(err);
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       const comp = createComponent();
@@ -663,10 +673,33 @@ describe('signupVerifyPage', () => {
 
       await comp.submitCreateAccount();
 
-      expect(comp.phase).toBe('create-username');
-      expect(comp.error).toBe('seedPhrase.createAccountFailed');
-      expect(warnSpy).toHaveBeenCalled();
+      expect(comp.phase).toBe('unaccredited');
+      expect(comp.unaccreditedReasonKey).toBe(reasonKey);
+      expect(comp.boundTo).toBe(boundTo);
+      expect(comp.error).toBeNull();
+      expect(comp.isSubmitting).toBe(false);
+      expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
       warnSpy.mockRestore();
+    });
+
+    it('clears the username debounce timer when routing to the created-but-unaccredited state', async () => {
+      mockConfirmAccount.mockRejectedValue(codedError('MAILBOX_ALREADY_BOUND'));
+      const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
+
+      const comp = createComponent();
+      enterChooseState(comp);
+      comp.chooseCreate();
+      comp.username = 'alice';
+      comp.usernameStatus = 'available';
+      const handle = setTimeout(() => {}, 100000);
+      comp._usernameTimer = handle;
+
+      await comp.submitCreateAccount();
+
+      expect(comp.phase).toBe('unaccredited');
+      expect(clearSpy).toHaveBeenCalledWith(handle);
+      expect(comp._usernameTimer).toBeNull();
+      clearSpy.mockRestore();
     });
 
     // Entering the affordance clears the username debounce timer so a stale
@@ -898,6 +931,56 @@ describe('signupVerifyPage', () => {
       expect(comp.broadcastPendingDescriptionKey).toBe('seedPhrase.broadcastOperatorDescription');
       expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
+    });
+
+    it('MAILBOX_ALREADY_BOUND on the link path shows the created-but-unaccredited state', async () => {
+      mockIsKeychainInstalled.mockReturnValue(true);
+      const err = codedError('MAILBOX_ALREADY_BOUND');
+      err.details = { bound_to: 'olderaccount' };
+      mockLinkExistingAccount.mockRejectedValue(err);
+
+      const comp = createComponent();
+      enterChooseState(comp);
+      comp.chooseLink();
+      comp.hiveUsername = 'Bob';
+
+      await comp.handleLinkAccount();
+
+      expect(comp.phase).toBe('unaccredited');
+      expect(comp.unaccreditedReasonKey).toBe('seedPhrase.unaccreditedMailboxBound');
+      expect(comp.boundTo).toBe('olderaccount');
+      expect(comp.error).toBeNull();
+      expect(comp.isSubmitting).toBe(false);
+      expect(mockAuthStore.loginFromResponse).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('created-but-unaccredited state', () => {
+    const start = signupVerifyPageTemplate.indexOf(`x-show="phase === 'unaccredited'"`);
+    const block = signupVerifyPageTemplate.slice(start, signupVerifyPageTemplate.indexOf('<!-- Done -->', start));
+
+    it('names the bound account only when the answer carries it', () => {
+      expect(start).toBeGreaterThan(-1);
+      expect(block).toContain("$t(unaccreditedReasonKey, { account: '@' + boundTo })");
+    });
+
+    it('links to sign-in and the contact page, never to a new signup', () => {
+      expect(block).toContain("navigate('/login')");
+      expect(block).toContain("navigate('/contact')");
+      expect(block).not.toContain('/signup');
+    });
+
+    it('every string the template names resolves in en.json', () => {
+      const keys = [...signupVerifyPageTemplate.matchAll(/\$t\('([^']+)'/g)].map((m) => m[1]);
+      expect(keys).toEqual(expect.arrayContaining(['seedPhrase.unaccreditedTitle', 'seedPhrase.unaccreditedSignIn']));
+      expect(keys.filter((key) => !resolves(key))).toEqual([]);
+      const reasonKeys = [
+        'seedPhrase.unaccreditedMailboxBound',
+        'seedPhrase.unaccreditedMailboxBoundUnnamed',
+        'seedPhrase.unaccreditedOrcidLinked',
+        'seedPhrase.unaccreditedSanctioned',
+      ];
+      expect(reasonKeys.filter((key) => !resolves(key))).toEqual([]);
     });
   });
 

@@ -159,6 +159,10 @@ const template = `
                 <label for="email" class="block text-sm font-medium text-ink mb-1" x-text="$t('accreditation.email')"></label>
                 <input id="email" type="email" class="select-control" :placeholder="$t('accreditation.emailPlaceholder')" x-model="email" required />
                 <p class="text-xs text-ink-muted mt-1" x-text="$t('accreditation.emailHint')"></p>
+                <p class="text-xs text-ink-muted mt-1">
+                  <span x-text="$t('common.mailboxPurpose')"></span>
+                  <a :href="$lp('/contact')" @click.prevent="navigate('/contact')" class="text-pevo-teal hover:underline" x-text="$t('common.mailboxPurposeObject')"></a>
+                </p>
               </div>
               <div class="pt-2 flex flex-col sm:flex-row gap-3">
                 <button type="submit" class="btn-primary" :disabled="!isConnected || isSubmitting || step === 'success'"

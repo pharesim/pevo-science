@@ -52,6 +52,26 @@ const template = `
             <p class="text-ink-muted" x-text="$t('verify.mismatchMessage')"></p>
           </div>
         </template>
+        <template x-if="state === 'mailbox_bound'">
+          <div>
+            <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-pevo-teal-light mb-6">
+              <svg class="h-8 w-8 text-pevo-teal" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd" /></svg>
+            </div>
+            <h1 class="text-2xl font-bold text-ink mb-2" x-text="$t('verify.mailboxBoundTitle')"></h1>
+            <p class="text-ink-muted mb-6" x-text="boundTo ? $t('verify.mailboxBoundMessage', { account: '@' + boundTo }) : $t('verify.mailboxBoundMessageUnnamed')"></p>
+            <a :href="$lp('/contact')" @click.prevent="navigate('/contact')" class="btn-secondary no-underline" x-text="$t('contact.title')"></a>
+          </div>
+        </template>
+        <template x-if="state === 'sanctioned'">
+          <div>
+            <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-pevo-teal-light mb-6">
+              <svg class="h-8 w-8 text-pevo-teal" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd" /></svg>
+            </div>
+            <h1 class="text-2xl font-bold text-ink mb-2" x-text="$t('verify.sanctionedTitle')"></h1>
+            <p class="text-ink-muted mb-6" x-text="$t('verify.sanctionedMessage')"></p>
+            <a :href="$lp('/contact')" @click.prevent="navigate('/contact')" class="btn-secondary no-underline" x-text="$t('contact.title')"></a>
+          </div>
+        </template>
         <template x-if="state === 'retriable_error'">
           <div>
             <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-pevo-teal-light mb-6">
@@ -86,8 +106,10 @@ export function initAccreditationVerifyPage() {
     // write to torn-down reactive state.
     ...createTimerGuard(),
 
-    state: 'loading', // loading | signin | mismatch | success | error | retriable_error
+    state: 'loading', // loading | signin | mismatch | mailbox_bound | sanctioned | success | error | retriable_error
     resultUsername: '',
+    // The account the mailbox already backs, from a MAILBOX_ALREADY_BOUND answer.
+    boundTo: '',
     errorMessage: '',
     retryCooldownRemaining: 0,
     // Token captured at init so Retry uses the same token the user received
@@ -184,13 +206,14 @@ export function initAccreditationVerifyPage() {
           if (this._isNetworkError(err)) {
             this.state = 'retriable_error';
             this.errorMessage = this.$t('verify.networkUnavailable');
-            // AbortError = fetch timed out (default 30s in api.js): backend
-            // may be slow but reachable; a fixed 5s cooldown gives it time
-            // to recover before the next attempt re-arms the timeout.
+            // TimeoutError = the 30s timeout in api.js fired: backend may
+            // be slow but reachable; a fixed 5s cooldown gives it time to
+            // recover before the next attempt re-arms the timeout.
+            // AbortError gets the same cooldown.
             // TypeError = network unreachable (offline, DNS fail, conn
             // refused): no benefit to waiting; the user retries when they
             // see connectivity restored, so allow immediate click.
-            const cooldown = err?.name === 'AbortError' ? 5 : 0;
+            const cooldown = err?.name === 'TypeError' ? 0 : 5;
             this._startCooldown(cooldown);
           } else if (SIGN_IN_CODES.includes(err?.code)) {
             // The auth store can take up a newer session another tab saved
@@ -200,6 +223,11 @@ export function initAccreditationVerifyPage() {
             else this.state = 'signin';
           } else if (err?.code === 'ACCREDITATION_ACCOUNT_MISMATCH') {
             this.state = 'mismatch';
+          } else if (err?.code === 'MAILBOX_ALREADY_BOUND') {
+            this.boundTo = err.details?.bound_to || '';
+            this.state = 'mailbox_bound';
+          } else if (err?.code === 'ACCREDITATION_SANCTIONED') {
+            this.state = 'sanctioned';
           } else if (this._isRetriable(err)) {
             this.state = 'retriable_error';
             this.errorMessage = this.$t('verify.serviceTemporarilyUnavailable');
@@ -219,14 +247,14 @@ export function initAccreditationVerifyPage() {
     // Network-layer errors never reach `ApiRequestError` — `api.js`
     // constructs `ApiRequestError` from the response body, so a fetch
     // that never produces a response throws raw `TypeError` (offline /
-    // DNS / connection refused / CORS) or raw `AbortError` (fetch
-    // timeout). Both carry no `.code`/`.details`, so `_isRetriable` is
-    // blind to them. Without this branch the user would burn one of
-    // their 3/24h `/api/accreditation/request` slots clicking "Request
-    // New" against a still-valid token — the backend was never reached,
-    // so the token was never consumed.
+    // DNS / connection refused / CORS), `TimeoutError` (the timeout in
+    // api.js) or `AbortError`. None carries `.code`/`.details`, so
+    // `_isRetriable` is blind to them. Without this branch the user
+    // would burn one of their 3/24h `/api/accreditation/request` slots
+    // clicking "Request New" when a retry of the same link can still
+    // succeed.
     _isNetworkError(err) {
-      return err?.name === 'TypeError' || err?.name === 'AbortError';
+      return err?.name === 'TypeError' || err?.name === 'TimeoutError' || err?.name === 'AbortError';
     },
 
     _startCooldown(seconds) {
