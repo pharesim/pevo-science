@@ -28,9 +28,9 @@ tags:
 
 PEvO's accreditation completion path (`recordAccreditationCompletion` in `backend/src/routes/accreditation.ts`) writes a grace-period record and cleans up the pending token atomically inside a single `redis.multi().set(...).del(...).exec()` pipeline. An inner try/catch around the `.exec()` emits `accreditation.verify.completion_record_pipeline_failed` and falls through to in-memory writes (`memoryAccreditationCompletions.set` + `memoryTokens.delete`) so a Redis flap mid-pipeline does not break the user-facing 200 envelope.
 
-During the round-3 review of `backend-verify-post-success-retry-idempotency`, the architect's hold-block specified an acceptance criterion for the pipeline-rejection spec that read: *"(c) issue a second /verify with the same token; assert 200 with cached envelope; assert broadcastJsonMock NOT re-invoked."* The implementer flagged in their round-3 signal that this acceptance was physically unachievable on healthy Redis. Without the `isRedisAvailable === false` flap precondition on the retry leg, a second call hits the surviving pending row through `getToken`'s Redis branch and re-broadcasts — the in-memory fallback never runs.
+During the review of the post-success retry idempotency work on `/verify`, the architect's hold-block specified an acceptance criterion for the pipeline-rejection spec that read: *"(c) issue a second /verify with the same token; assert 200 with cached envelope; assert broadcastJsonMock NOT re-invoked."* The implementer flagged in their signal that this acceptance was physically unachievable on healthy Redis. Without the `isRedisAvailable === false` flap precondition on the retry leg, a second call hits the surviving pending row through `getToken`'s Redis branch and re-broadcasts — the in-memory fallback never runs.
 
-The deviation was correctly absorbed at round-4 triage (the implementer added the flap spy and the architect accepted the deviation), but the underlying ioredis MULTI/EXEC semantic — *pipeline rejection unwinds every command, including the del* — is not stated in the code, not visible from `recordAccreditationCompletion`'s body alone, and not covered by adjacent conventions ([[chain-write-timeout-ambiguous-outcome-2026-04-22]] discusses Redis flap for DECR and `expire` failures but not MULTI atomicity; [[post-broadcast-grace-period-record-must-follow-permanent-rethrow-cleanup-2026-05-19]] covers ordering of the record write relative to permanent-rethrow cleanups but treats the MULTI as a single best-effort unit without examining the post-rejection state). This convention captures the mechanic and its three downstream consequences so future code, tests, and architect hold blocks can account for it.
+The deviation was accepted at triage (the implementer added the flap spy), but the underlying ioredis MULTI/EXEC semantic — *pipeline rejection unwinds every command, including the del* — is not stated in the code, not visible from `recordAccreditationCompletion`'s body alone, and not covered by adjacent conventions ([[chain-write-timeout-ambiguous-outcome-2026-04-22]] discusses Redis flap for DECR and `expire` failures but not MULTI atomicity; [[post-broadcast-grace-period-record-must-follow-permanent-rethrow-cleanup-2026-05-19]] covers ordering of the record write relative to permanent-rethrow cleanups but treats the MULTI as a single best-effort unit without examining the post-rejection state). This convention captures the mechanic and its three downstream consequences so future code, tests, and architect hold blocks can account for it.
 
 ## Guidance
 
@@ -41,23 +41,23 @@ When a `redis.multi()` pipeline includes a `del` and any command (or the whole p
 Canonical pipeline shape:
 
 ```typescript
-// backend/src/routes/accreditation.ts
+// backend/src/routes/accreditation.ts (recordAccreditationCompletion)
 try {
   await redis
     .multi()
-    .set(completionKey, JSON.stringify(envelope), 'EX', COMPLETION_TTL_SECS)
-    .del(pendingKey)   // does NOT run if the pipeline rejects
+    .set(accreditationCompletedKey(token), serialized, 'EX', ACCREDITATION_COMPLETED_TTL_SECONDS)
+    .del(`${config.appTag}:pending_accred:${token}`)   // does NOT run if the pipeline rejects
     .exec();
 } catch (pipelineErr) {
   logger.warn(
-    { err: pipelineErr, route, username, token_hash: hashTokenForLogs(token) },
-    'accreditation.verify.completion_record_pipeline_failed',
+    { event: 'accreditation.verify.completion_record_pipeline_failed', route, username, token_hash: hashTokenForLogs(token), err: pipelineErr },
+    'accreditation.verify completion-record Redis pipeline failed — falling through to in-memory fallback',
   );
-  // pendingKey is still alive in Redis here.
-  // Fall through to in-memory writes.
-  memoryAccreditationCompletions.set(token, { username, txId, expires_at });
-  memoryTokens.delete(token);
+  // The pending row is still alive in Redis here.
 }
+// In-memory writes run on every path, after the pipeline or its catch.
+memoryAccreditationCompletions.set(token, { record: payload, expires_at });
+memoryTokens.delete(token);
 ```
 
 A healthy-Redis retry against the same token will see the surviving pending row through `getToken`'s Redis branch and re-broadcast. The in-memory fallback only wins when `getToken`'s Redis branch is unreachable.
@@ -126,7 +126,7 @@ The incorrect form generates a round-trip in one of two failure modes: (1) the i
 
 Three failure modes follow from missing the MULTI rejection semantic:
 
-1. **Silent re-broadcast on healthy-Redis retry.** Pipeline rejection leaves `pendingKey` alive. If `/verify` runs again on healthy Redis before the 24h TTL expires, `getToken` finds the row, treats the operation as not-yet-complete, and re-broadcasts to the chain. In PEvO's current architecture the HAF idempotency gate and per-token dedup catch the duplicate at the rare intersection of pipeline-rejection-followed-by-healthy-Redis-retry, so the user-facing impact is contained — but the inner-catch fallback alone does not prevent re-broadcast in that window. (The architect-considered alternative of adding a best-effort `deleteToken(token)` to the inner catch would close the window, but was dismissed at round-4 triage as out-of-scope given the existing HAF backstop and PEvO's single-instance scale.)
+1. **Silent re-broadcast on healthy-Redis retry.** Pipeline rejection leaves `pendingKey` alive. If `/verify` runs again on healthy Redis before the 24h TTL expires, `getToken` finds the row, treats the operation as not-yet-complete, and re-broadcasts to the chain. In PEvO's current architecture the HAF idempotency gate and per-token dedup catch the duplicate at the rare intersection of pipeline-rejection-followed-by-healthy-Redis-retry, so the user-facing impact is contained — but the inner-catch fallback alone does not prevent re-broadcast in that window. (The architect-considered alternative of adding a best-effort `deleteToken(token)` to the inner catch would close the window, but was dismissed as out-of-scope given the existing HAF backstop and PEvO's single-instance scale.)
 
 2. **Test exercises the wrong path; regression class missed.** A spec that stubs the pipeline once and then issues a healthy-Redis retry achieves the 200-status assertion via re-broadcast, not via the in-memory fallback. The spec appears green; the regression-kill claim of the spec ("the in-memory fallback satisfies the retry") is false. A later change that removes the inner catch entirely would still let the test pass via re-broadcast.
 
@@ -142,16 +142,16 @@ Does NOT apply to pipelines that only `set` or only `get` (no `del`) — rejecti
 
 ## Examples
 
-**Before/after hold-block acceptance (real round-3 deviation):**
+**Before/after hold-block acceptance (a real deviation):**
 
-Before (round-3 architect prescription, post-condition only):
+Before (architect prescription, post-condition only):
 
 ```
 (c) issue a second /verify with same token; assert 200 with cached envelope;
     assert broadcastJsonMock NOT re-invoked.
 ```
 
-After (round-3 implementer correction, precondition named — accepted at round-4):
+After (implementer correction, precondition named, accepted at triage):
 
 ```
 (c) With isRedisAvailable returning false on the retry leg, issue a second
