@@ -81,3 +81,10 @@ sign-in state, and maps 403 `ACCREDITATION_ACCOUNT_MISMATCH` to a different-acco
 "Request New" button. The page matches on `err.code`, not on the status: the 401s
 `verifyHiveSignature` sends carry `UNAUTHORIZED` or `SESSION_INVALIDATED`, and the refusal in
 scope item 2 must carry exactly `ACCREDITATION_ACCOUNT_MISMATCH`.
+
+## Architect note (2026-10-06): key the `/verify` limiter by account
+
+From the review of `backend-accreditation-limiters-refund-work-already-done` (user decision, 2026-10-06). `accreditationVerifyLimiter` is keyed by IP (5 per minute) and now counts every outcome except a 503 or 504, including the 400 a junk token gets. A client that shares an IP with the user, such as another machine behind a campus NAT, can keep that IP at 429 by sending junk tokens. Once scope item 1 puts `verifyHiveSignature` ahead of the limiter, `req.hiveUsername` is set when the limiter runs. Two additions:
+
+- Scope 6. Key `accreditationVerifyLimiter` by account (`keyFn: byAccount`) and keep its window, max and refund set. The route-site comment above the `/verify` handler says the limiter is IP-keyed; narrow it. Specs that set `X-Forwarded-For` to get their own `/verify` bucket need their own account instead.
+- AC 7. Junk-token 400s from one account do not bring a different account on the same IP to 429.
