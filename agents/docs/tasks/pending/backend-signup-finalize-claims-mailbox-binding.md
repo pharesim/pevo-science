@@ -22,7 +22,12 @@ the accreditation page have no row at all, so their mailbox is invisible to `/si
    the shared module from `backend-mailbox-binding-registry`; when the key is live-bound to
    another account, answer exactly as a successful signup does and send the notice mail (the
    account that holds the mailbox and the ways through, in the same words whether or not that
-   account is sanctioned) instead of the verification link; create no row. The shared function
+   account is sanctioned) instead of the verification link. Create the same pending row an unbound
+   signup creates (amended by the architect with the user, 2026-10-06): with no row, a login with
+   the address and the chosen password answers 401 for a bound address and 409
+   `PENDING_UNVERIFIED` for an unbound one, which reveals the binding. Only the mail differs:
+   `POST /api/auth/resend-verification` for such a row sends the notice again, never a link, and
+   login and expiry answer as for any pending row. The shared function
    also refuses what `accreditationRequestSchema`'s email rule refuses, so the signup body's
    missing format check is closed on this path (the separate defect task covers the schema).
 2. **Finalize** (`broadcastAccreditationAndSeed` callers on `/confirm` and `/link`, email path):
@@ -54,7 +59,9 @@ After `backend-mailbox-binding-registry` (shared module and table) and
 ## Acceptance criteria
 
 1. A mailbox bound to Keychain account A: `/signup` with it answers like a normal signup, sends the
-   notice mail, creates no row, and no account is accredited.
+   notice mail, creates the same pending row an unbound signup creates, and no account is
+   accredited. A login with that address and the chosen password answers 409
+   `PENDING_UNVERIFIED`, as for an unbound address, and a resend sends the notice again.
 2. An email-path signup for an unbound mailbox ends `bound` to the new account; a second signup
    with a case or `+tag` variant hits criterion 1.
 3. Delete the light account's row; sign up again with the same mailbox: criterion 1 applies (the
