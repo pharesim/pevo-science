@@ -100,7 +100,7 @@ test('unaccredited user submits request and completes the verify callback', asyn
   await page.locator('input[x-model="email"]').fill(TEST_EMAIL);
   await page.locator('input[x-model="orcid"]').fill(TEST_ORCID);
 
-  await page.locator('form button[type="submit"]').click();
+  await page.locator('[x-data="accreditationPage"] form button[type="submit"]').click();
 
   const requestResp = await requestResponsePromise;
   expect(requestResp.status()).toBe(200);
@@ -131,7 +131,7 @@ test('unaccredited user submits request and completes the verify callback', asyn
 
   // Submit button is disabled in the success step so a repeat click
   // can't re-fire the request.
-  await expect(page.locator('form button[type="submit"]')).toBeDisabled();
+  await expect(page.locator('[x-data="accreditationPage"] form button[type="submit"]')).toBeDisabled();
 
   // ─── Stub POST /api/accreditation/verify ────────────────────────
   // The verify page auto-POSTs on init with the token from the URL.
