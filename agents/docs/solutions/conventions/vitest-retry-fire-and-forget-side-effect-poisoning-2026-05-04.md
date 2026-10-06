@@ -7,7 +7,7 @@ problem_type: convention
 component: testing_framework
 severity: high
 applies_when:
-  - "Vitest config sets `retry: > 0` (PEvO default: `retry: 1`)"
+  - "Vitest config sets `retry: > 0` (PEvO default: `retry: 3`)"
   - "Production code under test emits a fire-and-forget side effect (no `await`; `.catch(() => {})` swallows errors)"
   - "Test asserts the side-effect count via strict equality (`toBe(N)`, `toHaveLength(N)`)"
   - "Cleanup is scoped to `beforeAll` / `afterAll` only, not `beforeEach`"
@@ -28,7 +28,7 @@ tags:
 
 ## Context
 
-Integration tests in PEvO use a class-level setup pattern (`beforeAll` / `afterAll`) to seed and tear down test users — the right shape for expensive HAF-seeded state. The failure mode in this convention surfaces when a test additionally asserts the count of a **fire-and-forget side effect** (an audit row written via `logCustodyBroadcast(...).catch(() => {})` or similar non-awaited call), while `vitest.config.ts` carries `retry: 1`.
+Integration tests in PEvO use a class-level setup pattern (`beforeAll` / `afterAll`) to seed and tear down test users — the right shape for expensive HAF-seeded state. The failure mode in this convention surfaces when a test additionally asserts the count of a **fire-and-forget side effect** (an audit row written via `logCustodyBroadcast(...).catch(() => {})` or similar non-awaited call), while `vitest.config.ts` carries `retry: 3`.
 
 This combination is invisible in normal CI runs — the retry-poisoning only manifests when attempt #1 fails for *any* reason (a timing hiccup, an unrelated flake, a slow CI runner). At that point the retry runs the route a second time, the fire-and-forget side effect fires again, and the strict-equality assertion fails in a way that masks the original failure cause entirely.
 
@@ -40,7 +40,7 @@ The copy-paste vector is real: `backend/tests/routes/recover.test.ts:602-633` us
 
 1. Production code emits a fire-and-forget side effect (no `await`; microtask completes after response is sent). Example: `logCustodyBroadcast(username, 'upgrade_failure').catch(() => {})`.
 2. The test asserts the side-effect count via strict equality: `expect(auditRows.length).toBe(1)`.
-3. `vitest.config.ts` has `retry: > 0` (PEvO default: `retry: 1`).
+3. `vitest.config.ts` has `retry: > 0` (PEvO default: `retry: 3`).
 
 **Prescribed remedy: add a `beforeEach` reset that `DELETE`s the fire-and-forget rows for the seeded entities.** Scope the delete to the seeded usernames only — never wipe the whole table.
 
@@ -59,7 +59,7 @@ it('logs upgrade_failure on null hash', async () => {
   const res = await request(app).post('/api/custody/upgrade').send({ username, password });
   expect(res.status).toBe(401);
 
-  // DANGER: strict equality + fire-and-forget + retry: 1 = self-poisoning
+  // DANGER: strict equality + fire-and-forget + retry > 0 = self-poisoning
   const { rows: auditRows } = await pool.query(
     `SELECT * FROM custody_audit_log WHERE username = $1 AND operation_type = 'upgrade_failure'`,
     [username]
@@ -126,7 +126,7 @@ Add a `beforeEach` side-effect row reset when **all three** of the following are
 
 - The production code path under test writes a row via a fire-and-forget call (no `await`, `.catch(() => {})` or `.catch(noop)` swallows errors).
 - The test asserts the row count with strict equality (`toBe(N)` or `toHaveLength(N)`).
-- `vitest.config.ts` has `retry: 1` or higher (the PEvO project default).
+- `vitest.config.ts` has `retry: 1` or higher (the PEvO project default is `retry: 3`).
 
 The pattern is safe to omit when **any one** condition is absent:
 
