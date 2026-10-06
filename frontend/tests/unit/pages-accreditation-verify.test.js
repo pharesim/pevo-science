@@ -74,8 +74,7 @@ describe('accreditationVerifyPage', () => {
     expect(comp.resultUsername).toBe('alice');
   });
 
-  // The verification is accepted only from the session of the account that
-  // requested it, so the page never posts the token without a session.
+  // The page never posts the token without a session.
   describe('session requirement', () => {
     it('with no session, sends nothing and shows the sign-in state', () => {
       mockAuthStore.token = null;

@@ -171,7 +171,7 @@ test('unaccredited user submits request and completes the verify callback', asyn
 
   expect(capturedVerify, 'accreditation-verify route should fire').not.toBeNull();
   expect(capturedVerify.body).toEqual({ token: STUB_TOKEN });
-  // The verification is accepted only from the requesting account's session.
+  // The verify POST carries the session.
   expect(capturedVerify.headers.authorization).toBe(`Bearer ${token}`);
 
   // ─── UI reaches the confirmed state ─────────────────────────────
@@ -259,9 +259,8 @@ test('verify link opened without a session asks for sign-in, then posts with the
   expect(verifyRequests[0].headers.authorization).toBe(`Bearer ${token}`);
 });
 
-// A session of another account is refused with ACCREDITATION_ACCOUNT_MISMATCH.
-// The token stays usable, so the page says which account to sign in as and
-// offers no new request.
+// A 403 ACCREDITATION_ACCOUNT_MISMATCH answer shows the different-account
+// state, which offers no new request.
 test('verify link opened as a different account shows the different-account state', async ({
   page,
 }) => {
