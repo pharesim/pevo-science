@@ -1,3 +1,169 @@
+## The sign-in modal has no way to ORCID sign-in (archived 2026-10-06) — clean review; two signal follow-ups and two residual risks triaged
+
+### Architect archive note (2026-10-06)
+
+Full `/ce-code-review` of dbc81a26, 25f3823b, 0b47e5ae and 2b9eb770 (correctness, project-standards,
+testing, frontend races, in-process adversarial, learnings). Verdict: ready to merge, no findings at any
+severity; S1 to S3 and AC1 to AC3 met. The frontend unit suite at 2b9eb770, run in an isolated copy, gave
+92 files / 2165 tests, the claimed count; its one failure was the known absolute-cap flake in
+lib-fresh-auth-session-window, which passed 2 of 3 standalone re-runs. The testing reviewer re-planted the
+signal's nine mutants: all killed; navigate-before-cancel survives as the signal states.
+
+Dispositions (user approved "as recommended"):
+
+- Signal out-of-scope 1 (composer `destroy()` drops the pending 2 s draft save): filed as
+  `pending/ui-composer-destroy-drops-pending-draft-save.md` (normal).
+- Signal out-of-scope 2 (the `dbc81a26` commit body overclaims): dismissed; history is not rewritten and
+  `0b47e5ae` narrowed the source comment.
+- Residual 1 (from /review the link leaves an undrafted review, and ORCID login lands on /papers): note
+  appended to `blocked/ui-composer-surfaces-navigate-over-undrafted-work.md`; no new task.
+- Residual 2 (a second root inside a mode template would render nothing while the test stays green):
+  dismissed as preemptive test hardening; the shipped markup has one root per mode.
+
+Compound: no.
+
+**Owner:** ui
+**Created:** 2026-09-30
+**Priority:** high
+
+## Why
+
+The sign-in modal (`signInModal`, opened by the auth store's `connect()`)
+offers two options: email with password, and the browser extension. ORCID
+sign-in exists only on the `/login` page (`handleOrcidLogin`), and the modal
+links to sign-up and to the password reset, not to `/login`.
+
+A light account with no password can therefore not sign in from the modal.
+That was a minor gap while the modal only opened on the user's own click. It
+is now the surface a revoked session lands on: the auth store's
+`handleRevokedSession` tears the session down and opens this modal in place.
+One of the causes of that teardown produces exactly the account the modal
+cannot serve. A recovery through ORCID with no new password leaves the account
+passwordless and revokes every other session. On the other device the modal
+opens, email sign-in fails with the generic failure message because no
+password exists, the extension option does not apply to a light account, and
+nothing on screen points to ORCID.
+
+## Scope
+
+1. Give the modal's chooser a path to ORCID sign-in. Either an ORCID option
+   that starts the same flow `/login` starts, or a link to `/login`. Prefer
+   the option that does not leave the page when that is cheap, since the
+   revoked-session teardown stays in place to keep unsaved work. If the ORCID
+   round-trip leaves the page anyway, a link to `/login` is honest about it.
+2. Reuse the login page's start flow rather than writing a second one,
+   including the redirect-host allowlist check.
+3. Add the copy to all sixteen locales per the stub convention.
+
+## Acceptance criteria
+
+1. A passwordless light account can reach ORCID sign-in from the modal.
+2. The modal's existing email and extension paths are unchanged.
+3. A unit test pins the new path.
+
+## UI implementation signal (2026-10-06, commits dbc81a26, 25f3823b, 0b47e5ae, 2b9eb770)
+
+Landed on main in four commits, each verified with
+`git merge-base --is-ancestor <sha> main`:
+
+- `dbc81a26`: the modal line, its two keys in all sixteen locales, the
+  STUBS.md sweep, and the unit test.
+- `25f3823b`: STUBS.md lines for the two ORCID button stubs that predate the
+  ledger (decision 3).
+- `0b47e5ae`: the simplification pass on the test.
+- `2b9eb770`: the test reads each mode from the parsed markup (verification
+  findings F1 and F2).
+
+**Decisions taken with the user before implementing:**
+
+1. **Same tab.** A link to `/login` in the same tab. Not a second ORCID start
+   flow, and not a new tab. The new-tab variant was offered: the existing
+   cross-tab storage sync would sign this tab back in with the page intact.
+   The user chose the same tab.
+2. **Both places.** The line appears in the chooser and in the email form. In
+   this task's scenario the user tries email first and lands on the generic
+   failure, where the email form showed only "Forgot password?" and Back.
+3. **Old stubs now, own commit.** `login.orcidLogin` and `signup.orcidSignup`
+   are English in all fifteen non-English locales and were never listed.
+   They are appended under a fresh `### Added` heading for this task.
+
+**Scope 1 / AC 1.**
+- The chooser gets "Use ORCID to sign in?" with the link "Go to the sign-in
+  page", under the two option cards and above the sign-up line.
+- The link is `:href="$lp('/login')"` with
+  `@click.prevent="cancel(); $store.router.navigate('/login')"`, the pattern of
+  the sign-up and reset-password links.
+- The email form carries the same line under "Forgot password?".
+- On `/login` the signed-out store renders the ORCID button
+  (`handleOrcidLogin`).
+- The link text names the page it opens, because the link does not start
+  ORCID itself.
+
+**Scope 2.** No second start flow. `handleOrcidLogin` on `/login` stays the
+only one, with its `ORCID_REDIRECT_HOSTS` check.
+
+**Scope 3.** `signIn.orcidPrompt` and `signIn.orcidGoToLogin` are in all 16
+locale files, right after `signIn.browserExtensionDescription`. The 15
+non-English values are English stubs, listed under
+`### Added 2026-10-06 (ui-sign-in-modal-has-no-orcid-path)`.
+
+**AC 2.**
+- The index.html diff adds lines only. The original `mt-4` paragraph now
+  holds the ORCID line, and the sign-up line moved into a new `mt-2`
+  paragraph.
+- The email card, the extension card, the email form's inputs and buttons,
+  and the unverified and extension modes are byte-identical.
+- `sign-in-modal.js` is unchanged.
+
+**AC 3.** The `ORCID sign-in line` describe in
+`tests/unit/components-sign-in-modal.test.js` runs once for the choose mode and
+once for the email mode. Each run parses index.html, takes the mode's x-if
+template content, and finds the single link by its text key. Then:
+- The `:href` binding is evaluated with a recording `$lp` stub and gives
+  `/login`.
+- The `@click.prevent` handler runs against a real modal instance after
+  `prompt()`. The modal is closed, the mode is `choose`, the prompt resolves
+  `null`, and the router is called with `/login`.
+- Every `$t` key in the mode resolves in en.json.
+
+**Verification:**
+- **Unit suite.** The frontend unit suite at `2b9eb770` gives 92 files and
+  2165 tests, exit 0.
+- **Mutation probes.** Run on `2b9eb770` in scratchpad copies, one copy per
+  mutant. These are killed: `cancel()` dropped, the href without `$lp`, the
+  email line deleted, a key typo, `.prevent` dropped (a named assertion), the
+  chooser line moved outside its x-if, the email line moved into the
+  `emailError` template, the span and link keys swapped, and `cancel()` no
+  longer resolving the prompt. Navigate-before-cancel survives by design,
+  because the order makes no difference at runtime (F2).
+- **Browser.** The working tree was served with vite dev against the dev
+  backend and driven with headless Chromium through the repo's Playwright.
+  agent-browser cannot open its socket directory in this sandbox. The modal
+  was opened through `connect({ notice })` with the revoked-session notice,
+  three times: en at 1280 and 390 px wide, and ar at 1280.
+  - Each run showed one link per mode with href `/<locale>/login`.
+  - Clicking it closed the modal and landed on `/<locale>/login` with the
+    ORCID button visible.
+  - There were no page errors.
+- **E2E, not run.** No spec covers the chooser's copy. The selectors in
+  `login-keychain.spec.js` are dialog-scoped button roles, and the
+  `/login` ORCID click in `orcid-no-password.spec.js` uses an attribute
+  selector. The new link matches neither (read, not run).
+
+**Out-of-scope findings for follow-up:**
+
+1. **Composer drafts on navigation.** `destroy()` on the publish and edit
+   pages clears the pending 2 s draft debounce without writing it. Any in-app
+   navigation away from a composer therefore drops the last 2 s of typing.
+   That includes the modal's existing sign-up link and now this link.
+   - ARCHITECTURE.md § 8 says work typed after a teardown "survives the trip
+     to the sign-in page", which this partly contradicts.
+   - It predates this task: the sign-up link did the same before.
+   - Fix it in `destroy()`, or narrow the § 8 sentence.
+2. **Overclaiming commit message.** The `dbc81a26` body says the test runs
+   the link bindings against a real modal instance. Only the click handler
+   does. `0b47e5ae` narrowed the source comment; history is left as is.
+
 ## The settings email-verify handler clears verify_token on whatever row carries it (archived 2026-10-06) — re-review of the token-keyed swap fix; one comment clause cut in place
 
 ### Architect archive note (2026-10-06)
@@ -82,169 +248,3 @@ availability and account-state defect, not a binding bypass.
    400 the not-found path already answers. Do not add a distinguishing message:
    the difference between "no such token" and "that token is not for this flow"
    is a signup-state oracle.
-3. Decide, and state, what happens to the change flow's branch in the same
-   handler. It keys on `pending_email_token`, a column no signup path writes, so
-   it is not exposed the same way; say so in the commit rather than leaving the
-   asymmetry unexplained.
-
-## Acceptance criteria
-
-1. A state E row's own hex token presented to the settings verify handler
-   answers the generic 400 and leaves that row's `verify_token` intact, pinned
-   by a route test.
-2. A state F row's `confirmed:` token does the same, pinned by a route test.
-3. The settings add flow's own token still verifies, pinned by a route test that
-   exercises the real path rather than asserting the narrowing in isolation.
-4. No response distinguishes a wrong-flow token from an unknown one.
-
-## Notes
-
-- Sibling defect, same family, already filed:
-  `backend-signup-upsert-overwrites-finalized-row.md`. That one is the signup
-  upsert reaching a settings-created row; this one is the settings handler
-  reaching a signup-created row. They are opposite directions through the same
-  shared column and should read as a pair, but they are separate fixes in
-  separate routes.
-- The `accounts.updated_at` canary's docblock names this clearer as the third
-  statement that clears the token. That sentence stays true whichever way this
-  task lands; do not edit the canary from here.
-
-## Backend implementation signal (2026-10-05, commit d33792ce)
-
-d33792ce verified as an ancestor of HEAD with `git merge-base --is-ancestor`. It landed in the
-same pass as `backend-state-g-unverified-row-lifecycle`, at the user's request. That task's
-signal block holds the shared verification run.
-
-- **Scope 1.** The add-flow lookup is now `WHERE verify_token = $1 AND username IS NOT NULL`. I
-  verified the separation from the code: the settings add-flow INSERT always names the
-  username, both signup INSERTs in `routes/auth.ts` leave it NULL, and both finalizes clear the
-  token in the same UPDATE that sets the username. The clear is also keyed on the presented
-  token (`WHERE id = $1 AND verify_token = $2 AND username IS NOT NULL`). The new re-issue
-  branch can replace a G row's token between the lookup and the clear, and a link for the
-  earlier address must not verify the later one. A clear that matches no row gets the same
-  generic 400.
-- **Scope 2.** Wrong-flow tokens (E hex, expired E, F `confirmed:`) get the not-found 400
-  'Invalid or expired verification link', identical to an unknown token. That includes an
-  expired E token, which used to draw the distinct "has expired" message.
-- **Scope 3, the change branch.** Not narrowed. A non-NULL `pending_email_token` is written
-  only by the settings `POST /email` handler, on a row it found by username, so no signup
-  token can match. A code comment says so. Separately, under the lifecycle task's item 8b, the
-  change branch now also clears `verify_token` and `expires_at` with the swap.
-- **AC1-AC4.** Specs in `tests/routes/settings-state-g-unverified-email.test.ts`:
-  - "answers a state E row's hex token with the unknown-token 400 and keeps the row's token"
-  - "answers an expired state E row's token with the same unknown-token 400"
-  - "answers a state F row's confirmed: token with the unknown-token 400 and keeps the row's
-    token"
-  - "verifies the settings add flow's own token through the mailed link", which drives the
-    real path.
-
-  The first three each failed against the base code. The responses are asserted identical to
-  the unknown-token answer.
-- **The `updated_at` canary.** The Notes said not to edit it from here. The lifecycle task's
-  changes made several of its sentences false: the re-issue writes `verify_token` on an
-  existing row, and the change branch now clears the token. So it was rewritten in d33792ce
-  under that task, and the clearer it names is described with its new scope.
-
-## Architect re-review (2026-10-05) — HELD PENDING FIXES:
-
-Reviewed d33792ce, scoped to `GET /api/settings/email/verify/:token` and its specs in
-`tests/routes/settings-state-g-unverified-email.test.ts`. Scope 1, Scope 2 and AC1 to AC4 are
-met. Both held items are in that handler.
-
-1. **Key the change-branch swap on the presented token.** The swap UPDATE matches
-   `WHERE id = $1` only. A `POST /email` that writes between the handler's
-   `pending_email_token` SELECT and the swap therefore has its address swapped in by the
-   earlier link. Measured on a copy of d33792ce, with the interleave forced through a
-   `pool.query` wrapper:
-   - A row with a verified email A0 and pending A under token T1. A second change request
-     writes pending B under T2 inside the window. The T1 link answers 200 and
-     `accounts.email` becomes B, an address nobody proved. Signup then answers 409 for B.
-   - A legacy unverified state G row that carries a pending triple. A re-issue to B lands
-     inside the window. The T1 link answers 200 and the swap writes `email = NULL` (the
-     column is nullable) and `verify_token = NULL`, discarding the re-issued link.
-
-   Fix: add `AND pending_email_token = $2` (bound to the presented token) to the swap's
-   WHERE. When it matches no row, answer the same generic 400 'Invalid or expired
-   verification link' and skip the `notification_preferences` UPDATE. Plant-tested in that
-   form, with `RETURNING email` feeding the `notification_preferences` UPDATE:
-   - Both interleaves answer the generic 400.
-   - Each row keeps what the interleaving write left: pending B under T2 on the verified
-     row, the re-issued email and token on the legacy row.
-   - The in-scope spec file plus `tests/routes/settings.test.ts` stay green (37/37).
-
-   If `RETURNING` replaces it, the `newEmail` local goes unused. Either source is correct,
-   because once the swap is keyed on the token the two are equal.
-
-   The comment above the swap says clicking the link "proves control of the new address,
-   which is now the row's email". That is false under the interleave today. Reword it to
-   say why it holds once the swap is keyed. Every write of `pending_email` in `settings.ts`
-   writes `pending_email_token` in the same UPDATE: the change branch sets both, the
-   re-issue branch clears both, and both SMTP-fail restores put both back. So a swap
-   matched on the token installs the address that token was mailed to.
-
-   No new spec is required for this item. An interleave spec was considered and dismissed
-   as preemptive hardening, as for the add-flow clear below.
-
-2. **Drop `AND username IS NOT NULL` from the add-flow clear.** The clear matches
-   `WHERE id = $1 AND verify_token = $2 AND username IS NOT NULL` on a row the SELECT
-   already found with `username IS NOT NULL`. The username conjunct can refuse only if that
-   row's username became NULL between the two statements. No writer sets `username` to
-   NULL and ARCHITECTURE.md section 6.1 lists no such transition, so under the account-state
-   rule it defends a fictional state. It also absorbs the wrong-flow pins.
-   - At d33792ce, removing the SELECT's predicate fails only the expired state E spec,
-     because the clear's conjunct still refuses live E and F tokens.
-   - Measured with the conjunct dropped, removing the SELECT's predicate fails all three
-     wrong-flow specs (E, expired E, F).
-
-   Keep `AND verify_token = $2`. That is what refuses a link whose token a re-issue
-   replaced.
-
-Dismissed at this review (recorded so the archive keeps them):
-- An interleave spec pinning the add-flow clear's token key and its `rowCount === 0`
-  refusal. Mutation shows no spec fails when either is removed. But the guard is in place,
-  and removing it is not a realistic refactor, so this was dismissed as preemptive hardening.
-- Scope 3's "say so in the commit". The decision and its reason are stated in the comment
-  above the change branch, which is the more durable home.
-- The blast-radius trace the Why asked for. It was traced at review: a row with `username`
-  NULL and `verify_token` NULL logs in with a JWT whose `sub` is null. `verifyHiveSignature`
-  accepts only a non-empty string `sub`, so that session authorizes nothing.
-
-Filed separately: rows the base handler already left with `verify_token` NULL and
-`username` NULL are not repaired by this change. See
-`tasks/pending/backend-repair-rows-the-settings-verify-handler-locked.md`.
-
-## Backend hold-fix signal (2026-10-06)
-
-Landed in the commit that moves this file to `review/`. One file: `backend/src/routes/settings.ts`,
-in `GET /api/settings/email/verify/:token`. No spec changed.
-
-- **Item 1.** The swap is `WHERE id = $1 AND pending_email_token = $2 RETURNING email`, bound to
-  the presented token. When it matches no row it answers the generic 400 'Invalid or expired
-  verification link' and skips the `notification_preferences` UPDATE, which now takes its new
-  address from `RETURNING email`. The `newEmail` local is gone, and so is `pending_email` from the
-  change-branch SELECT, which nothing read any more. The comment states the pairing in both
-  directions ("every write of `pending_email` or `pending_email_token` in this file writes both").
-  Its last sentence says an interleaving change request or re-issue makes the swap match no row.
-  It drops "a moment later": an interleaving request whose mail fails restores the earlier token,
-  and the link then verifies again.
-- **Item 2.** The add-flow clear is `WHERE id = $1 AND verify_token = $2`. The SELECT keeps
-  `AND username IS NOT NULL`.
-- **Verification.** In scope: `tests/routes/settings-state-g-unverified-email.test.ts` plus
-  `tests/routes/settings.test.ts` 37/37, exit 0. tsc and eslint clean. Full backend suite: 19
-  failed in 9 files, exit 1: accreditation-idempotency, accreditation (cap), reviews (gate),
-  idempotency-real-haf, papers-enrichment-parity-gate, profile-auth-bypass, stats-profile-parity,
-  cast-hardening-author-index-weight, fresh-auth-consent-op-burn-offline-queue. None touches
-  `settings.ts` or this route, and several are on the known pre-existing list. They were NOT
-  re-checked against clean main in this pass.
-- **Probes** (scratchpad copies of base 342f2820 and of the fix, `pool.query` spy interleaves, not
-  committed). Both hold interleaves reproduce on base. On the fix both answer 400 deep-equal to an
-  unknown-token response, and the rows keep what the interleaving write left. Also closed: two
-  overlapping clicks of one change link gave 200/200 and `email` NULL on base, 200/400 on the fix.
-  Item 2: removing the SELECT predicate now fails all three wrong-flow specs; on base, only the
-  expired E spec. As expected, no committed spec fails with the swap's token key or rowCount guard
-  removed.
-- **Pre-existing, outside this task, awaiting the user's triage.** (1) The change branch's
-  `notification_preferences` UPDATE is keyed on email only. Another user's row holding the old
-  address picks up the newly verified address, measured on both base and fix. (2) Both recovery
-  UPDATEs in `recover.ts` leave the pending triple. A change link queued before a recovery still
-  swaps afterwards. (3) No spec pins the `notification_preferences` move. (4) Signup checks

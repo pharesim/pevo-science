@@ -284,3 +284,10 @@ vouch, and `retractReason` for a retraction (`showRetract` is the view state tha
 reason field).
 
 The architect moves this file to `pending/` once `ui-light-account-vouch` is archived.
+
+## Architect note (2026-10-06): relevance at pickup
+
+The sign-in modal that a revoked or expired session opens now links to /login in the same tab, so a
+passwordless account whose session ends on /review can leave the undrafted review that way, as it already
+could by going to /login by hand. After ORCID sign-in from /login, `_handleLogin` in `orcid-callback.js`
+navigates to /papers, because login mode records no return path.
