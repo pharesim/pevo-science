@@ -1637,9 +1637,9 @@ export function initEditPage() {
         const targetAuthor = ownPost ? ownPost.author : this.paper.author;
         const targetPermlink = ownPost ? ownPost.permlink : this.paper.permlink;
         const targetIsHead = targetAuthor === headAuthor && targetPermlink === headPermlink;
-        // In a chain the served body is the latest version's, so a patch
-        // computed against it fits only that version's post. An entry
-        // without author/permlink names no post.
+        // In a chain whose versions[] names its posts the served body is the
+        // latest version's, so a patch computed against it fits only that
+        // version's post. An entry without author/permlink names no post.
         const latestVersion = this.paper.versions?.[this.paper.versions.length - 1];
         const latestIsTarget = !latestVersion?.author || !latestVersion?.permlink
           || (latestVersion.author === targetAuthor && latestVersion.permlink === targetPermlink);
