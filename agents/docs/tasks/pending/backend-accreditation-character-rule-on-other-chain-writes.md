@@ -2,7 +2,7 @@
 
 **Owner:** backend
 **Created:** 2026-10-06
-**Priority:** normal
+**Priority:** high
 
 Filed from the review of `backend-accreditation-mail-names-the-account` (the implementer's
 out-of-scope follow-up, extended by the security reviewer; triage: user, "as recommended").
@@ -44,3 +44,29 @@ Out of scope: values already on chain that a later op carries forward unchanged.
    an ordinary non-Latin value.
 2. A spec pins the ORCID-name handling chosen in Scope 2.
 3. No emdash in new response strings. Comments follow root `CLAUDE.md` "Comment anchors".
+
+## Architect note (2026-10-07): raised to high
+
+From the review of `backend-latest-op-haf-lookups-walk-the-blocks-index` (triage: user). The
+character rule also protects the HAF reads:
+
+- PostgreSQL's jsonb input rejects the escape `\u0000` and a lone surrogate escape such as
+  `\ud800` (checked on PostgreSQL 16; the HAF node runs 17.9). `::json ->> 'action'` also throws
+  when another key holds `\u0000`.
+- `hafsql.operation_custom_json_view.json` is `text` (`body_value ->> 'json'`), so the
+  `cj.json::jsonb` casts in PEvO's queries parse it.
+- `JSON.stringify` writes U+0000 as `\u0000` and a lone surrogate as its `\uXXXX` escape. An
+  authority-signed accredit op carrying one makes every query that casts that row throw, and the
+  op cannot be removed from the chain. `/verify`, the metadata edit and the ORCID flows would fail
+  for every user.
+
+Scope addition: also reject a lone surrogate (a value that is not well-formed UTF-16) in every
+field Scope 1 covers and in `full_name` and `institution` of `accreditationRequestSchema`.
+`NO_CONTROL_CHARACTERS` rejects U+0000, which is Cc, but not a lone surrogate. Scope 2's handling
+of the ORCID name covers both.
+
+AC addition: specs pin a 400 for U+0000 in each newly covered field, and for a lone surrogate in
+every field the scope addition names.
+
+The read side, for ops any Hive account can broadcast, is
+`backend-custom-json-unicode-escape-breaks-jsonb-casts`.

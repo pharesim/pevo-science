@@ -35,3 +35,5 @@ The findings are triaged with the user, accepted ones are filed as tasks with a 
 - The `update_weights` read has the `ORDER BY block_num DESC LIMIT 1` shape that took 19.75 s in
   `findExistingAccreditation` for a no-match input. It runs after an existence check and under a
   5 s `SET LOCAL statement_timeout`. It was not plan-checked.
+  A matching row does not protect this shape: on 2026-10-06 the unfenced accreditation lookups
+  read the whole blocks index (26.2 s under `EXPLAIN ANALYZE`) for a subject with one matching op.

@@ -26,3 +26,11 @@ Total: 3257 lines.
 ## Done when
 
 The findings are triaged with the user, accepted ones are filed as tasks with a priority or folded into an open task that covers them, the dispositions are recorded in this file, and the file is archived.
+
+## Carried over from the latest-op HAF lookup review (2026-10-07)
+
+- Plan-check `fetchConsentOpsForPaper` in `backend/src/consent-ops.ts` (`ORDER BY cj.id DESC
+  LIMIT` over one paper's consent ops) and the `revoteResult` read in `backend/src/routes/papers.ts`
+  (`ORDER BY cj.block_num DESC`, no `LIMIT`) with a plan-only `EXPLAIN` on HAF. Under
+  `ORDER BY block_num DESC LIMIT 1` the seven latest-op accreditation lookups walked the whole
+  blocks index backward; neither of these two reads was checked.

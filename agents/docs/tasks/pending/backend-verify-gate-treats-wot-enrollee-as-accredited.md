@@ -67,3 +67,7 @@ whether or not the account currently meets the threshold.
 - Update the `already_accredited` paragraph of `api-contracts/accreditation.md`, and say in
   `ARCHITECTURE.md` § 2 that an email verification pins a WoT enrollee.
 - `/ce-compound-refresh` on `accreditation-state-read-latest-action-wins-2026-05-15.md`.
+  The same refresh deletes the entry's claim that `backend/src/wot.ts:347` produces revoke ops,
+  in its sibling-site list and in "The bug is reachable, not theoretical". `wot.ts` broadcasts no
+  revoke op; the admin sanction route (`/accreditation/sanction` in `routes/admin.ts`) does.
+  (Added 2026-10-07 from the review of `backend-latest-op-haf-lookups-walk-the-blocks-index`.)
