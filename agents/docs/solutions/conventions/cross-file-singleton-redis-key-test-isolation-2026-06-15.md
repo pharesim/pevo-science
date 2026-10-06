@@ -76,7 +76,7 @@ afterEach(async () => {
 
 ## Why This Matters
 
-Under `maxWorkers: 2` a singleton key is a guaranteed shared mutable global across every concurrently-scheduled file that touches the batch loop. Without the read-pin, a file's documented `startCycle` geometry is at the mercy of whatever a sibling last wrote (or didn't write) to the one key, so a structurally-correct test fails intermittently with a wrong-branch symptom (an unexpected full replay, a skipped resume, a missing `batchMapToScoreRecord` call) that looks like a logic bug in the file under test but originates in a sibling. The read-pin + write-suppression removes `calc:version` as a source of cross-file interference.
+Under `maxWorkers: 2` a singleton key is a guaranteed shared mutable global across every concurrently-scheduled file that touches the batch loop. Without the read-pin, a file's documented `startCycle` geometry is at the mercy of whatever a sibling last wrote (or didn't write) to the one key, so a structurally-correct test fails intermittently with a wrong-branch symptom (an unexpected full replay, a skipped resume, a missing `batchMapToScoreRecord` call) that looks like a logic bug in the file under test but originates in a sibling. The read-pin + write-suppression keeps each pinned file's branch independent of `calc:version`.
 
 ## When to Apply
 
