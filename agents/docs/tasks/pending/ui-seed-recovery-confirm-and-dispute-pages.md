@@ -206,3 +206,58 @@ on a destroyed page.
 7. Pre-existing: on a cold load (every mailed link) `initI18n` replaces the
    route title with `metadata.title`, so route titles show only after
    in-app navigation.
+
+## Architect re-review (2026-10-06) — HELD PENDING FIXES:
+
+Reviewed d297d2e4 and cb8b610f with `/ce-code-review` (correctness,
+project-standards, testing, security, adversarial, frontend races,
+maintainability, learnings) against a snapshot of cb8b610f. The pages are
+clean: every scope item and acceptance criterion is met, the error states
+map every server outcome to copy that holds, the new strings match the
+backend's windows, and the testing lens killed all 13 mutants it planted
+(the six target suites give 6 files, 177 passed, exit 0 at cb8b610f). The
+hold is for one comment group and the warn placement in both catches.
+
+1. **The page-gone comment and its test claim the session is taken up.**
+   The comment in `recoverVerifyPage.submit()` ("so the reissued session is
+   taken up even if the page has gone"), the comment above the test
+   `still takes up the reissued session when the answer lands after the page
+   is gone` in `pages-recover-verify.test.js`, and that test's title all say
+   the reissued session is taken up. For a browser signed in to another
+   account, `adoptRecoveredSession` returns false and takes nothing up, and
+   the test checks only that the answer was handed to
+   `adoptRecoveredSession`. Narrow all three to that: the answer goes to
+   `adoptRecoveredSession` even after the page has gone.
+
+2. **Warn only on the unexpected branch.** In both pages' `submit()` catch,
+   `console.warn` runs before the code branches, so `INVALID_TOKEN` (both
+   pages) and `DUPLICATE` (confirm page) warn on every routine refusal.
+   `agents/docs/solutions/conventions/frontend-error-sanitization-2026-04-21.md`
+   (exemption for benign semantic codes) keeps the warn on the unexpected
+   branch, as `signup-verify.js` does. Move the warn into the `failed` arm.
+   In the two `it.each` tables ("maps %s to the %s state, with the raw error
+   to console.warn only"), assert no warn for the mapped codes and keep the
+   raw-error pin for the `failed` codes.
+
+**Out-of-scope list, dispositions (user triage 2026-10-06):**
+
+- Item 1 (contract drift): fixed in `api-contracts/auth.md` by the architect.
+- Item 2: filed as `backend-recovery-dispute-message-claims-no-change` (low).
+- Item 3: filed as `backend-recovery-verify-consume-is-not-atomic` (low).
+- Item 4: filed as `backend-password-reset-link-has-no-page` (high).
+- Item 5: filed as `ui-settings-verify-email-posts-on-load` (low). The
+  signup verify page no longer posts on load since e2334dd4.
+- Item 6: already filed.
+- Item 7: filed as `ui-cold-load-replaces-route-titles` (low).
+- Review residual, pre-existing: mailed-link tokens land in the access log.
+  Filed as `backend-access-log-records-mailed-link-tokens` (normal).
+
+**Dismissed (no change asked):** the stale Switch button after a later
+same-account sign-in (a multi-step cross-tab sequence; the same shape is
+in the ORCID arm), a lost confirm response
+or two tabs confirming at once (the next bearer request tears the revoked
+session down; the backend half is item 3), a forwarded confirm link signing
+a signed-out browser in to the sender's account (the confirm press is
+required and signed-out adoption is the task's rule), `recover.verifyInvalid`
+not naming a deleted or upgraded account, and no test rendering the
+`duplicate` and `failed` templates.
