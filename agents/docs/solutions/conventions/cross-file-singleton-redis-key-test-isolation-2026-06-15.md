@@ -6,6 +6,7 @@ module: backend
 problem_type: convention
 component: testing_framework
 severity: medium
+last_updated: 2026-10-06
 applies_when:
   - "Vitest config sets `maxWorkers > 1` (PEvO: `maxWorkers: 2`), so two test files run concurrently"
   - "A new SINGLETON Redis key is added: ONE fixed name (e.g. `${appTag}:reputation:calc:version`), NOT a per-entity namespace, read by a batch loop on each run beside an existing cursor/marker key"
@@ -75,7 +76,7 @@ afterEach(async () => {
 
 ## Why This Matters
 
-Under `maxWorkers: 2` a singleton key is a guaranteed shared mutable global across every concurrently-scheduled file that touches the batch loop. Without the read-pin, a file's documented `startCycle` geometry is at the mercy of whatever a sibling last wrote (or didn't write) to the one key, so a structurally-correct test fails intermittently with a wrong-branch symptom (an unexpected full replay, a skipped resume, a missing `batchMapToScoreRecord` call) that looks like a logic bug in the file under test but originates in a sibling. The read-pin + write-suppression makes each non-owning file deterministic and leak-free without serializing the suite.
+Under `maxWorkers: 2` a singleton key is a guaranteed shared mutable global across every concurrently-scheduled file that touches the batch loop. Without the read-pin, a file's documented `startCycle` geometry is at the mercy of whatever a sibling last wrote (or didn't write) to the one key, so a structurally-correct test fails intermittently with a wrong-branch symptom (an unexpected full replay, a skipped resume, a missing `batchMapToScoreRecord` call) that looks like a logic bug in the file under test but originates in a sibling. The read-pin + write-suppression removes `calc:version` as a source of cross-file interference.
 
 ## When to Apply
 
@@ -88,4 +89,5 @@ Canonical implementation: the `pinCalcVersionRead(redis)` helper in `backend/tes
 ## Related
 
 - [[test-teardown-wildcard-delete-shared-id-band-parallel-workers-2026-06-14]] — the DB-ROW band variant of the same parallel-workers contamination class; that one collides at teardown over a shared namespace and is fixed by exact-ID cleanup scoping, whereas the singleton-key case collides during execution over one fixed key and is fixed by read-pin + write-suppression.
+- [[per-file-setup-redis-flush-wipes-concurrent-test-files]] — a second source of cross-file interference for these files: a concurrently starting file's setup flush deletes every `${appTag}:*` key, including the seeded `cycle:last`. The read-pin does not cover it; these specs carry `{ retry: 5 }` for it.
 - [[evalscript-test-mocks-both-verbs-and-key-discriminator-2026-05-26]] — a different Redis test-isolation concern (Lua script warm/cold SHA caches), not the cross-file shared-key shape.
