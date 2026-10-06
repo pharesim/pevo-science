@@ -1,3 +1,157 @@
+## The accreditation verify page posts the token without a session (archived 2026-10-06) — one round; clean after one in-place comment fix; ORCID copy gap and cross-tab post dismissed; backend half unblocked
+
+### Architect archive note (2026-10-06, round 1)
+
+- **Review:** `/ce-code-review` on `9e853eea~1..8f9a082a` (correctness, security, adversarial in-process, testing, frontend races, project-standards, learnings; validator on the two merged findings). No P0/P1. The full frontend unit suite on a git-archive copy of `8f9a082a`: 92 files, 2179 tests, exit 0, matching the signal. Testing planted 11 mutants: 9 killed; the two survivors (the `SIGN_IN_CODES` branch moved below `_isRetriable`; the `_mounted` guard in `handleConnect` dropped) dismissed as low-risk. Two lenses traced the page's states (8 real-Alpine scenarios, 5 named race scenarios): no double post, loop, stuck `loading`, lost token, or POST without a session.
+- **#1 (P2, dismissed):** the sign-in modal's ORCID line navigates to `/login` in the same tab and ORCID login lands on `/papers`, so the captured token is lost, and `verify.signInMessage` does not say to open the link again. The signal's "which the sign-in copy already asks for" is false: only `verify.mismatchMessage` says it. Dismissed on reachability: an account that requests email accreditation signs in inside the modal (light signups are accredited by the `/confirm` and `/link` accreditation cascade in `signup-verify.ts`; pure self-custody accounts have no ORCID login), so only an off-path click on the ORCID line reaches it.
+- **#2 (P3, fixed in place by the architect, `faffe9f9`):** deleted "Each comes before the token is read, so" from the `SIGN_IN_CODES` docblock. `/verify` has no auth middleware yet, so the server-side ordering described the backend task.
+- **#3 (advisory, dismissed):** a sign-in in another tab also posts the captured token; the watcher comment names that case. Until the backend task lands this is narrower than the old post-on-load; after it, a sign-in as the wrong account gets the mismatch state.
+- **Noted, no action:** two tabs in the sign-in state both post on one sign-in, and `/verify` has no per-token lock, so near-simultaneous posts may both broadcast (backend concern). Testing gap on the code strings is covered by the backend task's AC1/AC2 plus the unblock note appended to it.
+- **Sibling drift:** `64bca0fb` and `141840d7` (other ui tasks: mailbox-bound and sanctioned states, timeout naming, copy) landed on the verify page and its spec after the reviewed head; not part of this review.
+- **[TODO Architect] done:** `backend-accreditation-verify-requires-the-account-session` moved `blocked/` → `pending/` with an unblock note naming the codes the page matches.
+- **Learnings checkpoint:** existing entries grepped for the verify page and route symbols; the `skip-failed-requests-jwt-required-credential-verify-carve-out` grid row for `accreditationVerifyLimiter` (JWT-required ❌) still holds until the backend task lands, and no entry claims the page posts on load. No new entry: the adopted-session re-post rationale is carried by the comment in `_verify` and by `_endSession` in `auth.js`.
+
+**Owner:** ui
+**Created:** 2026-10-05
+**Priority:** high
+
+Filed from the accreditation and Web of Trust audit (finding 4).
+
+## Why
+
+`POST /api/accreditation/verify` takes the emailed token as its only credential. Whoever opens
+the link accredits the account that requested it, under the name the requester typed. A requester
+can name someone else's institutional address, and `accreditationVerifyPage.init()`
+(`frontend/src/pages/accreditation-verify.js`) posts the token as soon as the page loads.
+
+**Decision (user, 2026-10-05):** `/verify` will require the session of the account the link was
+requested for. The backend half is `backend-accreditation-verify-requires-the-account-session`,
+which waits in `blocked/` until this task is archived: if the backend landed first, this page's
+unauthenticated POST would answer 401 and the page would show its generic failure state.
+
+This task is compatible with the backend as it stands. The route has no auth middleware today, so
+it ignores an `Authorization` header.
+
+## Scope
+
+1. `verifyAccreditation` (`frontend/src/api.js`) sends the session. It uses the plain `request`
+   helper today; `requestAccreditation`, next to it, uses `authenticatedRequest`.
+2. The page does not post while no session exists. It shows a state that says the link has to be
+   opened while signed in as the account that requested the accreditation, and offers the app's
+   existing sign-in entry point (`frontend/src/components/sign-in-modal.js`). After a sign-in on
+   that page it goes on with the token it captured in `init()`. The session is kept in
+   `localStorage`, so a link opened in a new tab of a browser that is already signed in has it.
+3. Two answers the backend task will add, both leaving the token usable:
+   - 401 (`UNAUTHORIZED`, or the session-ended codes `authenticatedRequest` already handles):
+     show the sign-in state, not "Request New".
+   - 403 `ACCREDITATION_ACCOUNT_MISMATCH`: say that the link belongs to a different account and
+     that the user should sign in as that account and open the link again. No "Request New"
+     button on this state.
+4. New copy goes through the i18n flow the other pages use.
+
+## Out of scope
+
+- How the page maps the other error codes. `architect-audit-frontend-security-surface` covers
+  this file.
+- A confirm click before posting. The session requirement was chosen instead.
+
+## Acceptance criteria
+
+1. With no session the page sends no request and shows the sign-in state. After sign-in it posts
+   once, with the token from the URL.
+2. With a session the POST carries the `Authorization` header.
+3. A 403 `ACCREDITATION_ACCOUNT_MISMATCH` answer shows the different-account copy and no
+   "Request New" button. A 401 answer shows the sign-in state.
+4. Comments follow root `CLAUDE.md` "Comment anchors".
+
+## [TODO Architect] at archive
+
+- Move `backend-accreditation-verify-requires-the-account-session` from `blocked/` to `pending/`.
+
+## UI implementation signal (2026-10-06, commits 9e853eea, 39439ca1, 8f9a082a)
+
+Landed on main in three commits, each verified with
+`git merge-base --is-ancestor <sha> main`:
+
+- `9e853eea`: the two `form button[type="submit"]` locators in
+  `accreditation.spec.js` scoped to `[x-data="accreditationPage"]` (decision 1).
+- `39439ca1`: the change itself: `verifyAccreditation`, the page, the four
+  `verify.*` keys in all sixteen locales, the STUBS.md sweep, and the unit and
+  E2E specs.
+- `8f9a082a`: three comments in the new specs narrowed to what the page does
+  (verification findings, below).
+
+**Decisions taken with the user before submitting:**
+
+1. **Locator fold-in.** The request-and-verify E2E spec failed at its first
+   click on the known strict-mode clash with the always-rendered re-auth modal
+   form, so the Authorization assertion added to it never ran. Fixed in its own
+   commit, the same fix `edit-paper.spec.js` received.
+2. **Adopted session posts again.** On a `SESSION_EXPIRED` or
+   `SESSION_INVALIDATED` answer the auth store can adopt a newer session another
+   tab saved instead of signing out (`_endSession` ->
+   `_adoptStoredSessionOtherThan`). The page would then show "Sign in" under a
+   live session. `_verify` remembers the session token the request carried; in
+   the sign-in branch, a different store token means the page posts again with
+   it, and no token left means the sign-in state. A server `UNAUTHORIZED` with an
+   unchanged token shows the sign-in state, so there is no loop. A newer session
+   of another account lands on the mismatch state once the backend task is in.
+
+**Scope 1 / AC2.** `verifyAccreditation` (`frontend/src/api.js`) goes through
+`authenticatedRequest`. `api.test.js` asserts `Authorization: Bearer <token>` on
+`POST /api/accreditation/verify`; both E2E flows assert the bearer header.
+
+**Scope 2 / AC1.** `init()` captures the URL token, registers
+`$watch('$store.auth.token')`, and calls `_verifyIfSignedIn()`. With no session
+it shows the `signin` state (title, the "has to be opened while signed in as the
+requesting account" copy, and a Sign in button calling `auth.connect()`) and
+sends nothing. Any later session token while in that state (the page's button,
+the header, another tab's storage event) posts the captured token once.
+E2E "verify link opened without a session asks for sign-in, then posts with the
+session" drives this through the real modal (Keychain path, `/api/auth/session`
+stubbed with a minted JWT): zero requests before sign-in, exactly one after,
+with the token from the URL and the new bearer.
+
+**Scope 3 / AC3.** `SIGN_IN_CODES` (`UNAUTHORIZED`, `SESSION_EXPIRED`,
+`SESSION_INVALIDATED`) map to the `signin` state, never to "Request New".
+`ACCREDITATION_ACCOUNT_MISMATCH` maps to a `mismatch` state with its own title
+and the different-account copy, and no button. E2E "verify link opened as a
+different account shows the different-account state" asserts the copy and zero
+"Request New Accreditation" links (the stubbed 403 carries a different message,
+so the assertion would catch raw server text).
+
+**Scope 4.** Keys `verify.signInTitle`, `verify.signInMessage`,
+`verify.mismatchTitle`, `verify.mismatchMessage` in all sixteen locales, English
+stubs in the fifteen others, listed under
+`### Added 2026-10-06 (ui-accreditation-verify-page-signs-in-first)`. No emdash.
+
+**AC4.** The pre-commit anchor gate passed on all three commits.
+
+**Verification.**
+- Unit: full frontend suite, `npx vitest run` exit 0, 92 files, 2179 tests.
+- E2E (test-mode stack, bundle rebuilt from 39439ca1): `accreditation.spec.js`
+  3/3 passed, including the formerly failing request-and-verify spec. `8f9a082a`
+  is comment-only. Stack restored with `./deploy.sh up`.
+- `/ce-simplify-code`: applied the watcher's redundant token check, the
+  `vi.fn()` `$watch` idiom of `pages-edit.test.js`, and a distinct mismatch stub
+  message. Skipped exporting `SESSION_ENDED_CODES` (would pull `fresh-auth.js`
+  into the page and its api mock) and an E2E session-stub helper (two copies).
+- Adversarial verification workflow (3 lenses, skeptic per finding) on
+  39439ca1: 10 planned mutants plus 4 extra, all killed by a unit spec or, by
+  reading, an E2E spec; a real-Alpine probe of 11 sign-in scenarios found no
+  double post or loop. Two low findings confirmed and fixed in `8f9a082a`
+  (comments stating the backend's session check as current, and that the
+  mismatch state names the account).
+- `/ce-code-review` not run: architect-owned per `agents/ui/CLAUDE.md`.
+
+**Out of scope, for follow-up if wanted.**
+- The sign-in modal's ORCID line navigates to `/login` in the same tab
+  (decision on `ui-sign-in-modal-has-no-orcid-path`), so an ORCID sign-in from
+  this page loses the captured token; the user opens the link again, which the
+  sign-in copy already asks for. A skeptic refuted it as a defect of this task.
+- `403 ACCREDITATION_SANCTIONED` from `/verify` still shows the generic failure
+  with "Request New" (other-code mapping is out of scope here).
+
 ## A native edit never sends an empty body, and never copies another post's `continues` (archived 2026-10-06) — three rounds; round 2 added the served-body send rule (§ 8 rule 2), round 3 one comment narrowing; clean; two follow-ups filed
 
 ### Architect archive note (2026-10-06, round 3)
@@ -94,157 +248,3 @@ while deciding the composer retry-safety question. Neither depends on any other 
   - de-duplication removed: the head-target spec and the fork spec fail.
   - E2E: with the `continues` line removed, the non-head spec fails at `expect(meta[APP_TAG].continues).toBeUndefined()`, receiving the root as its own `continues`; unmutated it passes (both served by vite dev from scratch copies carrying the backend's `__PEVO_CONFIG__`).
 - AC5: the new comments anchor on `targetOwnContinues`, `NO_OP_PATCH` and the specs' fixtures; the commits passed the pre-commit anchor gate.
-- Verification: full frontend unit suite 91 files / 2149 passed, exit 0. E2E on the final tree (`./deploy.sh restart`, `test-db-up`, `test-up`; dev routing restored after): `edit-paper.spec.js` 7/7 passed from the repo checkout. A scratch-only browser check (not committed) confirmed a title-only and an addressed-review-only head edit send the no-op patch on the real page.
-- Review (verification workflow: mutation probes plus chain, send-rule and conventions lenses, one refuter each), triaged by the user, all as recommended:
-  1. Fixed in `bdefe550`: a continuation post served as a paper of its own lost its `continues` under the first derivation (it read as a root).
-  2. Fixed in `bdefe550`: the head-diff unit and e2e specs could not tell a real patch from the no-op patch.
-  3. Fixed in `bdefe550`: a link re-pointed onto the chain by a hand-made op, older than the root, made the root's own edit write a cycle; the root now always reads first.
-  4. Fixed in `bdefe550`: the e2e non-head spec's opening comment called the edited post a continuation; the fixture makes it the root.
-  5. Filed as `ui-edit-no-change-guard-compares-served-authors` (normal, `0498a574`): the no-change guard compares the form with the raw head claim, so an untouched form whose served authors differ from it now lands a metadata-only version instead of failing.
-- Residual, filed at the user's choice as `ui-native-edit-continues-from-target-own-metadata` (low, `59018357`): a link re-pointed onto the middle of a chain by a hand-made op reads out of order, so another author's edit of a continuation can name the wrong predecessor. The root and the listing are protected.
-- Simplify pass (`/ce-simplify-code` over the `edit.js` changes, run after the move; the UI protocol puts it before): the reuse and efficiency reviewers found nothing; the quality reviewer raised three optional nits. Applied in `89db458e` (verified on `main`): a blank line setting the `targetContinues` capture apart from the comment about the captures `_finishLanded` reads. Skipped: returning `undefined` rather than `null` from `targetOwnContinues` (the `null` matches `userPostInChain`), and testing body equality instead of `diffText === ''` (equivalent; the current form is the task's own wording and the probes above pin it).
-
-## Architect re-review (2026-10-06) — HELD PENDING FIXES:
-
-Reviewed `6e10bd5e`..`89db458e` with `/ce-code-review` (correctness, adversarial, project-standards, testing, learnings; one finding validated independently). AC1 to AC5 are met, and the seven unit kill claims were re-measured and held. Two items:
-
-1. **A native edit takes the patch path only when the served body is the target post's.** With `continues` fixed, a non-head edit keeps the chain intact, so the latest op can belong to a post other than the head. The paper detail serves a chain's body as the replay of its latest op (`detail.body = latest.body`), and the replay applies each patch to the patched post's own previous body. So when the latest op is not the target's:
-   - an unchanged body sends `NO_OP_PATCH`, the target keeps its own older body, its op becomes the latest, and the paper page loses the other author's revision;
-   - a changed body's patch is computed against the other post's text and applied to the target's own body.
-
-   Fix: take the patch path (the computed patch, or `NO_OP_PATCH` for an unchanged body) only when the last `versions[]` entry names the target post, or carries no `author`/`permlink`. Otherwise send the full `newPostBody`, changed or not. For this one case this replaces the Out-of-scope sentence "Do not send the full body for the empty case": that sentence's reason is the creation body a single-post detail serves, while a chain detail serves the replayed body. Single-post papers keep the patch path.
-
-   Tests: correct the fixture of `head native edit of a continuation post keeps the post it continues when the latest op is the root's` so `paper.body` and `_originalBody` hold the root's latest text, as the backend serves it for that chain, and assert the full body there. Add a changed-body spec in the same chain state. The head-target specs whose last `versions[]` entry is the target (`head-author native edit still computes diff`, the unchanged-body specs) stay on the patch path. Probe each new site by reverting it, and list the probes in the signal block.
-
-   `agents/docs/ARCHITECTURE.md` § 8 "What a native edit sends" now carries this as its rule 2.
-
-2. **Narrow the `targetOwnContinues` docblock.** Delete ", which continues nothing". A post served as a paper of its own and since continued is the canonical of a multi-post response and does continue a post. That case moved to `ui-native-edit-continues-from-target-own-metadata`.
-
-Dismissed: the unpinned skip of a `versions[]` entry without `author`/`permlink` (the guard is correct, and only a degraded HAF read reaches it).
-
-**UI re-review signal (2026-10-06, commits `a5dcb592`, `3969623c`, `35bac763`; each verified an ancestor of `main` with the expected file list):**
-
-- `a5dcb592`: both hold items. Item 1: the native-edit arm takes the patch path (the computed patch, or `NO_OP_PATCH`) only when `targetIsHead && latestIsTarget`. `latestIsTarget` is true when the last `versions[]` entry names the target post, or carries no `author`/`permlink` (and when `versions[]` is absent, which no detail path serves). Every other native edit sends the full `newPostBody`, changed or not. It is captured with `targetIsHead` before the first await. Item 2: ", which continues nothing" deleted from the `targetOwnContinues` docblock, nothing else changed in it. `3969623c`: the new comment's "In a chain the served body is the latest version's" narrowed to a chain whose `versions[]` names its posts (a degraded chain read serves the root's row body with the synthetic entry; that path never reaches the native arm, but the sentence was broader than the backend). `35bac763`: simplify pass (below).
-- Tests, as prescribed: the spec `head native edit of a continuation post keeps the post it continues when the latest op is the root's` now sits in `describe('a head continuation whose latest op is the root\'s')` with a shared fixture whose `paper.body`, `_originalBody` and form hold the root's latest text (as `papers.ts` serves `latest.body` for that chain), and it asserts that full body. New sibling `a changed body is sent whole, not as a patch`, same chain state, with a body long enough that the patch is shorter (39 vs 148 chars), so the old rule would send a patch. `head-author native edit still computes diff` and the three unchanged-body specs keep the patch path unmodified. Added beyond the hold: `a version entry that names no post keeps the no-op patch` (unchanged-body block), because nothing else pinned the unnamed-entry clause, and a single-post paper on a degraded read would otherwise send its served creation body whole.
-- Red before the fix: both chain specs failed against the pre-fix `edit.js` (the unchanged one received `@@ -0,0 +0,0 @@\n`, the changed one `@@ -135,8 +135,14 @@ ...`).
-- Probes (scratchpad copies, `tests/unit/pages-edit.test.js`, baseline 139 passed; rerun on `35bac763` for the three new-site probes with identical results):
-  - `if (targetIsHead && latestIsTarget)` reverted to `if (targetIsHead)`: the two root-latest chain specs fail, nothing else.
-  - unnamed-entry clause deleted from `latestIsTarget`: only `a version entry that names no post keeps the no-op patch` fails.
-  - `versions?.[0]` read instead of the last entry: only `head-author native edit still computes diff` fails.
-  - patch path never taken (`targetIsHead && false`): `head-author native edit still computes diff`, the three unchanged-body specs and the unnamed-entry spec fail.
-  - permlink comparison dropped: survives, equivalent. The target is `userPostInChain`, the user's last `versions[]` entry, so a last entry by the target's author is that entry; with `ownPost` null the native arm needs a single post with no entry naming the user.
-- Verification: full frontend unit suite 92 files / 2167 passed, exit 0 (on `a5dcb592`; the later commits touch comments and one test-local constant, and the edit-page file stays 139/139). E2E on `a5dcb592` (`./deploy.sh restart`, `test-db-up`, `test-up`; dev routing restored after): `edit-paper.spec.js` 7/7 passed. Its in-place spec's only version names the target, so it stays on the patch path.
-- Verification workflow on `a5dcb592` (send-rule, test-strength and comment-truth lenses, a refuter per finding): zero findings. The send-rule lens drove 20 chain states in a copy (single post with named, synthetic or absent versions; head target latest; head target with the root's or a middle link's op latest; non-head target latest or not; the inverted chain, both ways; each with an unchanged and a changed body), and each sent what § 8 rule 2 prescribes. Its served-body residual is what `3969623c` narrows.
-- Simplify pass (`/ce-simplify-code`, three reviewers). Applied in `35bac763`: the composed root body named once (`ROOT_POST_BODY`), and the full-body branch's comment deleted, since it restated the negation of the condition the branch docblock states. Skipped: folding the unnamed-entry spec into the `it.each` table (its own title says which branch it pins), and renaming the chain spec to drop the describe's context (the hold cites it by its current title).
-- Out of scope, noted for triage, not filed: `reconstructVersionsFromHaf` orders ops by `block_num` alone, so two chain posts edited in the same block have no defined latest. The frontend check stays consistent with the served body (both come from the same array). Theoretical.
-
-## Architect re-review (2026-10-06, round 3) — HELD PENDING FIXES:
-
-Reviewed `a5dcb592`..`35bac763` with `/ce-code-review` (correctness, adversarial, project-standards, testing, learnings; the one finding confirmed by an independent validator). Both items of the previous hold are met: the send rule matched § 8 rule 2 in an 11-state matrix, the prescribed fixture and specs landed, the five probes re-measured as listed, and the docblock change is exactly the prescribed deletion. One item:
-
-1. **Narrow the `latestIsTarget` comment in `handleSubmit`.** Change "In a chain whose versions[] names its posts" to "In a multi-post chain whose versions[] names its posts", and change nothing else in that comment. `papers.ts` serves `latest.body` only when the chain holds more than one post. A single post is served its `hafsql.comments` body, which stays at the creation body after an edit, while its `versions[]` still names the post, so the current wording also claims the single-post case. The wrong wording came from the previous hold's own sentence ("serves a chain's body as the replay of its latest op"). Comment only: no spec or probe is needed. Run the edit-page spec file and say so in the signal block.
-
-Dismissed: the signal's note that `reconstructVersionsFromHaf` orders by `block_num` alone (two co-authors' edits to one paper in the same block; the edit page reads `versions[]` and the body from one response, so they agree). No action, already covered: a non-head target whose own op is the latest sends the full body for an unchanged body where § 8's order prescribes the no-op patch, and a stale cached detail can name an older latest op. `ui-composer-landing-wait-and-served-diff-base` carries both (its send-rule scope and the head check).
-
-**UI re-review signal (2026-10-06, round 3, commit `1d26e15e`; verified an ancestor of `main`, file list `frontend/src/pages/edit.js` only):**
-
-- Item 1: the `latestIsTarget` comment in `handleSubmit` now reads "In a multi-post chain whose versions[] names its posts". Nothing else in the comment changed; the diff is that one line. Checked against `papers.ts`: `detail.body = latest.body` sits inside `if (chain.length > 1)`.
-- Comment only, so no spec or probe. `tests/unit/pages-edit.test.js`: 139/139 passed, vitest exit 0.
-
-## Decide how an institutional mailbox is bound to one accredited account (archived 2026-10-06) — seven questions decided with the user; design written to ARCHITECTURE.md § 2 Credential Bindings; 8 implementation tasks and 7 defect tasks filed
-
-### Architect archive note (2026-10-06)
-
-Decisions, the task list and the dismissals are in the "Decisions (2026-10-06)" section below. Design commit 30817bbe.
-
-**Owner:** architect
-**Created:** 2026-10-05
-**Priority:** high
-
-Filed from the accreditation and Web of Trust audit (finding 3). Two reviewers reported it and the
-validator confirmed it from the code. The user chose a design task over accepting it for beta
-(2026-10-05).
-
-## Why
-
-`POST /api/accreditation/request` checks an address only with `isInstitutionalEmail`, behind a
-limiter keyed on the Hive account. `POST /api/accreditation/verify` never looks up earlier use of
-the address: `evidence_hash` is salted with the token, so two accreditations from one mailbox
-share no value on chain, and nothing in the app database records the address. A sanction is keyed
-on the Hive username.
-
-So one mailbox can accredit any number of Hive accounts, and a sanctioned researcher can accredit
-a fresh account from the same mailbox. Every accredited account can vouch, and the threshold
-number of vouches (3 by default) enrolls an account in the Web of Trust, so the WoT is only as
-strong as this binding.
-
-## Questions to settle
-
-1. **The rule.** Does one verified mailbox back at most one accredited account at a time? Does a
-   sanctioned account's mailbox stay bound, so that its holder cannot accredit another account?
-2. **Where the binding lives.** An app-database table keyed by an HMAC of the normalised address
-   needs a migration and is not reconstructible from the chain, which sits against design
-   principles 2 and 6. A value on chain is public and linkable, which sits against principle 5.
-   Name the trade and choose.
-3. **Normalisation.** Case, plus-addressing, and subdomain variants of one institution.
-4. **Rebinding.** A researcher who lost their keys, or who moves to another account.
-5. **Other entry points.** Light-account signup already refuses a duplicate `accounts.email`. How
-   do the signup-verify accredit path and the settings email add flow relate to the binding?
-6. **Existing accreditations.** Past `evidence_hash` values cannot be compared, so the binding
-   can only apply from its rollout on, apart from addresses the `accounts` table already holds.
-7. **Enforcement points.** A refusal at `/request` is cheap; the check at `/verify` is the
-   authoritative one and has to hold when two verifications race.
-
-## Deliverable
-
-Work the questions through with the user (`/ce-brainstorm`). Record the decisions in
-`ARCHITECTURE.md` § 2 and file the implementation tasks with their priorities. A schema change
-needs the user's explicit approval before any task is filed.
-
-## Related
-
-`backend-accreditation-verify-requires-the-account-session` makes a verification show control of
-both mailbox and account. It does not limit how many accounts one mailbox can accredit.
-
-## Decisions (2026-10-06)
-
-Worked through with the user in a `/ce-brainstorm` dialogue, grounded by a read-only workflow over
-the code, the open tasks and external sources (52 agents, every fact adversarially verified), and
-written into `ARCHITECTURE.md` § 2 "Credential Bindings", § 2 "Revocation (custom_json)",
-"Accreditation Lifecycle & Sanctions", § 6.4, § 7, `hive-schemas.md` § 2.1 and 2.2, `CONCEPTS.md`
-("Credential Binding", "Release"), `.env.example` (`MAILBOX_BINDING_KEY`); commit 30817bbe. The
-text passed a five-lens doc review with adversarial verification of each finding (45 applied).
-
-| Question | Decision | Chosen over |
-|---|---|---|
-| 1. The rule | One verified mailbox backs at most one accredited account; a second account is refused, sanction or not, so a sanctioned account's mailbox stays bound. Extended to the ORCID iD: each credential binds one account, a sanction keeps every credential held. The principle is one researcher, one accredited account; two credentials on two accounts is an undetected breach, not a permitted arrangement (user correction mid-session) | sanction-only refusal; record-only registry; small per-mailbox cap; mailbox only |
-| 2. Where the binding lives | Mailbox: app-database table `mailbox_bindings` keyed by HMAC-SHA256 of the canonical address under a dedicated secret, nothing on chain (schema change approved). ORCID: on chain as today, with sanction stickiness added to the read | keyed hash in the accredit op; table plus encrypted copy on chain |
-| 3. Normalisation | Trim, lowercase, strip `+tag`, keep dots, the request schema's email rule, punycode domain; subdomains and aliases not folded; one shared function; the mail recipient is never derived from the folded form (architect, from evidence; confirmed in the synthesis) | |
-| 4. Rebinding | The holder can release the account's own accreditation (new `revoke type: "release"`, admin-signed on the holder's fresh-auth request), which frees its mailboxes; lost keys go to an admin (`POST /api/admin/accreditation/release`). History of released bindings kept for admins, one year, no waiting period | admin-only; move by mailbox proof alone; no moves; waiting period |
-| 5. Other entry points | Light-account signup claims the binding at finalize for the mailbox the signup link proved; `/signup` answers uniformly after the duplicate check; ORCID-path signups bind no mailbox; settings e-mail never binds; account deletion no longer frees a mailbox | |
-| 6. Existing accreditations | Light accounts on file are bound by an operator script (mail-proven signup ops matched by hash); page-accredited Keychain accounts are left until their mailbox is next verified | asking the ten to verify again |
-| 7. Enforcement | Uniform `/request` answer with the notice delivered by mail; authoritative claim at `/verify` after the session and the existing gates, 409 `MAILBOX_ALREADY_BOUND`, row before op, kept on ambiguous outcomes, partial unique index as race arbiter, fail closed without the app database | |
-
-Tasks filed (2026-10-06): `backend-mailbox-binding-registry` (high),
-`backend-accreditation-release-op` (high), `backend-orcid-binding-sanction-sticky` (high),
-`backend-signup-finalize-claims-mailbox-binding` (high), `backend-mailbox-binding-backfill-script`
-(normal), `backend-mailbox-binding-history-and-admin-view` (normal),
-`ui-accreditation-binding-refusal-states` (high), `ui-accreditation-release-flow` (normal).
-
-Defects found while grounding, triaged by the user "as recommended": `backend-signup-email-address-list`
-(high), `backend-signup-finalize-evidence-hash-salted` (normal), `backend-verify-failure-may-have-landed`
-(normal), `backend-registration-watch-masks-addresses` (normal),
-`backend-academic-domains-case-and-stoplist` (low), `architect-accreditation-docs-drift-sweep` (low),
-`ui-signup-duplicate-and-server-strings` (low); two stale-comment items appended to
-`backend-accreditation-wot-comment-and-dead-code-pass`; `ui-light-account-vouch` moved from
-`blocked/` to `pending/` (its blocker was archived 2026-10-01). Dismissed: `/verify` skipping its
-HAF gates when HAF is unconfigured (every deployment configures HAF; the binding gate sits outside
-that block by design).
-
-The privacy and terms task (`tasks/hold/`, untracked) carries the notice items the binding needs.
-Learnings: no `/ce-compound`; the design rationale is in `ARCHITECTURE.md`.
-
-## The sign-in modal has no way to ORCID sign-in (archived 2026-10-06) — clean review; two signal follow-ups and two residual risks triaged
-
-### Architect archive note (2026-10-06)
-

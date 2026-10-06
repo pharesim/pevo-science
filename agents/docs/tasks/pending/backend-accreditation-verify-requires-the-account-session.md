@@ -71,3 +71,13 @@ Waits for `ui-accreditation-verify-page-signs-in-first` to be archived. If this 
 SPA's unauthenticated POST would answer 401 and the verify page would show its generic failure
 state with a "Request New" button. The architect moves this file to `pending/` when the ui task
 is archived.
+
+## Unblocked (architect, 2026-10-06)
+
+`ui-accreditation-verify-page-signs-in-first` is archived. The verify page now sends the session
+on `POST /api/accreditation/verify` (`verifyAccreditation` uses `authenticatedRequest`), posts
+nothing without one, maps `UNAUTHORIZED`, `SESSION_EXPIRED` and `SESSION_INVALIDATED` to its
+sign-in state, and maps 403 `ACCREDITATION_ACCOUNT_MISMATCH` to a different-account state with no
+"Request New" button. The page matches on `err.code`, not on the status: the 401s
+`verifyHiveSignature` sends carry `UNAUTHORIZED` or `SESSION_INVALIDATED`, and the refusal in
+scope item 2 must carry exactly `ACCREDITATION_ACCOUNT_MISMATCH`.
