@@ -706,18 +706,24 @@ export async function findAccreditedAccountWithOrcid(orcidId: string): Promise<s
 
   // Latest authorized on-chain accredit op carrying this ORCID. Filter by
   // accreditationAuthorities so a self-broadcast custom_json can't poison the check.
-  // `cj.id DESC` is the same-block deterministic tie-breaker (the monotonic HAF
+  // `id DESC` is the same-block deterministic tie-breaker (the monotonic HAF
   // op id) per the custom-json hive-primitive design-rules convention; without
   // it, two ops affecting this ORCID in the same 3s block resolve
-  // non-deterministically.
+  // non-deterministically. The row match sits in an AS MATERIALIZED CTE with
+  // the ORDER BY and LIMIT outside it, so an ORCID that no accredit op carries
+  // does not walk the blocks index backward. `loadWotThreshold` (wot.ts)
+  // explains the planner shape.
   const recent = await pool.query<{ account: string | null }>(
-    `SELECT cj.json::jsonb ->> 'account' AS account
-     FROM ${T.customJson} cj
-     WHERE cj.custom_id = $2
-       AND cj.json::jsonb ->> 'action' = 'accredit'
-       AND cj.json::jsonb ->> 'orcid' = $1
-       AND cj.required_posting_auths ?| $3::text[]
-     ORDER BY cj.block_num DESC, cj.id DESC
+    `WITH candidates AS MATERIALIZED (
+       SELECT cj.id, cj.block_num, cj.json::jsonb ->> 'account' AS account
+       FROM ${T.customJson} cj
+       WHERE cj.custom_id = $2
+         AND cj.json::jsonb ->> 'action' = 'accredit'
+         AND cj.json::jsonb ->> 'orcid' = $1
+         AND cj.required_posting_auths ?| $3::text[]
+     )
+     SELECT c.account FROM candidates c
+     ORDER BY c.block_num DESC, c.id DESC
      LIMIT 1`,
     [orcidId, config.appTag, config.accreditationAuthorities],
   );
@@ -729,18 +735,23 @@ export async function findAccreditedAccountWithOrcid(orcidId: string): Promise<s
   // if that action is still an 'accredit' carrying THIS orcid; a subsequent
   // 'revoke' clears it, and a subsequent 'accredit' with a different orcid
   // means the account rebound to another identity (freeing this orcid).
-  // `cj.id DESC` is the same-block deterministic tie-breaker (monotonic HAF op
+  // `id DESC` is the same-block deterministic tie-breaker (monotonic HAF op
   // id) per the custom-json hive-primitive design-rules convention, so a
-  // same-block accredit/revoke for this account resolves to the later op.
+  // same-block accredit/revoke for this account resolves to the later op. The
+  // AS MATERIALIZED CTE is the same fence as on the `recent` read.
   const status = await pool.query<{ action: string | null; orcid: string | null }>(
-    `SELECT cj.json::jsonb ->> 'action' AS action,
-            cj.json::jsonb ->> 'orcid' AS orcid
-     FROM ${T.customJson} cj
-     WHERE cj.custom_id = $2
-       AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
-       AND cj.json::jsonb ->> 'account' = $1
-       AND cj.required_posting_auths ?| $3::text[]
-     ORDER BY cj.block_num DESC, cj.id DESC
+    `WITH candidates AS MATERIALIZED (
+       SELECT cj.id, cj.block_num,
+              cj.json::jsonb ->> 'action' AS action,
+              cj.json::jsonb ->> 'orcid' AS orcid
+       FROM ${T.customJson} cj
+       WHERE cj.custom_id = $2
+         AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+         AND cj.json::jsonb ->> 'account' = $1
+         AND cj.required_posting_auths ?| $3::text[]
+     )
+     SELECT c.action, c.orcid FROM candidates c
+     ORDER BY c.block_num DESC, c.id DESC
      LIMIT 1`,
     [account, config.appTag, config.accreditationAuthorities],
   );

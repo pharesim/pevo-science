@@ -475,8 +475,8 @@ describe('findAccreditationBroadcastByIdempotencyKey — real HAF SQL shape', ()
  * the third in-scope function per the originating task spec. The function
  * implements latest-action-wins semantics over `(accredit, revoke)` ops
  * scoped to `(account = $hiveUsername, required_posting_auths ?|
- * accreditationAuthorities)`. See `backend/src/lib/idempotency.ts`
- * (lines ~282-345) for the SQL shape this test exercises.
+ * accreditationAuthorities)`. See `findExistingAccreditation` in
+ * `backend/src/lib/idempotency.ts` for the SQL shape this test exercises.
  *
  * Discovery helper: probe HAF for the most-recent (`ORDER BY block_num
  * DESC, id DESC`) `accredit`-OR-`revoke` op signed by a configured
@@ -499,7 +499,7 @@ async function findKnownExistingAccreditationFixture(): Promise<ExistingAccredit
   if (!pool) return null;
   const genesis = getCachedGenesisBlock();
   // Round-1 hold item 1: no try/catch — SQL errors propagate as test
-  // failures. The probe mirrors findExistingAccreditation's SQL shape so
+  // failures. The probe reads findExistingAccreditation's view and join so
   // a regression on the underlying view surfaces here as well as in the
   // assertion below.
   const res = await queryWithRetry<{

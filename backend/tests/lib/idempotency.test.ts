@@ -333,7 +333,7 @@ describe('findAccreditationBroadcastByIdempotencyKey', () => {
     // Round-1 hold #5: tiebreaker alignment with sibling
     // `findExistingAccreditation` per convention Rule 2 of
     // `hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md`.
-    expect(sql).toMatch(/ORDER BY cj\.block_num DESC, cj\.id DESC/);
+    expect(sql).toMatch(/ORDER BY c\.block_num DESC, c\.id DESC/);
     expect(params[0]).toBe(config.appTag);
     expect(params[1]).toBe(KEY);
     expect(params[2]).toEqual(config.accreditationAuthorities);
@@ -394,7 +394,7 @@ describe('findExistingAccreditation', () => {
     expect(sql).toMatch(/'action' AS action/);
     // Convention Rule 2 tiebreaker (cj.id substitutes for trx_in_block,
     // which operation_custom_json_view does not expose).
-    expect(sql).toMatch(/ORDER BY cj\.block_num DESC, cj\.id DESC/);
+    expect(sql).toMatch(/ORDER BY c\.block_num DESC, c\.id DESC/);
     expect(sql).toMatch(/LIMIT 1/);
     expect(params[0]).toBe(config.appTag);
     expect(params[1]).toBe('alice');

@@ -107,13 +107,20 @@ export async function getLatestAccreditOp(account: string): Promise<{
   if (!pool) throw new Error('HAF pool unavailable for latest-accredit-op read');
 
   try {
+    // The row match sits in an AS MATERIALIZED CTE with the ORDER BY and LIMIT
+    // outside it, so an account with no accredit op does not walk the blocks
+    // index backward. `loadWotThreshold` (wot.ts) explains the planner shape.
     const result = await pool.query<{ json: string | Record<string, unknown> }>(
-      `SELECT cj.json FROM ${T.customJson} cj
-       WHERE cj.custom_id = $1
-         AND cj.json::jsonb ->> 'account' = $2
-         AND cj.json::jsonb ->> 'action' = 'accredit'
-         AND cj.required_posting_auths ?| $3::text[]
-       ORDER BY cj.block_num DESC, cj.id DESC
+      `WITH candidates AS MATERIALIZED (
+         SELECT cj.id, cj.block_num, cj.json
+         FROM ${T.customJson} cj
+         WHERE cj.custom_id = $1
+           AND cj.json::jsonb ->> 'account' = $2
+           AND cj.json::jsonb ->> 'action' = 'accredit'
+           AND cj.required_posting_auths ?| $3::text[]
+       )
+       SELECT c.json FROM candidates c
+       ORDER BY c.block_num DESC, c.id DESC
        LIMIT 1`,
       [config.appTag, account, config.accreditationAuthorities],
     );

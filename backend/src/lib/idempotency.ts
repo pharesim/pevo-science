@@ -159,8 +159,7 @@ export function embedIdempotencyKey(
  * not carry the Hive transaction id directly — `trx_id` lives on
  * `hafsql.haf_operations.included_trx_id` and is reachable via
  * `haf_operations.id = <op_view>.id`. The schema convention is documented in
- * `agents/docs/hive-schemas.md`; the JOIN cost is negligible at LIMIT 1
- * because both sides have indexes on `id`.
+ * `agents/docs/hive-schemas.md`.
  *
  * Comments use `operation_comment_view` (not `comments`) — the `comments`
  * roll-up view has no surrogate matching `haf_operations.id`, so the
@@ -208,14 +207,21 @@ export async function findCustodyBroadcastByIdempotencyKey(
   }
 
   // opType === undefined OR opType === 'custom_json'
+  // The row match sits in an AS MATERIALIZED CTE with the ORDER BY and LIMIT
+  // outside it, so a key that matches nothing does not walk the blocks index
+  // backward. `loadWotThreshold` (wot.ts) explains the planner shape.
   const customJsonHit = await pool.query<{ trx_id: string; block_num: number | null }>(
-    `SELECT op.included_trx_id AS trx_id, cj.block_num
-     FROM ${T.customJson} cj
-     JOIN hafsql.haf_operations op ON op.id = cj.id
-     WHERE cj.custom_id = $1
-       AND cj.required_posting_auths ?| $2::text[]
-       AND (cj.json::jsonb ->> 'idempotency_key') = $3
-     ORDER BY cj.block_num DESC
+    `WITH candidates AS MATERIALIZED (
+       SELECT cj.id, cj.block_num
+       FROM ${T.customJson} cj
+       WHERE cj.custom_id = $1
+         AND cj.required_posting_auths ?| $2::text[]
+         AND (cj.json::jsonb ->> 'idempotency_key') = $3
+     )
+     SELECT op.included_trx_id AS trx_id, c.block_num
+     FROM candidates c
+     JOIN hafsql.haf_operations op ON op.id = c.id
+     ORDER BY c.block_num DESC
      LIMIT 1`,
     [config.appTag, [username], idempotencyKey],
   );
@@ -246,24 +252,32 @@ export async function findAccreditationBroadcastByIdempotencyKey(
   pool: IdempotencyPool,
   idempotencyKey: string,
 ): Promise<IdempotencyHit | null> {
-  // ORDER BY (cj.block_num, cj.id) DESC matches the sibling
+  // ORDER BY (block_num, id) DESC matches the sibling
   // `findExistingAccreditation` tiebreaker per convention Rule 2 of
   // `hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md`.
-  // `operation_custom_json_view` does NOT expose `trx_in_block`; cj.id (the
+  // `operation_custom_json_view` does NOT expose `trx_in_block`; id (the
   // HAF op id, monotonic per chain) is the operationally-equivalent secondary
   // key. Under LIMIT 1 the practical impact is bounded (`idempotency_key` is
   // a sha256 hash; collisions implying multiple same-block rows are
   // vanishingly unlikely), but the convention-alignment matters across both
   // accreditation-state helpers.
+  //
+  // The row match sits in an AS MATERIALIZED CTE with the ORDER BY and LIMIT
+  // outside it, so a key that matches nothing does not walk the blocks index
+  // backward. `loadWotThreshold` (wot.ts) explains the planner shape.
   const result = await pool.query<{ trx_id: string; block_num: number | null }>(
-    `SELECT op.included_trx_id AS trx_id, cj.block_num
-     FROM ${T.customJson} cj
-     JOIN hafsql.haf_operations op ON op.id = cj.id
-     WHERE cj.custom_id = $1
-       AND cj.json::jsonb ->> 'action' = 'accredit'
-       AND (cj.json::jsonb ->> 'idempotency_key') = $2
-       AND cj.required_posting_auths ?| $3::text[]
-     ORDER BY cj.block_num DESC, cj.id DESC
+    `WITH candidates AS MATERIALIZED (
+       SELECT cj.id, cj.block_num
+       FROM ${T.customJson} cj
+       WHERE cj.custom_id = $1
+         AND cj.json::jsonb ->> 'action' = 'accredit'
+         AND (cj.json::jsonb ->> 'idempotency_key') = $2
+         AND cj.required_posting_auths ?| $3::text[]
+     )
+     SELECT op.included_trx_id AS trx_id, c.block_num
+     FROM candidates c
+     JOIN hafsql.haf_operations op ON op.id = c.id
+     ORDER BY c.block_num DESC, c.id DESC
      LIMIT 1`,
     [config.appTag, idempotencyKey, config.accreditationAuthorities],
   );
@@ -295,7 +309,7 @@ export async function findAccreditationBroadcastByIdempotencyKey(
  * /verify must NOT hit the gate on their old accredit op — that would return
  * 200 outcome='already_accredited' with a stale tx_id, eat the fresh token in
  * cleanup, and silently lock the user out of re-accreditation. Helper picks
- * the LIMIT-1 row by (block_num, cj.id) DESC and returns the hit only when
+ * the LIMIT-1 row by (block_num, id) DESC and returns the hit only when
  * that row's action is 'accredit'; when the latest is 'revoke' it returns
  * null so /verify falls through to the per-token check + broadcast path,
  * which is correct for a re-accreditation attempt after revoke.
@@ -312,9 +326,9 @@ export async function findAccreditationBroadcastByIdempotencyKey(
  *     `hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md`,
  *     the "inverted-shape" admin-issued op case)
  *
- * Same-block tiebreaker: `ORDER BY cj.block_num DESC, cj.id DESC` per
+ * Same-block tiebreaker: `ORDER BY block_num DESC, id DESC` per
  * convention Rule 2. `operation_custom_json_view` does NOT expose
- * `trx_in_block` (documented in `consent-ops.ts` header), so `cj.id` (the
+ * `trx_in_block` (documented in `consent-ops.ts` header), so `id` (the
  * HAF op id — monotonic per chain; within a block, higher id = later op)
  * is the operationally-equivalent secondary key. Determinism matters here
  * MORE than for the prior strict-accredit shape: under the revoke-aware
@@ -326,15 +340,23 @@ export async function findExistingAccreditation(
   pool: IdempotencyPool,
   hiveUsername: string,
 ): Promise<IdempotencyHit | null> {
+  // The row match sits in an AS MATERIALIZED CTE with the ORDER BY and LIMIT
+  // outside it, so an account with no accredit or revoke op does not walk the
+  // blocks index backward. `loadWotThreshold` (wot.ts) explains the planner
+  // shape.
   const result = await pool.query<{ trx_id: string; block_num: number | null; action: string }>(
-    `SELECT op.included_trx_id AS trx_id, cj.block_num, cj.json::jsonb ->> 'action' AS action
-     FROM ${T.customJson} cj
-     JOIN hafsql.haf_operations op ON op.id = cj.id
-     WHERE cj.custom_id = $1
-       AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
-       AND cj.json::jsonb ->> 'account' = $2
-       AND cj.required_posting_auths ?| $3::text[]
-     ORDER BY cj.block_num DESC, cj.id DESC
+    `WITH candidates AS MATERIALIZED (
+       SELECT cj.id, cj.block_num, cj.json::jsonb ->> 'action' AS action
+       FROM ${T.customJson} cj
+       WHERE cj.custom_id = $1
+         AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+         AND cj.json::jsonb ->> 'account' = $2
+         AND cj.required_posting_auths ?| $3::text[]
+     )
+     SELECT op.included_trx_id AS trx_id, c.block_num, c.action
+     FROM candidates c
+     JOIN hafsql.haf_operations op ON op.id = c.id
+     ORDER BY c.block_num DESC, c.id DESC
      LIMIT 1`,
     [config.appTag, hiveUsername, config.accreditationAuthorities],
   );

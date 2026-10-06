@@ -1450,16 +1450,23 @@ async function getExistingAccreditation(username: string): Promise<{
   // Filter by accreditationAuthorities so a self-broadcast custom_json (signed
   // by the target account's own posting key) cannot masquerade as a real
   // accreditation and unlock the /link flow.
-  // `cj.id DESC` is the same-block deterministic tie-breaker (monotonic HAF op
+  // `id DESC` is the same-block deterministic tie-breaker (monotonic HAF op
   // id) per the custom-json hive-primitive design-rules convention, so a
-  // same-block accredit/revoke resolves to the later op.
+  // same-block accredit/revoke resolves to the later op. The row match sits in
+  // an AS MATERIALIZED CTE with the ORDER BY and LIMIT outside it, so an
+  // account with no accredit or revoke op does not walk the blocks index
+  // backward. `loadWotThreshold` (wot.ts) explains the planner shape.
   const result = await pool.query(
-    `SELECT cj.json FROM ${T.customJson} cj
-     WHERE cj.custom_id = $2
-       AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
-       AND cj.json::jsonb ->> 'account' = $1
-       AND cj.required_posting_auths ?| $3::text[]
-     ORDER BY cj.block_num DESC, cj.id DESC
+    `WITH candidates AS MATERIALIZED (
+       SELECT cj.id, cj.block_num, cj.json
+       FROM ${T.customJson} cj
+       WHERE cj.custom_id = $2
+         AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+         AND cj.json::jsonb ->> 'account' = $1
+         AND cj.required_posting_auths ?| $3::text[]
+     )
+     SELECT c.json FROM candidates c
+     ORDER BY c.block_num DESC, c.id DESC
      LIMIT 1`,
     [username, config.appTag, config.accreditationAuthorities],
   );
