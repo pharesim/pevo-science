@@ -45,4 +45,13 @@ or narrowing the claim (root `CLAUDE.md` "Comment anchors", last rule).
    database holds accounts, encrypted custody keys, recovery staging and the bridge queue);
    `UNSUBSCRIBE_SECRET` is read by `config.ts` but absent from the template.
 
+**Progress (2026-10-07).** The archive of the state G unverified-row lifecycle task applied part
+of items 3 and 4 (commit `8d27a8f3`):
+- Item 3, `orcid.md`: `PENDING_UNVERIFIED` is listed for `/start` and the callback, and step 4 of
+  `accredit` and `link` now describes the `verify_token IS NULL` write. Still open:
+  `ACCREDITATION_SANCTIONED`, the citation of a task file that does not exist, and the
+  line-number anchors.
+- Item 4, `settings.md`: done (the add-flow 401, state G in the factor lists, the re-issue
+  branch, and `PENDING_UNVERIFIED` on set-password).
+
 Done when each item is fixed or recorded here as dismissed with a reason, and the file is archived.

@@ -1,8 +1,8 @@
-# Check that a state-D JWT session can complete settings critical actions
+# Check that a `'self'`-claim session can complete settings critical actions
 
 **Owner:** ui
 **Created:** 2026-10-05
-**Priority:** normal
+**Priority:** high
 
 Raised by the backend in the custody-column alignment (since archived) and
 approved for filing at that task's archive. Reproduce first. This may turn out
@@ -52,3 +52,30 @@ the custody-column change; ORCID-login ones joined them.
 
 1. Every action above has a recorded reproduction for both login factors.
 2. No code change lands without an architect decision, unless step 2 applies.
+
+## Architect note (2026-10-07): widened to every `'self'` session, priority raised to high
+
+Folded in at the archive of the state G unverified-row lifecycle task (its `[TODO UI]` item 3).
+User triage: "as recommended". The priority is high because part of this is a broken flow
+already shown by reading the code, not only a suspected one.
+
+`submitEmail`, `deleteEmail` and `setPassword` in `frontend/src/api.js` all go through
+`authenticatedRequest`, which sends the session JWT as a Bearer token; none of them signs with
+Keychain. A Keychain user's session carries the `'self'` claim (`POST /api/auth/session`), so
+these calls take the backend's JWT path:
+
+1. **No row (pure Keychain user adding an email).** `POST /api/settings/email` answers 401
+   `UNAUTHORIZED` to the add flow on the JWT path and writes no row (ARCHITECTURE.md § 6.4
+   "Change email"; `api-contracts/settings.md`). A Keychain user therefore cannot register an
+   email from settings.
+2. **State G row whose email is unverified.** Re-issuing the link (`POST /api/settings/email`)
+   and deleting the row (`DELETE /api/settings/email`) need a fresh-auth proof on the JWT path.
+   The password issuer refuses the row's claim, and the row cannot acquire an ORCID while the
+   email is unverified, so unless it already holds one it has no proof it can mint.
+3. **State D**, as above.
+
+Scope addition: reproduce 1 and 2 as well. Items 1 and 2 need no architect decision: § 6.4
+admits those rows only on the Keychain (Hive-signature) path, so the fix is to sign these
+settings requests with Keychain for a `'self'` session, as the SPA already does for
+`POST /api/auth/link`. Step 3 of the Scope still applies to state D, which has factors a JWT-path
+proof could use.

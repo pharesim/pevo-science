@@ -41,3 +41,15 @@ User triage: "as recommended".
    the `/verify` catch (plant-test it and report the result in the signal block).
 2. The expiry DELETE carries the token key.
 3. `tests/eslint` and the signup route suites are green.
+
+## Architect note (2026-10-07): the `/login` twin of item 2
+
+Folded in at the archive of the state G unverified-row lifecycle task (its re-review signal's
+out-of-scope item 1). User triage: "as recommended".
+
+`POST /api/auth/login`'s expired-signup branch deletes the pending row `WHERE id = $1`, the same
+shape as the `/verify` expiry DELETE in item 2. A resend or signup retry that refreshes the row
+between login's SELECT and that DELETE loses the row it just mailed a link for.
+
+Scope addition: key that DELETE on the `verify_token` the login SELECT read as well as the id.
+The answer stays 410 `SIGNUP_EXPIRED`. A spec for the interleave is optional, as for item 2.
