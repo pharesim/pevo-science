@@ -299,3 +299,70 @@ Triage of the rest (user, 2026-10-07, as recommended):
   consequence today); signal note 4 (scaling, 22 ops). Signal notes 1 and 2 are already covered
   by `backend-verify-gate-treats-wot-enrollee-as-accredited` and
   `backend-idempotency-real-haf-discovery-walks-the-chain`.
+
+## Backend re-review signal (2026-10-07, commits 8fccf4f0, 35e4cac3 and d442a4b7)
+
+**Landed.** Three commits, each checked with `git merge-base --is-ancestor <sha> main`:
+`8fccf4f0` (hold item 1, `backend/tests/lib/idempotency.test.ts` only, +3 lines), `35e4cac3`
+(hold item 2, `[skip-zone-audit]`), and `d442a4b7` (two user-approved follow-ups on the same
+entry, `[skip-zone-audit]`; item 3 below).
+
+1. **Hold item 1.** `toMatch(/\bAS\s+MATERIALIZED\b/i)` on the captured SQL in exactly the three
+   specs the hold names, one line each, with no comment:
+   - custody custom_json arm (asserted on the second query call): "scopes the custom_json query by
+     required_posting_auths containing username and joins haf_operations";
+   - `findAccreditationBroadcastByIdempotencyKey`: "filters by accreditationAuthorities + appTag +
+     accredit action and joins haf_operations; orders by (block_num, id) DESC";
+   - `findExistingAccreditation`: "filters by appTag + action IN (accredit,revoke) +
+     account=$username + accreditationAuthorities; orders by (block_num, id) DESC".
+
+   No new spec and no other edit in the file. Red first, in a scratchpad `git archive` copy with
+   `tests/setup.ts` stubbed: replacing one site's `AS MATERIALIZED` with `AS` fails exactly that
+   site's spec, on the new assertion (1 failed, 28 passed, exit 1, at each of the three sites).
+   The HEAD test file stays green under the same three mutants (29 passed, exit 0). An independent
+   verifier replicated both in its own copy.
+
+2. **Hold item 2.** `/ce-compound-refresh` scoped to
+   `haf-custom-json-latest-op-materialized-fence-2026-06-14.md`, classified Update, with the three
+   prescribed edits and no sentence added:
+   - the Guidance snippet projects `json, block_num, id` and orders by `block_num DESC, id DESC`,
+     the shape of the entry's Examples "After" block and of `loadWotThreshold`;
+   - "and returned identical rows" is deleted;
+   - `findCustodyBroadcastByIdempotencyKey` (custom_json arm) and
+     `findAccreditationBroadcastByIdempotencyKey` are deleted from the verified-on-live-HAF sentence.
+
+   CONCEPTS.md: scanned, no qualifying terms. Discoverability: root `CLAUDE.md` already covers the
+   store.
+
+3. **Beyond the hold (`d442a4b7`).** The verification pass below raised two points on the entry,
+   and the user chose to fix both:
+   - The Guidance sentence "Verified against live HAF: ~15ms vs ~18s, and the blocks index scan
+     reports `(never executed)`" sits under the edited snippet, which now projects `id`. The 15 ms
+     was measured on the two-column CTE before `id` was added, and nothing re-measured it. The
+     timing is deleted; the `(never executed)` observation stays. The Examples block's "~15ms"
+     line is unchanged, because it already says current code also projects `id`.
+   - `35e4cac3` had left the verified-sites paragraph on one 112-character line. It is re-wrapped,
+     with no word changed.
+
+**Runs.**
+
+- `npm run typecheck`: exit 0. `npx eslint tests/lib/idempotency.test.ts`: exit 0.
+- `tests/lib/idempotency.test.ts` and `tests/eslint`, shared checkout, root `CLAUDE.md` recipe:
+  10 files, 175 passed, exit 0.
+
+**Review passes.** `/ce-code-review` was not run (backend role). A read-only verification workflow
+ran three lenses (red-first replication, entry truth against the code and this task's AC 2 table,
+hold completeness), with two refuters per finding. One P3 survived, the 112-character line, fixed
+in `d442a4b7`. Residual notes, no action taken:
+
+- A mutant that keeps `AS MATERIALIZED` but moves `ORDER BY ... LIMIT 1` inside the CTE passes the
+  custody custom_json spec, which has no ORDER BY pin. At the two accreditation lookups only the
+  existing ORDER BY pin catches it. This is outside the hold's red-first criterion, and the
+  2026-10-07 triage dismissed a custody sort-order spec. `AS NOT MATERIALIZED` and an inlined
+  subquery both fail the new assertion at all three sites.
+- The new assertions pin SQL text against a mocked pool, not the live plan.
+
+**Learnings checkpoint.** `/ce-compound-refresh` on the fence entry (`35e4cac3`, `d442a4b7`). A
+grep of `agents/docs/solutions/` for the two dropped lookups and for fence-pinning claims found no
+other entry contradicted. No new entry: the commits and this block carry everything this round
+established.
