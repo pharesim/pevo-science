@@ -78,3 +78,19 @@ Two consequences follow when the teardown lands inside the await:
 2. The recover start's reject path removes no flow key a later flow could own.
 3. The signed-out recover ORCID flow is unchanged.
 4. Tests drive the real subject-change path and were observed red at base.
+
+## Added at the archive of `ui-recover-and-reset-leave-a-revoked-session-signed-in` (2026-10-07)
+
+Folded in by user decision, same function:
+
+4. `handleOrcidVerify` does not check `isSubmitting`. The method tabs and the
+   Verify with ORCID button stay clickable while a seed-phrase submit is in
+   flight, so the user can pick the ORCID tab, press Verify with ORCID and
+   leave for ORCID before the seed request settles. If that request
+   succeeds, the user never sees the screen that tells them to confirm
+   through the mailed link. Start nothing from Verify with ORCID while
+   `isSubmitting` is true; the button works again once the submit settles.
+   This applies under either shape in scope item 1, for the signed-out page.
+
+Acceptance criterion 5: while a recover submit is in flight, Verify with
+ORCID starts no ORCID request and does not navigate, and a unit test pins it.
