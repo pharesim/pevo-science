@@ -46,7 +46,7 @@ The discriminator: status codes returned *after* a successful auth check disclos
 
 The pattern is silent on read. The pre-gate SELECT looks the same at code-review time before and after the gate is added. Static analysis won't flag it. Library tests for the SELECT and the gate independently pass. Only adversarial review (constructing the attack scenario from first principles) surfaces the composition issue.
 
-In PEvO's threat model JWT theft is the accepted upstream prerequisite. Once a JWT is stolen, the attacker has broadcast access via the JWT alone — but they don't have password or fresh-auth proofs. The fresh-auth gate is the defense against full account takeover. If the pre-gate SELECT enables email enumeration via that same stolen JWT, the gate's protection is weakened: an attacker can probe the user's email registration to plan further attacks (phishing, account-recovery social engineering, etc.) without ever needing to bypass the gate.
+In PEvO's threat model JWT theft is the accepted upstream prerequisite. A stolen JWT carries no password or fresh-auth proof, and the fresh-auth gate is the defense against full account takeover. If the pre-gate SELECT enables email enumeration via that same stolen JWT, the gate's protection is weakened: an attacker can probe the user's email registration to plan further attacks (phishing, account-recovery social engineering, etc.) without ever needing to bypass the gate.
 
 The fix is mechanical (reorder route steps), the bug is conceptual (a previously-uniform disclosure becomes oracle-shaped under composition). The discipline is checking the composition at every gate-addition.
 
