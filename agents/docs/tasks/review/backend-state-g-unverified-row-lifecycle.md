@@ -358,3 +358,71 @@ the old `POST /api/auth/verify` may have given a `confirmed:` token.
 At archive: the `[TODO Architect]` doc updates and filing the `[TODO UI]` task.
 
 When both items are in, `git mv` this file back to `tasks/review/`.
+
+## Backend re-review signal (2026-10-07, commits 8f4a8287, 09e006ed)
+
+Both SHAs verified as ancestors of HEAD with `git merge-base --is-ancestor`.
+
+**Hold item 1 (8f4a8287).** `routes/recover.ts` now ends the comment at "The 401 + generic
+message matches the no-ORCID branch.", and the `recover-orcid-state-g.test.ts` header sentence ends
+at "...no-ORCID branches return.". Both are the prescribed literal forms.
+
+**Hold item 2 (8f4a8287).** The resend UPDATE is `WHERE id = $3 AND verify_token = $4`, bound to
+the token the handler's SELECT read. When `rowCount !== 1` the handler returns the uniform message
+before the SMTP block, so it sends no mail. No new spec, per the hold.
+
+**Found by verification, fixed after your triage (09e006ed).** The docblock of
+`tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts` credited the resend's
+early return for a row with a username with keeping a hex token off a finalized row. That return
+sees only the row as read before the argon2 verify. The clause now says the resend writes only where
+the row still holds the hex token it read. User decision (2026-10-07): narrow it in this task.
+
+**Verification.**
+- Typecheck exits 0. Lint has 0 errors (the one pre-existing warning).
+- Each route file run alone at 8f4a8287, all green: auth-state-g-rows 12/12, auth-log-shape 10/10,
+  signup-verify-link-password 5/5, recover 32/32, recover-orcid-state-g 1/1,
+  auth-argon-error-translation 18/18.
+- `tests/eslint` alone: 9 files, 146/146, after each commit.
+- The pre-commit anchor matcher finds 0 hits on the added lines, and its control line fires.
+- An adversarial verification workflow ran against 8f4a8287: four lenses (race enumeration,
+  real-path race probe, comment truth, oracle and timing) and two refuters per finding. All 6
+  agents finished, none died.
+  - Race lens: walked every `accounts` writer in `backend/src`. None moves a row the resend read
+    as E to another state while keeping its hex token. No writer puts a prior token back on an
+    E row, and ids are never reused.
+  - Probe lens: scratchpad copies, a `pool.query` spy fires one write right after the resend's
+    SELECT, SMTP mocked, every case `fired`.
+    - Head: confirm, confirm plus finalize, delete and a concurrent token replacement each answer
+      200 with the uniform message, send no mail, and leave the row as the interleaver wrote it.
+      The uncontended case and an expiry-only bump still re-issue and mail once.
+    - Base: the finalized light row gets a signup hex token and a mail (the hold's defect), a
+      confirmed row reverts to hex, and a deleted row is still mailed.
+    - A mutant without the `rowCount` guard mails a dead link in every race case.
+  - Oracle lens: only a caller past the password check reaches the no-match return, the 503, 400
+    and 500 paths are unchanged, and SMTP failure still cannot become a 500.
+  - The one finding is the docblock above (1 of 2 refuters voted to refute it, on scope).
+- Dev database, read-only: 0 rows with `username` set and a non-`confirmed:` `verify_token` under
+  `custody` 'light', 'self' or NULL. No residue of the old race to repair here. Production not
+  checked.
+- This also closes the race the signup verify password task's verification noted: a resend racing a
+  successful `/verify` could turn the confirmed row back into a hex-token row that keeps its binding.
+
+**Out of scope, for follow-up filing (pre-existing, unchanged by this diff).**
+1. The `/login` expired-E DELETE is keyed on `id` alone. A resend that refreshes the row between
+   the SELECT and the DELETE loses its row, so the link it mailed is dead. (The `/verify` expiry
+   DELETE twin is already listed in the signup verify password task.)
+2. The `/resume-signup` UPDATE (`expires_at`, `signup_binding_hash`) is keyed on `id` alone. It can
+   stamp those columns onto a row `/confirm` or `/link` finalized in between. Not probed for a
+   reader that acts on them.
+3. Anchor rot in tests, outside both the eslint canary and the added-lines gate:
+   `auth-log-shape.test.ts` cites `auth.ts` line numbers for the two SMTP warn emissions and carries
+   round ordinals, and `recover.test.ts` cites a task file slug.
+
+**Learnings checkpoint.** Grepped `agents/docs/solutions/` for resend-verification, the
+`WHERE id = $3` write and token-keyed writes. `timing-equalization-smtp-failure-mode-oracle` is not
+contradicted (its uniform-200 goal holds; the new return is a 200). No new entry: item 3 of
+`mailed-credential-token-dies-with-its-address-and-credential` already states the principle (the
+write that issues the token re-checks the lookup's predicate).
+
+**Simplify.** About 6 substantive changed code lines, under the `ce-simplify-code` threshold;
+nothing to cut. Code review left to the architect at intake, per `agents/backend/CLAUDE.md`.
