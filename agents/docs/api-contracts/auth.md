@@ -57,7 +57,7 @@ Register a light account. Two paths: email-based (institutional email required) 
 
 **With `orcid_token` (ORCID path):**
 - `email` -- optional. Any domain accepted (no institutional requirement). When omitted, the account has no email (ORCID-only).
-- `password` -- **optional** on the ORCID path, regardless of whether `email` is provided. When omitted, null, or empty, the account is stored with `password_hash = NULL`; subsequent password-login attempts return `403 NO_PASSWORD_SET` and the UI should direct the user to sign in via ORCID or recover via seed phrase. The user can opt into password login later via `POST /api/settings/set-password`. When supplied, the password must meet the signup policy (10+ chars with lowercase, uppercase, and numbers).
+- `password` -- **optional** on the ORCID path, regardless of whether `email` is provided. When omitted, null, or empty, the account is stored with `password_hash = NULL`; subsequent password-login attempts return `403 NO_PASSWORD_SET` (see `POST /api/auth/login`). The user can opt into password login later via `POST /api/settings/set-password`. When supplied, the password must meet the signup policy (10+ chars with lowercase, uppercase, and numbers).
 - `full_name` -- optional, falls back to name from ORCID profile.
 - `institution`, `field` -- optional, default to empty string.
 - `orcid_token` -- one-time nonce returned by `POST /api/orcid/callback` (signup mode). Backend validates against Redis and retrieves the verified ORCID iD. Consumed on use.
@@ -79,7 +79,7 @@ Username selection and account creation happen later, at the `/api/auth/confirm`
 
 **Errors:**
 - `VALIDATION_ERROR` — password too weak, or missing required fields
-- `DUPLICATE` — email already registered or pending (fires BEFORE the accreditation gate; duplicate-email 409 is authoritative regardless of whether the domain is institutional)
+- `DUPLICATE` (409): email already registered or pending. The check fires BEFORE the accreditation gate, so this 409 does not depend on whether the domain is institutional. One exception: an address held by a state G row (ARCHITECTURE.md § 6.1) whose email is unverified and that has no password and no ORCID is not a duplicate. That signup continues to the accreditation gate, and past the gate it deletes the G row and writes its own. A 409 can also come after the gate, when the row holding the address changed, or a row appeared for it, between the check and the write.
 - `ORCID_ALREADY_LINKED` (409) -- the supplied `orcid_token`'s ORCID is already bound to another account row (the `accounts_orcid_unique` partial index). Same terminal wire shape as the `/orcid/callback` durable-binding 409 (no `retriable` field, no `Retry-After` header). Previously surfaced as `INTERNAL_ERROR` (500). Recovery is terminal: the ORCID is already bound to a different account, so a resubmit cannot succeed, and the single-use verification nonce is already consumed (a same-`orcid_token` resubmit gets the unresolved-token `BAD_REQUEST` 400). Clients MUST NOT blindly resubmit the same `orcid_token`; route the user to log into the existing account, or restart the ORCID OAuth flow from `/api/orcid/start` for a different ORCID.
 - `BAD_REQUEST` (400): a non-empty `orcid_token` that does not resolve, because it expired or an earlier submit spent it. Message: "Your ORCID verification is no longer valid. Please verify your ORCID again." No row is written. The check runs before the duplicate-email check and does not depend on the address.
 - `ACCREDITATION_NOT_FOUND` — non-institutional email without valid `orcid_token`, on a non-duplicate email. Institution-is-accredited is public knowledge; the fast-return on this path is intentional.
@@ -151,7 +151,7 @@ The `auth_token` is used in the subsequent `/api/auth/confirm` (new account) or 
 
 **Errors:**
 - `VALIDATION_ERROR` (400): missing or invalid `token`, or a missing or non-string `password`.
-- `BAD_REQUEST` (400): token not found or expired. Also the answer when a signup retry for the same address rewrote the row between the password check and the confirm.
+- `BAD_REQUEST` (400): token not found or expired. Also the answer when a signup retry for the same address rewrote the row between the password check and the confirm. The lookup matches only the hex token mailed for a pending signup, so a `confirmed:` `auth_token` and a settings email-verification token get this answer too, and no cookie is set.
 - `UNAUTHORIZED` (401): "Incorrect password". The password does not match the signup's, or the pending signup has no password. Nothing is written and no cookie is set, so the same link can be tried again.
 - `SERVICE_UNAVAILABLE` (503): argon2 capacity exhausted or backend draining. See [common.md](common.md).
 
@@ -293,7 +293,7 @@ On success: account activated with `custody: "self"`, accreditation `custom_json
 
 ### POST /api/auth/login
 
-Password-based login for light accounts.
+Password-based login for any account row that has a password.
 
 **Body:**
 
@@ -321,11 +321,11 @@ Password-based login for light accounts.
 
 **Errors:**
 - `UNAUTHORIZED` — invalid credentials
-- `NO_PASSWORD_SET` (403) — account has `password_hash IS NULL` (ORCID-only signup, or ORCID recovery that skipped password). The UI should direct the user to sign in with ORCID or recover via seed phrase. Message: `"Account has no password; sign in with ORCID or recover via seed phrase"`. Distinct from 401 on purpose — collapsing this into "invalid credentials" would make password login indistinguishable from the wrong-password case and hide the correct remediation path from legitimate users. Backend implementation note (advisory, not contract): the null-hash branch burns a sentinel `argon2.verify` against a module-load-computed argon2id hash before returning the 403, so its wall-time matches the real-hash verify path. This closes the per-request timing oracle that would otherwise let an unauthenticated attacker enumerate ORCID-only accounts (~1ms vs ~100ms before the equalization). The status-code axis (403 vs 401) is an accepted tradeoff — the feature-distinct error is UX-valuable for legitimate ORCID users, and status-code oracles are weaker than the prior 100x timing gap.
+- `NO_PASSWORD_SET` (403): the row has `password_hash IS NULL`. This check runs before the pending-signup checks, so a pending ORCID-path signup with no password gets it too. Message: `"This account has no password. Use another sign-in method, such as ORCID or Hive Keychain."`, one string for every passwordless row, because this branch is unauthenticated and a per-row message would read the row's state back to whoever typed the address. Distinct from 401 on purpose: collapsing this into "invalid credentials" would make password login indistinguishable from the wrong-password case and hide the correct remediation path from legitimate users. Backend implementation note (advisory, not contract): the null-hash branch burns a sentinel `argon2.verify` against a module-load-computed argon2id hash before returning the 403, so its wall-time matches the real-hash verify path. This closes the per-request timing oracle that would otherwise let an unauthenticated attacker enumerate passwordless accounts (~1ms vs ~100ms before the equalization). The status-code axis (403 vs 401) is an accepted tradeoff. The feature-distinct error is UX-valuable for legitimate ORCID users, and status-code oracles are weaker than the prior 100x timing gap.
 - `ACCOUNT_LOCKED` (403) — too many failed attempts
 - `PENDING_SIGNUP` (409): email verified but signup not completed. Response `data` contains `{ email }` only. The `auth_token` is NOT returned here (it is the row-lookup credential for `/confirm` and `/link`, and returning it in the login response leaked it via referer/proxy logs). To resume, route the user to `/api/auth/resume-signup` (password re-verify), which mints the binding cookie and returns a fresh `auth_token` in its response body.
-- `PENDING_UNVERIFIED` (409) — email not yet verified
-- `SIGNUP_EXPIRED` (410) — signup expired, user must re-register
+- `PENDING_UNVERIFIED` (409): a pending signup (no username yet) whose email is not verified. A finalized row whose settings email is unverified (state G) logs in normally.
+- `SIGNUP_EXPIRED` (410): that pending signup's link has expired. The row is deleted and the user must sign up again. Login never deletes a finalized row, G included.
 - `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. See [common.md](common.md).
 
 ---
@@ -427,7 +427,7 @@ Recover a light account when the user has lost access to their email. Requires e
 - `new_password` is **optional** on ORCID recovery. When omitted, null, or empty, `password_hash` is set to `NULL`, which disables password login until the user opts in via `POST /api/settings/set-password`. Subsequent password-login attempts return `403 NO_PASSWORD_SET`. Seed-phrase recovery remains available on null-hash accounts.
 - When supplied, the password must meet the signup policy (10+ chars with lowercase, uppercase, and numbers, the same `isPasswordValid` helper used by signup).
 
-For ORCID recovery, obtain `orcid_token` via `POST /api/orcid/start` (mode: `signup`) and `POST /api/orcid/callback` first. The backend verifies the ORCID iD from the token matches the account's stored ORCID. Note: the ORCID recovery path does not re-check `ORCID_MIN_WORKS`. It only verifies identity match, since the ORCID was already validated during signup. ORCID recovery is severed once the account has upgraded to self-custody (state D): a `upgraded_at IS NOT NULL` account is under on-chain (Keychain) control, and a stored ORCID link must not trigger a server-side rebind.
+For ORCID recovery, obtain `orcid_token` via `POST /api/orcid/start` (mode: `signup`) and `POST /api/orcid/callback` first. The backend verifies the ORCID iD from the token matches the account's stored ORCID. Note: the ORCID recovery path does not re-check `ORCID_MIN_WORKS`. It only verifies identity match, since the ORCID was already validated during signup. ORCID recovery serves light accounts only. It is refused for any row whose derived custody claim is not light: state D, and a state G row with an ORCID. Such an account is under on-chain (Keychain) control, and a stored ORCID link must not trigger a server-side rebind.
 
 **Response `data` is path-dependent.**
 
@@ -458,7 +458,7 @@ Phase 1 verifies the memo key, then stages the requested swap (new email plus th
 **Errors:**
 - `VALIDATION_ERROR` (400): missing fields, weak password, no recovery method provided, OR **both `memo_key` and `orcid_token` supplied simultaneously**. Exactly one credential must be presented. Message: `"Supply exactly one of memo_key or orcid_token, not both"`.
 - `NOT_FOUND` (404): no active account with that username.
-- `UNAUTHORIZED` (401): memo key mismatch, account has no stored memo key, no ORCID on account, ORCID recovery attempted on an account that has upgraded to self-custody, or invalid/expired/mismatched ORCID token. The message is generic so the route is not an upgrade-state or account-state oracle.
+- `UNAUTHORIZED` (401): memo key mismatch, account has no stored memo key, no ORCID on account, ORCID recovery attempted on an account whose custody is not light (state D or G), or invalid/expired/mismatched ORCID token. A non-light account gets the same message as an account with no ORCID.
 - `DUPLICATE` (409): new email already in use by another account.
 - `SERVICE_UNAVAILABLE` (503): argon2 capacity exhausted or backend draining (the memo-key path and password-bearing ORCID path both run argon2). See [common.md](common.md).
 

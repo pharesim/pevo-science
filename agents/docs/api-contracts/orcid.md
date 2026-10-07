@@ -79,6 +79,7 @@ In all modes other than `fresh_auth`, the three fields are IGNORED. Session-kind
 - `VALIDATION_ERROR` -- invalid mode
 - `UNAUTHORIZED` -- missing/invalid JWT for authenticated modes
 - `INTERNAL_ERROR` -- ORCID integration not configured
+- `PENDING_UNVERIFIED` (409) -- `link` and `accredit` only: the caller's account row has a settings-registered email that is not verified yet (a state G row). Message: "Verify the email you registered in settings, or remove it, before linking an ORCID." The callback checks again, because the email can be registered after `/start`.
 
 ---
 
@@ -169,7 +170,7 @@ The caller already knows the ORCID they submitted, so the response carries no pa
 1. Exchange code for token, fetch profile and works.
 2. Check `ORCID_MIN_WORKS`.
 3. Broadcast `accredit` custom_json with `method: "orcid"`.
-4. Update `orcid` column in `accounts` table (if light account).
+4. Update the `orcid` column of the caller's `accounts` row where its `verify_token` is NULL, so a state G row whose email is unverified is skipped. A caller with no row has nothing to update.
 
 **Response `data`:**
 
@@ -188,7 +189,7 @@ The caller already knows the ORCID they submitted, so the response carries no pa
 1. Exchange code for token, get ORCID iD and profile.
 2. Fetch existing accreditation from HAF to preserve fields (name, institution, field, method).
 3. Broadcast updated `accredit` custom_json with ORCID added/updated.
-4. Update `orcid` column in `accounts` table (if light account).
+4. Update the `orcid` column of the caller's `accounts` row where its `verify_token` is NULL, so a state G row whose email is unverified is skipped. A caller with no row has nothing to update.
 
 No min works check on link.
 
@@ -279,6 +280,7 @@ Submit it as the `fresh_auth_proof` field on a subsequent `POST /api/custody/bro
 - `BAD_REQUEST` -- `Invalid ORCID iD format`. The `orcid_id` returned from ORCID's token-exchange response did not match `/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/`. Format-level defense-in-depth guard; ORCID itself validates the MOD 11-2 checksum upstream. Fires at the `/callback` dispatch before any Redis key builder, pub.orcid.org fetch, or `custom_json` broadcast sees the value.
 - `UNAUTHORIZED` -- missing/invalid auth on `accredit` or `link` callbacks
 - `FORBIDDEN` -- authenticated caller does not match the `username` bound into the state by `/start` (applies to `accredit`, `link`)
+- `PENDING_UNVERIFIED` (409) -- `accredit` and `link`: as at `/start`, checked before the broadcast, so nothing is broadcast and the row is not written.
 - `ORCID_ALREADY_LINKED` (409) -- ORCID is bound to another account. Applies to `accredit` and `link`. Three distinct causes share this code; on the wire all three are non-retriable and identically shaped (no `retriable` field, no `Retry-After` header). Cause discrimination is server-side telemetry only:
   - **Durable on-chain binding:** the ORCID is accredited to another account on Hive. `findAccreditedAccountWithOrcid` matched an authority-signed `accredit` op for a different account. The caller must rebind via that account's keys or wait for a revoke.
   - **Cache-lag binding:** a different account successfully bound this ORCID within the last ~120s and the op has not yet been indexed by HAF. The orcid_binding Redis cache answered the 409 during the HAF-indexing-lag window. The binding is durable once indexed.
