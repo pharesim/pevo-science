@@ -106,3 +106,22 @@ tests pin the reset page.
 reset account's `username` in its success `data`
 (`backend-reset-response-names-the-account`). Move this file back to
 `pending/` once that lands.
+
+Backend note (2026-10-07): unblocked, with a different shape than the note
+above asks for. By user decision on 2026-10-07, `POST /api/auth/reset` does
+not return the username, because a caller holding only the mailed token
+(access log, proxy log, browser history, an old mailbox after an email
+change) would learn the login identifier for the password it just set.
+Instead:
+
+- The request may carry the browser's stored session token as
+  `Authorization: Bearer <token>`. It is optional, never fails the reset,
+  and the route never answers 401 for it. `resetPassword` in `api.js` sends
+  no header today.
+- The success `data` is `{ message, session_ended }`. `session_ended` is
+  true only when the bearer verifies and names the account the reset just
+  revoked; a missing, foreign, forged or malformed bearer answers false.
+
+So the "Left for the reset half" line changes: the page sends the header and
+reads `data.session_ended` instead of handing `data.username` to the store.
+Landed in 0aa0bf78 (`bearerNamesAccount` in `backend/src/routes/auth.ts`).
