@@ -15,8 +15,10 @@
  * the settings re-issue for an unverified state G row and that re-issue's
  * restore when its mail fails, and both signup upserts over a pending row E.
  * `POST /api/auth/reset-request` writes its token only while the row still
- * matches its lookup, so a recovery that moves the row's email between the two
- * leaves no token either.
+ * matches its lookup, so an email move that commits between the two leaves no
+ * token either. That spec holds the move open in a transaction on a second
+ * connection, so the route's lookup passes and its token write waits on the
+ * row lock until the move commits.
  *
  * Tokens are issued by `POST /api/auth/reset-request` where it serves the row.
  * It does not serve an unverified state G row, so for those the token is
@@ -32,12 +34,7 @@
  *   leaves it empty) to capture the mailed links and to fail one send
  *   deterministically. The verified ORCID nonce and the ORCID set-password
  *   proof are written directly, because the OAuth round trips that mint them
- *   need the remote ORCID provider. One spec wraps the app pool's `query` to
- *   run an ORCID recovery immediately before the reset-request's token
- *   write: a write inside the window between that route's lookup and its
- *   token write cannot be placed deterministically any other way. The
- *   wrapper changes no result; every statement still runs against the real
- *   database.
+ *   need the remote ORCID provider.
  *
  *   (b) `verifyHiveSignature` is NOT mocked: the settings route runs the real
  *   signature recovery against `signRequestBound` signatures, and the
@@ -447,37 +444,49 @@ describe('a reset token does not outlive a write that moves its email or drops i
     await expectTokenDead(id.email, token, WRITER_PASSWORD);
   });
 
-  it.skipIf(!dbReachable || !hasCustodyKey)('ORCID recovery committing between reset-request\'s lookup and its token write', async () => {
+  it.skipIf(!dbReachable || !hasCustodyKey)('an email move committing between reset-request\'s lookup and its token write', async () => {
     const id = fresh();
     await seedLight(id, true);
-    const nonce = await seedOrcidNonce(id.orcid);
-
     const pool = getAppPool()!;
-    const originalQuery = pool.query.bind(pool) as (...args: any[]) => Promise<any>;
-    let recovered: request.Response | undefined;
-    const spy = vi.spyOn(pool, 'query').mockImplementation((async (...args: any[]) => {
-      const sql = typeof args[0] === 'string' ? args[0] : '';
-      if (!recovered && sql.includes('SET reset_token = $1')) {
-        await clearRateLimitKeys(['auth-recover']);
-        recovered = await request(app)
-          .post('/api/auth/recover')
-          .send({ username: id.username, new_email: id.newEmail, new_password: WRITER_PASSWORD, orcid_token: nonce });
-      }
-      return originalQuery(...args);
-    }) as any);
-    await clearRateLimitKeys(['auth-reset-request']);
-    let requested: request.Response;
+
+    // The move runs in a transaction held open on a second connection. Its
+    // UPDATE holds the row lock, and the route's lookup, a plain SELECT, still
+    // reads the earlier address and passes; the route's token write then
+    // waits on the lock until the move commits.
+    const mover = await pool.connect();
+    let open = false;
+    let requested: Promise<request.Response>;
     try {
-      requested = await request(app).post('/api/auth/reset-request').send({ email: id.email });
+      await mover.query('BEGIN');
+      open = true;
+      await mover.query('UPDATE accounts SET email = $1 WHERE username = $2', [id.newEmail, id.username]);
+      const { rows: [{ pid }] } = await mover.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+
+      await clearRateLimitKeys(['auth-reset-request']);
+      requested = Promise.resolve(request(app).post('/api/auth/reset-request').send({ email: id.email }));
+
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        const { rows: [{ waiting }] } = await pool.query<{ waiting: number }>(
+          'SELECT count(*)::int AS waiting FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))',
+          [pid],
+        );
+        if (waiting === 1) break;
+        if (Date.now() > deadline) throw new Error(`expected the token write waiting on the row lock, saw ${waiting}`);
+        await new Promise((r) => setTimeout(r, 25));
+      }
+
+      await mover.query('COMMIT');
+      open = false;
     } finally {
-      spy.mockRestore();
+      if (open) await mover.query('ROLLBACK').catch(() => {});
+      mover.release();
     }
 
-    expect(recovered, 'the recovery should have run inside the reset-request').toBeDefined();
-    expect(recovered!.status, JSON.stringify(recovered!.body)).toBe(200);
-    expect(requested.status, JSON.stringify(requested.body)).toBe(200);
+    const res = await requested;
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
     const mailed = mailedTo(id.email, /[?&]token=([0-9a-f]{64})/);
 
-    await expectTokenDead(id.newEmail, mailed, WRITER_PASSWORD);
+    await expectTokenDead(id.newEmail, mailed, OLD_PASSWORD);
   });
 });
