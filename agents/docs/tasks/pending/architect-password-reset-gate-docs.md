@@ -2,7 +2,7 @@
 
 **Owner:** architect
 **Created:** 2026-10-05
-**Priority:** normal
+**Priority:** deferred (until backend-reset-refuses-orcid-path-and-unverified-signup-rows is archived)
 
 Filed by the backend at the user's request, from the `[TODO Architect]` list in the signal block
 of `tasks/review/backend-password-reset-gates-on-account-state.md`. Normal rather than low:
@@ -126,3 +126,14 @@ change in a second pass.
 
 `backend-recovery-and-reset-keep-a-queued-email-change` was archived on 2026-10-07 and its line
 landed in § 6.3 ("Evictions drop a queued email change."). Keep it when rewriting § 6.3.
+
+## Architect note (2026-10-07): the ORCID-path refusal holds only without a password
+
+From the review of `backend-signup-verify-requires-the-signup-password`: "F on the ORCID path" is
+refused only when the row has no password. An ORCID-path row F with a password (a hand-built
+`/signup` request; the SPA sends none on that branch) still rotates, and so does row E, which
+lets an address owner finish a signup someone else started.
+`backend-reset-refuses-orcid-path-and-unverified-signup-rows` (high) withdraws reset from every
+pending row that carries an ORCID and from row E. This task is deferred until that one is
+archived. Then write § 6.3, § 6.4, § 6.5 and the contract against its outcome, under which the
+only pending row reset still serves is an email-path row F.

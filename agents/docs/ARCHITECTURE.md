@@ -745,7 +745,7 @@ States E and F are transient signup-pending. States A, B, C, D are finalized. St
 **Field rationale:**
 - `verify_token`: encodes signup progress. Random hex = email not yet confirmed (state E, and state G while a settings-registered email is unverified). `'confirmed:<hex>'` = ready to finalize via `/signup-verify` (state F). NULL = finalized. The hex form is disambiguated by `username`: NULL in E, SET in G.
 - `username`: NULL while pending finalization; SET to Hive username once the user picks one (light path) or links to an existing one (self path).
-- `password_hash`: SET if account can password-auth. NULL for ORCID-only signups (no password ever set), after `/recover-orcid-no-password` (password dropped), on a state G row until a password is set, and on a D row that carried a NULL over from one of those. Argon2id-hashed.
+- `password_hash`: SET if account can password-auth. NULL for ORCID-only signups (no password ever set), after `/recover-orcid-no-password` (password dropped), on a state G row until a password is set, and on a D row that carried a NULL over from one of those. Argon2id-hashed. Row E always has one: `POST /api/auth/signup` refuses an `orcid_token` that does not resolve, so its email path runs only with a password. A hex-token row with `username` and `password_hash` both NULL is a shape written before that refusal; `POST /api/auth/verify` gives it the wrong-password 401 and leaves it unchanged.
 - `orcid`: SET if account has an ORCID linked. ORCID-only signup sets this at signup; email-signup users can link later via `/orcid/callback mode='link'`.
 - `custody`: `'light'` while server holds encrypted broadcasting keys. `'self'` after upgrade. NULL during the transient pre-finalize states E and F, and permanently in state G, whose row was created by the settings email add flow and never had server-held keys. Because NULL is reachable on a finalized row, no reader may treat the raw column as authoritative: `custodyClaimFor` (`backend/src/lib/custody-claim.ts`) is the single derivation, and it resolves anything that is not an explicit `'light'` with no epoch to `'self'`, the claim that grants nothing server-side.
 - `upgraded_at`: Set by `/api/custody/upgrade` as part of the light→self transition, and by the signup-verify `/link` finalize when a self-custody account is linked. Once set, never unset. Both writers set `custody = 'self'` in the same UPDATE, and the `accounts_upgraded_implies_self_custody` CHECK (migration 017) enforces that pairing at the schema layer: an epoch on a row whose `custody` is not `'self'` is refused, NULL included. The epoch is therefore the authoritative "the server can no longer sign for this account" signal, and every gate that refuses server-side signing reads it. The CHECK is one-directional: it still permits `custody = 'self'` with no epoch. No writer produces that pairing and no state above enumerates it, so it is a fictional shape; the one reader that would otherwise have to decide about it, the `/link` stuck-recovery lookup, refuses it by construction (see § 6.3's Option C note). Do not add a defensive `OR upgraded_at IS NULL` anywhere to admit it.
@@ -770,9 +770,9 @@ All routes that mutate state. Routes that only read state (login session-mint, a
 
 ```
 Initial → finalized:
-  [no row] ──signup(email+password)──> E ──email-verify-link──> F ──signup-verify(light)──> A
-  [no row] ──signup(orcid_token only)─────────────────────────> F ──signup-verify(light)──> C
-  [no row] ──signup(email+password+orcid_token)──────────────> F ──signup-verify(light)──> B
+  [no row] ──signup(email+password)──> E ──email-verify-link(+password)──> F ──signup-verify(light)──> A
+  [no row] ──signup(orcid_token only)────────────────────────────────────> F ──signup-verify(light)──> C
+  [no row] ──signup(email+password+orcid_token)──────────────────────────> F ──signup-verify(light)──> B
   [no row] ──signup(...)──> E or F ──signup-verify(self)──> D   (POST /api/auth/link, fresh self-custody finalization linking to a Hive account the user already controls; the finalize UPDATE writes neither password_hash nor orcid, so the D row keeps whatever its E or F row carried: a password on the email path, an ORCID on the ORCID path, both on the combined path)
   [no row] ──(bring own Hive account)──────> no-row case
 

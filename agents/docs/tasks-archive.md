@@ -1,3 +1,231 @@
+## The signup verify link finalizes a signup without its password (archived 2026-10-07): one round, clean on the diff; the P3 and follow-ups filed, a pre-existing P1 filed high, contract and § 6.1 / § 6.3 applied
+
+### Architect archive note (2026-10-07)
+
+- **Review:** `/ce-code-review` full path on `c489e0ed` and `8e6a79cc` (branch-remote via a synthetic head holding only the six task files; base `c739f26c`; the interleaved ui commits excluded): correctness, security, adversarial (in-process, no cross-model peer), testing, project-standards, api-contract, reliability, learnings. Verdict "Ready with fixes": every Scope item, the architect note and AC 1 to 6 met; one P3 in the diff (no route-level argon2 error-class spec on `/verify`), validator confirmed. Baseline: the three verify suites, 3 files / 32 tests, exit 0. Testing's mutants: 7 of 10 killed; the three survivors are all Scope 3 (the unkeyed UPDATE the Notes allow, the 0-row branch, the cookie set before the UPDATE). `tests/eslint` 9 files / 146 tests green.
+- **Triage (user: "as recommended"):**
+  - Filed (security, pre-existing P1, merged with follow-up 3 and adversarial's reset detour): reset serves an ORCID-path F row with a password and row E, so an address owner can finish a signup someone else started -> `backend-reset-refuses-orcid-path-and-unverified-signup-rows` (high). `architect-password-reset-gate-docs` got a correction note and is deferred behind it.
+  - Filed (the architect's own read, not probed): an ORCID-path signup can hold an address its owner never gave and block the owner's signup -> `architect-orcid-path-signup-holds-an-unproven-address` (normal).
+  - Filed: the P3 argon2 spec, follow-up 2 (the expiry DELETE keyed on the id only) and a comment nit at the `/signup` refusal -> `backend-verify-link-argon-spec-and-expiry-delete-key` (low).
+  - Filed: follow-up 1 (the SPA keeps a spent ORCID token after the new 400) -> `ui-signup-keeps-a-spent-orcid-token` (normal).
+  - Dismissed: follow-up 4 (refusal position and 0-row branch unpinned), the state G `/verify` specs' unpinned unknown-token baseline, `verifyLimiter` being per IP only, and moving the ORCID branch's checks ahead of the nonce lookup.
+  - Applied at archive: `api-contracts/auth.md` (the `/verify` body, rate limit and errors; the `/signup` unresolved-token 400; the stale 422 line), ARCHITECTURE.md § 6.1 (row E's password and the legacy NULL-hash shape) and § 6.3 (the E -> F edge needs the password). § 6.4 has no signup verify row.
+- **Learnings checkpoint:** no entry contradicted; `conventions/mailed-credential-token-dies-with-its-address-and-credential.md` and the timing-equalization, wrapping-primitive and token-redeem entries are honored (learnings and correctness). No new entry now: the reset gate's proxy-column lesson waits for the reset task's archive, whose Notes carry it.
+
+**Owner:** backend
+**Created:** 2026-10-05
+**Priority:** high
+
+Surfaced as a residual risk in the architect review of
+`backend-signup-upsert-overwrites-finalized-row`. The user asked for this task on 2026-10-05.
+The UI half is `ui-signup-verify-asks-for-the-signup-password`.
+
+## Why
+
+`POST /api/auth/signup` accepts any address. On the email path it stores the caller's password on
+a pending signup row E and mails the address a verification link. `POST /api/auth/verify` takes
+only the token from that link. It confirms the row, mints the signup session binding for the
+browser that presents the token, and returns the `auth_token`. Neither `/confirm` nor `/link`
+asks for the password, and both keep the row's `password_hash`. In ARCHITECTURE.md § 6.3,
+`/confirm` finalizes the email-path row into A, a light account that keeps its signup password,
+and the `/link` finalize writes neither `password_hash` nor `orcid`.
+
+So anyone can sign up with someone else's address and a password of their own choosing. If the
+address owner clicks the mailed link and finishes the signup, through `/confirm` or `/link`, the
+person who signed up can log in to the finished account with the address and that password. The
+state G eviction, which `/signup` performs for a factor-less unverified settings address, makes
+this easier to aim: the evicted Keychain user is waiting for a verification mail, and settings and
+signup both mail the subject "PEvO - Verify your email".
+
+Requiring the password the row was created with at `/verify` closes this. The person who signed up
+knows it. An address owner who never signed up does not know it, so a link sent to them can no
+longer finalize the signup. `/resume-signup` already gates the confirmed-but-unfinished row the
+same way.
+
+The requirement only holds if every row `/verify` can match has a password. ARCHITECTURE.md § 6.1
+lists E with `password_hash` SET, but `/signup` can write an E row without one. A request with an
+`orcid_token` that no longer resolves leaves `verifiedOrcid` NULL. That happens when the nonce has
+expired (`ORCID_VERIFIED_TTL` is 30 minutes) or was spent by an earlier submit, because the
+lookup deletes it on read. Such a request skips the standard path's required-field checks, since
+those run only when no `orcid_token` was sent. An institutional address passes the accreditation
+gate, and the request falls through to the standard email upsert. When no password was sent,
+`passwordHash` is NULL there.
+
+## Scope
+
+1. **`POST /api/auth/signup`: refuse an `orcid_token` that does not resolve.** When `orcid_token`
+   is present and non-empty and `verifiedOrcid` is NULL after the lookup, answer 400 before the
+   duplicate-email pre-check. Use an existing error code and a message that tells the user to
+   verify their ORCID again. Write no row. The refusal does not depend on the address, so it is
+   not a registration-status signal. After this change, every row the email path writes carries
+   a password.
+2. **`POST /api/auth/verify`: require `password`.** The body is `{ token, password }`.
+   - A missing or non-string `password` answers 400 `VALIDATION_ERROR`, as `/resume-signup` does.
+   - The token lookup and the expiry branch keep their current answers.
+   - Then verify the presented password against the row's `password_hash` with `argon2.verify`
+     inside `runWithArgon2Slot`, with argon errors going through `handleArgonError`, as in
+     `/resume-signup`.
+   - A wrong password answers 401 `UNAUTHORIZED` with a message saying the password is
+     incorrect, and leaves the row as it was: no confirm, no new binding, no delete, no
+     `Set-Cookie`. 401 gives the SPA a status it can tell apart from the 400 token answers, so it
+     can keep the link usable and let the user retry.
+3. **Key the confirm UPDATE on the presented token.** The UPDATE that writes the `confirmed:`
+   token and the binding hash currently matches `WHERE id = $3` only. A re-signup for the same
+   address can rewrite the row's `password_hash` and `verify_token` (the upsert's `DO UPDATE` on
+   E) after the password check read it. The confirm would then finalize the row with a password
+   the presenter never proved. Add `AND verify_token = <presented token>`. When it matches no row,
+   answer what an unknown token answers.
+4. **Verification mail text.** The email-path signup mail in `routes/auth.ts`, and the
+   `/resend-verification` mail if it uses separate text, should say that the link asks for the
+   password chosen at signup.
+
+## Acceptance criteria
+
+1. A route spec signs up an address with password P1, then calls `/verify` with the mailed token
+   and a different password. It asserts 401 `UNAUTHORIZED`, no `pevo_signup_session` cookie, and
+   the row unchanged (same hex `verify_token`, same `signup_binding_hash`). The same spec with P1
+   gets today's 200 `choose` answer and the cookie. The 401 half fails against the current code.
+2. A route spec posts `/verify` without `password` and gets 400 `VALIDATION_ERROR` with the row
+   unchanged.
+3. A route spec posts `/signup` with an institutional address, no password, and an `orcid_token`
+   that does not resolve. It asserts the 400 refusal and that no row was written for the address.
+   This spec fails against the current code.
+4. Every existing spec that calls `/verify` sends the signup password. Where a spec built its E
+   row without a password, it now builds one with a password.
+5. Timing: no address is sent to `/verify`, so the new branches carry no email-enumeration oracle.
+   The token is 32 random bytes (`crypto.randomBytes(32)`), so a fast answer for an unknown token
+   tells nothing to anyone who does not already hold a valid one. No sentinel burn is needed on
+   the unknown-token branch. State in the signal block whether the existing `verifyLimiter`
+   (10 per hour per IP) is unchanged.
+6. No new error code. No new writer of `accounts.updated_at`.
+
+## Notes
+
+- The UI half landed first (`e2334dd4`, archived 2026-10-06): the SPA already sends
+  `{ token, password }`.
+- A spec for the scope 3 interleave is not required.
+- **[TODO Architect] at review:** update `agents/docs/api-contracts/auth.md` (`/verify` request
+  and errors, the `/signup` refusal) and the § 6.4 row for the signup verify link, if § 6.4 lists
+  one.
+- Out of scope: finalized light rows that already came from a passwordless E row (no password, no
+  ORCID). Report in the signal block whether the dev database has any. Do not repair them here.
+
+**Architect note (2026-10-06), from the review of the UI half:** a pending row with `password_hash`
+NULL can reach `/verify`. `/signup` writes one when an `orcid_token` no longer resolves and no
+password was sent. Scope 1 stops new ones, but a row written before it deploys keeps its mailed
+token until the row expires, 24 hours after the signup that wrote it. `argon2.verify` throws a
+`TypeError` on a NULL hash; `/resume-signup` guards the same case. Answer such a row with the
+wrong-password 401 and leave the row unchanged. On a 401 the SPA shows its wrong-password copy,
+which points to a new signup with the same address. On a 500 it shows its retry message on every
+attempt.
+
+## Backend implementation signal (2026-10-07, commits c489e0ed, 8e6a79cc)
+
+Both SHAs are ancestors of `main` (`git merge-base --is-ancestor` checked).
+
+**Scope 1.** `POST /api/auth/signup` answers an `orcid_token` that is present, non-empty and does
+not resolve with 400 `BAD_REQUEST` "Your ORCID verification is no longer valid. Please verify your
+ORCID again." It runs right after the nonce lookup and before the duplicate-email pre-check, and
+writes no row. Past it, the standard email path is reached only when no `orcid_token` was sent, so
+the required-field checks (password policy included) have run and every row that path writes
+carries a password. An empty-string `orcid_token` is not refused; it takes the standard path as
+before.
+
+**Scope 2.** `POST /api/auth/verify` takes `{ token, password }`. A missing or non-string password
+answers 400 `VALIDATION_ERROR` "Password is required" before any lookup. The lookup and expiry
+answers are unchanged. A pending row with `password_hash` NULL answers 401 `UNAUTHORIZED`
+"Incorrect password" (architect note), and so does a wrong password, checked with `argon2.verify`
+inside `runWithArgon2Slot` with the request abort signal; `handleArgonError` runs first in the
+catch. Neither 401 writes the row or sets a cookie.
+
+**Scope 3.** The confirm UPDATE is `WHERE id = $3 AND verify_token = $4` (the presented token).
+A 0-row UPDATE answers the unknown-token 400. The binding cookie is set only after a 1-row UPDATE.
+
+**Scope 4.** Both mails (signup and `/resend-verification`, which carry the same text) now say
+"The link asks for the password you chose when you signed up. It expires in 24 hours."
+
+**Acceptance.** New suite `backend/tests/routes/signup-verify-link-password.test.ts` (5 specs,
+SMTP transporter mocked per the carve-out header; Postgres, Redis, argon2 and the routes real):
+AC 1 (wrong password: 401, no cookie, whole row `toEqual` before; signup password: 200 `choose` +
+cookie), AC 2 (missing and non-string password), the architect note's NULL-hash row, AC 3, and
+both mail texts. The AC 1 401 half, AC 2 and AC 3 were observed red against the pre-change code
+before the implementation. AC 4: the only backend callers of `/verify` were
+`signup-verify.test.ts` (the log-shape spec) and three specs in
+`settings-state-g-unverified-email.test.ts`; all now send a password. No backend spec builds a
+passwordless E row for `/verify`, and none relied on an unresolved `orcid_token` falling through
+`/signup` (the literal unresolvable tokens in other suites go to `/recover`). AC 5: `verifyLimiter`
+(10 per hour per IP) is unchanged; no sentinel burn was added. AC 6: no new error code, no new
+writer of `accounts.updated_at`.
+
+**Verification.** `npm run typecheck` and lint clean. 7 route files (signup-verify-link-password,
+signup-verify, settings-state-g-unverified-email, auth, auth-state-g-rows,
+signup-verify-session-binding, signup-verify-orcid-binding-guard): 85/85 at c489e0ed;
+`tests/eslint` 9 files / 146 specs green; after 8e6a79cc the new suite plus `tests/eslint`,
+10 files / 151 specs, exit 0. A four-lens adversarial verification workflow ran against c489e0ed
+in scratchpad copies: mutants deleting the `/signup` refusal, the wrong-password branch, the
+missing-password check or the NULL-hash branch, reverting either mail sentence, or answering the
+wrong password 400 are all killed. Dropping the `AND verify_token = $4` key survives every spec,
+as the Notes allow; a race probe (a `pool.query` spy rewriting the row's token and hash between
+the SELECT and the UPDATE) got the unknown-token 400 with no cookie and no confirm on c489e0ed,
+and 200 plus a confirmed row with the unproven hash on the mutant.
+
+**Fixed after that workflow (8e6a79cc), comment truth only.** `POST /api/auth/reset-request` and
+`/reset` accept a pending row E (pinned as `rotates: true` in `auth-reset-account-state.test.ts`)
+and rotate its password without touching `verify_token`. So the first commit's comments overclaimed:
+a mailbox holder can reset the row's password and then pass `/verify`, and a reset landing between
+the password check and the UPDATE still matches the token key. The `/verify` comments now claim only
+what the gate proves (the mailed link alone does not confirm; the token key catches a signup
+retry's rewrite), and the `signup-session-binding.ts` scope note keeps its mailbox-read caveat,
+through the reset flow. The task's threat stays closed: a reset replaces the signer's password and
+stamps `sessions_invalidated_at`, so the signer cannot log in to the finished account.
+
+**Dev database (Notes).** No finalized light row came from a passwordless E row. The one row with
+`username` set, `custody = 'light'`, no password and no ORCID is `login_nullhash_1776818046871`
+(`@example.com`, created 2026-04-22), a leftover login-spec fixture. There are 0 pending rows with
+a NULL `password_hash` and no ORCID.
+
+**[TODO Architect] at review.**
+- `agents/docs/api-contracts/auth.md`: the `/verify` request is `{ token, password }`; new errors
+  400 `VALIDATION_ERROR` (missing or non-string password), 401 `UNAUTHORIZED` "Incorrect password"
+  (wrong password, or a pending row with no password), and the 503 the argon2 semaphore can
+  answer. `/signup`: the 400 `BAD_REQUEST` refusal of an unresolved `orcid_token`, which now
+  precedes the duplicate-email 409; the line saying a same-`orcid_token` resubmit falls through to
+  the 422 is stale.
+- `agents/docs/ARCHITECTURE.md` § 6.1: row E lists `password_hash` SET only, while `/verify` now
+  defends (hex token, username NULL, password_hash NULL), the shape `/signup` wrote before Scope 1
+  for up to 24 hours after deploy. A note, or a decision to retire the NULL-hash branch once such
+  rows are gone. § 6.3: the E → F edge is labelled as a link click; it now also needs the row's
+  password. § 6.4 has no row for the signup verify link.
+
+**Out of scope, for follow-up filing.**
+1. UI: `frontend/src/pages/signup.js` `handleSubmit` has no branch for the new `/signup` 400
+   `BAD_REQUEST`. On the ORCID branch it shows the generic `signup.submitFailed`, keeps the spent
+   `orcidToken`, leaves `canSubmit` true, and every resubmit gets the same 400; the only exit is the
+   clear-ORCID button. Two SPA comments there still say a same-`orcid_token` resubmit yields a 422.
+   The SPA's wrong-password copy at `/signup/verify` points to a new signup and not to the reset
+   flow, which also works on a pending row.
+2. Backend, pre-existing: the `/verify` expiry branch deletes `WHERE id = $1` only. A signup retry
+   that refreshes an expired E row between `/verify`'s SELECT and that DELETE loses its fresh row
+   (reproduced in a scratchpad probe); the user has to sign up again. Same race class as Scope 3,
+   which the task left out for the expiry branch.
+3. Design question: should the reset flow serve pending rows E and F at all? It lets a mailbox
+   holder take over a legitimate user's pending signup (reset, then `/verify`, then `/confirm` or
+   `/link`). This predates the task.
+4. Not pinned by any spec: the Scope 1 refusal's position before the duplicate-email pre-check, and
+   the 0-row branch of the Scope 3 UPDATE (dropping it answers 200 with an `auth_token` no row
+   carries; no security effect).
+
+**Learnings checkpoint.** Grepped `agents/docs/solutions/` for `/api/auth/verify`, verify link,
+mailbox, `signup_binding`, `orcid_token` and token-keyed writes. No entry is contradicted:
+`mailed-credential-token-dies-with-its-address-and-credential.md` says the email signup upsert
+requires a password, which was false before Scope 1 and is true now. No new entry: the reset-flow
+interaction is carried by the `signup-session-binding.ts` scope note, and keying a write on what its
+lookup read is already that entry's item 3.
+
+**Simplify.** About 20 substantive changed code lines, under the `ce-simplify-code` threshold; a
+manual pass found nothing to cut. Code review: left to the architect at intake, per
+`agents/backend/CLAUDE.md`.
+
 ## Recovery and password reset leave this browser's revoked session in place (archived 2026-10-07): recovery and reset halves, one hold, clean re-review; one signal item folded, two dismissed, teardown-boundary entry refreshed
 
 ### Architect archive note (2026-10-07)
@@ -20,231 +248,3 @@
 touching the auth store. Both recovery arms await the API call and move to the
 done phase, discarding the reissued token in the response. The reset route
 returns no token at all. Each of these revokes every earlier session for the
-account on the server.
-
-A user who is signed in on the same browser and runs either flow keeps the
-revoked token in the store and in the stored session. Nothing happens until
-the next bearer request, which can be the notification poll up to five minutes
-later. At that point `handleRevokedSession` tears every tab down, shows the
-signed-out message and opens the sign-in modal, possibly over the done screen
-or over `/login`. The outcome is coherent, since the done screens already send
-the user to sign in, but it is delayed and unprompted, and it reads as if
-someone else changed the account.
-
-## Scope
-
-1. On a successful recovery or reset, end a live session in this browser for
-   the same account at that moment, through the auth store's existing
-   disconnect path, so the sign-out is part of the user's own action.
-2. Decide whether recovery should instead adopt the reissued token its
-   response carries. That changes what the done screen says and what state the
-   account is in, so check it against `ARCHITECTURE.md` § 6.1 and § 6.3 before
-   choosing, and ask if the answer is not clear from there.
-3. A session for a different account must be left alone.
-
-## Acceptance criteria
-
-1. After a successful recovery or reset in a browser signed in as that
-   account, no revoked session remains stored, and no teardown message or
-   sign-in modal appears later on its own.
-2. A session for another account survives.
-3. Unit tests pin both pages.
-
-## UI implementation signal (2026-10-06, commits f4eb9c85, 2319a5b9)
-
-Recovery half done. The reset half is blocked on the backend (note at the end).
-
-Decisions taken with the user on 2026-10-05 and 2026-10-06, for scope item 2
-and for two gaps the task text did not anticipate:
-
-- **Seed-phrase recovery is two-phase.** Phase 1 (`POST /api/auth/recover`
-  with `memo_key`) changes nothing and revokes nothing, so the seed arm leaves
-  the session alone. The revocation happens at `POST /api/auth/recover/verify`,
-  whose mailed link has no SPA page (nor does the dispute link). Filed as
-  `ui-seed-recovery-confirm-and-dispute-pages` (high); it reuses the helper
-  below.
-- **ORCID recovery adopts the reissued session** (the § 6.7 survivor token,
-  as the custody upgrade does) when the browser is signed out or signed in to
-  the recovered account. A different account stays signed in (criterion 2).
-  The done screen offers a button that switches to the recovered account at
-  the user's request.
-- **Reset needs the account name.** The reset response does not name the
-  account, so the page cannot tell whether the browser's session belongs to
-  it. The user chose a backend change over a client-side probe. Filed as
-  `backend-reset-response-names-the-account` (high).
-
-What landed:
-
-- `auth.js` `adoptRecoveredSession(data, { replaceAnotherAccount })`. For the
-  same account it scrubs this tab's subject-bound state and saves the reissued
-  session over the stored one. This does not go through `disconnect()` as
-  scope item 1 suggests: removing the stored session and then saving in one
-  task lets another tab's storage-event sign-out remove the reissued session.
-  Verification found that, and it reproduced in Chromium with two tabs sharing
-  a renderer process. The user chose this helper-local fix over changing the
-  shared storage handler, which would let a late accreditation-poll save in
-  another tab undo a header sign-out.
-- `recover.js`: the ORCID arm hands its response to the helper, and the done
-  screen follows the outcome (`doneCopy`, `doneAction`). New keys
-  `recover.orcidDoneSignedIn`, `orcidDoneOtherAccount`, `goToSettings` and
-  `switchAccount` are stubbed in 15 locales (`STUBS.md` entries dated
-  2026-10-05 and 2026-10-06).
-- Tests: `tests/unit/pages-recover-session.test.js` drives the real page,
-  store and `api.js` with `fetch` stubbed. It covers the same account, signed
-  out, another account kept, the switch, a second tab replaying the storage
-  events, the seed arm signed in and signed out, and a later bearer request.
-  The real-backend recovery test in `e2e/orcid-no-password.spec.js` asserts
-  the stored reissued session, its acceptance by the real middleware
-  (`GET /api/settings/email` 200), the signed-in copy and Go to Settings.
-- Verification: the full unit suite is green (92 files, 2159 tests), and
-  `orcid-no-password.spec.js` passes 7/7 against the rebuilt test stack. A
-  three-lens adversarial verification of f4eb9c85 (21 agents) left seven
-  findings; the user triaged them and 2319a5b9 fixes them.
-
-Acceptance criteria:
-
-1. Met for the ORCID arm. Seed phase 1 has nothing to revoke, and phase 2
-   belongs to the seed task. Reset: open (blocked).
-2. Met: another account stays signed in unless the user switches.
-3. The recover page is pinned. The reset page is still to do.
-
-Left for the reset half: `reset-password.js` hands `data.username` to the
-store, a same-account session ends there without anything to adopt, and unit
-tests pin the reset page.
-
-[BLOCKED by Backend] (2026-10-06): needs `POST /api/auth/reset` to return the
-reset account's `username` in its success `data`
-(`backend-reset-response-names-the-account`). Move this file back to
-`pending/` once that lands.
-
-Backend note (2026-10-07): unblocked, with a different shape than the note
-above asks for. By user decision on 2026-10-07, `POST /api/auth/reset` does
-not return the username, because a caller holding only the mailed token
-(access log, proxy log, browser history, an old mailbox after an email
-change) would learn the login identifier for the password it just set.
-Instead:
-
-- The request may carry the browser's stored session token as
-  `Authorization: Bearer <token>`. It is optional, never fails the reset,
-  and the route never answers 401 for it. `resetPassword` in `api.js` sends
-  no header today.
-- The success `data` is `{ message, session_ended }`. `session_ended` is
-  true only when the bearer verifies and names the account the reset just
-  revoked; a missing, foreign, forged or malformed bearer answers false.
-
-So the "Left for the reset half" line changes: the page sends the header and
-reads `data.session_ended` instead of handing `data.username` to the store.
-Landed in 0aa0bf78 (`bearerNamesAccount` in `backend/src/routes/auth.ts`).
-
-## UI implementation signal, reset half (2026-10-07, commits d68979b7, 599554f4, 54d041f7)
-
-Reset half done, against the shape in the backend note (bearer match,
-`session_ended`), not the `data.username` line that note replaced.
-
-What landed:
-
-- `api.js` `resetPassword(token, password, sessionToken)` sends the stored
-  session as `Authorization: Bearer` when the browser holds one. It stays on
-  plain `request()`: the reset works signed out, and the route never refuses
-  a reset over the bearer.
-- `auth.js` `endResetSession(sentToken)` ends the session through
-  `disconnect()`, as the header sign-out does: no message, no sign-in prompt,
-  and other tabs follow through the storage event. It goes through
-  `_endSession`, whose notice is now optional, so the stale-token check and
-  the adoption of a newer stored session cover it too. `handleRevokedSession`
-  and `endSessionIfExpired` still pass a notice and behave as before.
-- `pages/reset-password.js` captures the store's token before the request
-  and, when `data.session_ended` is true, hands it to `endResetSession`, even
-  if the page has gone. The done screen is unchanged (it already sends the
-  user to sign in), so no i18n keys were added.
-
-Tests:
-
-- `tests/unit/pages-reset-session.test.js` (new, 9 cases) drives the real
-  page, store and `api.js` with `fetch` stubbed: the bearer sent; the session
-  and its proof window ended; no message or prompt, then or on a later
-  request; the page gone mid-request; a second tab; another account kept; a
-  signed-out browser sending no bearer; the store changed in flight (a newer
-  stored session adopted, a switched session kept). 7 of the 9 are red
-  against the parent commit.
-- `tests/unit/pages-reset-password.test.js` follows the new signature. Its
-  page-gone happy-path case now resolves `{}`; with `undefined` it had passed
-  through a TypeError caught in `catch`.
-- `e2e/password-recovery.spec.js`, new case "a reset completed in a browser
-  signed in to the account signs that browser out": signs in through
-  `/login`, completes a real reset in the same browser, and asserts the
-  bearer sent, `session_ended: true`, no stored session, no revoked-session
-  copy, and that the real middleware answers the dropped token with 401
-  `SESSION_INVALIDATED`. Its submit locators are scoped to the page forms.
-
-Verification:
-
-- Full frontend unit suite green at d68979b7 (98 files, 2284 tests). After
-  the comment fix in 54d041f7, the eslint canaries and the reset and auth
-  suites passed (86/86).
-- E2E on the rebuilt test-mode stack, `password-recovery.spec.js` alone with
-  `--retries=0`: the new case passes. The file's older case fails at its
-  unscoped `form button[type="submit"]` (strict-mode clash with the re-auth
-  modal), which `ui-e2e-bare-submit-locators-clash-with-reauth-modal` owns.
-  Dev routing restored with `./deploy.sh up`.
-- Four-lens adversarial verification (12 agents, none died). All 9 mutants
-  were killed. Header logging, the carve-out header, comment anchors and the
-  E2E locators came back clean. It raised four P3 findings, which the user
-  triaged on 2026-10-07:
-  - two comment overclaims (`endResetSession` said every tab shows the
-    signed-out message; the reset page's `destroy()` said continuations bail
-    before touching reactive state): fixed in 54d041f7.
-  - a same-account session issued before the reset's commit (another tab
-    signs in again with the old password during the request) is kept or
-    adopted, is revoked too, and still meets the message later: accepted as
-    a residual. The client cannot tell it from a valid post-reset login, and
-    it is the pre-change outcome.
-  - ARCHITECTURE.md § 6.3 and § 6.4 name only A and B for the reset:
-    dismissed here, already filed as `architect-password-reset-gate-docs`.
-
-Residuals, recorded, no action taken:
-
-- A bearer request answered between the reset's commit and this page
-  processing the answer still raises the signed-out message. The window is
-  the rest of the reset round trip.
-- A transport failure after the server committed (client timeout, proxy
-  502/504) shows `resetFailed` and keeps the revoked session. The client
-  cannot know the reset landed.
-- A stored token already expired at the server gets `session_ended: false`
-  and later ends with the expired copy (the clock-skew residual documented
-  on `endSessionIfExpired`).
-- The `POST /api/auth/reset` section of `agents/docs/api-contracts/auth.md`
-  needs the optional bearer and `session_ended`; the `[TODO Architect]` in
-  `backend-reset-response-names-the-account` covers it.
-
-Acceptance criteria:
-
-1. Met: the ORCID arm (earlier signal) and the reset (this signal). Seed
-   phase 2 belongs to `ui-seed-recovery-confirm-and-dispute-pages`.
-2. Met on both halves: another account stays signed in.
-3. Met: the recover and reset pages are pinned.
-
-Learnings checkpoint: grepped `agents/docs/solutions/` for `_endSession`,
-`handleRevokedSession`, `adoptRecoveredSession`, `resetPassword`,
-`session_ended` and `bearerNamesAccount`.
-`credential-setting-token-redeem-must-not-name-the-account.md` covers the
-backend half and stays true. Nothing new qualified: the rationale for the
-quiet sign-out and its guards lives in the `endResetSession` and
-`_endSession` docblocks.
-
-## Architect re-review (2026-10-07) — HELD PENDING FIXES:
-
-`/ce-code-review` over the five commits (f4eb9c85, 2319a5b9, d68979b7,
-599554f4, 54d041f7) with seven reviewers. No finding reached the reporting
-bar, the acceptance criteria are met, the four page specs pass 63/63, and
-10 of 10 planted mutants were killed across the unit suite. The user
-triaged one item as blocking archive:
-
-1. **The recover page's done screen follows the method tab selected when the
-   request finishes, not the arm that sent it.** `doneCopy` and `doneAction`
-   read the live `method`, and the two tab buttons stay clickable while a
-   submit is in flight.
-   - ORCID submit, Seed tab clicked during the request: the done screen
-     shows the seed-pending title and copy and a Sign in button, although
-     the recovery was applied and this browser may already be signed in to
-     the recovered account.

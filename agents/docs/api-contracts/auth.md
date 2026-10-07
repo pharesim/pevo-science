@@ -80,7 +80,8 @@ Username selection and account creation happen later, at the `/api/auth/confirm`
 **Errors:**
 - `VALIDATION_ERROR` — password too weak, or missing required fields
 - `DUPLICATE` — email already registered or pending (fires BEFORE the accreditation gate; duplicate-email 409 is authoritative regardless of whether the domain is institutional)
-- `ORCID_ALREADY_LINKED` (409) -- the supplied `orcid_token`'s ORCID is already bound to another account row (the `accounts_orcid_unique` partial index). Same terminal wire shape as the `/orcid/callback` durable-binding 409 (no `retriable` field, no `Retry-After` header). Previously surfaced as `INTERNAL_ERROR` (500). Recovery is terminal: the ORCID is already bound to a different account, so a resubmit cannot succeed, and the single-use verification nonce is already consumed (a same-`orcid_token` resubmit falls through to the missing/invalid-token `422`). Clients MUST NOT blindly resubmit the same `orcid_token`; route the user to log into the existing account, or restart the ORCID OAuth flow from `/api/orcid/start` for a different ORCID.
+- `ORCID_ALREADY_LINKED` (409) -- the supplied `orcid_token`'s ORCID is already bound to another account row (the `accounts_orcid_unique` partial index). Same terminal wire shape as the `/orcid/callback` durable-binding 409 (no `retriable` field, no `Retry-After` header). Previously surfaced as `INTERNAL_ERROR` (500). Recovery is terminal: the ORCID is already bound to a different account, so a resubmit cannot succeed, and the single-use verification nonce is already consumed (a same-`orcid_token` resubmit gets the unresolved-token `BAD_REQUEST` 400). Clients MUST NOT blindly resubmit the same `orcid_token`; route the user to log into the existing account, or restart the ORCID OAuth flow from `/api/orcid/start` for a different ORCID.
+- `BAD_REQUEST` (400): a non-empty `orcid_token` that does not resolve, because it expired or an earlier submit spent it. Message: "Your ORCID verification is no longer valid. Please verify your ORCID again." No row is written. The check runs before the duplicate-email check and does not depend on the address.
 - `ACCREDITATION_NOT_FOUND` — non-institutional email without valid `orcid_token`, on a non-duplicate email. Institution-is-accredited is public knowledge; the fast-return on this path is intentional.
 - `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. Both the duplicate-email burn path and the new-account hash path emit 503 under saturation, so the 503 outcome does not distinguish registration status. See [common.md → Standard Error Codes](common.md) for the cross-route 503 contract and `Retry-After` semantics.
 
@@ -118,15 +119,19 @@ Always returns the same generic success message regardless of account state (unk
 
 ### POST /api/auth/verify
 
-Verify the email token from a signup. Marks the account as confirmed and returns an `auth_token` for the next step (choosing between new account or linking an existing Hive account).
+Verify the email token from a signup, with the password chosen at signup. Marks the account as confirmed and returns an `auth_token` for the next step (choosing between new account or linking an existing Hive account).
 
 **Body:**
 
 ```json
 {
-  "token": "abc123..."
+  "token": "abc123...",
+  "password": "SecurePass123"
 }
 ```
+
+- `token` -- required, the token from the mailed link.
+- `password` -- required, the password the signup was created with. The mailed link alone does not confirm the signup.
 
 **Response `data`:**
 
@@ -142,9 +147,13 @@ The `auth_token` is used in the subsequent `/api/auth/confirm` (new account) or 
 
 **Sets cookie:** `pevo_signup_session` (httpOnly, `sameSite=lax`, `secure` in production, `path=/api/auth`, max-age 24h). This binding cookie is required by the subsequent `/api/auth/confirm` and `/api/auth/link` calls. The `auth_token` alone is not sufficient. Same-origin XHRs must send credentials so the cookie is stored from `Set-Cookie` and re-sent.
 
+**Rate limit:** 10 requests per IP per hour.
+
 **Errors:**
-- `VALIDATION_ERROR` — missing or invalid token
-- `BAD_REQUEST` — token not found or expired
+- `VALIDATION_ERROR` (400): missing or invalid `token`, or a missing or non-string `password`.
+- `BAD_REQUEST` (400): token not found or expired. Also the answer when a signup retry for the same address rewrote the row between the password check and the confirm.
+- `UNAUTHORIZED` (401): "Incorrect password". The password does not match the signup's, or the pending signup has no password. Nothing is written and no cookie is set, so the same link can be tried again.
+- `SERVICE_UNAVAILABLE` (503): argon2 capacity exhausted or backend draining. See [common.md](common.md).
 
 ---
 
