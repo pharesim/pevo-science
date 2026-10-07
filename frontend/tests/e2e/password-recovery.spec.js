@@ -223,3 +223,85 @@ test('user requests password reset, follows email token, and signs in with new p
     expect(parsed.token).toBe(loginJson.data.token);
   });
 });
+
+// The reset revokes every session of the account, so a browser signed in to
+// it when its user completes the reset there is signed out at that moment:
+// the page sends the stored session along, the route answers that the reset
+// ended it, and the browser drops it without the signed-out message a later
+// bearer request would otherwise raise.
+test('a reset completed in a browser signed in to the account signs that browser out', async ({
+  page,
+  request,
+}, testInfo) => {
+  const RUN_SUFFIX = `${Date.now().toString(36).slice(-6)}s${testInfo.retry}`;
+  const TEST_EMAIL = `e2e+reset-signed-in-${RUN_SUFFIX}@pevo.test`;
+  const TEST_USERNAME = `e2e-reset-${RUN_SUFFIX}`;
+
+  await withAppPool(async (pool) => {
+    await seedActiveUser(request, pool, TEST_EMAIL, TEST_USERNAME);
+
+    // ── Sign this browser in to the account ────────────────────────
+    await page.goto('/login');
+    await page.locator('input[x-model="emailOrUsername"]').fill(TEST_EMAIL);
+    await page.locator('input[x-model="password"]').fill(OLD_PASSWORD);
+    const loginResponsePromise = page.waitForResponse(
+      (resp) => resp.url().endsWith('/api/auth/login'),
+    );
+    await page.locator('[x-data="loginPage"] form button[type="submit"]').click();
+    expect((await loginResponsePromise).status()).toBe(200);
+    await page.waitForURL(/\/papers(\?|$)/);
+    const signedIn = await page.evaluate(
+      () => JSON.parse(window.localStorage.getItem('pevo_session')),
+    );
+    expect(signedIn.username).toBe(TEST_USERNAME);
+
+    // ── Mint a reset token and follow the link in this browser ─────
+    const resetRequest = await request.post('/api/auth/reset-request', {
+      data: { email: TEST_EMAIL },
+    });
+    expect(resetRequest.status()).toBe(200);
+    const { rows: tokenRows } = await pool.query(
+      'SELECT reset_token FROM accounts WHERE email = $1',
+      [TEST_EMAIL],
+    );
+    const resetToken = tokenRows[0].reset_token;
+    expect(resetToken).toMatch(/^[a-f0-9]{64}$/);
+
+    await page.goto(`/reset-password?token=${resetToken}`);
+    await page.locator('input[x-model="password"]').fill(NEW_PASSWORD);
+    await page.locator('input[x-model="passwordConfirm"]').fill(NEW_PASSWORD);
+
+    const resetRequestPromise = page.waitForRequest(
+      (req) => req.url().endsWith('/api/auth/reset') && req.method() === 'POST',
+    );
+    const resetResponsePromise = page.waitForResponse(
+      (resp) => resp.url().endsWith('/api/auth/reset'),
+    );
+    await page.locator('[x-data="resetPasswordPage"] form button[type="submit"]').click();
+
+    // The stored session rides along, and the real route answers that the
+    // reset ended it.
+    const resetReq = await resetRequestPromise;
+    expect(await resetReq.headerValue('authorization')).toBe(`Bearer ${signedIn.token}`);
+    expect(JSON.parse(resetReq.postData() ?? '{}')).toEqual({
+      token: resetToken,
+      password: NEW_PASSWORD,
+    });
+    const resetResp = await resetResponsePromise;
+    expect(resetResp.status()).toBe(200);
+    expect((await resetResp.json()).data.session_ended).toBe(true);
+
+    // The browser holds no session, and nothing says it was signed out by
+    // someone else.
+    await expect(page.getByRole('heading', { name: 'Password Reset' })).toBeVisible();
+    expect(await page.evaluate(() => window.localStorage.getItem('pevo_session'))).toBeNull();
+    await expect(page.getByText(/sign-in details were changed/i)).toHaveCount(0);
+
+    // The session it dropped is one the real middleware now refuses.
+    const revokedRead = await request.get('/api/settings/email', {
+      headers: { Authorization: `Bearer ${signedIn.token}` },
+    });
+    expect(revokedRead.status()).toBe(401);
+    expect((await revokedRead.json())?.error?.code).toBe('SESSION_INVALIDATED');
+  });
+});
