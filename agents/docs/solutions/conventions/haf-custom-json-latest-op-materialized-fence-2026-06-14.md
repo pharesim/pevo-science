@@ -76,10 +76,9 @@ LIMIT 1
 The `AS MATERIALIZED` keyword is load-bearing: it forces the planner to fully
 evaluate the CTE before applying the outer `ORDER BY ... LIMIT`, so the sort/limit
 runs over the small filtered set instead of driving the plan from a backward walk
-of the blocks index. Verified against live HAF: ~15ms vs ~18s, and the blocks
-index scan reports `(never executed)` in `EXPLAIN`. The fix is match-independent,
-so it stays fast even once a real override exists and the candidate set is
-non-empty.
+of the blocks index. Verified against live HAF: the blocks index scan reports
+`(never executed)` in `EXPLAIN`. The fix is match-independent, so it stays fast
+even once a real override exists and the candidate set is non-empty.
 
 **Anti-pattern — do NOT add a `block_num >= $floor` predicate** to narrow the scan
 instead. On this view a floor flips the planner to a `BitmapAnd` against the full
@@ -145,7 +144,8 @@ non-matching inputs for all of these lookups.
 
 The fence is verified on live HAF for `loadWotThreshold` and, on 2026-10-06, for
 `findExistingAccreditation`, `getLatestAccreditOp`, both reads in
-`findAccreditedAccountWithOrcid`, and `getExistingAccreditation`. For other shapes, EXPLAIN before generalizing.
+`findAccreditedAccountWithOrcid`, and `getExistingAccreditation`. For other
+shapes, EXPLAIN before generalizing.
 
 **Verification methodology** (for anyone re-confirming): the HAF node has no `psql`
 binary available, and pgbouncer rejects a `statement_timeout` startup parameter.
