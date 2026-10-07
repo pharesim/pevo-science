@@ -1,3 +1,164 @@
+## Recovery and password reset leave a queued email change alive, so the evicted attacker takes the account back (archived 2026-10-07): one round, clean review; two pre-existing findings filed as tasks, § 6.3 line applied
+
+### Architect archive note (2026-10-07)
+
+- **Review:** `/ce-code-review` full path on this task's hunks of `4196982f` and `e9f8214f` (branch-remote via a synthetic head holding only the three `pending_email` triple clears, the `/reset` comment line and the new spec; base `8d6bd4e5`; the sibling's hunks excluded): correctness, security, adversarial (in-process, no cross-model peer), testing, project-standards, learnings. Verdict "Ready to merge", no finding in the diff, every AC met. Testing's mutants m1/m2/m3 (triple removed from one statement) each turned exactly its spec red; the orchestrator's token-only-clear mutant turned 3/3 red on the `pending_email` NULL assertion. Baseline: the new spec and every AC 5 file green alone, exit 0, no Errors line. Adversarial's `pool.query` spy reproduced the accepted in-flight race end to end. The sibling's review (archived at `ba3b008f`) also killed the three triple mutants.
+- **Triage (user: "as recommended"):**
+  - Filed (security, pre-existing P1): `/orcid/start` modes `link` and `accredit` run on the session alone and plant an ORCID that survives every eviction (ORCID login and ORCID recovery give the account back) -> `backend-orcid-link-and-accredit-require-fresh-auth` (high) and `ui-orcid-link-and-accredit-acquire-fresh-auth` (high, blocked behind it). § 6.4 row rewritten to the decided re-auth.
+  - Filed (adversarial, pre-existing): an attacker who completes the change before any eviction can beat an A owner's seed-phrase recovery by disputing it -> `architect-email-change-owner-notice-and-dispute-race` (high).
+  - No action: the in-flight race (accepted by the task and the solutions entry; the attacker cannot stretch the window), the custody upgrade (Scope item 2), the solutions entry's missing custody-upgrade sentence (its eviction definition already excludes the upgrade).
+  - Applied at archive: the § 6.3 "Evictions drop a queued email change." line, and a note on `architect-password-reset-gate-docs` to keep it.
+- **Learnings checkpoint:** no entry contradicted; `conventions/mailed-credential-token-dies-with-its-address-and-credential.md` verified against `e9f8214f` by learnings and correctness. No new entry qualified.
+
+**Owner:** backend
+**Created:** 2026-10-06
+**Priority:** high
+
+Filed at the user's request from the pre-existing findings in the signal block of
+`backend-settings-verify-clears-any-row-token` (its item 2), after a scoping pass that measured
+the takeover end to end on 02c66d99. The scoping found that password reset has the same hole as
+the two recovery routes.
+
+## Why
+
+The change flow of `POST /api/settings/email` writes `pending_email`, `pending_email_token` and
+`pending_email_expires_at`, and mails the link only to the new address. Clicked within
+`EMAIL_TOKEN_EXPIRY_MS` (24h, restarted by each re-queue), the link swaps the account email.
+
+Three statements evict a password holder by replacing the password (and, for recovery, the
+email) and stamping `sessions_invalidated_at`. None of them clears that triple:
+
+- `routes/recover.ts`, `POST /recover`, ORCID method:
+  `UPDATE accounts SET password_hash = $1, email = $2, sessions_invalidated_at = $3 WHERE id = $4`
+- `routes/recover.ts`, `POST /recover/verify`, the apply transaction:
+  `UPDATE accounts SET password_hash = COALESCE($1, password_hash), email = $2, sessions_invalidated_at = $3 WHERE id = $4`
+- `routes/auth.ts`, `POST /reset`:
+  `UPDATE accounts SET password_hash = $1, reset_token = NULL, reset_token_expires_at = NULL, sessions_invalidated_at = NOW() WHERE id = $2 AND password_hash IS NOT NULL`
+
+Measured through the real routes: the real `verifyHiveSignature` JWT path, real login, real
+fresh-auth. Only the SMTP transporter was mocked and the ORCID nonce seeded. The sequence:
+
+1. An attacker who has only the password logs in, gets a `change_email` fresh-auth proof with
+   that password, and queues a change to their own address.
+2. The owner evicts them by ORCID recovery, seed-phrase recovery or password reset. The eviction
+   works: the old JWT gets 401 SESSION_INVALIDATED and the old password is refused.
+3. The queued link still answers 200 and sets `accounts.email` to the attacker's address.
+4. `POST /api/auth/reset-request` mails the attacker a reset link. Reset and login then hand them
+   the account.
+
+After an ORCID recovery without a new password, the link still takes the email. The reset chain
+completes once the owner sets a password through `POST /api/settings/set-password`.
+
+The owner gets no warning. The change mail goes only to the new address, and nothing in
+`frontend/src` reads the `pendingChange` field of `GET /api/settings/email`.
+
+A planted fix that clears the triple in all three statements makes the stale link answer the
+not-found 400, deep-equal to an unknown token's answer, and keeps the post-eviction email.
+
+## Scope
+
+1. Add `pending_email = NULL, pending_email_token = NULL, pending_email_expires_at = NULL` to the
+   SET list of the three statements above. Write all three columns in the one statement, so that
+   every write of `pending_email` or `pending_email_token` still writes both. The change-branch
+   swap in `GET /api/settings/email/verify/:token` relies on that pairing.
+2. Leave `POST /api/custody/upgrade`, the fourth writer of `sessions_invalidated_at`, unchanged.
+   It replaces neither the password nor the email (ARCHITECTURE.md § 6.2: D keeps
+   `password_hash`), so clearing the triple there evicts no one. A D owner evicts a password
+   holder through `POST /api/auth/reset`, which this task covers. The upgrade docblock's sentence
+   about "the same posture the password-reset and recovery writers take" concerns bearer JWTs and
+   session-proof windows. It is not a contradiction for this task to fix.
+3. Add no new response string, status or error code. A cleared link gets the existing not-found
+   400.
+4. Fix any comment the change makes false by deleting or narrowing it. At filing, the change made
+   none false: the change-branch comments in `routes/settings.ts` and the docblock of
+   `tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts` both stay true
+   under NULL-only writes. List the three changed writers in the signal block, so the architect
+   can record in ARCHITECTURE.md § 6.3 that recovery and reset drop a pending email change.
+5. Tests: one new real-path route spec file. The attacker queues the change through the real
+   `POST /api/auth/login`, `POST /api/custody/fresh-auth` (action `change_email`) and
+   `POST /api/settings/email`. Mock only the SMTP transporter and `config.smtpHost`, and seed the
+   ORCID nonce. Use carve-out header items (a) and (c) as in `tests/routes/recover-two-phase.test.ts`
+   and `tests/routes/recover-orcid-state-g.test.ts`. `verifyHiveSignature` runs real, so (b) does
+   not apply.
+
+## Acceptance criteria
+
+1. The three named statements clear the triple. The custody upgrade is unchanged.
+2. ORCID recovery spec: a state B row with a change queued through the real fresh-auth gate, then
+   a 200 `POST /api/auth/recover` with `orcid_token`. The queued link answers a 400 deep-equal to
+   an unknown token's answer, `accounts.email` equals the recovery's `new_email`, and the triple
+   is NULL. The spec asserts the triple was non-NULL just before the recovery, and it fails
+   against the pre-change code.
+3. Seed-phrase recovery spec: the same, with `POST /api/auth/recover` (memo key) plus
+   `POST /api/auth/recover/verify` as the eviction. It fails against the pre-change code.
+4. Password reset spec: the same, with the owner's `POST /api/auth/reset-request` plus
+   `POST /api/auth/reset` as the eviction. `accounts.email` stays the owner's address, and the
+   spec fails against the pre-change code.
+5. These stay green, judged by exit code and the Errors line: `tests/routes/recover.test.ts`,
+   `recover-two-phase.test.ts`, `recover-orcid-state-g.test.ts`,
+   `auth-reset-account-state.test.ts`, `session-proof-invalidation.test.ts`,
+   `settings-state-g-unverified-email.test.ts`, `settings.test.ts`, and
+   `tests/eslint/no-accounts-updated-at-write-outside-signup-finalize.test.ts`.
+6. No new error code, response string or status. No emdash. No new writer of
+   `accounts.updated_at`.
+
+## Notes
+
+- Land in one pass with `backend-reset-tokens-outlive-email-changes-and-recovery`. It edits the
+  same two `recover.ts` UPDATEs (the `reset_token` clear) and the `POST /reset` UPDATE's predicate
+  (its Scope item 3). `backend-reset-response-names-the-account` edits the same `POST /reset`
+  handler's success data. Neither task closes this path: the reset-token one needs mailbox control
+  or a pre-issued reset token, while this one needs only the password.
+- Account-state check: `pending_email_*` is an overlay in ARCHITECTURE.md § 6.1, and clearing it
+  changes no state dimension. Reset reaches A, B, D and G rows with a password, plus E rows and
+  email-path F rows. E and F rows never carry a triple (`POST /api/settings/email` finds rows by
+  username), so the clear is a no-op there.
+- Accepted cost: a change the owner queued before their own recovery or reset is dropped. The
+  owner re-requests it.
+- Residuals, not proposed:
+  - The owner is not told when a change is queued.
+  - A change request already in flight can race the eviction. The window is server-side only and
+    the attacker cannot stretch it.
+- The custody upgrade path was not measured, because it needs on-chain keys. Its description
+  above comes from code reading.
+- Same statement family, different defect: both recovery paths check the new address against
+  `accounts.email` only, not against other rows' `pending_email`. Filed in
+  `backend-email-change-swap-500s-on-a-taken-address`.
+
+## Backend implementation signal (2026-10-07, commits 4196982f, e9f8214f; learning 3611be12)
+
+Landed in one pass with `backend-reset-tokens-outlive-email-changes-and-recovery`, which carries the
+shared test-run detail.
+
+- **AC 1.** The three statements write `pending_email = NULL, pending_email_token = NULL,
+  pending_email_expires_at = NULL` in their one SET: `routes/recover.ts` `POST /recover` (ORCID
+  method), `routes/recover.ts` `POST /recover/verify` (apply transaction), and `routes/auth.ts`
+  `POST /reset`. `POST /api/custody/upgrade` is unchanged.
+- **AC 2 to 4.** `tests/routes/recovery-and-reset-drop-queued-email-change.test.ts` (new, 3 specs).
+  The change is queued through the real `POST /api/auth/login`, `POST /api/custody/fresh-auth`
+  (`change_email`, password) and `POST /api/settings/email` on the real `verifyHiveSignature` JWT
+  path, and the spec asserts the triple holds the attacker's address and the mailed token before
+  the eviction. After it, the stale link answers a 400 deep-equal to an unknown token's,
+  `accounts.email` is the recovery's `new_email` (ORCID, seed phrase) or the owner's (reset), and
+  the triple is NULL. All three were red before the fix: the link answered 200 and swapped the
+  email. Header: (a) the SMTP transporter and `config.smtpHost`, and the seeded ORCID nonce;
+  (c) `recover.test.ts` [smtp-fail-test.invalid]; no auth middleware mocked.
+- **AC 5.** recover, recover-two-phase, recover-orcid-state-g, auth-reset-account-state,
+  session-proof-invalidation, settings-state-g-unverified-email, settings and `tests/eslint`
+  (including no-accounts-updated-at-write-outside-signup-finalize) are green, each run alone, exit
+  0, no Errors line.
+- **AC 6.** This task's statements add no error code, response string or status (the reworded
+  reset-request message belongs to the sibling), no emdash, and no writer of
+  `accounts.updated_at`.
+- **Comments.** None became false, as the filing found. The simplify pass deleted two `recover.ts`
+  comments that only restated the SET lists.
+- **For ARCHITECTURE.md § 6.3 [TODO Architect].** The three statements above drop a pending email
+  change. The residuals stand as filed: a change request in flight still races the eviction (the
+  change-flow write is keyed on `username` alone), and the owner is not told a change is queued.
+- **Learnings checkpoint.** Covered by the sibling's new entry,
+  `conventions/mailed-credential-token-dies-with-its-address-and-credential.md` (Guidance 1, and
+  the in-flight residual under Guidance 3); no separate entry qualified.
+
 ## Reset tokens outlive email changes and recovery, and unverified G rows still get reset links (archived 2026-10-07): one round, clean on code; no hold, contract line applied, docs carried to the gate-docs task
 
 ### Architect archive note (2026-10-07)
@@ -87,164 +248,3 @@ triage: "as recommended".
      before the gate existed or for a password dropped while the token was outstanding." After
      Scope item 2 a dropped password clears the token.
 6. Route tests against real Postgres: for each writer from Scope item 1, a token issued before
-   the write is refused after it and the password is unchanged. The unverified G row with a
-   password is refused at both ends, with the answers deep-equal to the unknown-email and
-   unknown-token answers and the timing floor the existing suite asserts.
-
-## Acceptance criteria
-
-1. No UPDATE in `backend/src` changes `email` or sets `password_hash` to NULL without clearing
-   both reset-token columns.
-2. `reset-request` and `reset` refuse an unverified state G row exactly as they refuse a
-   passwordless row.
-3. The reset-request answer is true for every refused row and identical for every caller.
-4. The completion signal lists the writers Scope item 1 found and the per-state outcome changes,
-   so the architect can update ARCHITECTURE.md § 6.3/6.4 and `api-contracts/auth.md`. Do not
-   edit those yourself.
-
-## Note (2026-10-06, backend): land with the pending-email-change sibling
-
-`backend-recovery-and-reset-keep-a-queued-email-change` edits the same three statements: the two
-recovery UPDATEs in `routes/recover.ts` and the `POST /reset` UPDATE in `routes/auth.ts`. It adds
-`pending_email = NULL, pending_email_token = NULL, pending_email_expires_at = NULL` to their SET
-lists. Land both in one pass so each statement is edited once. Neither task closes the other's
-path.
-
-## Backend implementation signal (2026-10-07, commits 4196982f, e9f8214f, dbae925d; learnings 3611be12, 2230a1f8)
-
-Landed in one pass with `backend-recovery-and-reset-keep-a-queued-email-change`, as the note above
-asks, so each shared statement was edited once.
-
-**Scope item 1, measured writers.** Three independent read-only sweeps (SQL text, column-name
-trace, route-by-route walk) and a critic found seven statements in `backend/src` that write
-`accounts.email` or can set `password_hash` to NULL. The filing listed the first four:
-
-1. `routes/recover.ts`, `POST /recover`, ORCID method UPDATE: moves the email; NULL hash when no
-   `new_password` is sent.
-2. `routes/recover.ts`, `POST /recover/verify`, apply UPDATE: moves the email (`COALESCE` never
-   NULLs the hash).
-3. `routes/settings.ts`, `GET /email/verify/:token` change swap (`SET email = pending_email`).
-4. `routes/settings.ts`, `POST /email` re-issue branch for an unverified state G row.
-5. `routes/settings.ts`, `POST /email` SMTP-failure restore of that re-issue: writes the earlier
-   email back.
-6. `routes/auth.ts`, `POST /signup` ORCID+email upsert:
-   `ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash`, NULL when the ORCID
-   signup sends no password. It reaches a pending row E, which can hold a reset token.
-7. `routes/auth.ts`, `POST /signup` email upsert, the same SET: replaces the hash (and NULLs it on
-   the path in out-of-scope finding 1).
-
-All seven now set `reset_token = NULL, reset_token_expires_at = NULL`. The two upserts clear it
-unconditionally rather than only for a NULL hash: the retry replaces the row's password either way,
-so a token issued against the replaced one has nothing left to rotate legitimately. Ruled out: the
-add-flow INSERT and the ORCID-only plain INSERT (new rows), set-password (a non-NULL hash on a
-hashless row), every DELETE, the custody upgrade, both signup finalizes, `orcid.ts` and
-`accreditation-metadata.ts` (neither column).
-
-**Scope item 3.** The `/reset-request` lookup and the `/reset` UPDATE carry
-`AND (username IS NULL OR verify_token IS NULL)` beside the password gate. Against ARCHITECTURE.md
-§ 6.1 it refuses exactly (username SET, verify_token non-NULL), the unverified state G row; E, F,
-A to D and verified G are untouched. A refused row takes the passwordless row's code paths.
-
-**Beyond the listed scope, found by a self-review and fixed in place.** `/reset-request` wrote its
-token in a second UPDATE keyed on `id` alone, so a recovery or swap that commits between its lookup
-and that write left a live token on the moved row: an in-flight form of Why item 1. The write now
-re-checks `email = $4` and the lookup's gate. A 0-row write still mails and answers the same 200.
-Pinned on the real path by holding the row lock (spec "an email move committing between
-reset-request's lookup and its token write"), red against a copy keyed on `id` alone.
-
-**Scope item 4.** `RESET_REQUEST_OK_MESSAGE` is now "If that email belongs to an account whose
-password can be reset, a reset link has been sent." The suggested "If an account with a password
-exists for that email" is false for an unverified G row with a password, so the sentence keys on
-whether reset is available. It is true for every refused row and for an unknown email, and stays
-one constant on both branches. No emdash.
-
-**Scope item 5, comments.** The `/reset` UPDATE comment's "token that outlived its row's password"
-sentences are deleted. "gates on no account state but the password" is deleted from the
-`signup-verify.ts` `/link` rationale and from spec (h) of `signup-verify-stuck-recovery.test.ts`;
-the lookup SQL is byte-identical. The `auth-reset-account-state.test.ts` header loses "or for a
-password dropped while the token was outstanding" and now names the unverified G refusal. Also
-narrowed: the `RESET_TOKEN_INVALID_MESSAGE` comment (no longer lists the refused rows), and the
-settings SMTP-failure comments that said the request's write "rolls back", which the reset-token
-clear no longer does.
-
-**Per-state outcome changes (AC 4).**
-
-- State G, email unverified, with a password: was rotate, now refused at both ends.
-  `/reset-request` gives the unknown-email 200 with the sentinel burn and writes no token. `/reset`
-  answers the unknown-token 400 and leaves the row unchanged; an expired token still gets the
-  expired answer, as on a passwordless row.
-- Every other § 6.1 state: unchanged. A, B, D with a password, verified G with a password, E and
-  F (email path) rotate; C, D and G without a password, unverified G without a password and F
-  (ORCID path) are refused.
-- A reset token no longer survives: ORCID recovery with or without a new password, the seed-phrase
-  recovery apply, the change-email swap, the settings re-issue and its restore, or a signup retry
-  over a row E.
-
-**Tests, real Postgres and Redis.**
-
-- `tests/routes/reset-token-cleared-by-account-writes.test.ts` (new, 9 specs): one per writer
-  (ORCID recovery twice, the passwordless one followed by the real set-password route; seed-phrase
-  apply; change swap; re-issue then the new address verified; restore then the earlier address
-  verified; both signup upserts) plus the race spec. Each issues a token (through `/reset-request`,
-  or written directly where it refuses the row), runs the writer through its route, then asserts
-  the row holds no token, `/reset` answers deep-equal to an unknown token, and the password is
-  unchanged. All eight writer specs were red before the clears.
-- `tests/routes/auth-reset-account-state.test.ts`: a `rotates` field per shape. The unverified G
-  row with a password flips to refused at both ends, with deep-equal answers and the
-  `TIMING_ORACLE_FLOOR_MS` floor; the refused `/reset` spec asserts the hash unchanged. Both specs
-  were red before.
-- Carve-out header of the new file: (a) the hive client key lookup stub (the signature path an
-  unverified G row has), the SMTP mock, and the ORCID nonce and set-password proof written
-  directly; (b) `verifyHiveSignature` real; (c) `recover.test.ts` [smtp-fail-test.invalid].
-- Green, each file alone, exit 0, no Errors line: recover, recover-two-phase,
-  recover-orcid-state-g, auth-reset-account-state, auth-reset-session-match,
-  auth-reset-request-shutdown, session-proof-invalidation, settings-state-g-unverified-email,
-  settings, auth-state-g-rows, auth, signup-verify, signup-verify-stuck-recovery,
-  settings-email-fresh-auth, settings-set-password-fresh-auth, auth-signup-dup-saturated,
-  auth-signup-argon-error-translation, auth-log-shape, signup-verify-session-binding,
-  signup-verify-orcid-binding-guard, `tests/eslint` (146), and both new files.
-- Full suite after 4196982f: 7 files / 15 specs red, all in the standing set
-  (accreditation-idempotency, profile-auth-bypass, reviews gate, idempotency-real-haf,
-  papers-enrichment-parity-gate, cast-hardening-author-index-weight, and
-  fresh-auth-consent-op-burn-offline-queue under full-suite load). Typecheck clean; lint 0 errors,
-  1 pre-existing warning in `lib/author-supersession.ts`.
-
-**Out-of-scope findings, for filing.**
-
-1. A standard email signup can write a row E with `password_hash` NULL, a shape § 6.1 does not
-   have (E carries a password). Validation keys on `hasOrcidToken` (any non-empty `orcid_token`),
-   the branch on `verifiedOrcid`: a non-resolving `orcid_token`, an institutional email and no
-   password pass the relaxed validation and reach the standard upsert with a NULL hash.
-2. The settings re-issue UPDATE is keyed on `username` alone. A verify click that lands between
-   its lookup and its write has its now-verified row's email rewritten and a fresh hex
-   `verify_token` installed, unverifying the row again; if the re-issued mail then fails, the
-   restore writes back the prior `verify_token` the click already consumed.
-3. `pending_email_token` has no index, so the change-verify lookup scans `accounts` (the
-   `reset_token` index is already filed as `backend-reset-token-lookup-has-no-index`).
-4. `auth-reset-account-state.test.ts` deletes only `accounts` rows; the `password_reset` audit rows
-   its rotating specs write stay behind. Predates this change.
-
-**[TODO Architect]**
-
-- `agents/docs/api-contracts/auth.md`, `POST /api/auth/reset-request` response example: quote the
-  new `RESET_REQUEST_OK_MESSAGE`.
-- ARCHITECTURE.md § 6.3 and § 6.4: reset serves A, B, D and verified G with a password, plus E and
-  email-path F; an unverified G row is refused with or without a password. The § 6.3 Option C
-  note's "`POST /api/auth/reset` gates on no account state" is now false. Record that the seven
-  writers above clear the reset token. `architect-password-reset-gate-docs` lists "G with a
-  password (email verified or not)" as rotating: email verified only, now.
-
-**Learnings checkpoint.** `/ce-compound` wrote
-`conventions/mailed-credential-token-dies-with-its-address-and-credential.md`, with its catalog row
-under the updated_at canary (3611be12). `/ce-compound-refresh` updated
-`conventions/credential-setting-token-redeem-must-not-name-the-account.md`, whose leak list still
-named an old mailbox after an email change (2230a1f8).
-
-## Stop an auth-layer 401 from spending the custody-upgrade proof budget (archived 2026-10-07): one round, clean review; two residuals accepted, one comment rider filed
-
-### Architect archive note (2026-10-07)
-
-- **Review:** `/ce-code-review` full path on `2b8e15ea`, `fb337fec`, `07a4dff6` (branch-remote via a synthetic head holding only the task's 25 files): correctness, security, adversarial (in-process, no cross-model peer), testing, project-standards, reliability, julik-frontend-races, maintainability, learnings, plus a validator on the one primary finding. Verdict "Ready to merge", no P0-P2. All four ACs met. Testing planted 11 mutants (both session-ended arms, the pinned-token gate, the reported token, the getter, the in-place sign-in, the toast, the template wiring, the counter, the branch order); all killed. Full frontend unit suite at `07a4dff6` in a two-level copy: 97 files / 2275 tests, exit 0. Project-standards checked every changed comment true against the code, including the seam comment against `backend/src/routes/custody.ts`.
-- **Accepted residuals (user triage, added to the implementer's list):** (1) when another sender (the api.js bearer helper, e.g. the notification poll, or a sibling tab) ends an expired session between the token pin and the cleanup POST, the store is signed out, so the `auth.token === upgradeToken` gate skips the expiry check and the expired bearer spends one proof attempt with the clock-skew copy; no wipe on its own. Pinning `expiresAt` beside the token would close it if ever wanted. (2) An email login in the in-place sign-in prompt answered `409 PENDING_SIGNUP` navigates to `/signup/verify` and unmounts the page, wiping the seed; it needs another account's pending-signup email.
-- **Dismissed:** moving the pinned-token gate into `endSessionIfExpired` (guards only a future fourth caller); the after-cleanup copy going unseen after a sign-out in the rotation-in-flight window (pre-existing, recorded in the `_endUpgradeAsSessionChanged` docblock, inside the window the user chose to leave unmarked).
-- **Rider filed:** pending `ui-upgrade-done-screen-hidden-by-custody-flip.md` now also deletes the `_proofRetryAttempts` parenthetical `(first in executeUpgrade, subsequent ones in retryUpgradeBackend)`, false when the first cleanup POST ends in a 503 or a session-ended error.

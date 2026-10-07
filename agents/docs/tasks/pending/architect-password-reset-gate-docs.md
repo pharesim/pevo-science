@@ -121,3 +121,8 @@ change in a second pass.
 - Not yet archived, same commits: `backend-recovery-and-reset-keep-a-queued-email-change` makes
   both recovery UPDATEs and the `/reset` UPDATE clear the `pending_email` triple. Its signal asks
   for the same § 6.3 transitions to say so; fold it in when that task archives.
+
+## Architect note (2026-10-07): the pending-email line is in
+
+`backend-recovery-and-reset-keep-a-queued-email-change` was archived on 2026-10-07 and its line
+landed in § 6.3 ("Evictions drop a queued email change."). Keep it when rewriting § 6.3.
