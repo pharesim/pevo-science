@@ -127,6 +127,9 @@ const RUN_ID = Date.now();
 const SUFFIX = (RUN_ID % 1000000).toString(36);
 const FAKE_PASSWORD_HASH =
   '$argon2id$v=19$m=65536,t=3,p=1$placeholderplaceholder$placeholderplaceholderplaceholderplaceholder';
+// `POST /api/auth/verify` answers 400 VALIDATION_ERROR to a body without a
+// password before it looks the token up, so every call here sends one.
+const VERIFY_PASSWORD = 'VerifyPassword1';
 
 // Every row a spec seeds or creates is keyed by an email carrying this marker,
 // so cleanup reaches signup rows (username NULL) as well as state G rows.
@@ -268,8 +271,8 @@ describe.skipIf(!dbReachable)('state G rows with an unverified email', () => {
       const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
       await seedUnverifiedG({ ...g, token, expiresAt });
 
-      const unknown = await request(app).post('/api/auth/verify').send({ token: hexToken() });
-      const res = await request(app).post('/api/auth/verify').send({ token });
+      const unknown = await request(app).post('/api/auth/verify').send({ token: hexToken(), password: VERIFY_PASSWORD });
+      const res = await request(app).post('/api/auth/verify').send({ token, password: VERIFY_PASSWORD });
 
       expect(res.status).toBe(unknown.status);
       expect(res.body).toEqual(unknown.body);
@@ -287,8 +290,8 @@ describe.skipIf(!dbReachable)('state G rows with an unverified email', () => {
       const token = hexToken();
       await seedUnverifiedG({ ...g, token, expiresAt: new Date(Date.now() - 60 * 60 * 1000) });
 
-      const unknown = await request(app).post('/api/auth/verify').send({ token: hexToken() });
-      const res = await request(app).post('/api/auth/verify').send({ token });
+      const unknown = await request(app).post('/api/auth/verify').send({ token: hexToken(), password: VERIFY_PASSWORD });
+      const res = await request(app).post('/api/auth/verify').send({ token, password: VERIFY_PASSWORD });
 
       expect(res.status).toBe(unknown.status);
       expect(res.body).toEqual(unknown.body);
@@ -307,8 +310,8 @@ describe.skipIf(!dbReachable)('state G rows with an unverified email', () => {
         [f.email, FAKE_PASSWORD_HASH, token, bindingHash],
       );
 
-      const unknown = await request(app).post('/api/auth/verify').send({ token: hexToken() });
-      const res = await request(app).post('/api/auth/verify').send({ token });
+      const unknown = await request(app).post('/api/auth/verify').send({ token: hexToken(), password: VERIFY_PASSWORD });
+      const res = await request(app).post('/api/auth/verify').send({ token, password: VERIFY_PASSWORD });
 
       expect(unknown.status).toBe(400);
       expect(res.status).toBe(unknown.status);

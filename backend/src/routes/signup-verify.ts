@@ -530,15 +530,22 @@ const linkTokenLimiter = rateLimit({
 
 // ─────────────────────────────────────────────────────────────
 // POST /api/auth/verify — Verify email token (SF3)
+// Request: { token, password }. The password is the one the signup row was
+// created with, so a link mailed to an address owner who never signed up
+// cannot finalize a signup someone else started with that address.
 // Marks account as confirmed, returns { flow: 'choose' }
 // ─────────────────────────────────────────────────────────────
 router.post('/verify', verifyLimiter, async (req: Request, res: Response) => {
+  const abortSignal = requestAbortSignal(req, res);
   const pool = getAppPool();
   if (!pool) return sendError(res, 503, 'INTERNAL_ERROR', 'Service not available');
 
-  const { token } = req.body || {};
+  const { token, password } = req.body || {};
   if (!token || typeof token !== 'string') {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Verification token is required');
+  }
+  if (!password || typeof password !== 'string') {
+    return sendError(res, 400, 'VALIDATION_ERROR', 'Password is required');
   }
 
   try {
@@ -559,8 +566,9 @@ router.post('/verify', verifyLimiter, async (req: Request, res: Response) => {
       id: number;
       email: string;
       expires_at: Date;
+      password_hash: string | null;
     }>(
-      `SELECT id, email, expires_at FROM accounts
+      `SELECT id, email, expires_at, password_hash FROM accounts
         WHERE verify_token = $1 AND username IS NULL AND verify_token NOT LIKE 'confirmed:%'`,
       [token],
     );
@@ -575,22 +583,45 @@ router.post('/verify', verifyLimiter, async (req: Request, res: Response) => {
       return sendError(res, 400, 'BAD_REQUEST', 'Verification token has expired');
     }
 
+    // A pending row with no password gets the wrong-password answer:
+    // `argon2.verify` throws on a NULL hash. Neither branch writes the row.
+    // Only a holder of the mailed token reaches them, so they need no
+    // timing equalization.
+    if (!account.password_hash) {
+      return sendError(res, 401, 'UNAUTHORIZED', 'Incorrect password');
+    }
+    const passwordHash = account.password_hash;
+    const passwordValid = await runWithArgon2Slot(() => argon2.verify(passwordHash, password), { signal: abortSignal });
+    if (!passwordValid) {
+      return sendError(res, 401, 'UNAUTHORIZED', 'Incorrect password');
+    }
+
     // Mark as confirmed with a random token. Mint a fresh browser-session
     // binding for this row: any prior binding (e.g., from /signup on a
     // different browser) is overwritten so that whichever browser clicked
     // the verification email link is the one bound for the upcoming
     // /confirm or /link ceremony. See `signup-session-binding.ts` for the
     // threat model.
+    //
+    // The UPDATE is keyed on the presented token as well as the id. A
+    // signup retry for the same address rewrites the row's password_hash
+    // and verify_token together, so a row that changed after the password
+    // check matches nothing and gets the unknown-token answer, instead of
+    // being confirmed with a password the presenter never proved.
     const confirmed = `confirmed:${crypto.randomBytes(32).toString('hex')}`;
     const binding = mintBinding();
-    await pool.query(
-      'UPDATE accounts SET verify_token = $1, signup_binding_hash = $2 WHERE id = $3',
-      [confirmed, binding.hash, account.id],
+    const { rowCount } = await pool.query(
+      'UPDATE accounts SET verify_token = $1, signup_binding_hash = $2 WHERE id = $3 AND verify_token = $4',
+      [confirmed, binding.hash, account.id, token],
     );
+    if (rowCount !== 1) {
+      return sendError(res, 400, 'BAD_REQUEST', 'Invalid or expired verification token');
+    }
 
     setBindingCookie(res, binding.cookieValue);
     sendOk(res, { flow: 'choose', email: account.email, auth_token: confirmed });
   } catch (err) {
+    if (handleArgonError(res, err) === ARGON_HANDLED) return;
     logger.error(
       { event: 'signup_verify.verify.failed', route: 'signup-verify.verify', err },
       'Email verification failed',

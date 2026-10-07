@@ -978,7 +978,7 @@ describe.skipIf(!dbReachable)('signup_verify.verify.failed log shape', () => {
       await clearRateLimitKeys(['signup-verify']);
       const res = await request(app)
         .post('/api/auth/verify')
-        .send({ token: 'log_shape_synthetic_token_for_verify_failed' });
+        .send({ token: 'log_shape_synthetic_token_for_verify_failed', password: 'TestPassword1' });
       expect(res.status).toBe(500);
 
       const fields = findEventCall(errorSpy as never, 'signup_verify.verify.failed');

@@ -389,6 +389,14 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     }
   }
 
+  // An `orcid_token` that does not resolve (expired, or spent by an earlier
+  // submit) is refused here. It would otherwise skip the required-field
+  // checks below, which run only when no `orcid_token` was sent, and reach
+  // the email upsert with no password.
+  if (hasOrcidToken && !verifiedOrcid) {
+    return sendError(res, 400, 'BAD_REQUEST', 'Your ORCID verification is no longer valid. Please verify your ORCID again.');
+  }
+
   // Validate required fields — relaxed when orcid_token is present.
   // Zod ensures every named field is either string-or-undefined; the
   // nonempty checks below are the business-required-field guards, NOT
@@ -673,7 +681,7 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
           from: config.smtpFrom,
           to: normalizedEmail!,
           subject: 'PEvO - Verify your email',
-          text: `Welcome to PEvO!\n\nPlease verify your email to complete your registration:\n\n${verifyUrl}\n\nThis link expires in 24 hours.\n\nIf you did not sign up for PEvO, you can safely ignore this email.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
+          text: `Welcome to PEvO!\n\nPlease verify your email to complete your registration:\n\n${verifyUrl}\n\nThe link asks for the password you chose when you signed up. It expires in 24 hours.\n\nIf you did not sign up for PEvO, you can safely ignore this email.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
         });
       } catch (mailErr) {
         logger.error(
@@ -839,7 +847,7 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
           from: config.smtpFrom,
           to: normalizedEmail,
           subject: 'PEvO - Verify your email',
-          text: `Welcome to PEvO!\n\nPlease verify your email to complete your registration:\n\n${verifyUrl}\n\nThis link expires in 24 hours.\n\nIf you did not sign up for PEvO, you can safely ignore this email.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
+          text: `Welcome to PEvO!\n\nPlease verify your email to complete your registration:\n\n${verifyUrl}\n\nThe link asks for the password you chose when you signed up. It expires in 24 hours.\n\nIf you did not sign up for PEvO, you can safely ignore this email.\n\nPEvO - Open Scientific Publishing\nhttps://pevo.science`,
         });
       } catch (err) {
         logger.warn(

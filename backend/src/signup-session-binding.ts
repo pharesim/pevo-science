@@ -12,13 +12,10 @@ import type { Request, Response } from 'express';
  * a log line — anyone could complete the signup with their own
  * browser-controlled Hive keys.
  *
- * Scope note: this binding does NOT close mailbox-read takeover. The
- * `/api/auth/verify` step re-mints a binding cookie for whoever presents the
- * emailed verification token, so an attacker who can read the mailbox can
- * verify and bind their own session. Email verification inherently trusts
- * mailbox possession; the binding closes the post-verification leak vectors
- * (Referer / login-error-body / log) on the `confirmed:…` token, not the
- * mailbox itself.
+ * Scope note: the `/api/auth/verify` step re-mints a binding cookie for
+ * whoever presents the emailed verification token with the signup password.
+ * The binding closes the post-verification leak vectors (Referer /
+ * login-error-body / log) on the `confirmed:…` token, not that step.
  *
  * The fix binds the auth_token to the browser session that initiated the
  * signup. Mechanism:
