@@ -533,7 +533,7 @@
   </div>
 
   <!-- ═══════════════════════════════════════════════ TOAST ═══════════════════════════════════════════════ -->
-  <div class="fixed bottom-4 right-4 z-50 flex flex-col-reverse gap-2 max-w-sm w-full pointer-events-none" aria-live="polite">
+  <div x-data class="fixed bottom-4 right-4 z-50 flex flex-col-reverse gap-2 max-w-sm w-full pointer-events-none" aria-live="polite">
     <template x-for="item in $store.toast.items" :key="item.id">
       <div class="pointer-events-auto flex items-start gap-3 rounded-lg border px-4 py-3 shadow-md transition-all duration-300"
            :class="{

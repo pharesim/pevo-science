@@ -114,8 +114,9 @@ test('202 enqueue renders the queued state with position and ETA', async ({ page
   await fillLookupAndRegister(page);
   await registerRequest;
 
-  // Queued banner: title + position-and-ETA copy + My imports link.
-  await expect(page.getByText('Queued for publishing')).toBeVisible();
+  // Queued banner: title + position-and-ETA copy + My imports link. The
+  // success toast carries the same title, so the title is read inside the page.
+  await expect(page.locator('[x-data="bridgePage"]').getByText('Queued for publishing')).toBeVisible();
   await expect(page.getByText(/Position 3 in queue/)).toBeVisible();
   await expect(page.getByText(/~10 min/)).toBeVisible();
   await expect(page.getByRole('link', { name: /Track this and other pending imports/ })).toBeVisible();
