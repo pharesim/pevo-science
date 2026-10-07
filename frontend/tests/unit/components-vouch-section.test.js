@@ -73,7 +73,7 @@ describe('vouchSection', () => {
       expect(comp.currentUserHasVouched).toBe(true);
     });
 
-    it('canVouch requires connected, not self, not already vouched, not accredited', () => {
+    it('canVouch is true for a Keychain account on an unaccredited profile it has not vouched for', () => {
       const comp = createComponent({ targetUsername: 'bob', isTargetAccredited: false });
       comp.vouchStatus = { vouches: [] };
       expect(comp.canVouch).toBe(true);
@@ -130,6 +130,13 @@ describe('vouchSection', () => {
       const comp = createComponent({ targetUsername: 'bob' });
       comp.vouchStatus = { vouches: [{ voucher: 'alice' }] };
       expect(comp.canRetract).toBe(true);
+    });
+
+    it('canRetract is false for a light account that has not vouched', () => {
+      mockAuthStore.custody = 'light';
+      const comp = createComponent({ targetUsername: 'bob' });
+      comp.vouchStatus = { vouches: [{ voucher: 'carol' }] };
+      expect(comp.canRetract).toBe(false);
     });
   });
 
