@@ -9,12 +9,14 @@ vi.mock('../../src/api.js', () => ({
 }));
 
 const mockRouterStore = { navigate: vi.fn() };
+const mockAuthStore = { token: null };
 
 vi.mock('alpinejs', () => ({
   default: {
     data: vi.fn(),
     store: vi.fn((name) => {
       if (name === 'router') return mockRouterStore;
+      if (name === 'auth') return mockAuthStore;
       return {};
     }),
   },
@@ -143,7 +145,7 @@ describe('resetPasswordPage', () => {
 
       await comp.handleReset();
 
-      expect(mockResetPassword).toHaveBeenCalledWith('tok', 'Abcdefgh1x');
+      expect(mockResetPassword).toHaveBeenCalledWith('tok', 'Abcdefgh1x', null);
       expect(comp.resetDone).toBe(true);
     });
 
@@ -235,7 +237,7 @@ describe('resetPasswordPage', () => {
       comp.passwordConfirm = 'Abcdefgh1x';
       const pending = comp.handleReset();
       comp.destroy();
-      resolveFn();
+      resolveFn({});
       await pending;
       expect(comp.resetDone).toBe(false);
     });

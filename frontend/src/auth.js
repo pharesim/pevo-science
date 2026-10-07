@@ -240,6 +240,19 @@ export function initAuth() {
       return true;
     },
 
+    // A password reset submitted from this browser revoked every session of
+    // its account, and the server answered that `sentToken`, the session the
+    // reset request carried, is one of them. End it now, as part of the user's
+    // own action, the way the header's sign-out does: no message and no
+    // sign-in prompt. Left stored, it would stay until a later bearer request
+    // met the revocation and `handleRevokedSession` tore every tab down with
+    // the signed-out message.
+    //
+    // Returns true when this call ended the session.
+    endResetSession(sentToken) {
+      return this._endSession(sentToken, () => this.disconnect());
+    },
+
     disconnect() {
       this.username = null;
       this.isConnected = false;
@@ -307,10 +320,10 @@ export function initAuth() {
       return true;
     },
 
-    // End the session `sentToken` belongs to, through `tearDown` (one of the
-    // shared fresh-auth teardowns), then offer sign-in carrying `notice()`.
-    // Shared by the revoked and expired sessions, so the two cannot drift on
-    // the stale-token check or the adoption of a newer stored session.
+    // End the session `sentToken` belongs to, through `tearDown`, then, when
+    // a `notice` is given, offer sign-in carrying `notice()`. Shared by the
+    // revoked, expired and reset sessions, so they cannot drift on the
+    // stale-token check or the adoption of a newer stored session.
     //
     // Acts only when `sentToken` is still the one this store holds. Tearing
     // down for a token the store has since replaced would remove the stored
@@ -326,18 +339,19 @@ export function initAuth() {
     // there would remove that newer session from storage and sign the other
     // tab out with it.
     //
-    // The user did not sign out, so the teardown says why the session ended
-    // and then offers sign-in where they are. Staying on the page matches the
-    // header sign-out and the session-inconsistency teardown, and keeps what
-    // a route change would destroy: a half-written review, attached files,
-    // the key-upgrade retry state.
+    // A revoked or expired session ends without the user signing out, so its
+    // teardown says why the session ended and then offers sign-in where they
+    // are. Staying on the page matches the header sign-out and the
+    // session-inconsistency teardown, and keeps what a route change would
+    // destroy: a half-written review, attached files, the key-upgrade retry
+    // state.
     //
     // Returns true when this call tore the session down.
     _endSession(sentToken, tearDown, notice) {
       if (!sentToken || sentToken !== this.token) return false;
       if (this._adoptStoredSessionOtherThan(sentToken)) return false;
       tearDown();
-      this._offerSignIn(notice());
+      if (notice) this._offerSignIn(notice());
       return true;
     },
 

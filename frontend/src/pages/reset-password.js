@@ -164,8 +164,13 @@ export function initResetPasswordPage() {
       this.resetSubmitting = true;
       this.resetError = null;
 
+      const sessionToken = Alpine.store('auth').token;
       try {
-        await resetPassword(this.token, this.password);
+        const res = await resetPassword(this.token, this.password, sessionToken);
+        // The reset has revoked every session of its account once the server
+        // answers, so a session it names as ended goes to the store even if
+        // the page has gone.
+        if (res.data?.session_ended) Alpine.store('auth').endResetSession(sessionToken);
         if (!this._mounted) return;
         this.resetDone = true;
       } catch (err) {

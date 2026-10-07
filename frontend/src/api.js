@@ -705,10 +705,17 @@ export function requestPasswordReset(email) {
   });
 }
 
-export function resetPassword(token, password) {
+// `sessionToken`, the session this browser holds if any, rides along as a
+// bearer so the answer's `session_ended` can say whether the reset revoked it.
+// The route never refuses a reset over it, and the reset works signed out, so
+// this is not an `authenticatedRequest`.
+export function resetPassword(token, password, sessionToken) {
   return request('/auth/reset', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+    },
     body: JSON.stringify({ token, password }),
   });
 }
