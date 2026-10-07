@@ -46,8 +46,7 @@ Two structural facts follow, and both are invisible to a reader who opens only t
 file:
 
 1. Chrome rendered by the shell is on screen for the whole session, whichever page-local
-   `x-if` branch is active. A page never renders its own sign-in affordance because a
-   global one already exists.
+   `x-if` branch is active.
 2. `x-data` establishes the Alpine component's lifecycle boundary. `x-if` is a
    conditional render *inside* that boundary. Flipping the condition tears down and
    rebuilds the DOM subtree under the `template`, but the enclosing component and
@@ -119,8 +118,9 @@ assertions catch.
 In the review that surfaced this, the copy under review tells a user who is no longer
 signed in as the account being upgraded to sign out, use the header's sign-in button to
 sign back in without leaving the page, then retry. All three readers opened
-`frontend/src/pages/settings.js`, saw that the not-connected branch renders only a
-`navigate('/login')` button, and concluded that the copy's own first step would unmount
+`frontend/src/pages/settings.js`, saw that the not-connected branch rendered only a
+`navigate('/login')` button (while an upgrade retry waits, that button now opens the
+sign-in prompt in place), and concluded that the copy's own first step would unmount
 the retry UI and leave a seed-destroying navigation as the only way forward. The
 adversarial persona rated it P1, reasonably: at that moment the user holds a freshly
 rotated BIP39 seed phrase that exists nowhere else, and `navigate('/login')` is exactly
