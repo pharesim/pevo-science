@@ -329,7 +329,7 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
     // NULL). Gate on the derived claim rather than on the epoch alone, since G
     // never had one: `custodyClaimFor` answers `'light'` only for an explicit
     // `'light'` column with no epoch. The 401 + generic message matches the
-    // no-ORCID branch so the route does not become a custody-state oracle.
+    // no-ORCID branch.
     if (orcid_token) {
       if (custodyClaimFor(account) !== 'light' || !account.orcid) {
         if (account.upgraded_at) {

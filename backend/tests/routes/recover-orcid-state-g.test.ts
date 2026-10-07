@@ -9,8 +9,7 @@
  * before the route gated on the derived custody claim. Recovery rebinds the
  * email and password of an account the server holds no keys for, so the
  * refusal is the same 401 and generic message the upgraded (state D) and
- * no-ORCID branches return, which keeps the route from becoming a custody
- * oracle.
+ * no-ORCID branches return.
  *
  * Real path, no mocking: real Postgres, real Redis, real route. The verified
  * ORCID nonce is seeded straight into Redis (and the in-memory fallback), the

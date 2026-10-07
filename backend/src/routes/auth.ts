@@ -822,13 +822,19 @@ router.post('/resend-verification', resendLimiter, async (req: Request, res: Res
       return sendOk(res, { message: 'If that email has a pending signup, a new verification link has been sent.' });
     }
 
-    // Generate new token and reset expiry
+    // Generate new token and reset expiry. The UPDATE is keyed on the token
+    // read above as well as the id: a row whose token changed or was cleared
+    // since that read matches nothing, gets no mail, and gets the uniform
+    // answer.
     const newToken = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + SIGNUP_TOKEN_EXPIRY_MS);
-    await pool.query(
-      'UPDATE accounts SET verify_token = $1, expires_at = $2 WHERE id = $3',
-      [newToken, expiresAt, account.id],
+    const { rowCount } = await pool.query(
+      'UPDATE accounts SET verify_token = $1, expires_at = $2 WHERE id = $3 AND verify_token = $4',
+      [newToken, expiresAt, account.id, account.verify_token],
     );
+    if (rowCount !== 1) {
+      return sendOk(res, { message: 'If that email has a pending signup, a new verification link has been sent.' });
+    }
 
     // SMTP-failure status-code oracle:
     // this known-email branch MUST NOT return 500 when sendMail throws. If it
