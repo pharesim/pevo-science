@@ -384,7 +384,6 @@
     "retractReasonPlaceholder": "Motivo (opcional)",
     "confirmRetract": "Confirmar Retirada",
     "connectToVouch": "Entre para atestar por este pesquisador.",
-    "keychainRequiredToVouch": "Atestar requer o Hive Keychain. Atualize sua conta nas configurações para ativar este recurso.",
     "vouchSuccess": "Atestacao enviada com sucesso!",
     "retractSuccess": "Atestacao retirada.",
     "accreditedViaWot": "{username} foi credenciado via Rede de Confianca!",

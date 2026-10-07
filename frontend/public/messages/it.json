@@ -384,7 +384,6 @@
     "retractReasonPlaceholder": "Motivo (opzionale)",
     "confirmRetract": "Conferma Ritiro",
     "connectToVouch": "Accedi per garantire per questo ricercatore.",
-    "keychainRequiredToVouch": "Garantire richiede Hive Keychain. Aggiorna il tuo account nelle impostazioni per abilitare questa funzione.",
     "vouchSuccess": "Garanzia inviata con successo!",
     "retractSuccess": "Garanzia ritirata.",
     "accreditedViaWot": "{username} è stato accreditato tramite la Rete di Fiducia!",

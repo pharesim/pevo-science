@@ -384,7 +384,6 @@
     "retractReasonPlaceholder": "Begrundelse (valgfrit)",
     "confirmRetract": "Bekræft tilbagetrækning",
     "connectToVouch": "Log ind for at gå i god for denne forsker.",
-    "keychainRequiredToVouch": "At gå i god kræver Hive Keychain. Opgrader din konto i indstillingerne for at aktivere denne funktion.",
     "vouchSuccess": "Anbefaling indsendt!",
     "retractSuccess": "Anbefaling trukket tilbage.",
     "accreditedViaWot": "{username} er blevet akkrediteret via Tillidsnetværk!",

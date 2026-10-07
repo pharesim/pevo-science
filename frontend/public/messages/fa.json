@@ -384,7 +384,6 @@
     "retractReasonPlaceholder": "دلیل (اختیاری)",
     "confirmRetract": "تایید بازپس‌گیری",
     "connectToVouch": "برای تایید این پژوهشگر وارد شوید.",
-    "keychainRequiredToVouch": "تایید نیازمند Hive Keychain است. حساب خود را در تنظیمات ارتقا دهید تا این قابلیت فعال شود.",
     "vouchSuccess": "تاییدیه با موفقیت ارسال شد!",
     "retractSuccess": "تاییدیه بازپس گرفته شد.",
     "accreditedViaWot": "{username} از طریق شبکه اعتماد اعتبارسنجی شد!",

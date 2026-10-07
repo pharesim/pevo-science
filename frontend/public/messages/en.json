@@ -384,7 +384,6 @@
     "retractReasonPlaceholder": "Reason (optional)",
     "confirmRetract": "Confirm Retract",
     "connectToVouch": "Sign in to vouch for this researcher.",
-    "keychainRequiredToVouch": "Vouching requires Hive Keychain. Upgrade your account in settings to enable this feature.",
     "vouchSuccess": "Vouch submitted successfully!",
     "retractSuccess": "Vouch retracted.",
     "accreditedViaWot": "{username} has been accredited via Web of Trust!",

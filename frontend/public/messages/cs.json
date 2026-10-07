@@ -384,7 +384,6 @@
     "retractReasonPlaceholder": "Důvod (volitelné)",
     "confirmRetract": "Potvrdit odvolání",
     "connectToVouch": "Přihlaste se, abyste se mohli za tohoto výzkumníka zaručit.",
-    "keychainRequiredToVouch": "Ručení vyžaduje Hive Keychain. Upgradujte svůj účet v nastavení, abyste tuto funkci povolili.",
     "vouchSuccess": "Zaručení bylo úspěšně odesláno!",
     "retractSuccess": "Zaručení bylo odvoláno.",
     "accreditedViaWot": "{username} byl/a akreditován/a prostřednictvím Sítě důvěry!",

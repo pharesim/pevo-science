@@ -384,7 +384,6 @@
     "retractReasonPlaceholder": "Neden (isteğe bağlı)",
     "confirmRetract": "Geri Çekmeyi Onayla",
     "connectToVouch": "Bu araştırmacıya kefil olmak için giriş yapın.",
-    "keychainRequiredToVouch": "Kefil olmak için Hive Keychain gereklidir. Bu özelliği etkinleştirmek için hesabınızı ayarlardan yükseltin.",
     "vouchSuccess": "Kefaletiniz başarıyla gönderildi!",
     "retractSuccess": "Kefalet geri çekildi.",
     "accreditedViaWot": "{username} Güven Ağı aracılığıyla akredite edildi!",

@@ -384,7 +384,6 @@
     "retractReasonPlaceholder": "Motif (facultatif)",
     "confirmRetract": "Confirmer le retrait",
     "connectToVouch": "Connectez-vous pour parrainer ce chercheur.",
-    "keychainRequiredToVouch": "Le parrainage nécessite Hive Keychain. Mettez à niveau votre compte dans les paramètres pour activer cette fonctionnalité.",
     "vouchSuccess": "Parrainage soumis avec succès !",
     "retractSuccess": "Parrainage retiré.",
     "vouchBroadcastPending": "Parrainage diffusé avec succès ! Notification au serveur en attente.",

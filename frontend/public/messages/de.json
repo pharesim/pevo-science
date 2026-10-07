@@ -384,7 +384,6 @@
     "retractReasonPlaceholder": "Begründung (optional)",
     "confirmRetract": "Rücknahme bestätigen",
     "connectToVouch": "Melden Sie sich an, um für diese forschende Person zu bürgen.",
-    "keychainRequiredToVouch": "Für das Bürgen wird Hive Keychain benötigt. Aktualisieren Sie Ihr Konto in den Einstellungen, um diese Funktion zu aktivieren.",
     "vouchSuccess": "Bürgschaft erfolgreich eingereicht!",
     "retractSuccess": "Bürgschaft zurückgezogen.",
     "vouchBroadcastPending": "Bürgschaft erfolgreich übermittelt! Backend-Benachrichtigung ausstehend.",

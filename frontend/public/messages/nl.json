@@ -384,7 +384,6 @@
     "retractReasonPlaceholder": "Reden (optioneel)",
     "confirmRetract": "Intrekking bevestigen",
     "connectToVouch": "Meld u aan om voor deze onderzoeker in te staan.",
-    "keychainRequiredToVouch": "Voor het instaan is Hive Keychain vereist. Upgrade uw account in de instellingen om deze functie in te schakelen.",
     "vouchSuccess": "Aanbeveling succesvol ingediend!",
     "retractSuccess": "Aanbeveling ingetrokken.",
     "accreditedViaWot": "{username} is geaccrediteerd via Web of Trust!",

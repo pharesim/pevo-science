@@ -384,7 +384,6 @@
     "retractReasonPlaceholder": "סיבה (אופציונלי)",
     "confirmRetract": "אישור ביטול",
     "connectToVouch": "התחברו כדי לערוב לחוקר זה.",
-    "keychainRequiredToVouch": "ערבות דורשת Hive Keychain. שדרגו את החשבון שלכם בהגדרות כדי לאפשר תכונה זו.",
     "vouchSuccess": "הערבות הוגשה בהצלחה!",
     "retractSuccess": "הערבות בוטלה.",
     "accreditedViaWot": "{username} הוסמך באמצעות רשת אמון!",

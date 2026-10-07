@@ -384,7 +384,6 @@
     "retractReasonPlaceholder": "原因（可选）",
     "confirmRetract": "确认撤回",
     "connectToVouch": "请登录后为该研究人员担保。",
-    "keychainRequiredToVouch": "担保需要 Hive Keychain。请在设置中升级您的账户以启用此功能。",
     "vouchSuccess": "担保提交成功！",
     "retractSuccess": "担保已撤回。",
     "accreditedViaWot": "{username} 已通过信任网络获得认证！",

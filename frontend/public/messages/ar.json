@@ -384,7 +384,6 @@
     "retractReasonPlaceholder": "السبب (اختياري)",
     "confirmRetract": "تأكيد السحب",
     "connectToVouch": "سجّل الدخول للشهادة لهذا الباحث.",
-    "keychainRequiredToVouch": "الشهادة تتطلب Hive Keychain. قم بترقية حسابك في الإعدادات لتفعيل هذه الميزة.",
     "vouchSuccess": "تم تقديم الشهادة بنجاح!",
     "retractSuccess": "تم سحب الشهادة.",
     "accreditedViaWot": "تم اعتماد {username} عبر شبكة الثقة!",

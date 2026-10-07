@@ -384,7 +384,6 @@
     "retractReasonPlaceholder": "Powód (opcjonalnie)",
     "confirmRetract": "Potwierdź wycofanie",
     "connectToVouch": "Zaloguj się, aby poręczyć za tego naukowca.",
-    "keychainRequiredToVouch": "Poręczenie wymaga Hive Keychain. Zaktualizuj swoje konto w ustawieniach, aby włączyć tę funkcję.",
     "vouchSuccess": "Poręczenie przesłane pomyślnie!",
     "retractSuccess": "Poręczenie wycofane.",
     "accreditedViaWot": "{username} uzyskał(a) akredytację przez Sieć zaufania!",

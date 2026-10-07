@@ -73,15 +73,36 @@ describe('vouchSection', () => {
       expect(comp.currentUserHasVouched).toBe(true);
     });
 
-    it('canVouch requires connected, non-light, not self, not already vouched, not accredited', () => {
+    it('canVouch requires connected, not self, not already vouched, not accredited', () => {
       const comp = createComponent({ targetUsername: 'bob', isTargetAccredited: false });
       comp.vouchStatus = { vouches: [] };
       expect(comp.canVouch).toBe(true);
     });
 
-    it('canVouch is false for light accounts', () => {
+    it('canVouch is true for a light account on an unaccredited profile it has not vouched for', () => {
+      mockAuthStore.custody = 'light';
+      const comp = createComponent({ targetUsername: 'bob', isTargetAccredited: false });
+      comp.vouchStatus = { vouches: [] };
+      expect(comp.canVouch).toBe(true);
+    });
+
+    it('canVouch is false for a light account vouching for itself', () => {
+      mockAuthStore.custody = 'light';
+      const comp = createComponent({ targetUsername: 'alice' });
+      comp.vouchStatus = { vouches: [] };
+      expect(comp.canVouch).toBe(false);
+    });
+
+    it('canVouch is false for a light account that has already vouched', () => {
       mockAuthStore.custody = 'light';
       const comp = createComponent({ targetUsername: 'bob' });
+      comp.vouchStatus = { vouches: [{ voucher: 'alice' }] };
+      expect(comp.canVouch).toBe(false);
+    });
+
+    it('canVouch is false for a light account when the target is accredited', () => {
+      mockAuthStore.custody = 'light';
+      const comp = createComponent({ targetUsername: 'bob', isTargetAccredited: true });
       comp.vouchStatus = { vouches: [] };
       expect(comp.canVouch).toBe(false);
     });
@@ -104,11 +125,11 @@ describe('vouchSection', () => {
       expect(comp.canRetract).toBe(true);
     });
 
-    it('canRetract is false for light accounts', () => {
+    it('canRetract is true for a light account that has vouched', () => {
       mockAuthStore.custody = 'light';
       const comp = createComponent({ targetUsername: 'bob' });
       comp.vouchStatus = { vouches: [{ voucher: 'alice' }] };
-      expect(comp.canRetract).toBe(false);
+      expect(comp.canRetract).toBe(true);
     });
   });
 

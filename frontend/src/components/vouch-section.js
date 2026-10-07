@@ -34,16 +34,12 @@ export function initVouchSection() {
       return this.vouchStatus?.vouches?.some((v) => v.voucher === this.username) ?? false;
     },
 
-    get isLightAccount() {
-      return Alpine.store('auth').custody === 'light';
-    },
-
     get canVouch() {
-      return this.isConnected && !this.isLightAccount && this.username !== this.targetUsername && !this.currentUserHasVouched && !this.isTargetAccredited;
+      return this.isConnected && this.username !== this.targetUsername && !this.currentUserHasVouched && !this.isTargetAccredited;
     },
 
     get canRetract() {
-      return this.isConnected && !this.isLightAccount && this.currentUserHasVouched;
+      return this.isConnected && this.currentUserHasVouched;
     },
 
     relationshipLabel(r) {

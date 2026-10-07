@@ -384,7 +384,6 @@
     "retractReasonPlaceholder": "Motivo (opcional)",
     "confirmRetract": "Confirmar retiro",
     "connectToVouch": "Inicie sesión para avalar a este investigador.",
-    "keychainRequiredToVouch": "Para avalar se requiere Hive Keychain. Actualice su cuenta en la configuración para habilitar esta función.",
     "vouchSuccess": "¡Aval enviado exitosamente!",
     "retractSuccess": "Aval retirado.",
     "vouchBroadcastPending": "¡Aval emitido exitosamente! Notificación al servidor pendiente.",

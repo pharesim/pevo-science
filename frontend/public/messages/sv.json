@@ -384,7 +384,6 @@
     "retractReasonPlaceholder": "Anledning (valfritt)",
     "confirmRetract": "Bekräfta tillbakadragande",
     "connectToVouch": "Logga in för att gå i god för denna forskare.",
-    "keychainRequiredToVouch": "Att gå i god kräver Hive Keychain. Uppgradera ditt konto i inställningarna för att aktivera denna funktion.",
     "vouchSuccess": "Borgen skickad!",
     "retractSuccess": "Borgen tillbakadragen.",
     "accreditedViaWot": "{username} har ackrediterats via Förtroendenätverk!",

@@ -152,11 +152,6 @@ const template = `
                   </div>
                 </template>
 
-                <!-- Light account message -->
-                <template x-if="isConnected && isLightAccount && !currentUserHasVouched">
-                  <p class="text-sm text-ink-muted italic" x-text="$t('wot.keychainRequiredToVouch')"></p>
-                </template>
-
                 <!-- Not connected -->
                 <template x-if="!isConnected">
                   <p class="text-sm text-ink-muted" x-text="$t('wot.connectToVouch')"></p>
