@@ -1523,13 +1523,15 @@ describe('orcidCallbackPage', () => {
 
   describe('_verify - session_auth mode', () => {
     // The session-window leg holds the proof to the consent-op leg's standard.
-    // A null proof cached here is dropped on the next read, and a truthy
-    // non-string is refused by the next gate; either way that gate starts
-    // another ORCID round-trip after this one was toasted as a success.
-    // Refusing the write surfaces the failure on this page instead.
+    // Cached, a falsy proof is dropped when the slot is next read, so the next
+    // gate finds no window; a truthy non-string is refused as a failed re-auth
+    // by the first gate the slot hands it to, and evicted, so the gate after
+    // that finds none. Either would follow a success toast. Refusing the write
+    // surfaces the failure on this page instead.
     it.each([
       { label: 'null', proof: null },
       { label: 'numeric', proof: 42 },
+      { label: 'empty-string', proof: '' },
     ])(
       'session_auth with a $label fresh_auth_proof: surfaces error, no cache write, no toast, no navigation',
       async ({ proof }) => {
@@ -1554,5 +1556,27 @@ describe('orcidCallbackPage', () => {
         expect(mockRouterStore.navigate).not.toHaveBeenCalled();
       },
     );
+
+    it('session_auth with a string fresh_auth_proof: caches the window, clears the return path, toasts success, navigates back', async () => {
+      sessionStorageData['pevo_fresh_auth_return_to'] = '/publish';
+      const comp = createComponent();
+      mockCompleteOrcid.mockResolvedValue({
+        data: {
+          mode: 'session_auth',
+          fresh_auth_proof: 'session-tok',
+          expires_at: '2099-01-01T00:00:00.000Z',
+          absolute_expires_at: '2099-01-01T08:00:00.000Z',
+        },
+      });
+
+      await comp._verify('code', 'state', 'session_auth');
+
+      const cached = JSON.parse(sessionStorageData['pevo_fresh_auth_session_proof']);
+      expect(cached.token).toBe('session-tok');
+      expect(sessionStorageData['pevo_fresh_auth_return_to']).toBeUndefined();
+      expect(mockToastStore.show).toHaveBeenCalledWith('orcid.reauthSuccess', 'success');
+      expect(mockRouterStore.navigate).toHaveBeenCalledWith('/publish');
+      expect(comp.status).not.toBe('error');
+    });
   });
 });

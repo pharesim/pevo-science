@@ -474,11 +474,18 @@ export function initOrcidCallbackPage() {
       // to where they started so they can carry on.
       //
       // Refuse a proof that is not a non-empty string before any of that, the
-      // same guard the consent-op leg applies. Cached, a null proof is dropped
-      // on the next read and a truthy non-string is refused by the next gate;
-      // either way that gate starts another ORCID round-trip after the user
-      // was told this one succeeded. The deadlines need no check here:
-      // `cacheSessionProof` already drops the slot on a non-finite deadline.
+      // same guard the consent-op leg applies. Cached, either shape would
+      // follow a success toast with no usable window: a falsy proof is dropped
+      // when the slot is next read, so the next gate finds no window; a truthy
+      // non-string is refused as a failed re-auth by the first gate the slot
+      // hands it to, and evicted, so the gate after that finds none.
+      //
+      // The deadlines are left to `cacheSessionProof`. One it cannot anchor
+      // (absent or unparseable) makes it drop the slot while this page still
+      // reports success, so the next gate finds no window. They go unchecked
+      // here because the backend always issues both, and the consent-op leg
+      // leaves its own deadline to `getCachedConsentOpProof`, which drops an
+      // unreadable one on read.
       if (typeof data.fresh_auth_proof !== 'string' || !data.fresh_auth_proof) {
         this.status = 'error';
         this.errorMessage = this.$t('orcid.verificationFailed');
