@@ -223,7 +223,7 @@ The backend verifies the proof by (a) checking the timestamp window, (b) recover
 **Rate limit:** 1 request per account per hour.
 
 **Errors:**
-- `NOT_FOUND` — account not found
+- `UNAUTHORIZED` (401), message "Session is no longer valid": no account row exists for the session's username.
 - `FORBIDDEN` — account is not a light account (self-custody or upgraded account submitting the upgrade endpoint)
 - `VALIDATION_ERROR` (400) — missing or non-string `derived_pubkey`, `signed_proof`, or `signed_at`
 - `UNAUTHORIZED` (401) — proof verification failed. Uniform message and status for all of: `signed_at` outside the 60s freshness window, malformed `signed_proof`, signature recovery returns a pubkey that does not match `derived_pubkey`, `derived_pubkey` not present in the on-chain account's key_auths, or no on-chain account exists for the username. Server-side telemetry discriminates via `event:` slugs (`custody.upgrade.proof_malformed`, `custody.upgrade.pubkey_binding_mismatch`, `custody.upgrade.chain_key_mismatch`, `custody.upgrade.hive_account_missing`); the wire envelope is intentionally non-discriminating to prevent oracle behavior.

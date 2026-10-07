@@ -41,3 +41,11 @@ for an account that was already self-custody unchanged.
 3. A self-custody account that never upgraded in this page load sees the settings page as
    today.
 4. A test that renders the real template (real Alpine) pins 1 and 2.
+
+## Architect rider (2026-10-07, from the upgrade-401 proof-budget review)
+
+While in `pages/settings.js`, delete the parenthetical
+`(first in executeUpgrade, subsequent ones in retryUpgradeBackend)` from the
+`_proofRetryAttempts` field comment. It is false when `executeUpgrade`'s cleanup POST ends in
+a 503 or a session-ended error, because the first counted 401 then comes from
+`retryUpgradeBackend`. Delete it; do not replace it with a longer sentence.

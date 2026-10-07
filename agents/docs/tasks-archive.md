@@ -1,3 +1,236 @@
+## Stop an auth-layer 401 from spending the custody-upgrade proof budget (archived 2026-10-07): one round, clean review; two residuals accepted, one comment rider filed
+
+### Architect archive note (2026-10-07)
+
+- **Review:** `/ce-code-review` full path on `2b8e15ea`, `fb337fec`, `07a4dff6` (branch-remote via a synthetic head holding only the task's 25 files): correctness, security, adversarial (in-process, no cross-model peer), testing, project-standards, reliability, julik-frontend-races, maintainability, learnings, plus a validator on the one primary finding. Verdict "Ready to merge", no P0-P2. All four ACs met. Testing planted 11 mutants (both session-ended arms, the pinned-token gate, the reported token, the getter, the in-place sign-in, the toast, the template wiring, the counter, the branch order); all killed. Full frontend unit suite at `07a4dff6` in a two-level copy: 97 files / 2275 tests, exit 0. Project-standards checked every changed comment true against the code, including the seam comment against `backend/src/routes/custody.ts`.
+- **Accepted residuals (user triage, added to the implementer's list):** (1) when another sender (the api.js bearer helper, e.g. the notification poll, or a sibling tab) ends an expired session between the token pin and the cleanup POST, the store is signed out, so the `auth.token === upgradeToken` gate skips the expiry check and the expired bearer spends one proof attempt with the clock-skew copy; no wipe on its own. Pinning `expiresAt` beside the token would close it if ever wanted. (2) An email login in the in-place sign-in prompt answered `409 PENDING_SIGNUP` navigates to `/signup/verify` and unmounts the page, wiping the seed; it needs another account's pending-signup email.
+- **Dismissed:** moving the pinned-token gate into `endSessionIfExpired` (guards only a future fourth caller); the after-cleanup copy going unseen after a sign-out in the rotation-in-flight window (pre-existing, recorded in the `_endUpgradeAsSessionChanged` docblock, inside the window the user chose to leave unmarked).
+- **Rider filed:** pending `ui-upgrade-done-screen-hidden-by-custody-flip.md` now also deletes the `_proofRetryAttempts` parenthetical `(first in executeUpgrade, subsequent ones in retryUpgradeBackend)`, false when the first cleanup POST ends in a 503 or a session-ended error.
+- **Fixed at archive:** `agents/docs/api-contracts/custody.md` listed `NOT_FOUND` for `POST /api/custody/upgrade`; the route answers a missing account row with `401 UNAUTHORIZED` "Session is no longer valid", as the signal reported.
+- **Still wanted, unfiled (user decision 2026-10-06):** a distinct error code for the five proof-rejection arms, so the ladder counts only those.
+- **Learnings checkpoint:** both entries refreshed in `07a4dff6` (`subject-divergence-guard-earns-its-place-only-where-the-flow-acts-unpinned`, `alpine-review-scope-global-chrome-and-x-if-teardown-boundary`) verified true at `07a4dff6`; no other entry names the touched symbols in a way the change contradicts. No new entry: the signed-out-store-reads-as-expired trap is already recorded in the subject-divergence entry.
+
+**Owner:** ui
+**Created:** 2026-09-06
+**Priority:** normal
+
+Routed out of the architect review of the custody-upgrade subject-pin work. Pre-existing;
+surfaced there because that task added a third entry point into the same retry.
+
+## Why
+
+`_handlePostBroadcastError` in `pages/settings.js` classifies the post-broadcast failure ladder by
+HTTP status alone:
+
+```
+if (broadcastLanded && status === 401) {
+  this._proofRetryAttempts += 1;
+```
+
+Every 401 is read as a rejected upgrade proof. The second one exhausts
+`UPGRADE_PROOF_RETRY_BUDGET`, runs `_clearSensitiveUpgradeState()`, and routes to terminal
+`partialApplyFailed`.
+
+But `POST /api/custody/upgrade` returns 401 for two unrelated classes. The proof arms are the
+ones the budget exists for: an expired or invalid `signed_at`, a signature that does not recover,
+a `derived_pubkey` absent from the on-chain key set. The auth arms are not: `verifyHiveSignature`
+returns `SESSION_INVALIDATED` for a revoked session, and the route itself returns
+`UNAUTHORIZED` for a missing bearer and again for an account row it can no longer read
+("Session is no longer valid").
+
+So a user whose session dies while the error screen idles, then presses Try Again twice, loses the
+mnemonic. That mnemonic is the only key to an account whose on-chain owner, active, posting and
+memo authorities have already rotated and whose backend row still holds keys derived from the old
+seed, because the cleanup POST never ran. The proof was never the problem, and the budget that
+protects against a genuinely broken proof spent itself on a dead session instead.
+
+The window is real: the error screen has no timeout, `retryUpgradeBackend` is reachable from
+three sub-cases now, and the newly retryable before-cleanup sub-case explicitly asks the user to
+sign back in and press Try Again, which is exactly the sequence that runs a stale bearer into
+this branch.
+
+## Scope
+
+1. In `_handlePostBroadcastError`, split the 401 branch. When the error is an auth failure rather
+   than a proof rejection, do not increment `_proofRetryAttempts` and do not wipe. Route it to
+   `_endUpgradeAsSessionChanged({ cleanupLanded: false, upgradeSubject })`, which is the truthful
+   description of that state and is now retryable, so the user re-authenticates and the next Try
+   Again runs the cleanup.
+
+2. `err.code` is already captured on the thrown error, so `SESSION_INVALIDATED` is separable with
+   no backend change. Land that half now.
+
+3. The remaining auth arms are not separable today: the route's own missing-bearer and
+   stale-row 401s share the bare `UNAUTHORIZED` code with all five proof arms. Completing the
+   split needs the backend to give the proof arms their own error code. That is a backend change
+   and is NOT in this task's scope. File it as a backend task, or note here that it is wanted, and
+   treat this task as landing the separable half plus the seam the backend half plugs into.
+
+## Acceptance criteria
+
+1. A post-broadcast 401 carrying `SESSION_INVALIDATED` leaves `_proofRetryAttempts` unchanged,
+   leaves `newSeedPhrase` and `_upgradeSubject` intact, and lands in the before-cleanup
+   session-changed sub-case with Try Again available.
+2. Two consecutive `SESSION_INVALIDATED` 401s still leave the seed intact. This is the case that
+   destroys it today.
+3. A genuine proof rejection still increments the budget and still wipes on the second one, so
+   the protection the budget exists for is unchanged.
+4. Whatever the backend cannot yet distinguish is named in a comment at the branch, anchored on
+   the error codes rather than on line numbers, so the seam is obvious when the backend half lands.
+
+## Notes
+
+Do not widen `_upgradeSubjectDiverged` for this. Its two landing call sites should keep accepting a
+server-refreshed session; the change belongs in the error ladder, not the divergence predicate.
+
+The reviewer that found this proposed a liveness check on the store's session before the retry
+signs, as an independent second fix. That is defensible but it is a different change with its own
+staleness question, so it is not part of this task's scope.
+
+## Note from the revoked-session teardown work (2026-09-30)
+
+The auth store now has `handleRevokedSession(sentToken)`, called by the api.js
+bearer helper and the custody broadcast on `401 SESSION_INVALIDATED`. It tears
+the session down when the rejected token is still the store's token, after
+first adopting a different unexpired session found in storage. The upgrade
+POST (`_postUpgradeBackend`) was deliberately left unhooked for this task to
+decide.
+
+One interaction to cover here. The upgrade route revokes the old token a
+moment before it answers. A bearer request answered in that gap (the
+notification or authorship poll in the upgrading tab, or any request in a
+sibling tab before the upgrading tab has saved the reissued session) now tears
+the session down, where before it was inert. When the upgrade response then
+lands, `_upgradeSubjectDiverged` is true, the reissued token is dropped and the
+flow ends as session-changed-after-cleanup. The window is tens of milliseconds
+and the user recovers by signing in again, but it lands at the irreversible
+step. A "rotation in flight" marker set around the upgrade POST in both legs,
+which `handleRevokedSession` defers to, would close the same-tab case. The
+sibling-tab case would need that marker visible across tabs.
+
+## Note from the expired-session work (2026-10-05)
+
+The auth store now has `endSessionIfExpired(sentToken)`. The api.js bearer
+helper and the custody broadcast call it before sending: past the session's
+`expiresAt` (client clock) it ends the session through the same path as
+`handleRevokedSession` (stale-token check, adoption of a newer stored session,
+teardown, sign-in offer) and the request is not sent. The upgrade flow does
+not go through either sender, so it is not covered.
+
+A verification pass traced that gap. Nothing on the upgrade path makes an
+authenticated request through api.js: the old-phrase check and the proof
+signing are local, `account_update` goes to the Hive node through dhive, and
+`_postUpgradeBackend` / `retryUpgradeBackend` send a raw fetch with the pinned
+token. A session that expired after the page mounted is caught only by the
+notification poll or by some other authenticated action. Inside that window
+the irreversible `account_update` lands, and the POST's 401 for the expired JWT
+is the bare `UNAUTHORIZED` this task cannot yet separate from the proof arms,
+so two Try Agains spend the budget and wipe the seed.
+
+The expiry arm is separable on the client now, with no backend change. Calling
+`Alpine.store('auth').endSessionIfExpired(upgradeToken)` before the
+upgrade POST in both legs can route an expired session to the before-cleanup
+session-changed sub-case without spending the budget. The same check before the
+`account_update` broadcast would stop the irreversible step from starting on a
+session that cannot complete it. Both are for this task to decide; the
+staleness question the reviewer note raises applies to the second one.
+
+## UI implementation signal (2026-10-07, commits 2b8e15ea, fb337fec, 1d4b9440, 07a4dff6)
+
+Landed in `2b8e15ea` (`ui(settings): a dead session no longer spends the key-upgrade proof
+budget`) and `fb337fec` (`ui(settings): narrow the upgrade comments the expiry check made
+false`), both verified ancestors of `main`. Files: `frontend/src/pages/settings.js`,
+`frontend/src/auth.js` (the `handleRevokedSession` and `endSessionIfExpired` docblocks), the 16
+locale files and `frontend/public/messages/STUBS.md` (translator notes only), comment fixes in
+`pages-settings.test.js`, `pages-settings-custody-upgrade-round2.test.js` and
+`pages-settings-custody-upgrade-subject-pin.test.js`, and the new suite
+`frontend/tests/unit/pages-settings-custody-upgrade-auth-failure.test.js` (13 tests, real auth
+store via `initAuth`). `1d4b9440` files a follow-up; `07a4dff6` is the learnings refresh.
+
+What landed against Scope and the ACs:
+1. Scope 1-2, AC1-3. `_handlePostBroadcastError` routes a post-broadcast `SESSION_INVALIDATED`
+   (and `SESSION_EXPIRED`, below) to `_endUpgradeAsSessionChanged({ cleanupLanded: false,
+   upgradeSubject })` ahead of the 401 branch: `_proofRetryAttempts` unchanged, seed and
+   `_upgradeSubject` kept, Try Again available. Two in a row keep the seed. A genuine proof
+   rejection still counts and still wipes on the second, including with a revoked session
+   between the two.
+2. AC4. The seam comment at the 401 branch names, by error code, what still answers
+   `UNAUTHORIZED` and spends the budget: a bearer the server cannot verify (an expired one
+   included) and an account row the route can no longer read. It says the branch should
+   match the proof rejections' own code once there is one.
+3. Scope 3, the backend half, noted here and not filed (user decision 2026-10-06): wanted is a
+   distinct error code for the five proof-rejection arms of `POST /api/custody/upgrade`, so
+   the ladder can count only those. Until then the missing-bearer, unverifiable-JWT
+   (including expiry the client misses through clock skew) and stale-row `UNAUTHORIZED`
+   answers still spend the budget.
+
+Decisions on the two appended notes, asked and approved by the user before implementation
+(2026-10-06):
+- Expiry (2026-10-05 note): checked before the cleanup POST in both legs, not before
+  `account_update`. `_postUpgradeBackend` calls `endSessionIfExpired(upgradeToken)` only while
+  `auth.token === upgradeToken`, and when that reports expiry it throws `SESSION_EXPIRED`
+  without sending. The gate exists because the store compares its own `expiresAt`: a
+  signed-out store has none and reads as expired, which in the ungated first draft stopped
+  the POST on an ordinary sign-out. Verification caught it before commit.
+- Teardown (2026-09-30 note): the upgrade POST reports `401 SESSION_INVALIDATED` to
+  `handleRevokedSession(upgradeToken)`, so the store ends the session and opens the sign-in
+  prompt in place, like the api.js helper and the custody broadcast.
+- Rotation-in-flight marker (2026-09-30 note): not built; the user chose to leave it out.
+  Candidate follow-up: the window is tens of milliseconds, and the outcome is a completed
+  upgrade that costs a sign-in plus a manual Keychain import, not a lost seed.
+
+Additions from verification triage, each approved by the user:
+- While any `retryable-backend-only` retry waits (`upgradeRetryAwaitsSignIn`), the signed-out
+  settings body renders `upgradeError`. Its Sign In then calls `signInFromSignedOutBody()`,
+  which opens the in-place sign-in prompt (`auth.connect()`, failure toast
+  `common.connectionFailed`) instead of `navigate('/login')`, which would unmount the page and
+  let `destroy()` clear the seed and the pin. With no retry waiting, it still goes to /login.
+- `upgrade.sessionChangedBeforeCleanup` is reworded to hold on every route into it. It was
+  never translated, so it is reworded in place in all 16 locale files with no new STUBS.md
+  entry, and the key's translator notes are narrowed to match.
+
+Verification: three adversarial workflow rounds (four lenses, then three, then two, each
+finding challenged by a refuter, probes run in scratchpad copies only). The user triaged each
+round. Dismissed with reasons: a keyboard-activated second sign-in prompt over the
+auto-offered one (the header Sign in does the same; cosmetic), and the copy-contract test not
+telling the old copy from the new (preemptive hardening).
+
+Accepted residuals, no action:
+- A client clock running behind the server, or a same-account session that replaced the
+  pinned one while the pinned token expired, still lets an expired bearer reach the bare 401.
+- ORCID-only light accounts cannot sign back in on the page; the copy's support fallback
+  covers them.
+- A Keychain re-login mints custody `self`, which hides the upgrade section.
+- The sign-in prompt's own links ("Go to the sign-in page", Forgot password, Sign up) still
+  navigate away.
+- In the rare route where this tab is already signed in again as the pinned account, the copy
+  names the header Sign in, which is not rendered; Try Again works directly.
+
+For the architect: `agents/docs/api-contracts/custody.md` lists `NOT_FOUND` (account not
+found) for `POST /api/custody/upgrade`. The route answers a missing account row with `401
+UNAUTHORIZED` ("Session is no longer valid"; its own comment says "401, not 404"), which is
+one of the auth arms the seam comment names. This is outside the ui zone.
+
+Follow-up filed: `ui-upgrade-done-screen-hidden-by-custody-flip.md` (`1d4b9440`). It is
+pre-existing: both success landings set custody to 'self' before the Keychain import loop, so
+the `x-if="isLight"` section with the done panel and the import warnings never renders.
+
+Tests: the frontend unit suite passes, 97 files and 2275 tests, exit 0. The 8 suites the
+round-3 comment edits touch pass (252 tests), as does `tests/unit/eslint`. Mutation probes:
+each new behavior is killed by its own test (the pinned-token gate, reporting the pinned
+token, the widened getter, the failure toast, the template wiring). The pre-change source
+fails 7 of the original 8. A real-Alpine binding probe, kept in a scratchpad and not
+committed, confirmed: the signed-out body shows the message, its Sign In opens the prompt
+with no navigation, and a re-login then Try Again posts with the new token and reaches
+'done'. No browser or E2E run: reaching the path needs a real on-chain `account_update`.
+
+Learnings checkpoint: ran `/ce-compound-refresh` scoped to
+`subject-divergence-guard-earns-its-place-only-where-the-flow-acts-unpinned-2026-09-03.md`
+and `alpine-review-scope-global-chrome-and-x-if-teardown-boundary-2026-09-08.md` (both
+Update, `07a4dff6`). The first now carries the gated expiry check as a new instance of its
+rule. No new entry: an absent stub method masking the new store calls in sibling suites is
+the same genus as `optional-predicate-gate-needs-live-false-case-not-just-absent-2026-09-02.md`.
+
 ## The ORCID callback's session-window leg caches a proof it never type-checks (archived 2026-10-07): two rounds, clean re-review; no findings
 
 ### Architect archive note (2026-10-07)
@@ -15,236 +248,3 @@ Routed out of the round-4 re-review of the shared-dispatch task (an adversarial
 residual, confirmed at HEAD by the architect). Low priority: pre-existing,
 reachable only through a backend contract violation, and nothing is
 misclassified. Filed for consistency with the mint-leg null coercion that round
-closed, so the window slot's two writers hold the same standard.
-
-## Why
-
-The window slot has two writers. `acquireSessionProof`'s mint callback
-(`lib/fresh-auth.js`) now narrows a non-string `fresh_auth_proof` to `undefined`
-so the fail-closed guard refuses it, says so, and the acquisition-level drop
-evicts the entry it wrote. The other writer is `_handleSessionAuth` in
-`pages/orcid-callback.js`: it calls
-`cacheSessionProof(data.fresh_auth_proof, data.expires_at, data.absolute_expires_at)`
-with the response value unexamined, toasts `orcid.reauthSuccess`, and navigates
-to the return path. Its sibling in the same component, `_handleFreshAuth`
-(the consent-op leg), refuses a non-string or empty `fresh_auth_proof` BEFORE it
-caches, by setting the page's error state and returning; the session-window leg
-has no such check.
-
-What a malformed response does on that leg depends on its shape, and neither
-outcome is one the user is told about. A `null` (or absent) proof writes a
-tokenless entry that `readSessionWindow` drops on the next read, so the next
-gate on a passwordless account starts cold and begins another ORCID round-trip:
-a success-toasted redirect loop with no refusal anywhere. A truthy non-string (a
-number, an object) survives the JSON round-trip through `sessionStorage`, and the
-next gate's fail-closed guard refuses, toasts and evicts it, after which that
-gate also starts cold. Neither is a lockout; both are a re-auth act the user is
-told succeeded and is then charged again.
-
-## Scope
-
-1. In `_handleSessionAuth`, mirror the consent-op leg's guard: when
-   `typeof data.fresh_auth_proof !== 'string' || !data.fresh_auth_proof`, set
-   `this.status = 'error'` and `this.errorMessage` to the same
-   `orcid.verificationFailed` copy the sibling uses, and return before
-   `cacheSessionProof`, the return-path clear, the success toast and the
-   navigation. The deadlines need no check here: `cacheSessionProof` already
-   fails closed on a non-finite deadline by dropping the slot.
-2. Pin it through the page component with one case per shape the wire can
-   produce (`null`, a number): nothing cached, no success toast, the error state
-   shown, no navigation. Model the cases on whatever spec already drives
-   `_handleFreshAuth`'s guard; if none does, that is a pre-existing gap to note
-   in the signal block, not to close here.
-3. No change to `cacheSessionProof`: its contract is to write what it is handed
-   (the readers own the corruption checks and the writers own the wire), and
-   the mint-leg coercion deliberately kept the raw write for the same reason.
-
-## Acceptance criteria
-
-1. A session-auth callback response whose `fresh_auth_proof` is not a non-empty
-   string caches nothing, shows no success toast, does not navigate, and lands
-   the page in the same error state a malformed consent-op response does.
-2. The string-proof path is unchanged; its existing specs pass unmodified.
-3. Suite green; deleting the new guard reddens exactly the new specs and
-   nothing else (measured in a private copy, not this checkout).
-
-## Notes
-
-Comment text must stay free of line numbers, SHAs, task slugs and bare
-positional anchors. The one docblock sentence that names the mint callback as
-"the only coercion the wire needs" (in `ensureSessionWindow`'s fail-closed
-guard) is scoped to the sentinel space and stays true after this lands, since
-this writer never returns into the vocabulary; do not edit it for this task.
-
-## UI implementation signal (2026-09-29, commit 91e6f22d)
-
-Landed in `91e6f22d` (verified: `git merge-base --is-ancestor 91e6f22d main`).
-
-- **Scope 1 / AC 1.** `_handleSessionAuth` now refuses
-  `typeof data.fresh_auth_proof !== 'string' || !data.fresh_auth_proof` with
-  `status = 'error'` and `orcid.verificationFailed`, returning before
-  `cacheSessionProof`, `clearReturnPath`, the success toast and `navigate`.
-  No deadline check added.
-- **Scope 2.** New `_verify - session_auth mode` describe in
-  `tests/unit/pages-orcid-callback.test.js`, an `it.each` over `null` and `42`
-  modeled on the consent-op leg's proof-shape table. Each case drives
-  `_verify(..., 'session_auth')` and asserts: error state and copy, no
-  `pevo_fresh_auth_session_proof` entry, return path still stored, no toast,
-  no navigation.
-- **Scope 3.** `cacheSessionProof` untouched; the `ensureSessionWindow`
-  docblock sentence untouched.
-- **AC 2, pre-existing gap noted.** No unit spec drives the session_auth
-  string-proof path through the page component. Its only coverage is the E2E
-  `orcid-callback session_auth caches the issued proof in sessionStorage` in
-  `tests/e2e/non-consent-fresh-auth.spec.js` (not run for this change; the
-  guard does not touch the string path). Not closed here, per scope 2.
-- **AC 3.** Frontend unit suite: 86 files, 1957 tests, exit 0. Mutation in a
-  scratchpad copy (guard deleted): exactly the two new cases fail. The copy
-  also fails `sec-001-equivalence.test.js` at file load because it imports
-  `backend/src/lib/authMessage.ts`, which the frontend-only copy lacks; it
-  fails identically with the guard restored, so it is a copy artifact.
-
-## Architect re-review (2026-10-01) — HELD PENDING FIXES:
-
-Reviewed `91e6f22d` with `/ce-code-review` (correctness, project-standards,
-testing, adversarial, frontend-races, learnings, plus one validator). The guard
-is correct and in the right place, and every claim in the signal block
-reproduced in a scratchpad copy of the commit: unit suite 86 files / 1957 tests,
-exit 0; build clean; guard deleted, exactly the two new cases fail. Three items
-hold it. Item 1 is wording that came from this task's own Why and scope 1, not
-from the implementation, and is charged to the architect.
-
-1. **Rewrite the rationale so it is true, in both comments.** Sites: the
-   comment above the new guard in `_handleSessionAuth`, and the comment opening
-   the `_verify - session_auth mode` describe. Two claims are wrong as written.
-   - "The deadlines need no check here: `cacheSessionProof` already drops the
-     slot on a non-finite deadline." On this leg the drop is not a defence.
-     With a string proof and an absent or unparseable `expires_at` or
-     `absolute_expires_at`, `anchoredSpan` returns NaN, `cacheSessionProof`
-     drops the slot and returns nothing, and the handler still clears the
-     return path, toasts `orcid.reauthSuccess` and navigates, so the next gate
-     finds no window. (A `null` deadline is different: `new Date(null)` is the
-     epoch, `anchoredSpan` falls back to the mirrored period, and a usable
-     window is cached.) Say instead that an unanchorable deadline is left to
-     `cacheSessionProof`, whose drop still lets this page report success and
-     costs a later re-auth, and that the shape is left open because the backend
-     always issues both deadlines and the consent-op leg leaves its own deadline
-     to the same kind of read-side drop. Do NOT add a deadline check: widening
-     the guard was considered and dismissed (reachable only through a backend
-     contract violation, and it would break parity with the consent-op leg).
-   - "either way that gate starts another ORCID round-trip". True for a null
-     proof: `readSessionWindow` drops a falsy token, so the next gate finds no
-     window and re-auths from scratch. Not true for a truthy non-string:
-     `readSessionWindow` keeps it, `evictUnnamedAcquisition` clears the slot,
-     and `ensureSessionWindow` refuses with `{ ready: false, failed: true }`,
-     which its consumer reports as a failure. That gate starts no round-trip;
-     the user's next attempt finds the slot empty and starts one. State what
-     each shape costs: a null proof, a silent re-auth at the next gate; a
-     truthy non-string, a refusal at the next gate and a re-auth at the attempt
-     after it. Both follow a success toast.
-   The comment-anchor rules apply as usual: stable symbol names only, no line
-   numbers, SHAs, task slugs or bare positional anchors.
-
-2. **Pin the truthiness arm.** Add `{ label: 'empty-string', proof: '' }` to the
-   session_auth `it.each`. `null` and `42` are both refused by the `typeof`
-   arm, so dropping `|| !data.fresh_auth_proof` leaves the file green (81/81,
-   measured by three reviewers and the validator). The validator measured an
-   empty-string row red against that mutant and green against the real guard.
-   No `undefined` row: the `typeof` arm refuses it exactly as it refuses `null`,
-   so it discriminates nothing.
-
-3. **Pin the accepted path through the page.** Add one session_auth case with a
-   non-empty string proof and valid deadlines, asserting: the window slot holds
-   that token, the return path is cleared, `orcid.reauthSuccess` is toasted,
-   navigation goes to the stored return path, and `status` is not `'error'`.
-   Today no unit spec reaches past the new guard on this leg: an always-refuse
-   mutant (`if (true) {`) passes all 81 specs in the file, and only the E2E
-   `orcid-callback session_auth caches the issued proof in sessionStorage`
-   would catch it. AC 2 assumed unit specs already covered this path; the
-   signal block correctly reported that none did, and this item closes it.
-
-Signal block for the re-review, each measured in a private copy, not this
-checkout: (a) dropping `|| !data.fresh_auth_proof` reddens exactly the
-empty-string row; (b) an always-refuse guard reddens exactly the new
-accepted-path case; (c) deleting the whole guard reddens exactly the three
-rejection rows. Suite green, by exit code.
-
-Dismissed at triage, no action: widening the guard to the deadlines; the
-consent-op leg's matching deadline gap (pre-existing, contract-violation only,
-no task filed); the return path left stored on refusal, and an older window
-entry left in place rather than overwritten (both traced harmless).
-
-## UI re-review signal (2026-10-07, commit b2aa6c25)
-
-Landed in `b2aa6c25` (verified: `git merge-base --is-ancestor b2aa6c25 main`).
-Two files: `frontend/src/pages/orcid-callback.js` (comment only) and
-`frontend/tests/unit/pages-orcid-callback.test.js`.
-
-- **Item 1.** Both comments rewritten. The round-trip claim is gone from
-  both. Each now states the cost per shape. A falsy proof is dropped on the
-  next slot read, so the next gate finds no window. A truthy non-string is
-  refused as a failed re-auth by the first gate the slot hands it to, and
-  evicted, so the gate after that finds none. Both would follow a success
-  toast. The deadline sentence, in the source comment only (the describe
-  comment never carried it), now says that an unanchorable deadline makes
-  `cacheSessionProof` drop the slot while the page still reports success.
-  It says why the deadlines go unchecked: the backend always issues both
-  (`handleSessionAuth` / `issueSessionFreshAuthToken`, both return paths),
-  and the consent-op leg leaves its deadline to `getCachedConsentOpProof`.
-  No deadline check was added. Three wording departures from the hold, each
-  forced by the code:
-  - The hold's "the same kind of read-side drop" became "which drops an
-    unreadable one on read". The session leg's drop is at write time, in
-    `cacheSessionProof`, so "same kind" would have been false.
-  - "Re-auth" became "finds no window". A non-navigating gate
-    (`allowRedirect: false`) returns `reauthRequired` and starts no re-auth
-    itself.
-  - "Refusal at the next gate" became "the first gate the slot hands it to".
-    A gate reading inside its pre-flight margin gets a miss from
-    `readSessionWindow` without a clear. So does a gate after the idle
-    deadline. In both cases the entry is never handed over and never refused
-    as `failed`. This one was caught by a probe-backed verification pass (see
-    below) and narrowed, not qualified.
-- **Item 2.** `{ label: 'empty-string', proof: '' }` added. No `undefined` row.
-- **Item 3.** New case `session_auth with a string fresh_auth_proof: caches the
-  window, clears the return path, toasts success, navigates back`, with a
-  non-empty proof and parseable deadlines. It asserts the five listed
-  behaviours: the slot token, the return path cleared,
-  `('orcid.reauthSuccess', 'success')`, `navigate('/publish')`, and status
-  not `'error'`.
-- **Measurements.** Each was run as the full frontend unit suite in a private
-  two-level scratchpad copy (frontend plus `backend/src/lib/authMessage.ts`),
-  not this checkout:
-  - Baseline: 98 files / 2286 tests, exit 0.
-  - (a) Dropping `|| !data.fresh_auth_proof` fails exactly the empty-string
-    row. Result: 1 failed / 2285, exit 1.
-  - (b) `if (true) {` fails exactly the new accepted-path case. Result:
-    1 failed / 2285, exit 1.
-  - (c) Deleting the guard fails exactly the null, numeric and empty-string
-    rows. Result: 3 failed / 2283, exit 1. The first run of (c) also failed
-    `lib-fresh-auth-session-window > the slide never pushes past the absolute
-    cap`, the known 1 ms clock flake; that file does not import the page. A
-    re-run gave exactly the three rows.
-- **Suite.** Checkout, final tree: 98 files / 2286 tests, exit 0. The
-  callback spec file alone: 83/83.
-- **Verification pass.** A four-lens workflow (claim trace, adversarial,
-  hold compliance plus standards, test strength) checked the diff with
-  probes in private copies, with three refuters per finding. 54 claims were
-  checked. One finding survived 3/3: the margin overclaim, now narrowed and
-  described in the Item 1 list. The test-strength lens planted 11
-  accepted-path regressions; each one fails only the new case.
-  Noted, no action:
-  - A swapped-deadlines mutant survives. It is equivalent in practice:
-    `anchoredSpan` clamps both spans to the mirrored periods.
-  - Dropping `_handleSessionAuth`'s own `_mounted` check survives. `_verify`
-    checks `_mounted` before dispatch, and the line predates this change.
-- **Learnings checkpoint.** Three entries name the touched symbols:
-  `fail-closed-guard-must-replace-the-recovery-a-round-trip-provided`,
-  `sibling-docblock-tallies-must-each-state-precisely-what-they-count` and
-  `fresh-auth-guard-coverage-must-sweep-the-callee-graph`. None claims
-  anything about the callback's session-auth writer, and nothing this work
-  established contradicts them. No new entry: the margin miss-without-clear
-  behind the narrowing is already in `readSessionWindow`'s docblock.
-
-## Seven latest-op HAF lookups walk the whole blocks index when nothing matches (archived 2026-10-07): two rounds, clean re-review; one pre-existing canary finding filed
-
