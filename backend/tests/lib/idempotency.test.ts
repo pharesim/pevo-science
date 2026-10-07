@@ -19,6 +19,11 @@
  * operator behavior change, `json::jsonb ->>` extraction regression, or
  * `haf_operations.included_trx_id` join-shape break). That file's risk-
  * class division is documented in its own header.
+ *
+ * The gate predicate of `findExistingAccreditation` (which latest op is a
+ * hit, a `method: 'wot'` accredit among them) runs against real Postgres on
+ * synthetic rows:
+ * Real-path companion: `backend/tests/lib/existing-accreditation-gate-real-postgres.test.ts` [findExistingAccreditation]
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
@@ -362,12 +367,9 @@ describe('findExistingAccreditation', () => {
     expect(hit).toBeNull();
   });
 
-  // Round-1 hold #1 — revoke-handling alignment with sibling reads
-  // (profile.ts:37, orcid.ts:1756, accreditations.ts:59, hafsql.ts:79,
-  // wot.ts:347). wot.ts:347 is a live producer of revoke ops via the WoT
-  // cleanup path, so a revoked user's /verify retry must NOT hit the gate
-  // on their old accredit op. Latest-action-wins: if the LIMIT-1 row's
-  // action is 'revoke', return null so /verify falls through to broadcast.
+  // A revoked user's /verify retry must NOT hit the gate on their old
+  // accredit op. Latest-action-wins: if the LIMIT-1 row's action is
+  // 'revoke', return null.
   it('returns null when latest action is revoke (revoke→re-accredit flow falls through to broadcast)', async () => {
     const queryFn = vi.fn().mockResolvedValueOnce({
       rows: [{ trx_id: 'revoke-tx-after-accredit', block_num: 99999, action: 'revoke' }],
@@ -376,6 +378,30 @@ describe('findExistingAccreditation', () => {
     const hit = await findExistingAccreditation(pool, 'alice');
     expect(hit).toBeNull();
   });
+
+  // A wot accredit is vouch-derived, so an account whose latest op is one
+  // may sit below the live threshold and not be accredited. /verify must
+  // fall through and broadcast the email accredit that pins it.
+  it('returns null when the latest op is a wot accredit', async () => {
+    const queryFn = vi.fn().mockResolvedValueOnce({
+      rows: [{ trx_id: 'wot-accredit-tx', block_num: 54321, action: 'accredit', method: 'wot' }],
+    });
+    const pool = { query: queryFn } as unknown as IdempotencyPool;
+    const hit = await findExistingAccreditation(pool, 'alice');
+    expect(hit).toBeNull();
+  });
+
+  it.each(['email', 'orcid', 'manual', null])(
+    'returns the hit when the latest op is an accredit with method %s',
+    async (method) => {
+      const queryFn = vi.fn().mockResolvedValueOnce({
+        rows: [{ trx_id: 'authority-accredit-tx', block_num: 54321, action: 'accredit', method }],
+      });
+      const pool = { query: queryFn } as unknown as IdempotencyPool;
+      const hit = await findExistingAccreditation(pool, 'alice');
+      expect(hit).toEqual({ tx_id: 'authority-accredit-tx', block_num: 54321 });
+    },
+  );
 
   it('filters by appTag + action IN (accredit,revoke) + account=$username + accreditationAuthorities; orders by (block_num, id) DESC', async () => {
     const queryFn = vi.fn().mockResolvedValueOnce({ rows: [] });
@@ -391,9 +417,10 @@ describe('findExistingAccreditation', () => {
     expect(sql).toMatch(/required_posting_auths \?\| \$3::text\[\]/);
     expect(sql).toMatch(/haf_operations/);
     expect(sql).toMatch(/included_trx_id/);
-    // SELECT projects the action column so the caller can apply
-    // latest-action-wins (gate-hit only on accredit-tail).
+    // SELECT projects the action and method columns so the caller can apply
+    // latest-action-wins (gate-hit only on a non-wot accredit tail).
     expect(sql).toMatch(/'action' AS action/);
+    expect(sql).toMatch(/'method' AS method/);
     // Convention Rule 2 tiebreaker (cj.id substitutes for trx_in_block,
     // which operation_custom_json_view does not expose).
     expect(sql).toMatch(/ORDER BY c\.block_num DESC, c\.id DESC/);

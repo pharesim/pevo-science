@@ -739,8 +739,10 @@ router.post('/verify', verifyHiveSignature, validate(accreditationVerifySchema),
   // operator-actionable, not auto-reconciled).
   const hafPool = isHafConfigured() ? getPool() : null;
   if (hafPool) {
-    // User-level "is this account already accredited?" gate. Runs BEFORE the
-    // per-token idempotency-key check (which catches retries of the SAME
+    // User-level existing-accreditation gate: hits when the account's latest
+    // accredit/revoke op is an accredit whose method is not 'wot'
+    // (`findExistingAccreditation`). Runs BEFORE the per-token
+    // idempotency-key check (which catches retries of the SAME
     // /verify call) so the multi-token coexistence class is closed: two
     // pending tokens for the same user produce different `idempotency_key`s
     // (the key is `sha256(token:username)`), so the per-token check misses
@@ -764,9 +766,10 @@ router.post('/verify', verifyHiveSignature, validate(accreditationVerifySchema),
         // Metadata-update routing. Gate-hit short-circuits before the pending
         // row's metadata (full_name, institution, field captured at /request)
         // would be embedded into a fresh accredit op, and /verify stays
-        // idempotent: a re-confirm of an already-accredited account returns the
-        // prior tx_id without re-broadcasting. Metadata edits do NOT flow through
-        // a second /request -> /verify; they have their own dedicated path,
+        // idempotent: a re-confirm of an account whose latest op is a non-wot
+        // accredit returns the prior tx_id without re-broadcasting. Metadata
+        // edits do NOT flow through a second /request -> /verify; they have
+        // their own dedicated path,
         // PATCH /api/accreditation/metadata, which re-broadcasts a merged
         // admin-signed accredit op behind its own fresh-auth proof. So
         // discarding the /request-captured metadata here is correct — the edit
@@ -842,9 +845,9 @@ router.post('/verify', verifyHiveSignature, validate(accreditationVerifySchema),
     }
 
     // Ever-sanctioned guard. The existing-accreditation gate above returns the
-    // prior tx_id idempotently for a currently-accredited account; reaching here
-    // means the account is NOT currently accredited (latest op is a revoke or
-    // there is no accredit). A self-service /verify must NOT lift a moderation
+    // prior tx_id when the latest op is a non-wot accredit; reaching here means
+    // the latest op is a revoke or a wot accredit, or there is none. A
+    // self-service /verify must NOT lift a moderation
     // sanction (only a deliberate admin accredit lifts it), so refuse before the
     // broadcast-attempt cap claim — a sanctioned account neither broadcasts nor
     // burns a cap slot. hasUnliftedSanction fails closed (refuse) on a HAF error;

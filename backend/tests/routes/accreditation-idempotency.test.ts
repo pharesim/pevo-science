@@ -689,15 +689,12 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
   });
 
   // Revoke→re-accredit flow. A user previously accredited and subsequently
-  // revoked (e.g., the WoT-cleanup revoke producer in wot.ts) must NOT hit
-  // the gate on their stale accredit op when retrying /verify. The gate
-  // selects from action IN ('accredit','revoke') ORDER BY (block_num, id)
-  // DESC LIMIT 1 and returns null when the LIMIT-1 row is 'revoke', falling
-  // through to the per-token idempotency check and ultimately broadcasting
-  // the fresh accredit op. A regression that filters on action='accredit'
-  // only would surface 200 outcome:'already_accredited' with the stale
-  // tx_id, eat the fresh token in cleanup, and silently lock the user out
-  // of re-accreditation.
+  // revoked must NOT hit the gate on their stale accredit op when retrying
+  // /verify. The gate selects from action IN ('accredit','revoke') ORDER BY
+  // (block_num, id) DESC LIMIT 1 and returns null when the LIMIT-1 row is
+  // 'revoke'. A regression that filters on action='accredit' only would
+  // surface 200 outcome:'already_accredited' with the stale tx_id and eat the
+  // fresh token in cleanup.
   it('revoke→re-accredit flow: latest action is revoke → gate falls through, fresh broadcast fires', async () => {
     const redis = getRedis();
     if (!redis) return;
@@ -705,8 +702,7 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     const username = 'gaterevokeuser';
     await seedPendingAccreditation(token, username);
 
-    // Gate query returns a row whose latest action is 'revoke' (prior
-    // accredit was revoked later via wot.ts cleanup or admin action).
+    // Gate query returns a row whose latest action is 'revoke'.
     // The helper inspects the action field and returns null, so the
     // route should fall through to the per-token check (miss → broadcast).
     hafQueryMock.mockResolvedValueOnce({
@@ -729,6 +725,88 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     expect(hafQueryMock).toHaveBeenCalledTimes(2);
     // Bonus seed fires on the broadcast path.
     expect(seedBonusMock).toHaveBeenCalledWith(username);
+  });
+
+  // WoT enrollee below the live vouch threshold. The latest op is a
+  // vouch-derived `method: 'wot'` accredit, so the gate falls through and the
+  // email verification broadcasts the `method: 'email'` accredit that pins
+  // the account.
+  it('latest op is a wot accredit → gate falls through, a method:email accredit is broadcast', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
+    const username = 'gatewotuser';
+    await seedPendingAccreditation(token, username);
+
+    // Gate (wot accredit), sanction guard (no sanction), per-token lookup (miss).
+    hafQueryMock.mockResolvedValueOnce({
+      rows: [{ trx_id: 'tx-wot-enrollment', block_num: 77777, action: 'accredit', method: 'wot' }],
+    });
+    hafQueryMock.mockResolvedValueOnce({ rows: [{ sanction_block: null, auth_block: null }] });
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
+
+    const res = await postVerify(token, username);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      message: 'Accreditation confirmed',
+      username,
+      tx_id: 'fresh-accred-tx-id',
+    });
+    expect(res.body.data.outcome).toBeUndefined();
+    expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse((broadcastJsonMock.mock.calls[0][0] as { json: string }).json) as Record<string, unknown>;
+    expect(payload).toMatchObject({ action: 'accredit', account: username, method: 'email' });
+    expect(hafQueryMock).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(['email', 'orcid', 'manual'])(
+    'latest op is a %s accredit → gate hit, outcome:already_accredited, no broadcast',
+    async (method) => {
+      const redis = getRedis();
+      if (!redis) return;
+      const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
+      const username = `gate${method}user`;
+      await seedPendingAccreditation(token, username);
+
+      hafQueryMock.mockResolvedValueOnce({
+        rows: [{ trx_id: `tx-${method}-accredit`, block_num: 66666, action: 'accredit', method }],
+      });
+
+      const res = await postVerify(token, username);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({
+        tx_id: `tx-${method}-accredit`,
+        outcome: 'already_accredited',
+      });
+      expect(broadcastJsonMock).not.toHaveBeenCalled();
+      expect(hafQueryMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  // A wot accredit after a sanction does not lift it, so the sanction guard
+  // refuses once the gate has fallen through.
+  it('sanctioned account whose latest op is a wot accredit → 403 ACCREDITATION_SANCTIONED, no broadcast', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
+    const username = 'gatewotsanctioned';
+    await seedPendingAccreditation(token, username);
+
+    // Gate (wot accredit), then the sanction guard: a sanction with no
+    // later authority accredit.
+    hafQueryMock.mockResolvedValueOnce({
+      rows: [{ trx_id: 'tx-wot-after-sanction', block_num: 90002, action: 'accredit', method: 'wot' }],
+    });
+    hafQueryMock.mockResolvedValueOnce({ rows: [{ sanction_block: 90001, auth_block: null }] });
+
+    const res = await postVerify(token, username);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('ACCREDITATION_SANCTIONED');
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+    expect(hafQueryMock).toHaveBeenCalledTimes(2);
   });
 });
 
