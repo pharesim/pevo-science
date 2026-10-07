@@ -41,7 +41,7 @@ vi.mock('alpinejs', () => ({
 }));
 
 import Alpine from 'alpinejs';
-import { initRecoverPage } from '../../src/pages/recover.js';
+import { initRecoverPage, recoverPageTemplate } from '../../src/pages/recover.js';
 
 function createComponent() {
   initRecoverPage();
@@ -49,6 +49,43 @@ function createComponent() {
   const comp = factory();
   comp.$t = (key) => key;
   return comp;
+}
+
+// The shipped done screen, which Alpine renders once `phase` is 'done'.
+const DONE_SCREEN = new DOMParser()
+  .parseFromString(recoverPageTemplate, 'text/html')
+  .querySelector(`template[x-if="phase === 'done'"]`).content;
+const ICONS = { 'M3 8l7.89': 'envelope', 'M5 13l4 4L19 7': 'check' };
+
+// Run shipped binding code with the component as its scope, the way Alpine
+// runs it.
+function evaluate(expression, scope) {
+  return new Function('scope', `with (scope) { return (${expression}); }`)(scope);
+}
+
+// What the done screen shows for `comp`, read through its shipped bindings.
+// `click` runs the button's handler.
+function renderDone(comp) {
+  const icons = [...DONE_SCREEN.querySelectorAll('svg')]
+    .filter((svg) => evaluate(svg.getAttribute('x-show'), comp))
+    .map((svg) => {
+      const d = svg.querySelector('path').getAttribute('d');
+      return Object.entries(ICONS).find(([prefix]) => d.startsWith(prefix))?.[1] ?? d;
+    });
+  const button = DONE_SCREEN.querySelector('button');
+  return {
+    icons,
+    title: evaluate(DONE_SCREEN.querySelector('h2').getAttribute('x-text'), comp),
+    description: evaluate(DONE_SCREEN.querySelector('p').getAttribute('x-text'), comp),
+    button: evaluate(button.getAttribute('x-text'), comp),
+    click: () => new Function('scope', `with (scope) { ${button.getAttribute('@click')} }`)(comp),
+  };
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((r) => { resolve = r; });
+  return { promise, resolve };
 }
 
 describe('recoverPage', () => {
@@ -335,6 +372,72 @@ describe('recoverPage', () => {
       expect(warnSpy).toHaveBeenCalled();
       expect(warnSpy.mock.calls[0][1]).toBe(leaky);
       warnSpy.mockRestore();
+    });
+  });
+
+  // The method tabs stay clickable while a request is in flight. The done
+  // screen describes what the finished request did.
+  describe('a method tab picked while the request is in flight', () => {
+    it('leaves an ORCID recovery its done screen', async () => {
+      const answer = deferred();
+      mockRecoverWithOrcid.mockReturnValue(answer.promise);
+      const comp = createComponent();
+      comp.method = 'orcid';
+      comp.username = 'alice';
+      comp.orcidToken = 'orcid-tok';
+      comp.newEmail = 'a@x.com';
+
+      const submitted = comp.handleSubmit();
+      expect(comp.isSubmitting).toBe(true);
+      comp.method = 'seed';
+      answer.resolve({
+        data: { token: 'jwt', expires_at: '2099-01-01T00:00:00.000Z', custody: 'light', username: 'alice' },
+      });
+      await submitted;
+
+      expect(comp.phase).toBe('done');
+      const done = renderDone(comp);
+      expect(done).toMatchObject({
+        icons: ['check'],
+        title: 'recover.doneTitle',
+        description: 'recover.orcidDoneSignedIn',
+        button: 'recover.goToSettings',
+      });
+      done.click();
+      expect(mockRouterStore.navigate).toHaveBeenCalledWith('/settings');
+    });
+
+    it('leaves a seed-phrase request its done screen, with no switch button', async () => {
+      const answer = deferred();
+      mockRecoverWithSeedPhrase.mockReturnValue(answer.promise);
+      const comp = createComponent();
+      comp.method = 'seed';
+      comp.username = 'alice';
+      comp.seedPhrase = 'word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12';
+      comp.newEmail = 'a@x.com';
+      comp.newPassword = 'Abcdefgh1x';
+      comp.newPasswordConfirm = 'Abcdefgh1x';
+
+      const submitted = comp.handleSubmit();
+      expect(comp.isSubmitting).toBe(true);
+      comp.method = 'orcid';
+      answer.resolve({
+        status: 'ok',
+        data: { recovery: 'pending_verification', message: 'Confirm the recovery by clicking the link sent to a***@x.com.' },
+      });
+      await submitted;
+
+      expect(comp.phase).toBe('done');
+      const done = renderDone(comp);
+      expect(done).toMatchObject({
+        icons: ['envelope'],
+        title: 'recover.seedPendingTitle',
+        description: 'recover.seedPendingDescription',
+        button: 'recover.goToLogin',
+      });
+      done.click();
+      expect(mockRouterStore.navigate).toHaveBeenCalledWith('/login');
+      expect(mockAuthStore.adoptRecoveredSession).not.toHaveBeenCalled();
     });
   });
 

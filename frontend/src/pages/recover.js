@@ -121,8 +121,8 @@ const template = `
           <template x-if="phase === 'done'">
             <div class="text-center py-16">
               <div class="w-16 h-16 bg-pevo-green/10 rounded-full flex items-center justify-center mx-auto mb-6">
-                <svg x-show="method === 'seed'" class="w-8 h-8 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
-                <svg x-show="method !== 'seed'" class="w-8 h-8 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                <svg x-show="doneMethod === 'seed'" class="w-8 h-8 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                <svg x-show="doneMethod !== 'seed'" class="w-8 h-8 text-pevo-green" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
               </div>
               <h2 class="text-2xl font-bold text-ink mb-2" x-text="$t(doneCopy.title)"></h2>
               <p class="text-ink-muted mb-6" x-text="$t(doneCopy.description)"></p>
@@ -141,6 +141,9 @@ export function initRecoverPage() {
     ...createOrcidRedirectGuard('orcidLoading'),
     phase: 'form', // 'form' | 'done'
     method: 'seed', // 'seed' | 'orcid'
+    // The method of the request that finished. The done screen reads it, not
+    // `method`: the tabs stay clickable while a request is in flight.
+    doneMethod: null,
 
     username: '',
     seedPhrase: '',
@@ -180,7 +183,7 @@ export function initRecoverPage() {
     // button. The seed-phrase arm changes nothing yet: the link mailed to the
     // new address applies the recovery.
     get doneCopy() {
-      if (this.method === 'seed') {
+      if (this.doneMethod === 'seed') {
         return { title: 'recover.seedPendingTitle', description: 'recover.seedPendingDescription', action: 'recover.goToLogin' };
       }
       if (this.signedIn) {
@@ -192,7 +195,7 @@ export function initRecoverPage() {
     // When the ORCID arm left another account signed in, the button switches
     // this browser to the recovered account at the user's request.
     doneAction() {
-      if (this.method === 'seed') return this.navigate('/login');
+      if (this.doneMethod === 'seed') return this.navigate('/login');
       if (this.signedIn) return this.navigate('/settings');
       this.signedIn = Alpine.store('auth').adoptRecoveredSession(this._recovered, { replaceAnotherAccount: true });
     },
@@ -323,6 +326,7 @@ export function initRecoverPage() {
           const name = this.username.trim();
           const keys = await deriveAllKeys(trimmedPhrase, name);
           await recoverWithSeedPhrase(name, keys.memo.private, this.newEmail.trim(), this.newPassword);
+          this.doneMethod = 'seed';
           this.phase = 'done';
         } catch (err) {
           // Sanitization pattern (see executeUpgrade() in settings.js).
@@ -344,6 +348,7 @@ export function initRecoverPage() {
           const res = await recoverWithOrcid(this.username.trim(), this.orcidToken, this.newEmail.trim(), null);
           this._recovered = res.data;
           this.signedIn = Alpine.store('auth').adoptRecoveredSession(res.data);
+          this.doneMethod = 'orcid';
           this.phase = 'done';
         } catch (err) {
           // Sanitization pattern (see executeUpgrade() in settings.js).
