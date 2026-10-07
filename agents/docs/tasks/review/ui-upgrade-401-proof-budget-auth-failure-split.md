@@ -124,3 +124,99 @@ session-changed sub-case without spending the budget. The same check before the
 `account_update` broadcast would stop the irreversible step from starting on a
 session that cannot complete it. Both are for this task to decide; the
 staleness question the reviewer note raises applies to the second one.
+
+## UI implementation signal (2026-10-07, commits 2b8e15ea, fb337fec, 1d4b9440, 07a4dff6)
+
+Landed in `2b8e15ea` (`ui(settings): a dead session no longer spends the key-upgrade proof
+budget`) and `fb337fec` (`ui(settings): narrow the upgrade comments the expiry check made
+false`), both verified ancestors of `main`. Files: `frontend/src/pages/settings.js`,
+`frontend/src/auth.js` (the `handleRevokedSession` and `endSessionIfExpired` docblocks), the 16
+locale files and `frontend/public/messages/STUBS.md` (translator notes only), comment fixes in
+`pages-settings.test.js`, `pages-settings-custody-upgrade-round2.test.js` and
+`pages-settings-custody-upgrade-subject-pin.test.js`, and the new suite
+`frontend/tests/unit/pages-settings-custody-upgrade-auth-failure.test.js` (13 tests, real auth
+store via `initAuth`). `1d4b9440` files a follow-up; `07a4dff6` is the learnings refresh.
+
+What landed against Scope and the ACs:
+1. Scope 1-2, AC1-3. `_handlePostBroadcastError` routes a post-broadcast `SESSION_INVALIDATED`
+   (and `SESSION_EXPIRED`, below) to `_endUpgradeAsSessionChanged({ cleanupLanded: false,
+   upgradeSubject })` ahead of the 401 branch: `_proofRetryAttempts` unchanged, seed and
+   `_upgradeSubject` kept, Try Again available. Two in a row keep the seed. A genuine proof
+   rejection still counts and still wipes on the second, including with a revoked session
+   between the two.
+2. AC4. The seam comment at the 401 branch names, by error code, what still answers
+   `UNAUTHORIZED` and spends the budget: a bearer the server cannot verify (an expired one
+   included) and an account row the route can no longer read. It says the branch should
+   match the proof rejections' own code once there is one.
+3. Scope 3, the backend half, noted here and not filed (user decision 2026-10-06): wanted is a
+   distinct error code for the five proof-rejection arms of `POST /api/custody/upgrade`, so
+   the ladder can count only those. Until then the missing-bearer, unverifiable-JWT
+   (including expiry the client misses through clock skew) and stale-row `UNAUTHORIZED`
+   answers still spend the budget.
+
+Decisions on the two appended notes, asked and approved by the user before implementation
+(2026-10-06):
+- Expiry (2026-10-05 note): checked before the cleanup POST in both legs, not before
+  `account_update`. `_postUpgradeBackend` calls `endSessionIfExpired(upgradeToken)` only while
+  `auth.token === upgradeToken`, and when that reports expiry it throws `SESSION_EXPIRED`
+  without sending. The gate exists because the store compares its own `expiresAt`: a
+  signed-out store has none and reads as expired, which in the ungated first draft stopped
+  the POST on an ordinary sign-out. Verification caught it before commit.
+- Teardown (2026-09-30 note): the upgrade POST reports `401 SESSION_INVALIDATED` to
+  `handleRevokedSession(upgradeToken)`, so the store ends the session and opens the sign-in
+  prompt in place, like the api.js helper and the custody broadcast.
+- Rotation-in-flight marker (2026-09-30 note): not built; the user chose to leave it out.
+  Candidate follow-up: the window is tens of milliseconds, and the outcome is a completed
+  upgrade that costs a sign-in plus a manual Keychain import, not a lost seed.
+
+Additions from verification triage, each approved by the user:
+- While any `retryable-backend-only` retry waits (`upgradeRetryAwaitsSignIn`), the signed-out
+  settings body renders `upgradeError`. Its Sign In then calls `signInFromSignedOutBody()`,
+  which opens the in-place sign-in prompt (`auth.connect()`, failure toast
+  `common.connectionFailed`) instead of `navigate('/login')`, which would unmount the page and
+  let `destroy()` clear the seed and the pin. With no retry waiting, it still goes to /login.
+- `upgrade.sessionChangedBeforeCleanup` is reworded to hold on every route into it. It was
+  never translated, so it is reworded in place in all 16 locale files with no new STUBS.md
+  entry, and the key's translator notes are narrowed to match.
+
+Verification: three adversarial workflow rounds (four lenses, then three, then two, each
+finding challenged by a refuter, probes run in scratchpad copies only). The user triaged each
+round. Dismissed with reasons: a keyboard-activated second sign-in prompt over the
+auto-offered one (the header Sign in does the same; cosmetic), and the copy-contract test not
+telling the old copy from the new (preemptive hardening).
+
+Accepted residuals, no action:
+- A client clock running behind the server, or a same-account session that replaced the
+  pinned one while the pinned token expired, still lets an expired bearer reach the bare 401.
+- ORCID-only light accounts cannot sign back in on the page; the copy's support fallback
+  covers them.
+- A Keychain re-login mints custody `self`, which hides the upgrade section.
+- The sign-in prompt's own links ("Go to the sign-in page", Forgot password, Sign up) still
+  navigate away.
+- In the rare route where this tab is already signed in again as the pinned account, the copy
+  names the header Sign in, which is not rendered; Try Again works directly.
+
+For the architect: `agents/docs/api-contracts/custody.md` lists `NOT_FOUND` (account not
+found) for `POST /api/custody/upgrade`. The route answers a missing account row with `401
+UNAUTHORIZED` ("Session is no longer valid"; its own comment says "401, not 404"), which is
+one of the auth arms the seam comment names. This is outside the ui zone.
+
+Follow-up filed: `ui-upgrade-done-screen-hidden-by-custody-flip.md` (`1d4b9440`). It is
+pre-existing: both success landings set custody to 'self' before the Keychain import loop, so
+the `x-if="isLight"` section with the done panel and the import warnings never renders.
+
+Tests: the frontend unit suite passes, 97 files and 2275 tests, exit 0. The 8 suites the
+round-3 comment edits touch pass (252 tests), as does `tests/unit/eslint`. Mutation probes:
+each new behavior is killed by its own test (the pinned-token gate, reporting the pinned
+token, the widened getter, the failure toast, the template wiring). The pre-change source
+fails 7 of the original 8. A real-Alpine binding probe, kept in a scratchpad and not
+committed, confirmed: the signed-out body shows the message, its Sign In opens the prompt
+with no navigation, and a re-login then Try Again posts with the new token and reaches
+'done'. No browser or E2E run: reaching the path needs a real on-chain `account_update`.
+
+Learnings checkpoint: ran `/ce-compound-refresh` scoped to
+`subject-divergence-guard-earns-its-place-only-where-the-flow-acts-unpinned-2026-09-03.md`
+and `alpine-review-scope-global-chrome-and-x-if-teardown-boundary-2026-09-08.md` (both
+Update, `07a4dff6`). The first now carries the gated expiry check as a new instance of its
+rule. No new entry: an absent stub method masking the new store calls in sibling suites is
+the same genus as `optional-predicate-gate-needs-live-false-case-not-just-absent-2026-09-02.md`.
