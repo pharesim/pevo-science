@@ -389,10 +389,10 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
     }
   }
 
-  // An `orcid_token` that does not resolve (expired, or spent by an earlier
-  // submit) is refused here. It would otherwise skip the required-field
-  // checks below, which run only when no `orcid_token` was sent, and reach
-  // the email upsert with no password.
+  // An `orcid_token` that does not resolve is refused here. Past this check,
+  // the standard email path below is reached only when no `orcid_token` was
+  // sent, so it has passed the required-field checks and every row it
+  // writes carries a password.
   if (hasOrcidToken && !verifiedOrcid) {
     return sendError(res, 400, 'BAD_REQUEST', 'Your ORCID verification is no longer valid. Please verify your ORCID again.');
   }

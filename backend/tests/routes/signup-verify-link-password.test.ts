@@ -1,6 +1,6 @@
 /**
  * The signup verification link (`POST /api/auth/verify`) confirms a pending
- * signup row E only for the password that row was created with, and
+ * signup row E only for that row's password, and
  * `POST /api/auth/signup` writes no row for an `orcid_token` that does not
  * resolve, so every row the email path writes carries a password. The specs
  * pin:
@@ -8,8 +8,8 @@
  *  - A wrong password answers 401 UNAUTHORIZED, sets no binding cookie and
  *    leaves the row as it was. The signup password answers 200 `choose` and
  *    sets the cookie.
- *  - A missing password answers 400 VALIDATION_ERROR and leaves the row as it
- *    was.
+ *  - A missing or non-string password answers 400 VALIDATION_ERROR and leaves
+ *    the row as it was.
  *  - A pending row with no password answers the wrong-password 401 and stays
  *    as it was.
  *  - `/signup` with an institutional address, no password and an
@@ -168,16 +168,18 @@ describe.skipIf(!dbReachable)('the signup verification link requires the signup 
     expect(mailText).toMatch(PASSWORD_SENTENCE);
   });
 
-  it('answers a missing password with 400 VALIDATION_ERROR and leaves the row as it was', async () => {
+  it('answers a missing or non-string password with 400 VALIDATION_ERROR and leaves the row as it was', async () => {
     const email = freshEmail('missing');
     const token = await signUp(email);
     const before = await rowByEmail(email);
 
-    const res = await request(app).post('/api/auth/verify').send({ token });
+    for (const body of [{ token }, { token, password: 12345678 }]) {
+      const res = await request(app).post('/api/auth/verify').send(body);
 
-    expect(res.status, JSON.stringify(res.body)).toBe(400);
-    expect(res.body.error.code).toBe('VALIDATION_ERROR');
-    expect(bindingCookieSet(res)).toBe(false);
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(bindingCookieSet(res)).toBe(false);
+    }
     expect(await rowByEmail(email)).toEqual(before);
   });
 

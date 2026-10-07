@@ -530,9 +530,8 @@ const linkTokenLimiter = rateLimit({
 
 // ─────────────────────────────────────────────────────────────
 // POST /api/auth/verify — Verify email token (SF3)
-// Request: { token, password }. The password is the one the signup row was
-// created with, so a link mailed to an address owner who never signed up
-// cannot finalize a signup someone else started with that address.
+// Request: { token, password }. The password is the row's own, so the
+// mailed link alone does not confirm the row.
 // Marks account as confirmed, returns { flow: 'choose' }
 // ─────────────────────────────────────────────────────────────
 router.post('/verify', verifyLimiter, async (req: Request, res: Response) => {
@@ -597,17 +596,15 @@ router.post('/verify', verifyLimiter, async (req: Request, res: Response) => {
     }
 
     // Mark as confirmed with a random token. Mint a fresh browser-session
-    // binding for this row: any prior binding (e.g., from /signup on a
-    // different browser) is overwritten so that whichever browser clicked
-    // the verification email link is the one bound for the upcoming
-    // /confirm or /link ceremony. See `signup-session-binding.ts` for the
-    // threat model.
+    // binding for this row: any prior binding is overwritten so that
+    // whichever browser clicked the verification email link is the one
+    // bound for the upcoming /confirm or /link ceremony. See
+    // `signup-session-binding.ts` for the threat model.
     //
     // The UPDATE is keyed on the presented token as well as the id. A
     // signup retry for the same address rewrites the row's password_hash
-    // and verify_token together, so a row that changed after the password
-    // check matches nothing and gets the unknown-token answer, instead of
-    // being confirmed with a password the presenter never proved.
+    // and verify_token together, so a row it rewrote after the password
+    // check matches nothing and gets the unknown-token answer.
     const confirmed = `confirmed:${crypto.randomBytes(32).toString('hex')}`;
     const binding = mintBinding();
     const { rowCount } = await pool.query(
