@@ -1,3 +1,245 @@
+## Reset tokens outlive email changes and recovery, and unverified G rows still get reset links (archived 2026-10-07): one round, clean on code; no hold, contract line applied, docs carried to the gate-docs task
+
+### Architect archive note (2026-10-07)
+
+- **Review:** `/ce-code-review` full path on `4196982f`, `e9f8214f`, `dbae925d` plus the learnings commits `3611be12`, `2230a1f8` (branch-remote via a synthetic head holding only the task's 11 files, base `8d6bd4e5`; the interleaved `9d1536a9` excluded): correctness, security, adversarial (in-process, no cross-model peer), testing, project-standards, learnings, plus a validator on three findings. Verdict "Ready with fixes", no P0/P1, no defect in production code. Every AC met, and the sibling's AC1 too. Testing ran the four task specs each alone (green) and `tests/eslint` at head and base (146 green both), and planted 15 mutants: 13 killed (each of the seven reset-token clears, the gate term at both ends, the token write's `email = $4`, the three `pending_email` triples), 2 survived (the token write's `password_hash` and gate re-check). Correctness, security and adversarial each re-measured the writer set by `git grep` and found the same seven. Project-standards checked every changed comment true. Adversarial's probe confirmed the race spec goes red against a token write keyed on id alone.
+- **Triage (user: "approved", as recommended):**
+  - Dismissed: the two surviving token-write terms (P2, preemptive test hardening; the `/reset` UPDATE's own password gate, pinned, still refuses such a token); the solutions-entry narrative finding (validator-rejected); the old reset message quoted in the illustrative snippets of `timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`; out-of-scope 2 (re-issue keyed on `username` alone, dismissed before at the state G lifecycle review); out-of-scope 4 (a spec's leftover `password_reset` audit rows).
+  - Accepted as behavior: a 0-row token write still mails and answers the same 200; both signup upserts clear the token on every retry over a row E. Accepted residual: reset tokens issued before deploy live out their hour.
+  - Duplicate: out-of-scope 1 (row E with a NULL hash) is item 1 of `backend-signup-verify-requires-the-signup-password`, which landed in `c489e0ed` during this review.
+  - Folded: out-of-scope 3 (`pending_email_token` has no index) into `backend-reset-token-lookup-has-no-index`.
+  - Applied at archive: the `POST /api/auth/reset-request` message in `api-contracts/auth.md`. Carried: § 6.3/6.4/6.5 and the remaining contract sentence, as an architect note on `architect-password-reset-gate-docs` with the new per-state outcome list.
+  - The learnings finding (the new entry's "the email signup upsert requires a password" false at `2230a1f8`) was moot at archive: `c489e0ed` made it true on `main`.
+- **Process:** one reviewer tried `git checkout --detach`; the permission system denied it and the tree was verified unchanged. A follow-up to the adversarial reviewer ended on an API error; correctness and security covered its checks.
+- **Learnings checkpoint:** `/ce-compound-refresh` scoped to `conventions/mailed-credential-token-dies-with-its-address-and-credential.md`: Keep (its Guidance 2 sentence matches `main` after `c489e0ed`). The `2230a1f8` edit to `credential-setting-token-redeem-must-not-name-the-account.md` was verified accurate by two reviewers. No new entry qualified.
+- **Sibling:** `backend-recovery-and-reset-keep-a-queued-email-change` was covered by this review and has no finding of its own; it stays in `review/` pending the user's call.
+
+**Owner:** backend
+**Created:** 2026-10-05
+**Priority:** high
+
+Filed at the architect archive of the password-reset account-state gate (archived 2026-10-05),
+from its signal block's out-of-scope findings and two residual risks from the review. User
+triage: "as recommended".
+
+## Why
+
+1. **A reset token outlives the email it was mailed to.** Only `routes/auth.ts` writes
+   `reset_token`: `POST /reset-request` sets it, and `POST /reset` clears it on use or expiry.
+   No UPDATE that moves the row's `email` touches it. A grep at filing found four:
+   `routes/recover.ts` `POST /recover` and `POST /recover/verify`, and in `routes/settings.ts`
+   the change-flow confirm in `GET /email/verify/:token` (`SET email = pending_email`) and the
+   re-issue branch of `POST /email` for an unverified state G row. `POST /reset` selects by
+   token alone, so the token keeps working for the rest of its hour.
+
+   Example: someone controls a user's mailbox and requests a reset. The user recovers through
+   ORCID with a new email and a new password. The outstanding token still rotates the password,
+   and the reset stamps `sessions_invalidated_at`, which revokes the user's sessions.
+
+   A narrower case: ORCID recovery without a new password sets `password_hash` to NULL and
+   leaves the token. The reset gate refuses that token while the row has no password. If the
+   owner sets a password through `POST /api/settings/set-password` within the token's hour,
+   the token rotates it.
+
+2. **An unverified state G row with a password still gets a reset link.** A state G row
+   (ARCHITECTURE.md § 6.1) whose settings-registered email is unverified has `username` set
+   and a hex `verify_token`. `POST /api/settings/set-password` refuses such a row, so one with
+   a password is a legacy row. Reset mails the link to an address the row never proved, so
+   whoever holds that address sets the password, and `POST /api/auth/login` logs in a G row
+   with a password whatever its email state. The user's state G decision is that an unverified
+   G row may not acquire auth factors. A G account signs in with Keychain, so refusing it a
+   reset leaves its owner a way in. `tests/routes/auth-reset-account-state.test.ts` pins this
+   row as rotating ("G, email unverified, with a password (legacy shape)"); that spec flips.
+
+3. **The reset-request answer promises a link that does not come.** `RESET_REQUEST_OK_MESSAGE`
+   ("If an account exists with that email, a reset link has been sent.") is false for a
+   passwordless account, and after item 2 for an unverified G row: the account exists and no
+   link is sent. The answer must stay identical for every caller.
+
+## Scope
+
+1. Measure first: list every statement in `backend/src` that writes `accounts.email` or sets
+   `accounts.password_hash` to NULL. The list under Why is from a grep at filing; go by your
+   measurement.
+2. Every UPDATE that changes `email` or sets `password_hash` to NULL also sets
+   `reset_token = NULL, reset_token_expires_at = NULL`.
+3. `POST /reset-request` and `POST /reset` refuse an unverified state G row the way they refuse
+   a passwordless row, at both ends: the unknown-email answer and no token at `/reset-request`,
+   the unknown-token `INVALID_TOKEN` answer and an unchanged row at `/reset`. Put the new term
+   where the password gate sits (the lookup predicate and the UPDATE predicate), so a refusal
+   stays the unknown-email and unknown-token code path.
+4. Narrow `RESET_REQUEST_OK_MESSAGE` so it is true for every row reset-request refuses and
+   identical for every caller. Suggested: "If an account with a password exists for that email,
+   a reset link has been sent." (intent only: after Scope item 3 an unverified G row with a
+   password gets no link either; write the sentence against the code). No emdashes. The UI
+   shows its own copy, changed by `ui-reset-request-copy-promises-a-link`. Leave a TODO for the
+   architect: `api-contracts/auth.md` quotes the message.
+5. Comments these changes make false: fix each by deleting the claim or cutting it to what the
+   code does, not by listing the new exceptions.
+   - `routes/auth.ts`, the `/reset` UPDATE comment: "It also refuses a token that outlived its
+     row's password: ORCID recovery without a new password drops the hash and leaves the token
+     in place." After Scope item 2 the recovery clears the token.
+   - "gates on no account state but the password", in `routes/signup-verify.ts` (the `/link`
+     stuck-recovery rationale) and `tests/routes/signup-verify-stuck-recovery.test.ts`. Scope
+     item 3 adds an account-state term. The lookup SQL in `signup-verify.ts` stays
+     byte-identical.
+   - The header of `tests/routes/auth-reset-account-state.test.ts`: "standing in for one issued
+     before the gate existed or for a password dropped while the token was outstanding." After
+     Scope item 2 a dropped password clears the token.
+6. Route tests against real Postgres: for each writer from Scope item 1, a token issued before
+   the write is refused after it and the password is unchanged. The unverified G row with a
+   password is refused at both ends, with the answers deep-equal to the unknown-email and
+   unknown-token answers and the timing floor the existing suite asserts.
+
+## Acceptance criteria
+
+1. No UPDATE in `backend/src` changes `email` or sets `password_hash` to NULL without clearing
+   both reset-token columns.
+2. `reset-request` and `reset` refuse an unverified state G row exactly as they refuse a
+   passwordless row.
+3. The reset-request answer is true for every refused row and identical for every caller.
+4. The completion signal lists the writers Scope item 1 found and the per-state outcome changes,
+   so the architect can update ARCHITECTURE.md § 6.3/6.4 and `api-contracts/auth.md`. Do not
+   edit those yourself.
+
+## Note (2026-10-06, backend): land with the pending-email-change sibling
+
+`backend-recovery-and-reset-keep-a-queued-email-change` edits the same three statements: the two
+recovery UPDATEs in `routes/recover.ts` and the `POST /reset` UPDATE in `routes/auth.ts`. It adds
+`pending_email = NULL, pending_email_token = NULL, pending_email_expires_at = NULL` to their SET
+lists. Land both in one pass so each statement is edited once. Neither task closes the other's
+path.
+
+## Backend implementation signal (2026-10-07, commits 4196982f, e9f8214f, dbae925d; learnings 3611be12, 2230a1f8)
+
+Landed in one pass with `backend-recovery-and-reset-keep-a-queued-email-change`, as the note above
+asks, so each shared statement was edited once.
+
+**Scope item 1, measured writers.** Three independent read-only sweeps (SQL text, column-name
+trace, route-by-route walk) and a critic found seven statements in `backend/src` that write
+`accounts.email` or can set `password_hash` to NULL. The filing listed the first four:
+
+1. `routes/recover.ts`, `POST /recover`, ORCID method UPDATE: moves the email; NULL hash when no
+   `new_password` is sent.
+2. `routes/recover.ts`, `POST /recover/verify`, apply UPDATE: moves the email (`COALESCE` never
+   NULLs the hash).
+3. `routes/settings.ts`, `GET /email/verify/:token` change swap (`SET email = pending_email`).
+4. `routes/settings.ts`, `POST /email` re-issue branch for an unverified state G row.
+5. `routes/settings.ts`, `POST /email` SMTP-failure restore of that re-issue: writes the earlier
+   email back.
+6. `routes/auth.ts`, `POST /signup` ORCID+email upsert:
+   `ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash`, NULL when the ORCID
+   signup sends no password. It reaches a pending row E, which can hold a reset token.
+7. `routes/auth.ts`, `POST /signup` email upsert, the same SET: replaces the hash (and NULLs it on
+   the path in out-of-scope finding 1).
+
+All seven now set `reset_token = NULL, reset_token_expires_at = NULL`. The two upserts clear it
+unconditionally rather than only for a NULL hash: the retry replaces the row's password either way,
+so a token issued against the replaced one has nothing left to rotate legitimately. Ruled out: the
+add-flow INSERT and the ORCID-only plain INSERT (new rows), set-password (a non-NULL hash on a
+hashless row), every DELETE, the custody upgrade, both signup finalizes, `orcid.ts` and
+`accreditation-metadata.ts` (neither column).
+
+**Scope item 3.** The `/reset-request` lookup and the `/reset` UPDATE carry
+`AND (username IS NULL OR verify_token IS NULL)` beside the password gate. Against ARCHITECTURE.md
+§ 6.1 it refuses exactly (username SET, verify_token non-NULL), the unverified state G row; E, F,
+A to D and verified G are untouched. A refused row takes the passwordless row's code paths.
+
+**Beyond the listed scope, found by a self-review and fixed in place.** `/reset-request` wrote its
+token in a second UPDATE keyed on `id` alone, so a recovery or swap that commits between its lookup
+and that write left a live token on the moved row: an in-flight form of Why item 1. The write now
+re-checks `email = $4` and the lookup's gate. A 0-row write still mails and answers the same 200.
+Pinned on the real path by holding the row lock (spec "an email move committing between
+reset-request's lookup and its token write"), red against a copy keyed on `id` alone.
+
+**Scope item 4.** `RESET_REQUEST_OK_MESSAGE` is now "If that email belongs to an account whose
+password can be reset, a reset link has been sent." The suggested "If an account with a password
+exists for that email" is false for an unverified G row with a password, so the sentence keys on
+whether reset is available. It is true for every refused row and for an unknown email, and stays
+one constant on both branches. No emdash.
+
+**Scope item 5, comments.** The `/reset` UPDATE comment's "token that outlived its row's password"
+sentences are deleted. "gates on no account state but the password" is deleted from the
+`signup-verify.ts` `/link` rationale and from spec (h) of `signup-verify-stuck-recovery.test.ts`;
+the lookup SQL is byte-identical. The `auth-reset-account-state.test.ts` header loses "or for a
+password dropped while the token was outstanding" and now names the unverified G refusal. Also
+narrowed: the `RESET_TOKEN_INVALID_MESSAGE` comment (no longer lists the refused rows), and the
+settings SMTP-failure comments that said the request's write "rolls back", which the reset-token
+clear no longer does.
+
+**Per-state outcome changes (AC 4).**
+
+- State G, email unverified, with a password: was rotate, now refused at both ends.
+  `/reset-request` gives the unknown-email 200 with the sentinel burn and writes no token. `/reset`
+  answers the unknown-token 400 and leaves the row unchanged; an expired token still gets the
+  expired answer, as on a passwordless row.
+- Every other § 6.1 state: unchanged. A, B, D with a password, verified G with a password, E and
+  F (email path) rotate; C, D and G without a password, unverified G without a password and F
+  (ORCID path) are refused.
+- A reset token no longer survives: ORCID recovery with or without a new password, the seed-phrase
+  recovery apply, the change-email swap, the settings re-issue and its restore, or a signup retry
+  over a row E.
+
+**Tests, real Postgres and Redis.**
+
+- `tests/routes/reset-token-cleared-by-account-writes.test.ts` (new, 9 specs): one per writer
+  (ORCID recovery twice, the passwordless one followed by the real set-password route; seed-phrase
+  apply; change swap; re-issue then the new address verified; restore then the earlier address
+  verified; both signup upserts) plus the race spec. Each issues a token (through `/reset-request`,
+  or written directly where it refuses the row), runs the writer through its route, then asserts
+  the row holds no token, `/reset` answers deep-equal to an unknown token, and the password is
+  unchanged. All eight writer specs were red before the clears.
+- `tests/routes/auth-reset-account-state.test.ts`: a `rotates` field per shape. The unverified G
+  row with a password flips to refused at both ends, with deep-equal answers and the
+  `TIMING_ORACLE_FLOOR_MS` floor; the refused `/reset` spec asserts the hash unchanged. Both specs
+  were red before.
+- Carve-out header of the new file: (a) the hive client key lookup stub (the signature path an
+  unverified G row has), the SMTP mock, and the ORCID nonce and set-password proof written
+  directly; (b) `verifyHiveSignature` real; (c) `recover.test.ts` [smtp-fail-test.invalid].
+- Green, each file alone, exit 0, no Errors line: recover, recover-two-phase,
+  recover-orcid-state-g, auth-reset-account-state, auth-reset-session-match,
+  auth-reset-request-shutdown, session-proof-invalidation, settings-state-g-unverified-email,
+  settings, auth-state-g-rows, auth, signup-verify, signup-verify-stuck-recovery,
+  settings-email-fresh-auth, settings-set-password-fresh-auth, auth-signup-dup-saturated,
+  auth-signup-argon-error-translation, auth-log-shape, signup-verify-session-binding,
+  signup-verify-orcid-binding-guard, `tests/eslint` (146), and both new files.
+- Full suite after 4196982f: 7 files / 15 specs red, all in the standing set
+  (accreditation-idempotency, profile-auth-bypass, reviews gate, idempotency-real-haf,
+  papers-enrichment-parity-gate, cast-hardening-author-index-weight, and
+  fresh-auth-consent-op-burn-offline-queue under full-suite load). Typecheck clean; lint 0 errors,
+  1 pre-existing warning in `lib/author-supersession.ts`.
+
+**Out-of-scope findings, for filing.**
+
+1. A standard email signup can write a row E with `password_hash` NULL, a shape § 6.1 does not
+   have (E carries a password). Validation keys on `hasOrcidToken` (any non-empty `orcid_token`),
+   the branch on `verifiedOrcid`: a non-resolving `orcid_token`, an institutional email and no
+   password pass the relaxed validation and reach the standard upsert with a NULL hash.
+2. The settings re-issue UPDATE is keyed on `username` alone. A verify click that lands between
+   its lookup and its write has its now-verified row's email rewritten and a fresh hex
+   `verify_token` installed, unverifying the row again; if the re-issued mail then fails, the
+   restore writes back the prior `verify_token` the click already consumed.
+3. `pending_email_token` has no index, so the change-verify lookup scans `accounts` (the
+   `reset_token` index is already filed as `backend-reset-token-lookup-has-no-index`).
+4. `auth-reset-account-state.test.ts` deletes only `accounts` rows; the `password_reset` audit rows
+   its rotating specs write stay behind. Predates this change.
+
+**[TODO Architect]**
+
+- `agents/docs/api-contracts/auth.md`, `POST /api/auth/reset-request` response example: quote the
+  new `RESET_REQUEST_OK_MESSAGE`.
+- ARCHITECTURE.md § 6.3 and § 6.4: reset serves A, B, D and verified G with a password, plus E and
+  email-path F; an unverified G row is refused with or without a password. The § 6.3 Option C
+  note's "`POST /api/auth/reset` gates on no account state" is now false. Record that the seven
+  writers above clear the reset token. `architect-password-reset-gate-docs` lists "G with a
+  password (email verified or not)" as rotating: email verified only, now.
+
+**Learnings checkpoint.** `/ce-compound` wrote
+`conventions/mailed-credential-token-dies-with-its-address-and-credential.md`, with its catalog row
+under the updated_at canary (3611be12). `/ce-compound-refresh` updated
+`conventions/credential-setting-token-redeem-must-not-name-the-account.md`, whose leak list still
+named an old mailbox after an email change (2230a1f8).
+
 ## Stop an auth-layer 401 from spending the custody-upgrade proof budget (archived 2026-10-07): one round, clean review; two residuals accepted, one comment rider filed
 
 ### Architect archive note (2026-10-07)
@@ -6,245 +248,3 @@
 - **Accepted residuals (user triage, added to the implementer's list):** (1) when another sender (the api.js bearer helper, e.g. the notification poll, or a sibling tab) ends an expired session between the token pin and the cleanup POST, the store is signed out, so the `auth.token === upgradeToken` gate skips the expiry check and the expired bearer spends one proof attempt with the clock-skew copy; no wipe on its own. Pinning `expiresAt` beside the token would close it if ever wanted. (2) An email login in the in-place sign-in prompt answered `409 PENDING_SIGNUP` navigates to `/signup/verify` and unmounts the page, wiping the seed; it needs another account's pending-signup email.
 - **Dismissed:** moving the pinned-token gate into `endSessionIfExpired` (guards only a future fourth caller); the after-cleanup copy going unseen after a sign-out in the rotation-in-flight window (pre-existing, recorded in the `_endUpgradeAsSessionChanged` docblock, inside the window the user chose to leave unmarked).
 - **Rider filed:** pending `ui-upgrade-done-screen-hidden-by-custody-flip.md` now also deletes the `_proofRetryAttempts` parenthetical `(first in executeUpgrade, subsequent ones in retryUpgradeBackend)`, false when the first cleanup POST ends in a 503 or a session-ended error.
-- **Fixed at archive:** `agents/docs/api-contracts/custody.md` listed `NOT_FOUND` for `POST /api/custody/upgrade`; the route answers a missing account row with `401 UNAUTHORIZED` "Session is no longer valid", as the signal reported.
-- **Still wanted, unfiled (user decision 2026-10-06):** a distinct error code for the five proof-rejection arms, so the ladder counts only those.
-- **Learnings checkpoint:** both entries refreshed in `07a4dff6` (`subject-divergence-guard-earns-its-place-only-where-the-flow-acts-unpinned`, `alpine-review-scope-global-chrome-and-x-if-teardown-boundary`) verified true at `07a4dff6`; no other entry names the touched symbols in a way the change contradicts. No new entry: the signed-out-store-reads-as-expired trap is already recorded in the subject-divergence entry.
-
-**Owner:** ui
-**Created:** 2026-09-06
-**Priority:** normal
-
-Routed out of the architect review of the custody-upgrade subject-pin work. Pre-existing;
-surfaced there because that task added a third entry point into the same retry.
-
-## Why
-
-`_handlePostBroadcastError` in `pages/settings.js` classifies the post-broadcast failure ladder by
-HTTP status alone:
-
-```
-if (broadcastLanded && status === 401) {
-  this._proofRetryAttempts += 1;
-```
-
-Every 401 is read as a rejected upgrade proof. The second one exhausts
-`UPGRADE_PROOF_RETRY_BUDGET`, runs `_clearSensitiveUpgradeState()`, and routes to terminal
-`partialApplyFailed`.
-
-But `POST /api/custody/upgrade` returns 401 for two unrelated classes. The proof arms are the
-ones the budget exists for: an expired or invalid `signed_at`, a signature that does not recover,
-a `derived_pubkey` absent from the on-chain key set. The auth arms are not: `verifyHiveSignature`
-returns `SESSION_INVALIDATED` for a revoked session, and the route itself returns
-`UNAUTHORIZED` for a missing bearer and again for an account row it can no longer read
-("Session is no longer valid").
-
-So a user whose session dies while the error screen idles, then presses Try Again twice, loses the
-mnemonic. That mnemonic is the only key to an account whose on-chain owner, active, posting and
-memo authorities have already rotated and whose backend row still holds keys derived from the old
-seed, because the cleanup POST never ran. The proof was never the problem, and the budget that
-protects against a genuinely broken proof spent itself on a dead session instead.
-
-The window is real: the error screen has no timeout, `retryUpgradeBackend` is reachable from
-three sub-cases now, and the newly retryable before-cleanup sub-case explicitly asks the user to
-sign back in and press Try Again, which is exactly the sequence that runs a stale bearer into
-this branch.
-
-## Scope
-
-1. In `_handlePostBroadcastError`, split the 401 branch. When the error is an auth failure rather
-   than a proof rejection, do not increment `_proofRetryAttempts` and do not wipe. Route it to
-   `_endUpgradeAsSessionChanged({ cleanupLanded: false, upgradeSubject })`, which is the truthful
-   description of that state and is now retryable, so the user re-authenticates and the next Try
-   Again runs the cleanup.
-
-2. `err.code` is already captured on the thrown error, so `SESSION_INVALIDATED` is separable with
-   no backend change. Land that half now.
-
-3. The remaining auth arms are not separable today: the route's own missing-bearer and
-   stale-row 401s share the bare `UNAUTHORIZED` code with all five proof arms. Completing the
-   split needs the backend to give the proof arms their own error code. That is a backend change
-   and is NOT in this task's scope. File it as a backend task, or note here that it is wanted, and
-   treat this task as landing the separable half plus the seam the backend half plugs into.
-
-## Acceptance criteria
-
-1. A post-broadcast 401 carrying `SESSION_INVALIDATED` leaves `_proofRetryAttempts` unchanged,
-   leaves `newSeedPhrase` and `_upgradeSubject` intact, and lands in the before-cleanup
-   session-changed sub-case with Try Again available.
-2. Two consecutive `SESSION_INVALIDATED` 401s still leave the seed intact. This is the case that
-   destroys it today.
-3. A genuine proof rejection still increments the budget and still wipes on the second one, so
-   the protection the budget exists for is unchanged.
-4. Whatever the backend cannot yet distinguish is named in a comment at the branch, anchored on
-   the error codes rather than on line numbers, so the seam is obvious when the backend half lands.
-
-## Notes
-
-Do not widen `_upgradeSubjectDiverged` for this. Its two landing call sites should keep accepting a
-server-refreshed session; the change belongs in the error ladder, not the divergence predicate.
-
-The reviewer that found this proposed a liveness check on the store's session before the retry
-signs, as an independent second fix. That is defensible but it is a different change with its own
-staleness question, so it is not part of this task's scope.
-
-## Note from the revoked-session teardown work (2026-09-30)
-
-The auth store now has `handleRevokedSession(sentToken)`, called by the api.js
-bearer helper and the custody broadcast on `401 SESSION_INVALIDATED`. It tears
-the session down when the rejected token is still the store's token, after
-first adopting a different unexpired session found in storage. The upgrade
-POST (`_postUpgradeBackend`) was deliberately left unhooked for this task to
-decide.
-
-One interaction to cover here. The upgrade route revokes the old token a
-moment before it answers. A bearer request answered in that gap (the
-notification or authorship poll in the upgrading tab, or any request in a
-sibling tab before the upgrading tab has saved the reissued session) now tears
-the session down, where before it was inert. When the upgrade response then
-lands, `_upgradeSubjectDiverged` is true, the reissued token is dropped and the
-flow ends as session-changed-after-cleanup. The window is tens of milliseconds
-and the user recovers by signing in again, but it lands at the irreversible
-step. A "rotation in flight" marker set around the upgrade POST in both legs,
-which `handleRevokedSession` defers to, would close the same-tab case. The
-sibling-tab case would need that marker visible across tabs.
-
-## Note from the expired-session work (2026-10-05)
-
-The auth store now has `endSessionIfExpired(sentToken)`. The api.js bearer
-helper and the custody broadcast call it before sending: past the session's
-`expiresAt` (client clock) it ends the session through the same path as
-`handleRevokedSession` (stale-token check, adoption of a newer stored session,
-teardown, sign-in offer) and the request is not sent. The upgrade flow does
-not go through either sender, so it is not covered.
-
-A verification pass traced that gap. Nothing on the upgrade path makes an
-authenticated request through api.js: the old-phrase check and the proof
-signing are local, `account_update` goes to the Hive node through dhive, and
-`_postUpgradeBackend` / `retryUpgradeBackend` send a raw fetch with the pinned
-token. A session that expired after the page mounted is caught only by the
-notification poll or by some other authenticated action. Inside that window
-the irreversible `account_update` lands, and the POST's 401 for the expired JWT
-is the bare `UNAUTHORIZED` this task cannot yet separate from the proof arms,
-so two Try Agains spend the budget and wipe the seed.
-
-The expiry arm is separable on the client now, with no backend change. Calling
-`Alpine.store('auth').endSessionIfExpired(upgradeToken)` before the
-upgrade POST in both legs can route an expired session to the before-cleanup
-session-changed sub-case without spending the budget. The same check before the
-`account_update` broadcast would stop the irreversible step from starting on a
-session that cannot complete it. Both are for this task to decide; the
-staleness question the reviewer note raises applies to the second one.
-
-## UI implementation signal (2026-10-07, commits 2b8e15ea, fb337fec, 1d4b9440, 07a4dff6)
-
-Landed in `2b8e15ea` (`ui(settings): a dead session no longer spends the key-upgrade proof
-budget`) and `fb337fec` (`ui(settings): narrow the upgrade comments the expiry check made
-false`), both verified ancestors of `main`. Files: `frontend/src/pages/settings.js`,
-`frontend/src/auth.js` (the `handleRevokedSession` and `endSessionIfExpired` docblocks), the 16
-locale files and `frontend/public/messages/STUBS.md` (translator notes only), comment fixes in
-`pages-settings.test.js`, `pages-settings-custody-upgrade-round2.test.js` and
-`pages-settings-custody-upgrade-subject-pin.test.js`, and the new suite
-`frontend/tests/unit/pages-settings-custody-upgrade-auth-failure.test.js` (13 tests, real auth
-store via `initAuth`). `1d4b9440` files a follow-up; `07a4dff6` is the learnings refresh.
-
-What landed against Scope and the ACs:
-1. Scope 1-2, AC1-3. `_handlePostBroadcastError` routes a post-broadcast `SESSION_INVALIDATED`
-   (and `SESSION_EXPIRED`, below) to `_endUpgradeAsSessionChanged({ cleanupLanded: false,
-   upgradeSubject })` ahead of the 401 branch: `_proofRetryAttempts` unchanged, seed and
-   `_upgradeSubject` kept, Try Again available. Two in a row keep the seed. A genuine proof
-   rejection still counts and still wipes on the second, including with a revoked session
-   between the two.
-2. AC4. The seam comment at the 401 branch names, by error code, what still answers
-   `UNAUTHORIZED` and spends the budget: a bearer the server cannot verify (an expired one
-   included) and an account row the route can no longer read. It says the branch should
-   match the proof rejections' own code once there is one.
-3. Scope 3, the backend half, noted here and not filed (user decision 2026-10-06): wanted is a
-   distinct error code for the five proof-rejection arms of `POST /api/custody/upgrade`, so
-   the ladder can count only those. Until then the missing-bearer, unverifiable-JWT
-   (including expiry the client misses through clock skew) and stale-row `UNAUTHORIZED`
-   answers still spend the budget.
-
-Decisions on the two appended notes, asked and approved by the user before implementation
-(2026-10-06):
-- Expiry (2026-10-05 note): checked before the cleanup POST in both legs, not before
-  `account_update`. `_postUpgradeBackend` calls `endSessionIfExpired(upgradeToken)` only while
-  `auth.token === upgradeToken`, and when that reports expiry it throws `SESSION_EXPIRED`
-  without sending. The gate exists because the store compares its own `expiresAt`: a
-  signed-out store has none and reads as expired, which in the ungated first draft stopped
-  the POST on an ordinary sign-out. Verification caught it before commit.
-- Teardown (2026-09-30 note): the upgrade POST reports `401 SESSION_INVALIDATED` to
-  `handleRevokedSession(upgradeToken)`, so the store ends the session and opens the sign-in
-  prompt in place, like the api.js helper and the custody broadcast.
-- Rotation-in-flight marker (2026-09-30 note): not built; the user chose to leave it out.
-  Candidate follow-up: the window is tens of milliseconds, and the outcome is a completed
-  upgrade that costs a sign-in plus a manual Keychain import, not a lost seed.
-
-Additions from verification triage, each approved by the user:
-- While any `retryable-backend-only` retry waits (`upgradeRetryAwaitsSignIn`), the signed-out
-  settings body renders `upgradeError`. Its Sign In then calls `signInFromSignedOutBody()`,
-  which opens the in-place sign-in prompt (`auth.connect()`, failure toast
-  `common.connectionFailed`) instead of `navigate('/login')`, which would unmount the page and
-  let `destroy()` clear the seed and the pin. With no retry waiting, it still goes to /login.
-- `upgrade.sessionChangedBeforeCleanup` is reworded to hold on every route into it. It was
-  never translated, so it is reworded in place in all 16 locale files with no new STUBS.md
-  entry, and the key's translator notes are narrowed to match.
-
-Verification: three adversarial workflow rounds (four lenses, then three, then two, each
-finding challenged by a refuter, probes run in scratchpad copies only). The user triaged each
-round. Dismissed with reasons: a keyboard-activated second sign-in prompt over the
-auto-offered one (the header Sign in does the same; cosmetic), and the copy-contract test not
-telling the old copy from the new (preemptive hardening).
-
-Accepted residuals, no action:
-- A client clock running behind the server, or a same-account session that replaced the
-  pinned one while the pinned token expired, still lets an expired bearer reach the bare 401.
-- ORCID-only light accounts cannot sign back in on the page; the copy's support fallback
-  covers them.
-- A Keychain re-login mints custody `self`, which hides the upgrade section.
-- The sign-in prompt's own links ("Go to the sign-in page", Forgot password, Sign up) still
-  navigate away.
-- In the rare route where this tab is already signed in again as the pinned account, the copy
-  names the header Sign in, which is not rendered; Try Again works directly.
-
-For the architect: `agents/docs/api-contracts/custody.md` lists `NOT_FOUND` (account not
-found) for `POST /api/custody/upgrade`. The route answers a missing account row with `401
-UNAUTHORIZED` ("Session is no longer valid"; its own comment says "401, not 404"), which is
-one of the auth arms the seam comment names. This is outside the ui zone.
-
-Follow-up filed: `ui-upgrade-done-screen-hidden-by-custody-flip.md` (`1d4b9440`). It is
-pre-existing: both success landings set custody to 'self' before the Keychain import loop, so
-the `x-if="isLight"` section with the done panel and the import warnings never renders.
-
-Tests: the frontend unit suite passes, 97 files and 2275 tests, exit 0. The 8 suites the
-round-3 comment edits touch pass (252 tests), as does `tests/unit/eslint`. Mutation probes:
-each new behavior is killed by its own test (the pinned-token gate, reporting the pinned
-token, the widened getter, the failure toast, the template wiring). The pre-change source
-fails 7 of the original 8. A real-Alpine binding probe, kept in a scratchpad and not
-committed, confirmed: the signed-out body shows the message, its Sign In opens the prompt
-with no navigation, and a re-login then Try Again posts with the new token and reaches
-'done'. No browser or E2E run: reaching the path needs a real on-chain `account_update`.
-
-Learnings checkpoint: ran `/ce-compound-refresh` scoped to
-`subject-divergence-guard-earns-its-place-only-where-the-flow-acts-unpinned-2026-09-03.md`
-and `alpine-review-scope-global-chrome-and-x-if-teardown-boundary-2026-09-08.md` (both
-Update, `07a4dff6`). The first now carries the gated expiry check as a new instance of its
-rule. No new entry: an absent stub method masking the new store calls in sibling suites is
-the same genus as `optional-predicate-gate-needs-live-false-case-not-just-absent-2026-09-02.md`.
-
-## The ORCID callback's session-window leg caches a proof it never type-checks (archived 2026-10-07): two rounds, clean re-review; no findings
-
-### Architect archive note (2026-10-07)
-
-- **Review:** `/ce-code-review` full path on `b2aa6c25` (branch-remote, `dd4aea20..b2aa6c25`): correctness, adversarial (in-process, no cross-model peer), testing, project-standards, learnings. Verdict "Ready to merge", zero findings. All three hold items met. Item 1: every sentence of both rewritten comments checked against `fresh-auth.js` and the backend `handleSessionAuth` / `issueSessionFreshAuthToken`, with claim probes (15 and 10 scenarios) in scratch copies. Items 2 and 3: mutants (a), (b) and (c) reproduced exactly as signalled; six more accepted-path plants each fail only the new accepted-path case. Full frontend unit suite at `b2aa6c25` in a two-level copy: 98 files / 2286 tests, exit 0.
-- **Signal-block correction (task prose only, no action):** the rationale for the third wording departure is half wrong. A read past the idle deadline is cleared by `readSessionWindow` (its `now >= closesAt` branch drops the slot); only a read inside the pre-flight margin misses without a clear. The comment says only "the first gate the slot hands it to", which holds either way.
-- **Implementer's "noted, no action" items accepted:** the swapped-deadlines mutant is equivalent for the fixture (each span clamps to its own mirrored period); the `_mounted` check in `_handleSessionAuth` predates this change and `_verify` checks `_mounted` before dispatch.
-- **Learnings checkpoint:** the entries naming the touched symbols (`fail-closed-guard-must-replace-the-recovery-a-round-trip-provided`, `sibling-docblock-tallies-must-each-state-precisely-what-they-count`, `fresh-auth-guard-coverage-must-sweep-the-callee-graph`) hold at `b2aa6c25`; a grep for entry claims about the callback's session-auth writer found none. No new entry: the margin-versus-deadline distinction is already in `readSessionWindow`'s docblock, and the signal-block slip is task prose. `CONCEPTS.md`: no new terms.
-
-**Owner:** ui
-**Created:** 2026-09-14
-**Priority:** normal
-
-Routed out of the round-4 re-review of the shared-dispatch task (an adversarial
-residual, confirmed at HEAD by the architect). Low priority: pre-existing,
-reachable only through a backend contract violation, and nothing is
-misclassified. Filed for consistency with the mint-leg null coercion that round

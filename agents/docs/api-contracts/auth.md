@@ -337,7 +337,7 @@ Request a password reset email.
 
 ```json
 {
-  "message": "If an account exists with that email, a reset link has been sent."
+  "message": "If that email belongs to an account whose password can be reset, a reset link has been sent."
 }
 ```
 

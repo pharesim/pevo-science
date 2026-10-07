@@ -25,3 +25,12 @@ user chose at the architect review (2026-10-07) to file it at low priority.
 
 1. The migration creates the index and runs cleanly, also when run twice
    (`./deploy.sh migrate`).
+
+## Architect note (2026-10-07): a second column, same migration
+
+Folded in at the archive of `backend-reset-tokens-outlive-email-changes-and-recovery` (its
+out-of-scope finding 3, user triage "as recommended"): `accounts.pending_email_token` has no index
+either, so the change-flow lookup in `GET /api/settings/email/verify/:token`
+(`SELECT id, pending_email_expires_at, email FROM accounts WHERE pending_email_token = $1`) scans
+the table on every change-verify click. Index it in the same migration. Acceptance criterion 1
+covers both indexes.

@@ -95,3 +95,29 @@ write that moves `email` or drops `password_hash`, and narrows `RESET_REQUEST_OK
 write § 6.3, § 6.4 and the contract against its outcome list instead of the one under Why. If
 these docs land first, that task's completion signal (its acceptance criterion 4) lists what to
 change in a second pass.
+
+## Architect note (2026-10-07): the follow-up landed first
+
+`backend-reset-tokens-outlive-email-changes-and-recovery` was archived on 2026-10-07, so write
+§ 6.3, § 6.4, § 6.5 and the contract against this outcome list, which replaces the one under Why:
+
+- Rotates the password: A, B, D with a password, G with a password and a verified email, E, and
+  F on the email path.
+- Refused: C, D without a password, G without a password, G whose email is unverified (with or
+  without a password), and F on the ORCID path. reset-request issues no token and gives the
+  unknown-email answer; a token already on the row gets the unknown-token `INVALID_TOKEN` answer
+  and the row is unchanged. An expired token still takes the expiry branch first.
+- The `/reset-request` lookup and the `/reset` UPDATE carry `AND (username IS NULL OR verify_token
+  IS NULL)` beside the password gate, so the Option C note (Scope item 2) is false on both
+  counts now: `/reset` gates on the password and on the unverified-G term.
+- Every statement that moves `accounts.email` or can set `password_hash` to NULL clears
+  `reset_token` and `reset_token_expires_at` in the same SET: ORCID recovery and the seed-phrase
+  recovery apply (`routes/recover.ts`), the settings re-issue for an unverified G row, its
+  SMTP-failure restore and the change-email swap (`routes/settings.ts`), and both
+  `POST /api/auth/signup` upserts (`routes/auth.ts`). Worth one line in § 6.3 or § 6.7.
+- Scope item 5: the quoted reset-request message in `api-contracts/auth.md` was updated at the
+  archive. The "Always returns success" sentence still needs the note that a passwordless or
+  unverified-G account gets the same answer and no email.
+- Not yet archived, same commits: `backend-recovery-and-reset-keep-a-queued-email-change` makes
+  both recovery UPDATEs and the `/reset` UPDATE clear the `pending_email` triple. Its signal asks
+  for the same § 6.3 transitions to say so; fold it in when that task archives.
