@@ -26,9 +26,8 @@
 // no cryptographic verification is bypassed; the cases assert what the client
 // does before and instead of sending. Clause (c): the risk class is the
 // client's handling of a session the server will no longer accept, and its
-// real-path companion is the revoked-session e2e spec requested when the
-// SESSION_INVALIDATED handling landed, which drives the same teardown and
-// sign-in offer against a real backend.
+// real-path companion is `tests/e2e/session-revoked.spec.js`, which drives the
+// same teardown and sign-in offer against a real backend.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import enMessages from '../../public/messages/en.json';
 

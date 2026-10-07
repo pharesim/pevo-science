@@ -19,11 +19,11 @@
 // late-rejection case needs the response to arrive after a cross-tab token
 // swap, which only a test-controlled settle can order. Clause (b): no auth
 // middleware is mocked and no cryptographic verification is bypassed; the
-// cases assert what the client does with the server's answer. Clause (c): no
-// real-path companion exists yet for this risk class (a second device's
-// session outliving a credential rotation). A two-context e2e spec that
-// revokes through a real password reset is the companion, requested as a
-// follow-up when this file landed.
+// cases assert what the client does with the server's answer. Clause (c): the
+// real-path companion for this risk class (a second device's session
+// outliving a credential rotation) is `tests/e2e/session-revoked.spec.js`,
+// which revokes a signed-in browser's session with a real password reset from
+// another context and asserts the same teardown against the real backend.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import enMessages from '../../public/messages/en.json';
 
