@@ -1,250 +1,250 @@
-## Seven latest-op HAF lookups walk the whole blocks index when nothing matches (archived 2026-10-07): two rounds, clean re-review; one pre-existing canary finding filed
+## The ORCID callback's session-window leg caches a proof it never type-checks (archived 2026-10-07): two rounds, clean re-review; no findings
 
 ### Architect archive note (2026-10-07)
 
-- **Review:** `/ce-code-review` focused path on `8fccf4f0`, `35e4cac3` and `d442a4b7` (branch-remote over `07a4dff6..d442a4b7` through a synthetic head holding only the two reviewed files; the sibling commits in that range touched neither). Orchestrator pass plus one local adversarial reviewer, no cross-model peer. Verdict "Ready to merge". Both hold items met. Item 1, re-run in a scratch copy: each `AS MATERIALIZED` to `AS` mutant fails exactly its own spec on the new assertion; the unmutated file passes, 29 passed, exit 0 (with Redis reachable; without it two Redis-dependent specs time out). Item 2: the three prescribed edits, no sentence added; `d442a4b7` only deletes the pre-`id` timing and re-wraps.
-- **Finding (pre-existing, P2), filed as `backend-wot-threshold-fence-canary-matches-its-own-comment` (low):** the `loadWotThreshold` fence canary in `wot-threshold-signer-gate.test.ts` cannot fail. A `--` comment inside the SQL literal contains "AS MATERIALIZED", which the unanchored regex matches. Fence removed, comment kept: 7 passed, exit 0; control red. The hold had cited that canary as the precedent for the three new assertions.
-- **Triage (user, "approved" as recommended).** Dismissed: anchoring the three new `idempotency.test.ts` assertions the same way (no such comment in those literals today). Residuals the signal already disclosed: the custody arm passes with `ORDER BY ... LIMIT` moved inside the CTE (sort-order spec dismissed at the hold triage); the assertions pin SQL text on a mocked pool, not the live plan.
-- **Learnings checkpoint:** the fence entry's Examples claim that the canary fails red on a dropped fence is false for `loadWotThreshold`; its `/ce-compound-refresh` is scope item 3 of the filed task, which makes the claim true again. Whether the inverse comment case (a comment satisfying a presence check) extends `source-discipline-canary-comment-normalization-and-lens-vs-probe-coverage-2026-09-08.md` or needs a new entry is that task's checkpoint, once the fix is measured. `CONCEPTS.md` scanned, no new terms.
+- **Review:** `/ce-code-review` full path on `b2aa6c25` (branch-remote, `dd4aea20..b2aa6c25`): correctness, adversarial (in-process, no cross-model peer), testing, project-standards, learnings. Verdict "Ready to merge", zero findings. All three hold items met. Item 1: every sentence of both rewritten comments checked against `fresh-auth.js` and the backend `handleSessionAuth` / `issueSessionFreshAuthToken`, with claim probes (15 and 10 scenarios) in scratch copies. Items 2 and 3: mutants (a), (b) and (c) reproduced exactly as signalled; six more accepted-path plants each fail only the new accepted-path case. Full frontend unit suite at `b2aa6c25` in a two-level copy: 98 files / 2286 tests, exit 0.
+- **Signal-block correction (task prose only, no action):** the rationale for the third wording departure is half wrong. A read past the idle deadline is cleared by `readSessionWindow` (its `now >= closesAt` branch drops the slot); only a read inside the pre-flight margin misses without a clear. The comment says only "the first gate the slot hands it to", which holds either way.
+- **Implementer's "noted, no action" items accepted:** the swapped-deadlines mutant is equivalent for the fixture (each span clamps to its own mirrored period); the `_mounted` check in `_handleSessionAuth` predates this change and `_verify` checks `_mounted` before dispatch.
+- **Learnings checkpoint:** the entries naming the touched symbols (`fail-closed-guard-must-replace-the-recovery-a-round-trip-provided`, `sibling-docblock-tallies-must-each-state-precisely-what-they-count`, `fresh-auth-guard-coverage-must-sweep-the-callee-graph`) hold at `b2aa6c25`; a grep for entry claims about the callback's session-auth writer found none. No new entry: the margin-versus-deadline distinction is already in `readSessionWindow`'s docblock, and the signal-block slip is task prose. `CONCEPTS.md`: no new terms.
 
-**Owner:** backend
-**Created:** 2026-10-05
-**Priority:** high
+**Owner:** ui
+**Created:** 2026-09-14
+**Priority:** normal
 
-Filed from the accreditation and Web of Trust audit. The learnings pass flagged the query shape;
-the architect then measured it on the HAF node with the user's permission. Widened the same day
-from three lookups to seven, after a plan-only `EXPLAIN` of the sibling reads (user decision).
+Routed out of the round-4 re-review of the shared-dispatch task (an adversarial
+residual, confirmed at HEAD by the architect). Low priority: pre-existing,
+reachable only through a backend contract violation, and nothing is
+misclassified. Filed for consistency with the mint-leg null coercion that round
+closed, so the window slot's two writers hold the same standard.
 
 ## Why
 
-Measured on the HAF node on 2026-10-05 with `EXPLAIN (ANALYZE, BUFFERS)`, appTag `pevotest`: the
-query in `findExistingAccreditation` (`backend/src/lib/idempotency.ts`) took 19.75 s for an
-account with no accredit or revoke op. The plan drives a nested loop from
-`Index Only Scan Backward using pk_hive_blocks` (110,520,295 rows read) and probes the
-`custom_id` candidate set, which is empty, once per block. The candidate scan itself took 0.2 ms.
-With the candidates in an `AS MATERIALIZED` CTE and the `ORDER BY ... LIMIT 1` outside it, the
-same lookup took 2.4 ms.
+The window slot has two writers. `acquireSessionProof`'s mint callback
+(`lib/fresh-auth.js`) now narrows a non-string `fresh_auth_proof` to `undefined`
+so the fail-closed guard refuses it, says so, and the acquisition-level drop
+evicts the entry it wrote. The other writer is `_handleSessionAuth` in
+`pages/orcid-callback.js`: it calls
+`cacheSessionProof(data.fresh_auth_proof, data.expires_at, data.absolute_expires_at)`
+with the response value unexamined, toasts `orcid.reauthSuccess`, and navigates
+to the return path. Its sibling in the same component, `_handleFreshAuth`
+(the consent-op leg), refuses a non-string or empty `fresh_auth_proof` BEFORE it
+caches, by setting the page's error state and returning; the session-window leg
+has no such check.
 
-A plan-only `EXPLAIN` shows the same backward scan of `pk_hive_blocks`, as the outer side of
-the nested loop, for six more lookups. None of the six was executed, so the 19.75 s is measured
-for the gate only:
-
-- `findAccreditationBroadcastByIdempotencyKey` (`backend/src/lib/idempotency.ts`);
-- `getLatestAccreditOp` (`backend/src/accreditation.ts`);
-- both reads in `findAccreditedAccountWithOrcid` (`backend/src/lib/orcid-binding.ts`): the latest
-  accredit op that carries the ORCID, and the account's latest accredit or revoke op;
-- `getExistingAccreditation` (`backend/src/routes/orcid.ts`);
-- the custom_json arm of `findCustodyBroadcastByIdempotencyKey` (`backend/src/lib/idempotency.ts`).
-
-What it costs today:
-
-- `POST /api/accreditation/verify`. A first-time verifier has no accredit or revoke op, and a
-  fresh token's idempotency key matches nothing. The route awaits `findExistingAccreditation` and
-  then `lookupAccreditationBroadcastIdempotency`, which calls
-  `findAccreditationBroadcastByIdempotencyKey` unless a cached hit exists, before it broadcasts.
-  The SPA aborts a request after 30 s (`DEFAULT_TIMEOUT_MS` in `frontend/src/api.js`) while the
-  handler keeps running, so the page can show a timeout for an accreditation that then lands. The
-  HAF pool's `statement_timeout` is also 30 s (`getPool` in `backend/src/db.ts`); a gate lookup
-  that runs past it answers 503 `ACCREDITATION_GATE_UNAVAILABLE`.
-- `PATCH /api/accreditation/metadata`. `getLatestAccreditOp` is its first HAF read. A caller with
-  no accredit op takes the no-match path.
-- The ORCID flows. `findAccreditedAccountWithOrcid` runs in the ORCID accredit and link handlers
-  (`backend/src/routes/orcid.ts`) and on the ORCID signup path
-  (`backend/src/routes/signup-verify.ts`). For an ORCID no accredit op carries, its first read
-  matches nothing. `getExistingAccreditation` runs in the link handler.
-- The custody arm does not run today. `POST /api/custody/broadcast` calls the lookup only when
-  the request body carries an `idempotency_key`, and nothing in `frontend/src` sends one.
-- Each such query holds one of the HAF pool's three connections while it runs.
-
-The fix pattern is the one `loadWotThreshold` (`backend/src/wot.ts`) and `aa_params_latest`
-(`backend/src/hafsql.ts`) already use. It is written up in
-`agents/docs/solutions/conventions/haf-custom-json-latest-op-materialized-fence-2026-06-14.md`.
+What a malformed response does on that leg depends on its shape, and neither
+outcome is one the user is told about. A `null` (or absent) proof writes a
+tokenless entry that `readSessionWindow` drops on the next read, so the next
+gate on a passwordless account starts cold and begins another ORCID round-trip:
+a success-toasted redirect loop with no refusal anywhere. A truthy non-string (a
+number, an object) survives the JSON round-trip through `sessionStorage`, and the
+next gate's fail-closed guard refuses, toasts and evicts it, after which that
+gate also starts cold. Neither is a lockout; both are a re-auth act the user is
+told succeeded and is then charged again.
 
 ## Scope
 
-1. In each of the seven lookups, put the row match in an `AS MATERIALIZED` CTE that carries no
-   `ORDER BY` and no `LIMIT`, and order and limit outside it. Keep every predicate of that lookup
-   (`custom_id`, the action filter where there is one, the subject field,
-   `required_posting_auths ?|`) inside the CTE. Keep each lookup's existing sort order. Do not
-   add a `block_num >=` floor.
-
-   The form that was measured for the gate (no-match input only):
-
-   ```sql
-   WITH candidates AS MATERIALIZED (
-     SELECT cj.id, cj.block_num, cj.json::jsonb ->> 'action' AS action
-     FROM hafsql.operation_custom_json_view cj
-     WHERE cj.custom_id = $1
-       AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
-       AND cj.json::jsonb ->> 'account' = $2
-       AND cj.required_posting_auths ?| $3::text[]
-   )
-   SELECT op.included_trx_id AS trx_id, c.block_num, c.action
-   FROM candidates c
-   JOIN hafsql.haf_operations op ON op.id = c.id
-   ORDER BY c.block_num DESC, c.id DESC
-   LIMIT 1
-   ```
-
-2. `hafsql.ts` keeps `AS MATERIALIZED` inline in its SQL literals for the
-   `pevo/no-custom-id-block-num-floor` lint canary (see the comment on `aa_vouch_ranked`). Check
-   whether that rule reads these files before you move the CTE into a shared fragment.
-3. Re-measure each of the seven after the change, for a no-match input and for a matching one, and
-   put the numbers in the signal block. If you cannot run `EXPLAIN` against the HAF node, say so
-   there and the architect measures at review.
-
-## Out of scope
-
-- The gate's semantics. `backend-verify-gate-treats-wot-enrollee-as-accredited` changes which
-  rows count as a hit and lands after this task, because both edit the same query.
-- The comment arm of `findCustodyBroadcastByIdempotencyKey`. Its plan-only `EXPLAIN` shows an
-  index scan on the comment author with the block floor and no backward blocks scan. Leave it.
-- The `update_weights` read in `reputation.ts`. It has the same `ORDER BY block_num DESC LIMIT 1`
-  shape, runs under a 5 s `SET LOCAL statement_timeout`, and was not plan-checked. It belongs to
-  `architect-audit-reputation`.
+1. In `_handleSessionAuth`, mirror the consent-op leg's guard: when
+   `typeof data.fresh_auth_proof !== 'string' || !data.fresh_auth_proof`, set
+   `this.status = 'error'` and `this.errorMessage` to the same
+   `orcid.verificationFailed` copy the sibling uses, and return before
+   `cacheSessionProof`, the return-path clear, the success toast and the
+   navigation. The deadlines need no check here: `cacheSessionProof` already
+   fails closed on a non-finite deadline by dropping the slot.
+2. Pin it through the page component with one case per shape the wire can
+   produce (`null`, a number): nothing cached, no success toast, the error state
+   shown, no navigation. Model the cases on whatever spec already drives
+   `_handleFreshAuth`'s guard; if none does, that is a pre-existing gap to note
+   in the signal block, not to close here.
+3. No change to `cacheSessionProof`: its contract is to write what it is handed
+   (the readers own the corruption checks and the writers own the wire), and
+   the mint-leg coercion deliberately kept the raw write for the same reason.
 
 ## Acceptance criteria
 
-1. The seven lookups return what they returned before, for matching and non-matching inputs. Name
-   the specs that cover each in the signal block.
-2. The signal block carries the measured timings, or says they could not be taken.
-3. A comment that states a timing cites only a number this task or its implementer measured, and
-   says for which input. Comments follow root `CLAUDE.md` "Comment anchors".
+1. A session-auth callback response whose `fresh_auth_proof` is not a non-empty
+   string caches nothing, shows no success toast, does not navigate, and lands
+   the page in the same error state a malformed consent-op response does.
+2. The string-proof path is unchanged; its existing specs pass unmodified.
+3. Suite green; deleting the new guard reddens exactly the new specs and
+   nothing else (measured in a private copy, not this checkout).
 
-## Backend implementation signal (2026-10-06, commits 3c76c235 and 10888287)
+## Notes
 
-**Landed.** `3c76c235` (code and tests), `10888287` (learnings refresh, `[skip-zone-audit]`). Both
-verified on main with `git merge-base --is-ancestor`.
+Comment text must stay free of line numbers, SHAs, task slugs and bare
+positional anchors. The one docblock sentence that names the mint callback as
+"the only coercion the wire needs" (in `ensureSessionWindow`'s fail-closed
+guard) is scoped to the sentinel space and stays true after this lands, since
+this writer never returns into the vocabulary; do not edit it for this task.
 
-- All seven lookups now put the row match in `WITH candidates AS MATERIALIZED (...)` and order and
-  limit outside it: the custom_json arm of `findCustodyBroadcastByIdempotencyKey`,
-  `findAccreditationBroadcastByIdempotencyKey`, `findExistingAccreditation`
-  (`backend/src/lib/idempotency.ts`), `getLatestAccreditOp` (`backend/src/accreditation.ts`), both
-  reads in `findAccreditedAccountWithOrcid` (`backend/src/lib/orcid-binding.ts`), and
-  `getExistingAccreditation` (`backend/src/routes/orcid.ts`). Every predicate, the params array,
-  the projected column names and each sort order are unchanged. The custody arm still orders by
-  `block_num DESC` only. No `block_num >=` floor.
-- Scope item 2: the CTE stays inline in each literal. Both SQL lint rules apply to every
-  `**/*.ts` file (`files: ['**/*.ts', '**/*.tsx']` in `backend/eslint.config.mjs`).
-  `pevo/no-accred-state-read-missing-id-tiebreaker` still fires on the new shape: a temp copy of
-  `getLatestAccreditOp` with `, c.id DESC` removed failed lint, and the copy was deleted.
-- Comments: each site has a short fence comment that points to `loadWotThreshold` for the planner
-  shape. None states a timing (AC 3). Comments that quoted the old ORDER BY text now name the key
-  without an alias (`block_num DESC, id DESC`). The `findCustodyBroadcastByIdempotencyKey`
-  docblock sentence "the JOIN cost is negligible at LIMIT 1 because both sides have indexes on
-  `id`" was deleted: the fenced arm joins the candidate set, which has no index. In
-  `idempotency-real-haf.test.ts`, the `(lines ~282-345)` pointer became the function name, and
-  "mirrors findExistingAccreditation's SQL shape" was narrowed to "reads ... view and join".
-- Tests: the two shape pins in `backend/tests/lib/idempotency.test.ts` now expect
-  `ORDER BY c.block_num DESC, c.id DESC`. Red observed first: 2 failed before the code change.
+## UI implementation signal (2026-09-29, commit 91e6f22d)
 
-**AC 1: same results, matching and non-matching.** The user chose a one-off live comparison over
-a new real-HAF spec file for the four lookups no spec runs for real. A scratchpad script took the
-old SQL from HEAD and the new SQL from the working tree, byte for byte, and ran both read-only on
-HAF (`BEGIN; SET LOCAL statement_timeout; ...; ROLLBACK`). appTag `pevotest` holds 22 custom_json
-ops; 21 are authority-signed accredits, and none carries an `idempotency_key`.
+Landed in `91e6f22d` (verified: `git merge-base --is-ancestor 91e6f22d main`).
 
-| Lookup | Matching inputs, old = new rows | Non-matching (new returns no row) | Specs |
-|---|---|---|---|
-| custody custom_json arm | 1 of 1 (swapped field, see below) | yes | `tests/lib/idempotency.test.ts`, `tests/routes/custody-idempotency.test.ts` (mocked); `tests/lib/idempotency-real-haf.test.ts`: negative miss, opType `comment`, opType `custom_json` (real HAF, pass) |
-| `findAccreditationBroadcastByIdempotencyKey` | 1 of 1 (swapped field) | yes | `tests/lib/idempotency.test.ts` (mocked); real-HAF negative miss and non-authority scoping (pass); positive hit skips, no fixture |
-| `findExistingAccreditation` | 11 of 11 accounts | yes | `tests/lib/idempotency.test.ts`, `tests/routes/accreditation-idempotency.test.ts` (mocked); real-HAF negative miss, positive hit, non-authority scoping (pass) |
-| `getLatestAccreditOp` | 11 of 11 | yes | none run its SQL (`tests/routes/accreditation-metadata-edit.test.ts` mocks the function); one-off check only |
-| `findAccreditedAccountWithOrcid`, ORCID read | 4 of 4 ORCIDs | yes | `tests/routes/orcid.test.ts` (mocked pool, dispatches on predicate text the CTE keeps verbatim); one-off check |
-| `findAccreditedAccountWithOrcid`, status read | 11 of 11 | yes | same as the ORCID read |
-| `getExistingAccreditation` | 11 of 11 | yes | `tests/routes/orcid.test.ts` (mocked pool, `/link`); one-off check |
+- **Scope 1 / AC 1.** `_handleSessionAuth` now refuses
+  `typeof data.fresh_auth_proof !== 'string' || !data.fresh_auth_proof` with
+  `status = 'error'` and `orcid.verificationFailed`, returning before
+  `cacheSessionProof`, `clearReturnPath`, the success toast and `navigate`.
+  No deadline check added.
+- **Scope 2.** New `_verify - session_auth mode` describe in
+  `tests/unit/pages-orcid-callback.test.js`, an `it.each` over `null` and `42`
+  modeled on the consent-op leg's proof-shape table. Each case drives
+  `_verify(..., 'session_auth')` and asserts: error state and copy, no
+  `pevo_fresh_auth_session_proof` entry, return path still stored, no toast,
+  no navigation.
+- **Scope 3.** `cacheSessionProof` untouched; the `ensureSessionWindow`
+  docblock sentence untouched.
+- **AC 2, pre-existing gap noted.** No unit spec drives the session_auth
+  string-proof path through the page component. Its only coverage is the E2E
+  `orcid-callback session_auth caches the issued proof in sessionStorage` in
+  `tests/e2e/non-consent-fresh-auth.spec.js` (not run for this change; the
+  guard does not touch the string path). Not closed here, per scope 2.
+- **AC 3.** Frontend unit suite: 86 files, 1957 tests, exit 0. Mutation in a
+  scratchpad copy (guard deleted): exactly the two new cases fail. The copy
+  also fails `sec-001-equivalence.test.js` at file load because it imports
+  `backend/src/lib/authMessage.ts`, which the frontend-only copy lacks; it
+  fails identically with the guard restored, so it is a copy artifact.
 
-"Swapped field": with no live `idempotency_key`, the two key lookups were compared and timed with
-`'idempotency_key'` replaced by `'action'` and the key set to `accredit` (custody signer
-`pevotest.admin`), which matches 21 rows. The old form was never executed on a non-matching input;
-plan-only `EXPLAIN` showed `Index Only Scan Backward using pk_hive_blocks` as the outer side of the
-nested loop for all seven.
+## Architect re-review (2026-10-01) — HELD PENDING FIXES:
 
-**AC 2: timings.** `EXPLAIN (ANALYZE, BUFFERS)` execution time on the HAF node; new form median of
-3 runs; old form executed only on matching inputs.
+Reviewed `91e6f22d` with `/ce-code-review` (correctness, project-standards,
+testing, adversarial, frontend-races, learnings, plus one validator). The guard
+is correct and in the right place, and every claim in the signal block
+reproduced in a scratchpad copy of the commit: unit suite 86 files / 1957 tests,
+exit 0; build clean; guard deleted, exactly the two new cases fail. Three items
+hold it. Item 1 is wording that came from this task's own Why and scope 1, not
+from the implementation, and is charged to the architect.
 
-| Lookup | New, no match | New, match | Old, match |
-|---|---|---|---|
-| custody custom_json arm | 0.137 ms | 1.065 ms (swapped) | 1,044 ms, 564,137 backward block rows (swapped) |
-| `findAccreditationBroadcastByIdempotencyKey` | 0.211 ms | 0.630 ms (swapped) | 1,023 ms (swapped) |
-| `findExistingAccreditation` | 0.217 ms | 0.388 ms gijo.george; 0.69 to 0.94 ms pevo.science | 261 ms gijo.george; 26,215 ms pevo.science |
-| `getLatestAccreditOp` | 12.9 ms | 15.1 ms gijo.george; 12.1 to 12.8 ms pevo.science | 259 ms; 26,715 ms |
-| ORCID read | 13.2 ms | 12.7 ms 0000-0002-7487-7441; 12.1 to 17.7 ms 0000-0001-2345-6789 | 211 ms; 26,100 ms |
-| status read | 13.0 ms | 13.8 ms; 12.7 to 13.4 ms | 259 ms; 25,940 ms |
-| `getExistingAccreditation` | 12.7 ms | 13.2 ms; 12.2 to 12.4 ms | 262 ms; 26,081 ms |
+1. **Rewrite the rationale so it is true, in both comments.** Sites: the
+   comment above the new guard in `_handleSessionAuth`, and the comment opening
+   the `_verify - session_auth mode` describe. Two claims are wrong as written.
+   - "The deadlines need no check here: `cacheSessionProof` already drops the
+     slot on a non-finite deadline." On this leg the drop is not a defence.
+     With a string proof and an absent or unparseable `expires_at` or
+     `absolute_expires_at`, `anchoredSpan` returns NaN, `cacheSessionProof`
+     drops the slot and returns nothing, and the handler still clears the
+     return path, toasts `orcid.reauthSuccess` and navigates, so the next gate
+     finds no window. (A `null` deadline is different: `new Date(null)` is the
+     epoch, `anchoredSpan` falls back to the mirrored period, and a usable
+     window is cached.) Say instead that an unanchorable deadline is left to
+     `cacheSessionProof`, whose drop still lets this page report success and
+     costs a later re-auth, and that the shape is left open because the backend
+     always issues both deadlines and the consent-op leg leaves its own deadline
+     to the same kind of read-side drop. Do NOT add a deadline check: widening
+     the guard was considered and dismissed (reachable only through a backend
+     contract violation, and it would break parity with the consent-op leg).
+   - "either way that gate starts another ORCID round-trip". True for a null
+     proof: `readSessionWindow` drops a falsy token, so the next gate finds no
+     window and re-auths from scratch. Not true for a truthy non-string:
+     `readSessionWindow` keeps it, `evictUnnamedAcquisition` clears the slot,
+     and `ensureSessionWindow` refuses with `{ ready: false, failed: true }`,
+     which its consumer reports as a failure. That gate starts no round-trip;
+     the user's next attempt finds the slot empty and starts one. State what
+     each shape costs: a null proof, a silent re-auth at the next gate; a
+     truthy non-string, a refusal at the next gate and a re-auth at the attempt
+     after it. Both follow a success toast.
+   The comment-anchor rules apply as usual: stable symbol names only, no line
+   numbers, SHAs, task slugs or bare positional anchors.
 
-- New plans: `pk_hive_blocks` runs only as a forward probe per candidate (0 loops on a no-match
-  input), and the backward scan is gone. The 12 to 13 ms floor on the four lookups without a
-  `haf_operations` join is a `Gather` (parallel) node over the candidate index scan. The three
-  join plans have no Gather.
-- Beyond the task's Why: the old form was slow on matching inputs too. pevo.science has one
-  accredit op (block 105,078,443), and its old plan read 110,548,040 backward block rows: the
-  whole index. gijo.george has three ops, the newest at block 109,983,748, and its old plan read
-  564,212 rows. Old-form wall clock was 12 to 14 s for each of the seven single-op accounts on
-  every account-keyed lookup, and 0.2 to 1.7 s for the multi-op accounts. The old account-keyed
-  plans have an `Incremental Sort` over the backward walk. My reading, not verified, is that it
-  keeps reading until it finds an older match to close the `block_num` group.
+2. **Pin the truthiness arm.** Add `{ label: 'empty-string', proof: '' }` to the
+   session_auth `it.each`. `null` and `42` are both refused by the `typeof`
+   arm, so dropping `|| !data.fresh_auth_proof` leaves the file green (81/81,
+   measured by three reviewers and the validator). The validator measured an
+   empty-string row red against that mutant and green against the real guard.
+   No `undefined` row: the `typeof` arm refuses it exactly as it refuses `null`,
+   so it discriminates nothing.
 
-**Runs.**
+3. **Pin the accepted path through the page.** Add one session_auth case with a
+   non-empty string proof and valid deadlines, asserting: the window slot holds
+   that token, the return path is cleared, `orcid.reauthSuccess` is toasted,
+   navigation goes to the stored return path, and `status` is not `'error'`.
+   Today no unit spec reaches past the new guard on this leg: an always-refuse
+   mutant (`if (true) {`) passes all 81 specs in the file, and only the E2E
+   `orcid-callback session_auth caches the issued proof in sessionStorage`
+   would catch it. AC 2 assumed unit specs already covered this path; the
+   signal block correctly reported that none did, and this item closes it.
 
-- `npm run typecheck`: exit 0. `npm run lint`: 0 errors. One warning, in
-  `src/lib/author-supersession.ts`, predates this work and is not in this diff.
-- `tests/eslint` + `tests/lib/idempotency.test.ts`: 10 files, 175 passed.
-- `idempotency.test.ts`, `accreditation-idempotency`, `accreditation-metadata-edit`,
-  `accreditation`, `custody-idempotency`, `orcid`, `signup-verify-orcid-binding-guard`,
-  `window-cte-deterministic-tiebreaker`, `lib/accreditation-orcid-cache` and `tests/eslint`:
-  378 passed, 6 failed. All six are in `accreditation-idempotency.test.ts`: the six specs that
-  `backend-accreditation-idempotency-specs-skip-the-sanction-guard-read` documents as failing on
-  clean main (FIFO mock queue, not SQL text).
-- `tests/lib/idempotency-real-haf.test.ts`, whole file: 2 failed, 8 passed, 1 skipped (488 s).
-  This matches the baseline in `backend-idempotency-real-haf-discovery-walks-the-chain`. Both
-  failures die in the test's own `findKnownCustodyIdempotencyOp` with `canceling statement due to
-  statement timeout`, before the production call.
-- Verbose re-run without those two specs: 8 passed, 3 skipped. The negative-miss specs, which run
-  the fenced lookups on a no-match input, took 73 to 149 ms.
+Signal block for the re-review, each measured in a private copy, not this
+checkout: (a) dropping `|| !data.fresh_auth_proof` reddens exactly the
+empty-string row; (b) an always-refuse guard reddens exactly the new
+accepted-path case; (c) deleting the whole guard reddens exactly the three
+rejection rows. Suite green, by exit code.
 
-**Review passes.**
+Dismissed at triage, no action: widening the guard to the deadlines; the
+consent-op leg's matching deadline gap (pre-existing, contract-violation only,
+no task filed); the return path left stored on refusal, and an older window
+entry left in place rather than overwritten (both traced harmless).
 
-- `/ce-code-review` was not run (backend role; the architect reviews at intake). A read-only
-  verification workflow ran three lenses (SQL equivalence and caller contracts, comment truth,
-  system-wide impact), each finding checked by a refuter. SQL lens: no defects. Impact lens: no
-  breakage. Every mocked dispatcher still matches. 3 P3 comment findings were confirmed and fixed
-  (listed under Comments); 6 were refuted as pre-existing text the diff left true.
-- `/ce-simplify-code`: reuse 0, efficiency 0, quality 2 applied (the alias-free tiebreaker
-  wording; a garbled clause in the `recent` read comment). Skipped: fusing the two
-  `findAccreditedAccountWithOrcid` reads into one statement (saves one round trip on infrequent
-  paths, harder to read).
+## UI re-review signal (2026-10-07, commit b2aa6c25)
 
-**Learnings checkpoint.** `/ce-compound-refresh` on two entries, committed as `10888287`:
+Landed in `b2aa6c25` (verified: `git merge-base --is-ancestor b2aa6c25 main`).
+Two files: `frontend/src/pages/orcid-callback.js` (comment only) and
+`frontend/tests/unit/pages-orcid-callback.test.js`.
 
-- `haf-custom-json-latest-op-materialized-fence-2026-06-14.md`: its carve-out said an account with
-  matching ops lets the backward scan stop early. The single-op measurement contradicts that, so
-  the carve-out is replaced by the numbers. The verified-sites list now names the seven lookups,
-  and the snippets match current code.
-- `accreditation-state-read-latest-action-wins-2026-05-15.md`: the canonical and example SQL showed
-  an unfenced shape with a `block_num >=` floor and `op.trx_id`. They now show the fenced shape
-  with `included_trx_id` and no floor. The `/verify` caller snippet matches the helper.
-- No new entry: the single-op finding sits in the fence entry. CONCEPTS.md: scanned, no qualifying
-  terms.
+- **Item 1.** Both comments rewritten. The round-trip claim is gone from
+  both. Each now states the cost per shape. A falsy proof is dropped on the
+  next slot read, so the next gate finds no window. A truthy non-string is
+  refused as a failed re-auth by the first gate the slot hands it to, and
+  evicted, so the gate after that finds none. Both would follow a success
+  toast. The deadline sentence, in the source comment only (the describe
+  comment never carried it), now says that an unanchorable deadline makes
+  `cacheSessionProof` drop the slot while the page still reports success.
+  It says why the deadlines go unchecked: the backend always issues both
+  (`handleSessionAuth` / `issueSessionFreshAuthToken`, both return paths),
+  and the consent-op leg leaves its deadline to `getCachedConsentOpProof`.
+  No deadline check was added. Three wording departures from the hold, each
+  forced by the code:
+  - The hold's "the same kind of read-side drop" became "which drops an
+    unreadable one on read". The session leg's drop is at write time, in
+    `cacheSessionProof`, so "same kind" would have been false.
+  - "Re-auth" became "finds no window". A non-navigating gate
+    (`allowRedirect: false`) returns `reauthRequired` and starts no re-auth
+    itself.
+  - "Refusal at the next gate" became "the first gate the slot hands it to".
+    A gate reading inside its pre-flight margin gets a miss from
+    `readSessionWindow` without a clear. So does a gate after the idle
+    deadline. In both cases the entry is never handed over and never refused
+    as `failed`. This one was caught by a probe-backed verification pass (see
+    below) and narrowed, not qualified.
+- **Item 2.** `{ label: 'empty-string', proof: '' }` added. No `undefined` row.
+- **Item 3.** New case `session_auth with a string fresh_auth_proof: caches the
+  window, clears the return path, toasts success, navigates back`, with a
+  non-empty proof and parseable deadlines. It asserts the five listed
+  behaviours: the slot token, the return path cleared,
+  `('orcid.reauthSuccess', 'success')`, `navigate('/publish')`, and status
+  not `'error'`.
+- **Measurements.** Each was run as the full frontend unit suite in a private
+  two-level scratchpad copy (frontend plus `backend/src/lib/authMessage.ts`),
+  not this checkout:
+  - Baseline: 98 files / 2286 tests, exit 0.
+  - (a) Dropping `|| !data.fresh_auth_proof` fails exactly the empty-string
+    row. Result: 1 failed / 2285, exit 1.
+  - (b) `if (true) {` fails exactly the new accepted-path case. Result:
+    1 failed / 2285, exit 1.
+  - (c) Deleting the guard fails exactly the null, numeric and empty-string
+    rows. Result: 3 failed / 2283, exit 1. The first run of (c) also failed
+    `lib-fresh-auth-session-window > the slide never pushes past the absolute
+    cap`, the known 1 ms clock flake; that file does not import the page. A
+    re-run gave exactly the three rows.
+- **Suite.** Checkout, final tree: 98 files / 2286 tests, exit 0. The
+  callback spec file alone: 83/83.
+- **Verification pass.** A four-lens workflow (claim trace, adversarial,
+  hold compliance plus standards, test strength) checked the diff with
+  probes in private copies, with three refuters per finding. 54 claims were
+  checked. One finding survived 3/3: the margin overclaim, now narrowed and
+  described in the Item 1 list. The test-strength lens planted 11
+  accepted-path regressions; each one fails only the new case.
+  Noted, no action:
+  - A swapped-deadlines mutant survives. It is equivalent in practice:
+    `anchoredSpan` clamps both spans to the mirrored periods.
+  - Dropping `_handleSessionAuth`'s own `_mounted` check survives. `_verify`
+    checks `_mounted` before dispatch, and the line predates this change.
+- **Learnings checkpoint.** Three entries name the touched symbols:
+  `fail-closed-guard-must-replace-the-recovery-a-round-trip-provided`,
+  `sibling-docblock-tallies-must-each-state-precisely-what-they-count` and
+  `fresh-auth-guard-coverage-must-sweep-the-callee-graph`. None claims
+  anything about the callback's session-auth writer, and nothing this work
+  established contradicts them. No new entry: the margin miss-without-clear
+  behind the narrowing is already in `readSessionWindow`'s docblock.
 
-**Out of scope, noticed (for triage).**
+## Seven latest-op HAF lookups walk the whole blocks index when nothing matches (archived 2026-10-07): two rounds, clean re-review; one pre-existing canary finding filed
 
-1. `accreditation-state-read-latest-action-wins-2026-05-15.md` is partly superseded.
-   `getAccreditationFromHaf` (`routes/profile.ts`) and `routes/accreditations.ts` now answer
-   "currently accredited" through `activeAccreditationsCteBody` (sanctions, WoT threshold,
-   legacy revoke). Its site list (line numbers) and its "any state read must use bare
-   latest-action-wins" guidance no longer describe them. Recommend a `/ce-compound-refresh`
-   Replace after `backend-verify-gate-treats-wot-enrollee-as-accredited` lands, since that task
-   changes `findExistingAccreditation`'s semantics. Its Related list also cites a task file that
-   no longer exists, which falls under `architect-solutions-entries-carry-coordination-context`.
-2. Two more unfenced probes in `tests/lib/idempotency-real-haf.test.ts`, both test-only and with
-   a genesis floor: `findKnownExistingAccreditationFixture` and the forged-accredit probe in
-   `findExistingAccreditation`'s per-route scoping spec. They pass but take 11 to 22 s per spec.
-   They fit `backend-idempotency-real-haf-discovery-walks-the-chain`, if that task does not
-   already cover them. The same file's "findExistingAccreditation lines 340-343" cite was already
-   wrong at HEAD.
-3. The `update_weights` read in `loadReputationWeights` (`reputation.ts`) stays out of scope per
-   this task (`architect-audit-reputation`). The single-op finding means a non-empty match set
-   does not protect it.
-4. Scaling note: the fenced form reads every appTag candidate before it sorts. That is trivial at
-   22 ops. Re-measure if appTag custom_json volume grows by orders of magnitude.
