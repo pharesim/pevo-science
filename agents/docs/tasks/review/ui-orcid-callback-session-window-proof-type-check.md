@@ -166,3 +166,75 @@ Dismissed at triage, no action: widening the guard to the deadlines; the
 consent-op leg's matching deadline gap (pre-existing, contract-violation only,
 no task filed); the return path left stored on refusal, and an older window
 entry left in place rather than overwritten (both traced harmless).
+
+## UI re-review signal (2026-10-07, commit b2aa6c25)
+
+Landed in `b2aa6c25` (verified: `git merge-base --is-ancestor b2aa6c25 main`).
+Two files: `frontend/src/pages/orcid-callback.js` (comment only) and
+`frontend/tests/unit/pages-orcid-callback.test.js`.
+
+- **Item 1.** Both comments rewritten. The round-trip claim is gone from
+  both. Each now states the cost per shape. A falsy proof is dropped on the
+  next slot read, so the next gate finds no window. A truthy non-string is
+  refused as a failed re-auth by the first gate the slot hands it to, and
+  evicted, so the gate after that finds none. Both would follow a success
+  toast. The deadline sentence, in the source comment only (the describe
+  comment never carried it), now says that an unanchorable deadline makes
+  `cacheSessionProof` drop the slot while the page still reports success.
+  It says why the deadlines go unchecked: the backend always issues both
+  (`handleSessionAuth` / `issueSessionFreshAuthToken`, both return paths),
+  and the consent-op leg leaves its deadline to `getCachedConsentOpProof`.
+  No deadline check was added. Three wording departures from the hold, each
+  forced by the code:
+  - The hold's "the same kind of read-side drop" became "which drops an
+    unreadable one on read". The session leg's drop is at write time, in
+    `cacheSessionProof`, so "same kind" would have been false.
+  - "Re-auth" became "finds no window". A non-navigating gate
+    (`allowRedirect: false`) returns `reauthRequired` and starts no re-auth
+    itself.
+  - "Refusal at the next gate" became "the first gate the slot hands it to".
+    A gate reading inside its pre-flight margin gets a miss from
+    `readSessionWindow` without a clear. So does a gate after the idle
+    deadline. In both cases the entry is never handed over and never refused
+    as `failed`. This one was caught by a probe-backed verification pass (see
+    below) and narrowed, not qualified.
+- **Item 2.** `{ label: 'empty-string', proof: '' }` added. No `undefined` row.
+- **Item 3.** New case `session_auth with a string fresh_auth_proof: caches the
+  window, clears the return path, toasts success, navigates back`, with a
+  non-empty proof and parseable deadlines. It asserts the five listed
+  behaviours: the slot token, the return path cleared,
+  `('orcid.reauthSuccess', 'success')`, `navigate('/publish')`, and status
+  not `'error'`.
+- **Measurements.** Each was run as the full frontend unit suite in a private
+  two-level scratchpad copy (frontend plus `backend/src/lib/authMessage.ts`),
+  not this checkout:
+  - Baseline: 98 files / 2286 tests, exit 0.
+  - (a) Dropping `|| !data.fresh_auth_proof` fails exactly the empty-string
+    row. Result: 1 failed / 2285, exit 1.
+  - (b) `if (true) {` fails exactly the new accepted-path case. Result:
+    1 failed / 2285, exit 1.
+  - (c) Deleting the guard fails exactly the null, numeric and empty-string
+    rows. Result: 3 failed / 2283, exit 1. The first run of (c) also failed
+    `lib-fresh-auth-session-window > the slide never pushes past the absolute
+    cap`, the known 1 ms clock flake; that file does not import the page. A
+    re-run gave exactly the three rows.
+- **Suite.** Checkout, final tree: 98 files / 2286 tests, exit 0. The
+  callback spec file alone: 83/83.
+- **Verification pass.** A four-lens workflow (claim trace, adversarial,
+  hold compliance plus standards, test strength) checked the diff with
+  probes in private copies, with three refuters per finding. 54 claims were
+  checked. One finding survived 3/3: the margin overclaim, now narrowed and
+  described in the Item 1 list. The test-strength lens planted 11
+  accepted-path regressions; each one fails only the new case.
+  Noted, no action:
+  - A swapped-deadlines mutant survives. It is equivalent in practice:
+    `anchoredSpan` clamps both spans to the mirrored periods.
+  - Dropping `_handleSessionAuth`'s own `_mounted` check survives. `_verify`
+    checks `_mounted` before dispatch, and the line predates this change.
+- **Learnings checkpoint.** Three entries name the touched symbols:
+  `fail-closed-guard-must-replace-the-recovery-a-round-trip-provided`,
+  `sibling-docblock-tallies-must-each-state-precisely-what-they-count` and
+  `fresh-auth-guard-coverage-must-sweep-the-callee-graph`. None claims
+  anything about the callback's session-auth writer, and nothing this work
+  established contradicts them. No new entry: the margin miss-without-clear
+  behind the narrowing is already in `readSessionWindow`'s docblock.
