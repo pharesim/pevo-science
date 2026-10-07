@@ -400,12 +400,18 @@ router.post('/recover', recoverLimiter, async (req: Request, res: Response) => {
       // fresh token's `reissuedAt` claim below. verifyHiveSignature uses that
       // identity match to let this reissued token survive same-second revocation
       // while a pre-reset token minted in the same integer second is still revoked.
+      // The UPDATE also clears any reset token and queued email change.
       const invalidatedAt = new Date();
       await pool.query(
         `UPDATE accounts
          SET password_hash = $1,
              email = $2,
-             sessions_invalidated_at = $3
+             sessions_invalidated_at = $3,
+             reset_token = NULL,
+             reset_token_expires_at = NULL,
+             pending_email = NULL,
+             pending_email_token = NULL,
+             pending_email_expires_at = NULL
          WHERE id = $4`,
         [passwordHash, normalizedEmail, invalidatedAt, account.id],
       );
@@ -555,11 +561,17 @@ router.post('/recover/verify', recoverLimiter, async (req: Request, res: Respons
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // A reset token and a queued email change are cleared with the swap.
       await client.query(
         `UPDATE accounts
          SET password_hash = COALESCE($1, password_hash),
              email = $2,
-             sessions_invalidated_at = $3
+             sessions_invalidated_at = $3,
+             reset_token = NULL,
+             reset_token_expires_at = NULL,
+             pending_email = NULL,
+             pending_email_token = NULL,
+             pending_email_expires_at = NULL
          WHERE id = $4`,
         [staged.new_password_hash, staged.new_email, invalidatedAt, account.id],
       );

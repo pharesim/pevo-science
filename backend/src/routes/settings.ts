@@ -163,7 +163,7 @@ router.get('/email', readLimiter, verifyHiveSignature, async (req: Request, res:
 //   (7) Send verification email. SMTP failure follows the catch-warn-200
 //       status-code-oracle convention (`agents/docs/solutions/conventions/
 //       timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`): catch,
-//       log warn, return uniform 200. DB write rolls back: DELETE on Add;
+//       log warn, return uniform 200. On that failure: DELETE on Add;
 //       snapshot-restore scoped by the just-written token on re-issue and
 //       on Change (the scope guards against a concurrent request having
 //       already overwritten the row — restore no-ops in that case rather
@@ -347,7 +347,7 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
       // new address rather than queueing a change behind an email that was
       // never proven. The new token replaces the old one, so the earlier
       // link stops working, and any pending change the row picked up while
-      // unverified is dropped with it.
+      // unverified is dropped with it, as is a reset token.
       await pool.query(
         `UPDATE accounts
          SET email = $1,
@@ -355,7 +355,9 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
              expires_at = $3,
              pending_email = NULL,
              pending_email_token = NULL,
-             pending_email_expires_at = NULL
+             pending_email_expires_at = NULL,
+             reset_token = NULL,
+             reset_token_expires_at = NULL
          WHERE username = $4`,
         [email, token, expiresAt, username],
       );
@@ -391,16 +393,16 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
         },
         'SMTP send failed',
       );
-      // Roll back the DB write this request made so the row doesn't carry a
-      // token that the user has no verify link for. On Add, DELETE the
-      // just-INSERTed row. On re-issue, restore the snapshotted email,
-      // verify_token and expires_at together with the pending_email triple,
-      // which puts the earlier link back in force. On Change, restore the
-      // snapshotted pending_email triple. Each restore applies only if THIS
-      // request's UPDATE is still the row's current state, scoped by the
-      // just-written token in the column that UPDATE wrote it to. A
-      // concurrent email request that already overwrote the row sees the
-      // restore no-op here, intended: don't clobber its in-flight state.
+      // Restore the row so it doesn't carry a token that the user has no
+      // verify link for. On Add, DELETE the just-INSERTed row. On re-issue,
+      // restore the snapshotted email, verify_token and expires_at together
+      // with the pending_email triple, which puts the earlier link back in
+      // force. On Change, restore the snapshotted pending_email triple. Each
+      // restore applies only if THIS request's UPDATE is still the row's
+      // current state, scoped by the just-written token in the column that
+      // UPDATE wrote it to. A concurrent email request that already
+      // overwrote the row sees the restore no-op here, intended: don't
+      // clobber its in-flight state.
       //
       // The rollback query is itself wrapped in an inner try/catch: if the
       // rollback throws (Postgres deadlock, statement timeout, transient
@@ -426,7 +428,9 @@ router.post('/email', writeLimiter, verifyHiveSignature, async (req: Request, re
                        expires_at = $3,
                        pending_email = $4,
                        pending_email_token = $5,
-                       pending_email_expires_at = $6
+                       pending_email_expires_at = $6,
+                       reset_token = NULL,
+                       reset_token_expires_at = NULL
                    WHERE username = $7 AND verify_token = $8`,
                 [
                   prior.email, prior.verify_token, prior.expires_at,
@@ -584,7 +588,8 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
       // unverified rows were routed to the re-issue branch) it marks the row
       // verified. A change request or re-issue that lands between the lookup
       // and this swap replaces or clears the token, so the swap matches no
-      // row and the link gets the not-found answer.
+      // row and the link gets the not-found answer. A reset token is cleared
+      // with the swap: it was mailed to the address the swap replaces.
       const swapped = await pool.query<{ email: string }>(
         `UPDATE accounts
          SET email = pending_email,
@@ -592,7 +597,9 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
              pending_email_token = NULL,
              pending_email_expires_at = NULL,
              verify_token = NULL,
-             expires_at = NULL
+             expires_at = NULL,
+             reset_token = NULL,
+             reset_token_expires_at = NULL
          WHERE id = $1 AND pending_email_token = $2
          RETURNING email`,
         [row.id, token],

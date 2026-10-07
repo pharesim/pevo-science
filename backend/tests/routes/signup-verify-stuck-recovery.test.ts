@@ -781,12 +781,12 @@ describe.skipIf(!dbReachable)('signup-verify /link recovery and the upgrade-epoc
     // The quadrant that separates the shipped rule from the one it replaced.
     // A revocation-ordering predicate refused any row whose last revocation
     // postdated its recency marker, and `POST /api/auth/reset` stamps exactly
-    // that: it selects by reset token alone, touches `updated_at` never, and
-    // gates on no account state but the password. So the user whose finalize
-    // landed, whose accreditation broadcast failed, and who then reset their
-    // password while locked out was refused the only self-service path they
-    // had. The epoch ordering admits them because a /link finalize writes both
-    // stamps from one statement, whatever the row's revocation history.
+    // that: it selects by reset token alone and touches `updated_at` never.
+    // So the user whose finalize landed, whose accreditation broadcast failed,
+    // and who then reset their password while locked out was refused the only
+    // self-service path they had. The epoch ordering admits them because a
+    // /link finalize writes both stamps from one statement, whatever the row's
+    // revocation history.
     // Restore the revocation term and this reds; the seeded ordering here is
     // the one that form refused.
     await seedStaleSelfCustodyAccount({

@@ -2,17 +2,18 @@
  * Password reset per account state (ARCHITECTURE.md section 6.1).
  *
  * `POST /api/auth/reset-request` mails a reset token to an email, and
- * `POST /api/auth/reset` trades the token for a new password. The rule both
- * routes enforce: reset rotates an existing password and never adds one. A row
- * whose `password_hash` is NULL is refused at both ends.
+ * `POST /api/auth/reset` trades the token for a new password. The rules both
+ * routes enforce: reset rotates an existing password and never adds one, and
+ * it does not serve a state G row whose email is unverified, an address the
+ * row never proved. A row whose `password_hash` is NULL, and an unverified
+ * state G row with or without a password, is refused at both ends.
  *
- *   - `/reset-request` gives a passwordless row the unknown-email answer: the
+ *   - `/reset-request` gives a refused row the unknown-email answer: the
  *     same status and body, the same sentinel argon2 burn, and no token.
- *   - `/reset` refuses an unexpired token on a passwordless row with the
+ *   - `/reset` refuses an unexpired token on a refused row with the
  *     invalid-token answer an unknown token gets, and leaves the row
  *     unchanged. The token here is written directly, standing in for one
- *     issued before the gate existed or for a password dropped while the
- *     token was outstanding.
+ *     issued before the gate existed.
  *
  * Rows are written directly in their section 6.1 shapes: these specs are about
  * what reset does to each shape, not about the routes that produce it. No
@@ -88,23 +89,24 @@ interface StateShape {
   verifyToken: 'none' | 'hex' | 'confirmed';
   custody: 'light' | 'self' | null;
   upgraded: boolean;
+  rotates: boolean;
 }
 
-// One row per section 6.1 state and password shape. `password` decides the
-// outcome: true rotates, false is refused.
+// One row per section 6.1 state and password shape. `rotates` is the outcome:
+// true rotates, false is refused.
 const STATES: StateShape[] = [
-  { label: 'A', username: true, password: true, orcid: false, verifyToken: 'none', custody: 'light', upgraded: false },
-  { label: 'B', username: true, password: true, orcid: true, verifyToken: 'none', custody: 'light', upgraded: false },
-  { label: 'C', username: true, password: false, orcid: true, verifyToken: 'none', custody: 'light', upgraded: false },
-  { label: 'D with a password', username: true, password: true, orcid: false, verifyToken: 'none', custody: 'self', upgraded: true },
-  { label: 'D without a password', username: true, password: false, orcid: true, verifyToken: 'none', custody: 'self', upgraded: true },
-  { label: 'G, email verified, with a password', username: true, password: true, orcid: true, verifyToken: 'none', custody: null, upgraded: false },
-  { label: 'G, email verified, without a password', username: true, password: false, orcid: false, verifyToken: 'none', custody: null, upgraded: false },
-  { label: 'G, email unverified, with a password', username: true, password: true, orcid: true, verifyToken: 'hex', custody: null, upgraded: false },
-  { label: 'G, email unverified, without a password', username: true, password: false, orcid: false, verifyToken: 'hex', custody: null, upgraded: false },
-  { label: 'E', username: false, password: true, orcid: false, verifyToken: 'hex', custody: null, upgraded: false },
-  { label: 'F, email path', username: false, password: true, orcid: false, verifyToken: 'confirmed', custody: null, upgraded: false },
-  { label: 'F, ORCID path', username: false, password: false, orcid: true, verifyToken: 'confirmed', custody: null, upgraded: false },
+  { label: 'A', username: true, password: true, orcid: false, verifyToken: 'none', custody: 'light', upgraded: false, rotates: true },
+  { label: 'B', username: true, password: true, orcid: true, verifyToken: 'none', custody: 'light', upgraded: false, rotates: true },
+  { label: 'C', username: true, password: false, orcid: true, verifyToken: 'none', custody: 'light', upgraded: false, rotates: false },
+  { label: 'D with a password', username: true, password: true, orcid: false, verifyToken: 'none', custody: 'self', upgraded: true, rotates: true },
+  { label: 'D without a password', username: true, password: false, orcid: true, verifyToken: 'none', custody: 'self', upgraded: true, rotates: false },
+  { label: 'G, email verified, with a password', username: true, password: true, orcid: true, verifyToken: 'none', custody: null, upgraded: false, rotates: true },
+  { label: 'G, email verified, without a password', username: true, password: false, orcid: false, verifyToken: 'none', custody: null, upgraded: false, rotates: false },
+  { label: 'G, email unverified, with a password', username: true, password: true, orcid: true, verifyToken: 'hex', custody: null, upgraded: false, rotates: false },
+  { label: 'G, email unverified, without a password', username: true, password: false, orcid: false, verifyToken: 'hex', custody: null, upgraded: false, rotates: false },
+  { label: 'E', username: false, password: true, orcid: false, verifyToken: 'hex', custody: null, upgraded: false, rotates: true },
+  { label: 'F, email path', username: false, password: true, orcid: false, verifyToken: 'confirmed', custody: null, upgraded: false, rotates: true },
+  { label: 'F, ORCID path', username: false, password: false, orcid: true, verifyToken: 'confirmed', custody: null, upgraded: false, rotates: false },
 ];
 
 type AccountRow = Record<string, unknown> & {
@@ -172,7 +174,7 @@ async function postReset(token: string): Promise<request.Response> {
 }
 
 describe('password reset rotates an existing password and never adds one', () => {
-  for (const shape of STATES.filter((s) => s.password)) {
+  for (const shape of STATES.filter((s) => s.rotates)) {
     it.skipIf(!dbReachable)(`state ${shape.label}: reset-request issues a token and reset rotates the password`, async () => {
       const id = fresh();
       const before = await seedRow(shape, id);
@@ -197,7 +199,7 @@ describe('password reset rotates an existing password and never adds one', () =>
     });
   }
 
-  for (const shape of STATES.filter((s) => !s.password)) {
+  for (const shape of STATES.filter((s) => !s.rotates)) {
     it.skipIf(!dbReachable)(`state ${shape.label}: reset-request answers as for an unknown email and issues no token`, async () => {
       const id = fresh();
       await seedRow(shape, id);
@@ -232,7 +234,7 @@ describe('password reset rotates an existing password and never adds one', () =>
       expect(res.body.error.code).toBe('INVALID_TOKEN');
 
       const after = await rowByEmail(id.email);
-      expect(after.password_hash).toBeNull();
+      expect(after.password_hash).toBe(before.password_hash);
       expect(after.sessions_invalidated_at).toBeNull();
       expect(stateColumns(after)).toEqual(stateColumns(before));
     });

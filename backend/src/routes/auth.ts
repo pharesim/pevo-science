@@ -111,7 +111,7 @@ const MAX_LOGIN_FAILURES = 20;
 // one site cannot silently re-open the email-enumeration oracle by drifting
 // the two branches apart. Both the unknown-email burn-then-200 path and the
 // known-email DB-update-then-200 path must use this constant.
-export const RESET_REQUEST_OK_MESSAGE = 'If an account exists with that email, a reset link has been sent.';
+export const RESET_REQUEST_OK_MESSAGE = 'If that email belongs to an account whose password can be reset, a reset link has been sent.';
 
 // /reset answer for an unknown token and for a token whose row has no
 // password. One string, so the refusal reads exactly like an unknown token.
@@ -557,7 +557,8 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
         // Otherwise the row is a pending signup row E (hex verify_token,
         // username NULL), the one row the upsert's ON CONFLICT DO UPDATE
         // branch is meant for: a signup retry re-issues it with a fresh token
-        // and expiry.
+        // and expiry. The retry also replaces the row's password, so it drops
+        // any reset token the row holds.
       }
     }
 
@@ -608,6 +609,8 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
              verify_token = EXCLUDED.verify_token,
              expires_at = EXCLUDED.expires_at,
              signup_binding_hash = EXCLUDED.signup_binding_hash,
+             reset_token = NULL,
+             reset_token_expires_at = NULL,
              created_at = NOW()
            WHERE accounts.username IS NULL AND accounts.verify_token NOT LIKE 'confirmed:%'`,
           [normalizedEmail, passwordHash, resolvedName, resolvedInstitution, resolvedField, verifiedOrcid, confirmed, expiresAt, binding.hash],
@@ -649,6 +652,8 @@ router.post('/signup', signupLimiter, async (req: Request, res: Response) => {
          orcid = EXCLUDED.orcid,
          verify_token = EXCLUDED.verify_token,
          expires_at = EXCLUDED.expires_at,
+         reset_token = NULL,
+         reset_token_expires_at = NULL,
          created_at = NOW()
        WHERE accounts.username IS NULL AND accounts.verify_token NOT LIKE 'confirmed:%'`,
       [normalizedEmail, passwordHash, resolvedName, resolvedInstitution, resolvedField, null, verifyToken, expiresAt],
@@ -1061,9 +1066,13 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
   try {
     // Look up account by email. Reset rotates an existing password and never
     // adds one, so a row with no password is not selected: it gets the
-    // unknown-email answer, sentinel burn included, and no token.
+    // unknown-email answer, sentinel burn included, and no token. Nor is a
+    // state G row whose email is unverified (`username` set and a
+    // `verify_token` still on it, ARCHITECTURE.md § 6.1): the link would go
+    // to an address the row never proved.
     const { rows } = await pool.query<{ id: number; username: string | null }>(
-      'SELECT id, username FROM accounts WHERE email = $1 AND password_hash IS NOT NULL',
+      `SELECT id, username FROM accounts
+        WHERE email = $1 AND password_hash IS NOT NULL AND (username IS NULL OR verify_token IS NULL)`,
       [normalizedEmail],
     );
 
@@ -1126,9 +1135,13 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
     const resetToken = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + RESET_TOKEN_EXPIRY_MS);
 
+    // The write re-checks the lookup's predicate, so a recovery, email change
+    // or password drop that commits between the two leaves no token on the
+    // row. The reset mail still goes out, carrying a token no row holds.
     await pool.query(
-      'UPDATE accounts SET reset_token = $1, reset_token_expires_at = $2 WHERE id = $3',
-      [resetToken, expiresAt, account.id],
+      `UPDATE accounts SET reset_token = $1, reset_token_expires_at = $2
+        WHERE id = $3 AND email = $4 AND password_hash IS NOT NULL AND (username IS NULL OR verify_token IS NULL)`,
+      [resetToken, expiresAt, account.id, normalizedEmail],
     );
 
     // Send reset email.
@@ -1253,19 +1266,24 @@ router.post('/reset', resetLimiter, async (req: Request, res: Response) => {
     // cast is needed here.
     const passwordHash = await runWithArgon2Slot(() => argon2.hash(password, ARGON2_OPTIONS), { signal: abortSignal });
 
-    // Update password, clear reset token, invalidate all existing sessions.
+    // Update password, clear reset token and any queued email change,
+    // invalidate all existing sessions.
     // `reset_token = $3` spends the token once: a second redemption of it,
     // even one that read the token before this write, finds it cleared.
-    // `password_hash IS NOT NULL` is the never-adds-a-password gate. It also
-    // refuses a token that outlived its row's password: ORCID recovery
-    // without a new password drops the hash and leaves the token in place.
+    // `password_hash IS NOT NULL` is the never-adds-a-password gate, and the
+    // `username` / `verify_token` term refuses a state G row whose email is
+    // unverified, as `/reset-request` does.
     const updated = await pool.query<{ username: string | null }>(
       `UPDATE accounts
        SET password_hash = $1,
            reset_token = NULL,
            reset_token_expires_at = NULL,
+           pending_email = NULL,
+           pending_email_token = NULL,
+           pending_email_expires_at = NULL,
            sessions_invalidated_at = NOW()
        WHERE id = $2 AND reset_token = $3 AND password_hash IS NOT NULL
+         AND (username IS NULL OR verify_token IS NULL)
        RETURNING username`,
       [passwordHash, account.id, token],
     );
