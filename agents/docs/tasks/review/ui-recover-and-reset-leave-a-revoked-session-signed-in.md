@@ -125,3 +125,99 @@ Instead:
 So the "Left for the reset half" line changes: the page sends the header and
 reads `data.session_ended` instead of handing `data.username` to the store.
 Landed in 0aa0bf78 (`bearerNamesAccount` in `backend/src/routes/auth.ts`).
+
+## UI implementation signal, reset half (2026-10-07, commits d68979b7, 599554f4, 54d041f7)
+
+Reset half done, against the shape in the backend note (bearer match,
+`session_ended`), not the `data.username` line that note replaced.
+
+What landed:
+
+- `api.js` `resetPassword(token, password, sessionToken)` sends the stored
+  session as `Authorization: Bearer` when the browser holds one. It stays on
+  plain `request()`: the reset works signed out, and the route never refuses
+  a reset over the bearer.
+- `auth.js` `endResetSession(sentToken)` ends the session through
+  `disconnect()`, as the header sign-out does: no message, no sign-in prompt,
+  and other tabs follow through the storage event. It goes through
+  `_endSession`, whose notice is now optional, so the stale-token check and
+  the adoption of a newer stored session cover it too. `handleRevokedSession`
+  and `endSessionIfExpired` still pass a notice and behave as before.
+- `pages/reset-password.js` captures the store's token before the request
+  and, when `data.session_ended` is true, hands it to `endResetSession`, even
+  if the page has gone. The done screen is unchanged (it already sends the
+  user to sign in), so no i18n keys were added.
+
+Tests:
+
+- `tests/unit/pages-reset-session.test.js` (new, 9 cases) drives the real
+  page, store and `api.js` with `fetch` stubbed: the bearer sent; the session
+  and its proof window ended; no message or prompt, then or on a later
+  request; the page gone mid-request; a second tab; another account kept; a
+  signed-out browser sending no bearer; the store changed in flight (a newer
+  stored session adopted, a switched session kept). 7 of the 9 are red
+  against the parent commit.
+- `tests/unit/pages-reset-password.test.js` follows the new signature. Its
+  page-gone happy-path case now resolves `{}`; with `undefined` it had passed
+  through a TypeError caught in `catch`.
+- `e2e/password-recovery.spec.js`, new case "a reset completed in a browser
+  signed in to the account signs that browser out": signs in through
+  `/login`, completes a real reset in the same browser, and asserts the
+  bearer sent, `session_ended: true`, no stored session, no revoked-session
+  copy, and that the real middleware answers the dropped token with 401
+  `SESSION_INVALIDATED`. Its submit locators are scoped to the page forms.
+
+Verification:
+
+- Full frontend unit suite green at d68979b7 (98 files, 2284 tests). After
+  the comment fix in 54d041f7, the eslint canaries and the reset and auth
+  suites passed (86/86).
+- E2E on the rebuilt test-mode stack, `password-recovery.spec.js` alone with
+  `--retries=0`: the new case passes. The file's older case fails at its
+  unscoped `form button[type="submit"]` (strict-mode clash with the re-auth
+  modal), which `ui-e2e-bare-submit-locators-clash-with-reauth-modal` owns.
+  Dev routing restored with `./deploy.sh up`.
+- Four-lens adversarial verification (12 agents, none died). All 9 mutants
+  were killed. Header logging, the carve-out header, comment anchors and the
+  E2E locators came back clean. It raised four P3 findings, which the user
+  triaged on 2026-10-07:
+  - two comment overclaims (`endResetSession` said every tab shows the
+    signed-out message; the reset page's `destroy()` said continuations bail
+    before touching reactive state): fixed in 54d041f7.
+  - a same-account session issued before the reset's commit (another tab
+    signs in again with the old password during the request) is kept or
+    adopted, is revoked too, and still meets the message later: accepted as
+    a residual. The client cannot tell it from a valid post-reset login, and
+    it is the pre-change outcome.
+  - ARCHITECTURE.md § 6.3 and § 6.4 name only A and B for the reset:
+    dismissed here, already filed as `architect-password-reset-gate-docs`.
+
+Residuals, recorded, no action taken:
+
+- A bearer request answered between the reset's commit and this page
+  processing the answer still raises the signed-out message. The window is
+  the rest of the reset round trip.
+- A transport failure after the server committed (client timeout, proxy
+  502/504) shows `resetFailed` and keeps the revoked session. The client
+  cannot know the reset landed.
+- A stored token already expired at the server gets `session_ended: false`
+  and later ends with the expired copy (the clock-skew residual documented
+  on `endSessionIfExpired`).
+- The `POST /api/auth/reset` section of `agents/docs/api-contracts/auth.md`
+  needs the optional bearer and `session_ended`; the `[TODO Architect]` in
+  `backend-reset-response-names-the-account` covers it.
+
+Acceptance criteria:
+
+1. Met: the ORCID arm (earlier signal) and the reset (this signal). Seed
+   phase 2 belongs to `ui-seed-recovery-confirm-and-dispute-pages`.
+2. Met on both halves: another account stays signed in.
+3. Met: the recover and reset pages are pinned.
+
+Learnings checkpoint: grepped `agents/docs/solutions/` for `_endSession`,
+`handleRevokedSession`, `adoptRecoveredSession`, `resetPassword`,
+`session_ended` and `bearerNamesAccount`.
+`credential-setting-token-redeem-must-not-name-the-account.md` covers the
+backend half and stays true. Nothing new qualified: the rationale for the
+quiet sign-out and its guards lives in the `endResetSession` and
+`_endSession` docblocks.
