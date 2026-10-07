@@ -1,250 +1,250 @@
-## Real-path e2e coverage for the revoked-session teardown (archived 2026-10-07): one round, clean on the diff; the P3 and two residual risks filed with the implementer's follow-up, a pre-existing editor bug filed normal
+## State G rows: unverified-email lifecycle and token scoping (archived 2026-10-07): two rounds; held on the recover oracle comment and the resend token write, clean re-review; [TODO Architect] docs applied, follow-ups filed, one dismissed
 
 ### Architect archive note (2026-10-07)
 
-- **Review:** `/ce-code-review` full path on `11b17105`, `c6956907` and `75e82606` (branch-remote via a synthetic head holding only the seven task files; base `c489e0ed`; interleaved sibling commits excluded): correctness, adversarial (in-process, no cross-model peer), testing, project-standards (re-tasked once after a shallow first pass), julik-frontend-races, learnings. Verdict "Ready to merge": Scope 1 to 4, the Notes, AC 1 and 2 and the architect note met; AC 1's live pass and the seven e2e mutants taken from the signal block and checked from source (no Playwright run in review). One P3 in the diff, validator confirmed. Correctness ran four unit files (122 tests) green in a scratchpad copy and re-derived the new solutions entry's counts and dates.
+- **Re-review:** `/ce-code-review` full path on `8f4a8287` and `09e006ed` (branch-remote via a synthetic head holding the four backend files; base `9ca30584`; interleaved task-file commits excluded): correctness, security, adversarial (in-process, no cross-model peer), testing, project-standards, learnings. Verdict "Ready to merge", zero findings. Both hold items fixed: the oracle claim deleted in `recover.ts` and the test header, matching the hold's literal forms; the resend UPDATE keyed on the token read, with no mail on no match. A real-path race probe (base vs head, `pool.query` spy plus a held row lock) reproduced the hold's defect at base (a finalized light row left holding a signup hex token) and showed it gone at head for finalize, confirm, delete and a concurrent resend; the uncontended and expiry-bump cases still mail once. Testing re-ran the signal's seven green claims alone (all exit 0); mutants on the happy path were killed (the orchestrator re-ran one), and dropping the token conjunct survives, as the hold accepted.
 - **Triage (user: "approved" as recommended):**
-  - Filed: the P3 (the toast stack clipped left of the screen below 25rem), the English-only uncaught-error toast and the implementer's follow-up 1 (the bridge queued title as banner and toast) -> `ui-toasts-now-render-follow-ups` (low).
-  - Filed (pre-existing): the editor's image-upload toasts call `Alpine.store('i18n')?.t`, which the store lacks, so a signed-out paste and most upload failures show nothing -> `ui-editor-image-upload-toasts-call-a-missing-i18n-method` (normal).
-  - Filed: the per-IP auth limiters against e2e retries (9 real logins per run against a limit of 10) -> `ui-e2e-auth-rate-limit-budget` (low).
-  - Dismissed: the `custody-upgrade.spec.js` "Try Again" locator (no toast on that path), narrowing the expired-session clause (c) sentence (it claims only the shared `_endSession` teardown, which holds), the unpinned in-memory auth state (the unit suite pins it). Follow-up 2 (the standing e2e failures) is already covered by `ui-e2e-bare-submit-locators-clash-with-reauth-modal` and the rate-limit task.
-- **Learnings checkpoint:** no entry contradicted (grep of every toast-mentioning entry for on-screen claims; `guard-report-dedupes-per-event-not-per-holder-2026-09-02.md` reasons from the store and holds). No new entry: the toast lesson is the implementer's `markup-outside-an-alpine-root-is-inert-and-store-assertions-cannot-see-it.md`, and the editor lookup lesson waits for its own task's archive.
-
-**Owner:** ui
-**Created:** 2026-09-30
-**Priority:** normal
-
-## Why
-
-`frontend/tests/unit/session-revoked.test.js` drives the real request path,
-auth store and teardown, but stubs `fetch` to produce the
-`401 SESSION_INVALIDATED` answer. Its header states that no real-path
-companion exists for the risk class (a second device's session outliving a
-credential rotation). This task is that companion, per clause (c) of the
-mocking carve-out in the root `CLAUDE.md`.
-
-## Scope
-
-One Playwright spec, two contexts, no mocked responses for the code under test.
-
-1. Seed a light account (`fixtures/light-account.js`) and give a second
-   browser context a session for it.
-2. Revoke from "the other device" with a real password reset through the API
-   request fixture. The reset token is read from the test database, as
-   `password-recovery.spec.js` does.
-3. Trigger a bearer request in the second context without reloading, for
-   example an in-app navigation to the settings page.
-4. Assert the response carried `SESSION_INVALIDATED`, the stored session entry
-   is gone, the signed-out message is shown, and the sign-in modal is open
-   with the reason inside it.
-
-## Notes
-
-- `seedUnaccreditedSession` uses an init script that re-seeds the stored
-  session on every load. Seed once after the first navigation instead, or the
-  "entry is gone" assertion is defeated.
-- Do not install `installAuthedBootMocks` in the victim context. Those
-  boot-time requests are a natural trigger.
-- The always-rendered re-auth modal form makes a bare
-  `form button[type="submit"]` locator ambiguous. Drive the reset through the
-  request fixture and scope any form locator to its own page form.
-- Keep trace, video and screenshot off: the spec handles a live token and
-  passwords.
-
-## Acceptance criteria
-
-1. The spec passes against the test-mode stack and fails with the teardown
-   hook removed.
-2. The unit test header's clause (c) sentence is updated to name the spec.
-
-**Architect note (2026-10-05):** `frontend/tests/unit/session-expired.test.js`
-names this spec as its clause (c) real-path companion too, since the expired
-session ends through the same `_endSession` teardown and sign-in offer. When
-the spec lands, update that header's clause (c) sentence to name it as well,
-alongside the `session-revoked.test.js` header in AC 2.
-
-UI implementation signal (2026-10-07, commits `11b17105`, `c6956907`, `75e82606`):
-
-- `c6956907`: `frontend/tests/e2e/session-revoked.spec.js`. A `browser.newContext()`
-  context signs in to a seeded light account through `/login`. The `request` fixture,
-  as the other device, resets the password (reset token read from the test DB). The
-  header user menu's Settings link then navigates in-app, and the settings mount's
-  bearer requests carry the revoked token. The spec asserts that the first 401 carrying
-  that token is `SESSION_INVALIDATED`, that the signed-out toast (the `auth.sessionRevoked`
-  copy read from `en.json`) is visible, that `pevo_session` is gone, and that the
-  sign-in modal is open with the same copy in its notice. Nothing is stubbed and no boot
-  mocks are installed. Trace, video and screenshots are off, and the login form locators
-  are scoped to `[x-data="loginPage"]`.
-- AC1: passes against the test-mode stack from the repo checkout with the baked bundle.
-  Mutation runs from vite-dev scratch copies, with an unmutated control passing:
-  - Removing the api.js `handleRevokedSession` hook fails at the toast assertion.
-  - Dropping the sign-in offer fails at the modal.
-  - Offering sign-in without the reason fails at the notice text.
-  - Removing the teardown toast fails at the toast.
-  - Keeping the storage entry fails at the storage check.
-  - Reverting the toast root fails at the toast.
-  - Using the expired copy fails at the toast.
-- AC2 and the architect note: the clause (c) sentences in both `session-revoked.test.js`
-  and `session-expired.test.js` now name `tests/e2e/session-revoked.spec.js`, and the
-  spec's docblock names both unit suites, so the citation is two-sided.
-- `11b17105` (asked first; the user approved fixing it in this task): the spec found
-  that no toast has ever rendered. Since the SPA migration, the toast container in
-  `frontend/index.html` sat outside every `x-data` root, so Alpine never initialized
-  its `x-for`. A bare `x-data` fixes it.
-  - Full-suite A/B: vite-dev copies differing only in that attribute, with the test DB
-    re-prepared before each arm. Both arms show the same 13 failures and nothing new.
-    The revoked-session spec went from failing to passing, and one test flaky in the
-    baseline arm passed in the fixed arm.
-  - A static sweep of e2e text locators against toast copy found one collision now that
-    toasts render: the `bridge-import-queue.spec.js` 202 test's
-    `getByText('Queued for publishing')` matched both the banner and the success toast
-    `bridge.js` raises with the same key. It is now scoped to `[x-data="bridgePage"]`.
-    That test times out earlier, at the Register button, in both arms (a pre-existing
-    failure), so no live run reaches the rescoped locator.
-- Pre-signal check: a four-lens, read-only verification workflow with a refuter per
-  finding. Two findings survived. One was the bridge locator, fixed in `11b17105`. The
-  other was a false retry-collision reason in the spec's `RUN_SUFFIX` comment, deleted
-  before `c6956907`.
-- All three SHAs are verified on main (`git merge-base --is-ancestor`), and their file
-  lists match.
-- Learnings checkpoint (`75e82606`, `[skip-zone-audit]`):
-  - `/ce-compound` wrote
-    `conventions/markup-outside-an-alpine-root-is-inert-and-store-assertions-cannot-see-it.md`.
-  - `/ce-compound-refresh`, scoped to
-    `completion-note-coverage-claim-run-suite-at-intake-2026-05-26.md`, narrowed
-    "the account-deleted toast shown" to "queued on the toast store".
-  - No other entry was contradicted.
-- For the reviewer: toasts now render app-wide for the first time, so every existing
-  `Alpine.store('toast').show` call site is user-visible as of `11b17105`.
-- Out of scope, for follow-up filing:
-  1. `bridge.js` shows `bridge.queuedTitle` as both the inline banner and a success
-     toast, and `my-imports.js` also toasts it. Now that toasts render, users see the
-     duplicate (a UX call).
-  2. The 13 pre-existing e2e failures are unchanged by this task. Several are the
-     bare-submit-locator class that `ui-e2e-bare-submit-locators-clash-with-reauth-modal`
-     covers.
-
-## The signup verify link finalizes a signup without its password (archived 2026-10-07): one round, clean on the diff; the P3 and follow-ups filed, a pre-existing P1 filed high, contract and § 6.1 / § 6.3 applied
-
-### Architect archive note (2026-10-07)
-
-- **Review:** `/ce-code-review` full path on `c489e0ed` and `8e6a79cc` (branch-remote via a synthetic head holding only the six task files; base `c739f26c`; the interleaved ui commits excluded): correctness, security, adversarial (in-process, no cross-model peer), testing, project-standards, api-contract, reliability, learnings. Verdict "Ready with fixes": every Scope item, the architect note and AC 1 to 6 met; one P3 in the diff (no route-level argon2 error-class spec on `/verify`), validator confirmed. Baseline: the three verify suites, 3 files / 32 tests, exit 0. Testing's mutants: 7 of 10 killed; the three survivors are all Scope 3 (the unkeyed UPDATE the Notes allow, the 0-row branch, the cookie set before the UPDATE). `tests/eslint` 9 files / 146 tests green.
-- **Triage (user: "as recommended"):**
-  - Filed (security, pre-existing P1, merged with follow-up 3 and adversarial's reset detour): reset serves an ORCID-path F row with a password and row E, so an address owner can finish a signup someone else started -> `backend-reset-refuses-orcid-path-and-unverified-signup-rows` (high). `architect-password-reset-gate-docs` got a correction note and is deferred behind it.
-  - Filed (the architect's own read, not probed): an ORCID-path signup can hold an address its owner never gave and block the owner's signup -> `architect-orcid-path-signup-holds-an-unproven-address` (normal).
-  - Filed: the P3 argon2 spec, follow-up 2 (the expiry DELETE keyed on the id only) and a comment nit at the `/signup` refusal -> `backend-verify-link-argon-spec-and-expiry-delete-key` (low).
-  - Filed: follow-up 1 (the SPA keeps a spent ORCID token after the new 400) -> `ui-signup-keeps-a-spent-orcid-token` (normal).
-  - Dismissed: follow-up 4 (refusal position and 0-row branch unpinned), the state G `/verify` specs' unpinned unknown-token baseline, `verifyLimiter` being per IP only, and moving the ORCID branch's checks ahead of the nonce lookup.
-  - Applied at archive: `api-contracts/auth.md` (the `/verify` body, rate limit and errors; the `/signup` unresolved-token 400; the stale 422 line), ARCHITECTURE.md § 6.1 (row E's password and the legacy NULL-hash shape) and § 6.3 (the E -> F edge needs the password). § 6.4 has no signup verify row.
-- **Learnings checkpoint:** no entry contradicted; `conventions/mailed-credential-token-dies-with-its-address-and-credential.md` and the timing-equalization, wrapping-primitive and token-redeem entries are honored (learnings and correctness). No new entry now: the reset gate's proxy-column lesson waits for the reset task's archive, whose Notes carry it.
+  - Filed: the resend comment's "the token read above" (P3 residual) and the anchor rot in `auth-log-shape.test.ts` and `recover.test.ts` -> `backend-test-comment-anchors-and-resend-comment` (low).
+  - Filed: the shared custody ORCID, the `recover_%` cleanup wildcard and the `auth.test.ts` notifications timeout (first signal's test-isolation list) -> `backend-route-test-isolation-and-a-notifications-timeout` (low).
+  - Folded: the `/login` expired-signup DELETE keyed on `id` alone -> `backend-verify-link-argon-spec-and-expiry-delete-key`.
+  - Filed: `[TODO UI]` items 1 and 2 -> `ui-pending-unverified-and-no-password-set-copy` (normal).
+  - Folded: `[TODO UI]` item 3 (every settings email call sends the Bearer JWT, so a Keychain user's add flow gets 401) -> `ui-state-d-session-settings-critical-actions`, widened to every `'self'` session and raised to high.
+  - Dismissed: the `/resume-signup` UPDATE keyed on `id` alone. It does not fire today: `/confirm` and `/link` select by the `confirmed:` token, the login pending block and the cleanup's signup arms are scoped to `username IS NULL`, and its G arm needs a hex token.
+  - Noted only: an unverified G row can be kept alive by re-issuing, blocking another Keychain user's settings add (409). Signup is not blocked, because signup evicts the claim.
+- **[TODO Architect]:** applied in `8d27a8f3` (§ 6.3 eviction transition; § 6.4 change-email add-flow 401 and re-issue, ORCID recovery on the derived claim, set-password `PENDING_UNVERIFIED`; `auth.md`, `settings.md` and `orcid.md` per the list). Two oracle claims the code contradicts were deleted on the way (the recover 401 contract and the § 6.4 ORCID-recovery row). Overlap recorded on `architect-accreditation-docs-drift-sweep` (item 4 done, item 3 partly).
+- **Learnings checkpoint:** no entry contradicted (learnings reviewer plus a grep for resend-verification, `WHERE id = $3`, custody oracle and token-keyed writes); no hold-time entries to refresh. No new entry: guidance 3 of `mailed-credential-token-dies-with-its-address-and-credential` already states the token-keyed write principle.
 
 **Owner:** backend
 **Created:** 2026-10-05
 **Priority:** high
 
-Surfaced as a residual risk in the architect review of
-`backend-signup-upsert-overwrites-finalized-row`. The user asked for this task on 2026-10-05.
-The UI half is `ui-signup-verify-asks-for-the-signup-password`.
+Surfaced by the state-G sweep on the account-state comments task (its signal block,
+"Needs triage", items 1-11). The user triaged every item to "fix" on 2026-10-05 and
+made two decisions:
 
-## Why
+- **Unverified G rows: verify the email first.** A state G row (ARCHITECTURE.md § 6.1)
+  whose settings-registered email is still unverified may not acquire auth factors:
+  setting a password and linking an ORCID are refused until the email is verified. An
+  expired unverified G row then carries nothing but the email claim, so the hourly
+  cleanup may keep deleting it (back to the no-row case, email released). Login never
+  deletes a G row. Re-adding an email on an unverified G row re-sends its verification
+  link instead of going through the change flow.
+- **Include the two pending sibling tasks** in the same pass:
+  `backend-signup-upsert-overwrites-finalized-row` and
+  `backend-settings-verify-clears-any-row-token`. Each keeps its own task file, signal
+  block and move to review.
 
-`POST /api/auth/signup` accepts any address. On the email path it stores the caller's password on
-a pending signup row E and mails the address a verification link. `POST /api/auth/verify` takes
-only the token from that link. It confirms the row, mints the signup session binding for the
-browser that presents the token, and returns the `auth_token`. Neither `/confirm` nor `/link`
-asks for the password, and both keep the row's `password_hash`. In ARCHITECTURE.md § 6.3,
-`/confirm` finalizes the email-path row into A, a light account that keeps its signup password,
-and the `/link` finalize writes neither `password_hash` nor `orcid`.
-
-So anyone can sign up with someone else's address and a password of their own choosing. If the
-address owner clicks the mailed link and finishes the signup, through `/confirm` or `/link`, the
-person who signed up can log in to the finished account with the address and that password. The
-state G eviction, which `/signup` performs for a factor-less unverified settings address, makes
-this easier to aim: the evicted Keychain user is waiting for a verification mail, and settings and
-signup both mail the subject "PEvO - Verify your email".
-
-Requiring the password the row was created with at `/verify` closes this. The person who signed up
-knows it. An address owner who never signed up does not know it, so a link sent to them can no
-longer finalize the signup. `/resume-signup` already gates the confirmed-but-unfinished row the
-same way.
-
-The requirement only holds if every row `/verify` can match has a password. ARCHITECTURE.md § 6.1
-lists E with `password_hash` SET, but `/signup` can write an E row without one. A request with an
-`orcid_token` that no longer resolves leaves `verifiedOrcid` NULL. That happens when the nonce has
-expired (`ORCID_VERIFIED_TTL` is 30 minutes) or was spent by an earlier submit, because the
-lookup deletes it on read. Such a request skips the standard path's required-field checks, since
-those run only when no `orcid_token` was sent. An institutional address passes the accreditation
-gate, and the request falls through to the standard email upsert. When no password was sent,
-`passwordHash` is NULL there.
+The signup flow itself is unchanged: signup rows (E/F) have `username` NULL and never
+reach the G-only branches. The one signup-visible change comes from the upsert task: a
+signup for an email an unverified G row holds answers 409 until that claim expires and
+is reaped (at most the 24h link expiry plus the hourly cleanup).
 
 ## Scope
 
-1. **`POST /api/auth/signup`: refuse an `orcid_token` that does not resolve.** When `orcid_token`
-   is present and non-empty and `verifiedOrcid` is NULL after the lookup, answer 400 before the
-   duplicate-email pre-check. Use an existing error code and a message that tells the user to
-   verify their ORCID again. Write no row. The refusal does not depend on the address, so it is
-   not a registration-status signal. After this change, every row the email path writes carries
-   a password.
-2. **`POST /api/auth/verify`: require `password`.** The body is `{ token, password }`.
-   - A missing or non-string `password` answers 400 `VALIDATION_ERROR`, as `/resume-signup` does.
-   - The token lookup and the expiry branch keep their current answers.
-   - Then verify the presented password against the row's `password_hash` with `argon2.verify`
-     inside `runWithArgon2Slot`, with argon errors going through `handleArgonError`, as in
-     `/resume-signup`.
-   - A wrong password answers 401 `UNAUTHORIZED` with a message saying the password is
-     incorrect, and leaves the row as it was: no confirm, no new binding, no delete, no
-     `Set-Cookie`. 401 gives the SPA a status it can tell apart from the 400 token answers, so it
-     can keep the link usable and let the user retry.
-3. **Key the confirm UPDATE on the presented token.** The UPDATE that writes the `confirmed:`
-   token and the binding hash currently matches `WHERE id = $3` only. A re-signup for the same
-   address can rewrite the row's `password_hash` and `verify_token` (the upsert's `DO UPDATE` on
-   E) after the password check read it. The confirm would then finalize the row with a password
-   the presenter never proved. Add `AND verify_token = <presented token>`. When it matches no row,
-   answer what an unknown token answers.
-4. **Verification mail text.** The email-path signup mail in `routes/auth.ts`, and the
-   `/resend-verification` mail if it uses separate text, should say that the link asks for the
-   password chosen at signup.
+1. **Login (`POST /api/auth/login`).** The pending-signup branch (PENDING_SIGNUP,
+   PENDING_UNVERIFIED, the expiry DELETE and SIGNUP_EXPIRED) applies only to signup rows
+   (`username` NULL). A G row with a password and an unverified email logs in normally
+   and is never deleted here.
+2. **Signup cleanup (`signup-cleanup.ts`).** Signup rows keep today's two expiry arms. A G
+   row is deleted only when its email is unverified (hex `verify_token`), its link has
+   expired, and it carries no password and no ORCID. A G row carrying a factor (a legacy
+   row from before the gates in items 6-7) is never deleted by the job.
+3. **Signup verify link (`POST /api/auth/verify`).** The token lookup is scoped to signup
+   rows (`username` NULL). A G row's settings token answers exactly what an unknown token
+   answers, and the row is untouched.
+4. **Resend verification (`POST /api/auth/resend-verification`).** A row with `username`
+   set (any finalized row, G included) is treated as not pending: uniform message, no
+   token rewrite, no mail. Timing equalisation is preserved.
+5. **ORCID recovery (`POST /api/auth/recover`, ORCID method).** Refused for any row whose
+   custody claim is not light (`custodyClaimFor`), which excludes G as well as D, with the
+   same 401 and generic message the upgraded and no-ORCID branches already return. This
+   matches § 6.4 (ORCID recovery: B and C). The seed-phrase method already excludes G and
+   D (no `memo_key_enc`).
+6. **Set password (`POST /api/settings/set-password`).** Refuses a G row whose email is
+   unverified (409 `PENDING_UNVERIFIED`, an existing error code).
+7. **ORCID link and accredit (`/api/orcid` callback, `mode='link'` and `mode='accredit'`).**
+   Refuse, before any broadcast, a caller whose row is a G row with an unverified email
+   (409 `PENDING_UNVERIFIED`). A caller with no row is unaffected. Accredit is included
+   because it writes the same `accounts.orcid` factor onto the row.
+8. **Settings email.** (a) `POST /api/settings/email` on an existing unverified G row
+   re-issues the add-flow verification (new `email`, `verify_token`, `expires_at`)
+   instead of writing the pending-change fields; the JWT-path fresh-auth gate and the
+   duplicate checks are unchanged. (b) The verify handler's change branch also clears a
+   hex `verify_token`, since proving control of the new address verifies the row's email
+   (legacy rows that used the change flow while unverified). (c) The add-flow lookup in
+   the verify handler is scoped per `backend-settings-verify-clears-any-row-token`.
+9. **Signup upsert** per `backend-signup-upsert-overwrites-finalized-row`.
+10. **Login `NO_PASSWORD_SET` message.** One uniform message that is true for every
+    passwordless row and leaks nothing per row (the branch is unauthenticated).
+11. **Comments.** The JWT-path-equals-light-account comments (`admin-roster.ts`,
+    `validation.ts`, `accreditation-metadata.ts`) and the "no-row-before-JWT invariant"
+    comments (`settings.ts`, `settings-email-fresh-auth.test.ts`), plus every comment the
+    code changes above make stale.
+12. **Test data.** `settings-email-delete-fresh-auth` seeds a real § 6.1 shape; the
+    migration 017 test title names G's NULL column.
 
 ## Acceptance criteria
 
-1. A route spec signs up an address with password P1, then calls `/verify` with the mailed token
-   and a different password. It asserts 401 `UNAUTHORIZED`, no `pevo_signup_session` cookie, and
-   the row unchanged (same hex `verify_token`, same `signup_binding_hash`). The same spec with P1
-   gets today's 200 `choose` answer and the cookie. The 401 half fails against the current code.
-2. A route spec posts `/verify` without `password` and gets 400 `VALIDATION_ERROR` with the row
-   unchanged.
-3. A route spec posts `/signup` with an institutional address, no password, and an `orcid_token`
-   that does not resolve. It asserts the 400 refusal and that no row was written for the address.
-   This spec fails against the current code.
-4. Every existing spec that calls `/verify` sends the signup password. Where a spec built its E
-   row without a password, it now builds one with a password.
-5. Timing: no address is sent to `/verify`, so the new branches carry no email-enumeration oracle.
-   The token is 32 random bytes (`crypto.randomBytes(32)`), so a fast answer for an unknown token
-   tells nothing to anyone who does not already hold a valid one. No sentinel burn is needed on
-   the unknown-token branch. State in the signal block whether the existing `verifyLimiter`
-   (10 per hour per IP) is unchanged.
-6. No new error code. No new writer of `accounts.updated_at`.
+1. Each behaviour in items 1-10 is pinned by a route or job test that fails against the
+   pre-change code and passes after it.
+2. No new error code: refusals reuse `PENDING_UNVERIFIED`; the recovery refusal reuses the
+   existing 401 envelope.
+3. Timing equalisation and uniform messages are preserved on every unauthenticated branch
+   touched (login, resend, signup, recover).
+4. No new writer of `accounts.updated_at`.
+5. Comment-anchor conventions hold in everything written.
 
-## Notes
+## Architect note (2026-10-05): item 10 and its comment
 
-- The UI half landed first (`e2334dd4`, archived 2026-10-06): the SPA already sends
-  `{ token, password }`.
-- A spec for the scope 3 interleave is not required.
-- **[TODO Architect] at review:** update `agents/docs/api-contracts/auth.md` (`/verify` request
-  and errors, the `/signup` refusal) and the § 6.4 row for the signup verify link, if § 6.4 lists
-  one.
-- Out of scope: finalized light rows that already came from a passwordless E row (no password, no
-  ORCID). Report in the signal block whether the dev database has any. Do not repair them here.
+The `/login` `NO_PASSWORD_SET` comment in `routes/auth.ts` currently names one row whose
+remedies the message misses: a state G row with no ORCID. That list is incomplete. A null-hash D
+row (upgraded from C, or an ORCID-path `/link` D) cannot recover by seed phrase either (no
+`memo_key_enc`) and is past ORCID recovery once `upgraded_at` is set. A pending ORCID-path F
+row also reaches this branch, because the null-hash check runs before the pending checks. When
+item 10 makes the message uniform, rewrite that comment so it lists no closed set of
+exceptions. The architect updates the 403-versus-401 rationale in `api-contracts/auth.md` at
+review. Say in the signal block what the final message is.
 
-**Architect note (2026-10-06), from the review of the UI half:** a pending row with `password_hash`
-NULL can reach `/verify`. `/signup` writes one when an `orcid_token` no longer resolves and no
-password was sent. Scope 1 stops new ones, but a row written before it deploys keeps its mailed
-token until the row expires, 24 hours after the signup that wrote it. `argon2.verify` throws a
-`TypeError` on a NULL hash; `/resume-signup` guards the same case. Answer such a row with the
-wrong-password 401 and leave the row unchanged. On a 401 the SPA shows its wrong-password copy,
-which points to a new signup with the same address. On a 500 it shows its retry message on every
-attempt.
+## Backend implementation signal (2026-10-05, commit d33792ce)
 
-## Backend implementation signal (2026-10-07, commits c489e0ed, 8e6a79cc)
+d33792ce verified as an ancestor of HEAD with `git merge-base --is-ancestor`. It carries this task
+and the two sibling tasks the user folded into the same pass (the signup upsert task and the
+settings verify-handler task, each with its own signal block). 49aa2c65, committed alongside, is
+the held comments task's two items and touches nothing here.
 
-Both SHAs are ancestors of `main` (`git merge-base --is-ancestor` checked).
+**User decisions taken during the pass (2026-10-05), beyond the ones at the top of this file:**
+- **Signup evicts a factor-less unverified G claim** instead of answering 409. Reason: the
+  re-issue branch (item 8a) restarts the 24h expiry, and delete-then-re-add works too, so a 409
+  let a Keychain user hold an unverified claim on someone else's address indefinitely. This
+  supersedes the opening section's "answers 409 until that claim expires" for factor-less rows.
+- **`POST /api/auth/verify` matches only an emailed hex token.** This is a security fix: a
+  pending row's leaked `confirmed:` auth_token re-confirmed the row and minted the presenter a
+  fresh signup binding.
+- **The settings `POST /email` duplicate checks use `IS DISTINCT FROM`.** Previously an address a
+  pending signup holds answered 500.
+- **The upgrade's surviving consent proofs are noted only** (see Residuals).
+
+**Per scope item:**
+1. **Login.** The pending block is scoped to `username IS NULL`.
+2. **Cleanup.** The predicate is `ABANDONED_ACCOUNT_ROWS`, exported as a WHERE fragment. The
+   signup arms are scoped to username NULL. The G arm requires unverified, expired, no password
+   and no ORCID.
+3. **`/verify`.** The lookup adds `AND username IS NULL AND verify_token NOT LIKE 'confirmed:%'`.
+4. **Resend.** A row with `username !== null` gets the uniform answer, after the argon2 verify.
+5. **Recover.** The ORCID method refuses on `custodyClaimFor(account) !== 'light'`, with the
+   same 401.
+6. **Set password.** Answers 409 PENDING_UNVERIFIED 'Verify your email before setting a
+   password.' It runs after PASSWORD_ALREADY_SET and before ORCID_REQUIRED and the proof
+   consume.
+7. **ORCID link and accredit.** `refuseUnverifiedEmailRow` runs at `/start` and in both callback
+   handlers, before any HAF read, broadcast, cache write or row write. It answers 409
+   PENDING_UNVERIFIED 'Verify the email you registered in settings, or remove it, before
+   linking an ORCID.' In addition, `updateAccountOrcid` writes only where `verify_token IS
+   NULL`, so a link that passed the gate cannot write onto a G row registered mid-broadcast.
+8. **Settings.**
+   - (a) The re-issue branch, with an SMTP-fail restore of email, token, expiry and the pending
+     triple, scoped by token.
+   - (b) The change-branch verify also clears `verify_token` and `expires_at`.
+   - (c) Done per the sibling task.
+   - Plus the `IS DISTINCT FROM` duplicate checks.
+9. **Upsert.** Done per the sibling task, plus the eviction:
+   - a conditional DELETE keyed on the state the pre-check read, in one transaction with the
+     upsert, and only once the request is past the 422 gate;
+   - `DO UPDATE ... WHERE accounts.username IS NULL AND accounts.verify_token NOT LIKE
+     'confirmed:%'` on both upserts, with an upsert that writes no row answering 409.
+
+   The `WHERE` term closes a window found in the final review. The caller's own settings
+   add-flow INSERT could land while argon2.hash runs, and the upsert would then write a
+   password onto an unverified G row. That would be a squat that can never be evicted or
+   reaped.
+10. **`NO_PASSWORD_SET` final message:** 'This account has no password. Use another sign-in
+    method, such as ORCID or Hive Keychain.' Its comment lists no closed set, and notes the
+    branch also answers pending signup rows.
+11. **Comments.**
+    - The JWT-path comments (admin-roster x2, validation x2, accreditation-metadata) describe
+      the gate by auth mechanism. Their list of who holds a JWT is open and includes the
+      `POST /api/auth/session` JWT.
+    - The settings "no-row-before-JWT" comments are corrected: the header, handler-order item
+      (4), the guard comment, and the `settings-email-fresh-auth.test` header and spec.
+    - The `requireAdminLevel` docblock now says that on the JWT path `hiveUsername` is the
+      verified JWT `sub`.
+    - The `updated_at` canary docblock is rewritten against the new code.
+    - The `recover.test.ts` headers, and every other comment the changes made stale, are
+      corrected.
+12. **Test data.** `seedSigUser` is now a real D row (`upgraded_at = NOW()`). The migration 017
+    test title names G's NULL column.
+
+**Tests.** Each was red before and green after. Where a behaviour already existed, the red was
+observed by mutation.
+- `auth-state-g-rows.test.ts` (new): login x4, resend x2 (one with a timing floor), signup x6:
+  - eviction on the email path;
+  - eviction on the ORCID path;
+  - 409, argon2 burn and an unchanged row for a G row with a factor;
+  - 422 keeps the G row;
+  - ORCID_ALREADY_LINKED keeps it, through the rollback;
+  - a G row written after the pre-check is left untouched and answers 409.
+- `settings-state-g-unverified-email.test.ts` (new):
+  - `/verify`: a G token, an expired G token, and an F `confirmed:` token;
+  - set-password answers 409, and the same proof still works once the row is verified;
+  - re-issue: the pending triple is cleared, the old pending token is dead, the new link
+    verifies;
+  - SMTP-fail restore puts the triple back;
+  - `IS DISTINCT FROM` x2;
+  - the verify task's E, F and add-flow specs;
+  - the change branch clears a hex token.
+- `orcid-state-g-unverified-email.test.ts` (new): refusal at `/start` (link and accredit),
+  refusal at the callback with no broadcast, unaffected callers, and the `updateAccountOrcid`
+  skip and write.
+- `recover-orcid-state-g.test.ts` (new): ORCID recovery answers 401 for a verified G row that
+  has an ORCID.
+- `signup-cleanup.test.ts` (new): runs the job's predicate narrowed to the file's own rows,
+  because vitest runs two files at once and the job's DELETE spans the table.
+- `settings-email-fresh-auth.test.ts`: the add-flow JWT-rejection guard answers 401 and creates
+  no row.
+- Fixture fixes:
+  - `recover.test.ts` and `auth-log-shape.test.ts` seeded a "pending" row with a username and
+    custody 'light', a shape § 6.1 does not list; they now seed the signup shape.
+  - The `settings-set-password-argon-error-translation` mock row gains `verify_token: null`.
+
+**Verification.**
+- Typecheck exits 0. Lint has 0 errors (one pre-existing warning, in `author-supersession.ts`).
+- The pre-commit anchor matcher finds 0 hits on the added lines, and its control line fires.
+- Full suite on this tree: 9 files failed.
+  - 7 are the known clean-main red bar: cast-hardening, idempotency-real-haf,
+    accreditation-idempotency, the accreditation cap specs, papers-enrichment-parity-gate,
+    profile-auth-bypass and the reviews gate.
+  - The other 2 pass when run alone: `signup-verify-activation-recovery` (the known lock spec
+    that poisons itself, 9/9) and `fresh-auth-consent-op-burn-offline-queue` (4/4).
+
+**Considered, not built.**
+- A deterministic test for the eviction DELETE matching 0 rows. Code reading covers it.
+- Restoring an evicted claim when the signup's verification mail fails after the commit. The
+  signup row is deleted, and the G owner can re-add.
+- Keeping the existing expiry on a same-address re-issue. With eviction, a held claim no longer
+  blocks signup, only the victim's own settings add.
+
+**Residuals for triage.**
+- A G row's holder can still keep an unverified claim alive by re-issuing. That blocks the
+  victim's settings add flow (409), not signup. A pending signup row E can likewise block a
+  Keychain user's settings add, since a re-signup refreshes its expiry.
+- Anyone who passes the accreditation gate can cancel a Keychain user's pending email
+  registration (factor-less, unverified) by signing up with that address. They cannot verify
+  it without the mailbox. This is the user's decision.
+- The custody upgrade revokes JWTs and session proofs, but not single-use consent proofs. A
+  password proof minted while the row was light stays consumable for its 5 minutes, given a
+  JWT issued after the upgrade. The settings factor tables' D line says so. User: note only.
+- `POST /api/auth/reset` can still add a password to any row with an email, an unverified G
+  row included. The pending password-reset gating task owns that. The comments in this diff
+  claim only what set-password and the ORCID link refuse.
+
+**Test-isolation issues seen, not caused here.**
+- `custody-session-auth.test.ts` and `custody-non-consent-fresh-auth.test.ts` seed the same
+  fixed ORCID (`0000-0002-3456-7892`) under different usernames. When vitest runs them at the
+  same time, one seed trips `accounts_orcid_unique`. Each passes alone.
+- `recover.test.ts` cleans up with `username LIKE 'recover_%'`, which also matches the
+  `recover2p_` rows of `recover-two-phase.test.ts`.
+- `auth.test.ts` "accepts valid Bearer JWT on authenticated endpoints" times out at 30s with
+  `--retry=0`, on `GET /api/notifications?since_block=1` against real HAF.
+
+**[TODO Architect]** These come from the final review's list of statements the code now
+contradicts.
