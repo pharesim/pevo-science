@@ -113,7 +113,7 @@ The inverse failure is equally real: dismissing a reachable finding because it s
 - A macrotask: a click (the header sign-out, a recovery done screen's switch-account button), the cross-tab `storage` event reaching `_handleStorageEvent`, the session restore at page load, or the continuation of an awaited request. Examples of the last are a login or signup answer reaching `loginFromResponse`, a recovery answer reaching `adoptRecoveredSession`, a reset answer reaching `endResetSession`, and a rejected request reaching `handleRevokedSession` or `handleSessionInconsistency`.
 - A bearer request call, before it sends. The `api.js` bearer helper, the custody broadcast in `signer.js` and the key-upgrade cleanup in `pages/settings.js` call `endSessionIfExpired` synchronously before sending. Any scrub that check causes runs inside the request call, before anything is sent.
 
-Because the scrub is synchronous and every path to it starts in one of these two places, the teardown mechanism can only ever interleave with in-flight guarded work at real I/O points, which is exactly the set of points the code already checks. A finding proposing a check anywhere else in this call graph proposes a check against a scrub that structurally cannot arrive there.
+Because the scrub is synchronous and every path to it starts in one of these two places, the teardown mechanism can only ever interleave with in-flight guarded work at real I/O points. A finding proposing a check anywhere else in this call graph proposes a check against a scrub that structurally cannot arrive there.
 
 ## Related
 
