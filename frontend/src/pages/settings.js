@@ -63,13 +63,14 @@ const UPGRADE_ERROR_KEYS = {
   rateLimited: 'upgrade.rateLimited',
   // The two halves of a session change during the upgrade. Both are reached
   // only after the chain rotation landed; they differ in whether the backend
-  // cleanup also landed, which decides what is left for the user to do. The after-cleanup half is terminal: the upgrade
-  // is complete, the seed is spent, and only the local Keychain import is
-  // missing. The before-cleanup half is retryable: it is reached from the
-  // retry's start guard, which declines before spending anything, and from
-  // a cleanup POST whose session had ended, which spends no proof attempt.
-  // Both keep the seed and the pin, so once the user signs back in as the
-  // pinned subject the same Try Again runs the cleanup. Splitting them
+  // cleanup also landed, which decides what is left for the user to do. The
+  // after-cleanup half is terminal: the upgrade is complete, the seed is
+  // spent, and only the local Keychain import is missing. The before-cleanup
+  // half is retryable: it is reached from the retry's start guard, which
+  // declines before spending anything, and from a cleanup POST whose session
+  // had ended, which spends no proof attempt. Both keep the seed and the pin,
+  // so once the user signs back in as the pinned subject the same Try Again
+  // runs the cleanup. Splitting them
   // is what keeps each message true: one string for both would have to lie
   // in one of the two cases. Neither name is a prefix of the other, so the
   // per-key grep over the translation-stub ledger still names one key at a
@@ -1578,8 +1579,7 @@ export function initSettingsPage() {
     // about the upgrade's own steps: the two `loginFromResponse` landings, and
     // the retry's start guard, which is the one place the flow genuinely
     // cannot act for the pinned account, because the only credential available
-    // to it there belongs to whoever the store now names. Everything in
-    // between runs on values pinned before the first await.
+    // to it there belongs to whoever the store now names.
     //
     // The subject is an argument so the predicate compares against the same
     // value every other step of the calling leg uses, rather than re-reading a

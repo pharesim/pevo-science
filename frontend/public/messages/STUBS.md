@@ -3846,7 +3846,7 @@ screen. "Try Again" must read exactly as this locale renders
 `common.tryAgain`; if the two drift apart, the reader is told to press
 something they cannot find. The "Sign in" immediately before the word
 "button" must read exactly as this locale renders `signIn.signInButton`.
-The other imperatives, "sign in as" and "sign out first", are ordinary
+The other sign-in wording, "sign in as" and "sign out first", is ordinary
 verbs and should read naturally.
 
 Keep the placement, "in the page header". Two controls read as sign in, and

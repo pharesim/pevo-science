@@ -2569,8 +2569,12 @@ describe('settingsPage', () => {
   //     R2. guard: RETRYABILITY[upgradeErrorKey] !== 'retryable-backend-only'
   //         → early return
   //     R3. defensive: !newSeedPhrase → wipe + partialApplyFailed (terminal)
+  //     R3a. start guard: subject diverged → KEEP state +
+  //          sessionChangedBeforeCleanup (still retryable), no POST
   //     R4. happy path: 2xx → loginFromResponse + _completeUpgradeAfterBackend → 'done'
   //     R5. post-await unmount guard: !_mounted after _postUpgradeBackend → early return
+  //     R5a. landing: subject diverged after the POST → wipe +
+  //          sessionChangedAfterCleanup (terminal), no loginFromResponse
   //     R6. post-await unmount guard: !_mounted after loginFromResponse → early return
   //         // untestable without DI: the mock auth store's loginFromResponse is
   //         // synchronous, so there is no suspension window between the two
