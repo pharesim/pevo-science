@@ -138,7 +138,7 @@ but no `disconnect`. Calling `.disconnect()` throws; control jumps to the catch;
 notifications-store mock exposing `stop: vi.fn()` and wire it into the `Alpine.store`
 dispatch for `'notifications'`, then rewrite the happy-path test to assert the new
 teardown contract (`disconnect` called, `stop` called, the account-deleted toast
-shown, `navigate('/')` called) instead of the removed `emailStatus` patch. Give the
+queued on the toast store, `navigate('/')` called) instead of the removed `emailStatus` patch. Give the
 ghost `preserves hasPassword` test a meaningful assertion against the new contract or
 remove it.
 
@@ -181,3 +181,6 @@ handleEmailDelete`; see "1 failed"; file a hold block before reading further.
   single-source abstractions met at the type layer only) pass typecheck/lint/tests
   whether or not they landed and need a per-item diff audit. Do not stop at "run the
   suite" when the claim is held-item completion.
+- `agents/docs/solutions/conventions/markup-outside-an-alpine-root-is-inert-and-store-assertions-cannot-see-it.md`
+  — what a toast assertion against the mocked store proves: that the message was
+  queued, not that the user saw it.
