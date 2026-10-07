@@ -1,0 +1,171 @@
+# /verify tells a WoT enrollee below the threshold that they are accredited
+
+**Owner:** backend
+**Created:** 2026-10-05
+**Priority:** high
+
+Filed from the accreditation and Web of Trust audit (finding 1). Seven reviewers reported it and
+the validator confirmed it from the code. Incidence was not measured.
+
+**Sequencing:** `backend-latest-op-haf-lookups-walk-the-blocks-index` rewrites the same query.
+Take that task first. If it is not archived when you pick this one up, stop and say so.
+
+## Why
+
+`POST /api/accreditation/verify` calls `findExistingAccreditation`
+(`backend/src/lib/idempotency.ts`) before anything else that reads the chain. That helper returns
+a hit whenever the account's latest authority-signed op among `accredit` and `revoke` is an
+`accredit`, whatever its `method`. On a hit the route writes the completion record, which deletes
+the pending token, and answers 200 "Accreditation confirmed" with `outcome: 'already_accredited'`.
+It broadcasts nothing.
+
+For an account in the "Below-threshold (WoT)" state of `ARCHITECTURE.md` § 2, the latest op is a
+`method: 'wot'` accredit and the account is not accredited: `active_accreditations` drops a `wot`
+row that does not meet the live vouch threshold. A user in that state who verifies an
+institutional email is told they are accredited, loses the token, and stays unaccredited.
+`POST /api/wot/retract` broadcasts no revoke, so ordinary retractions lead there.
+
+**Decision (user, 2026-10-05):** an email verification makes any WoT enrollee authority-pinned,
+whether or not the account currently meets the threshold.
+
+## Scope
+
+1. The gate short-circuits only when the latest op is an `accredit` whose method is not `wot`.
+   Use `IS DISTINCT FROM 'wot'`, the test `auth_accredit` applies in `activeAccreditationsCteBody`
+   (`backend/src/hafsql.ts`). When the latest op is a `wot` accredit, `/verify` goes on to the
+   sanction guard, the per-token lookup and the broadcast, so the `method: 'email'` op becomes the
+   account's latest accredit op.
+
+   What stays as it is: a latest `revoke` is still a miss, and `hasUnliftedSanction` still refuses
+   a sanctioned account after the gate. Once the email op is indexed, a second pending token for
+   the same account sees an `email` accredit as the latest op and hits the gate.
+2. Two comments in the `/verify` handler equate a gate hit with "currently accredited": the one
+   at the gate ("is this account already accredited?") and the opening of the "Ever-sanctioned
+   guard" comment ("reaching here means the account is NOT currently accredited (latest op is a
+   revoke or there is no accredit)"). Cut each to what the gate checks.
+3. The `findExistingAccreditation` docblock says "The WoT cleanup path in routes/wot.ts is a live
+   producer of revoke ops" and "Scope per the filing task". No WoT path broadcasts a revoke, and
+   the second is a task redirect. Delete both while you are in that docblock.
+
+## Out of scope
+
+- The per-token idempotency branch (`already_landed`). It stays.
+- The limiters, the session requirement and the mail text. Each has its own task.
+
+## Acceptance criteria
+
+1. A `/verify` spec for an account whose latest op is a `wot` accredit below the live threshold:
+   the route broadcasts an accredit op with `method: 'email'` and answers 200 with no `outcome`.
+2. An account whose latest op is an `email`, `orcid` or `manual` accredit still answers
+   `already_accredited` and broadcasts nothing.
+3. A sanctioned account whose latest op is a `wot` accredit is refused with 403
+   `ACCREDITATION_SANCTIONED`.
+4. Comments follow root `CLAUDE.md` "Comment anchors".
+
+## [TODO Architect] at archive
+
+- Update the `already_accredited` paragraph of `api-contracts/accreditation.md`, and say in
+  `ARCHITECTURE.md` § 2 that an email verification pins a WoT enrollee.
+- `/ce-compound-refresh` on `accreditation-state-read-latest-action-wins-2026-05-15.md`.
+  The same refresh deletes the entry's claim that `backend/src/wot.ts:347` produces revoke ops,
+  in its sibling-site list and in "The bug is reachable, not theoretical". `wot.ts` broadcasts no
+  revoke op; the admin sanction route (`/accreditation/sanction` in `routes/admin.ts`) does.
+  (Added 2026-10-07 from the review of `backend-latest-op-haf-lookups-walk-the-blocks-index`.)
+
+## Backend implementation signal (2026-10-07, commit 31994b09)
+
+31994b09 verified as an ancestor of HEAD with `git merge-base --is-ancestor`. The sequencing
+precondition held: `backend-latest-op-haf-lookups-walk-the-blocks-index` was archived in dd4aea20.
+
+**Per scope item:**
+1. **Gate predicate.** `findExistingAccreditation` projects `cj.json::jsonb ->> 'method' AS method`
+   and returns null unless the latest op is an `accredit` whose method is not `'wot'`. The test sits
+   in JS next to the existing action check (`row.action !== 'accredit' || row.method === 'wot'`), not
+   as a literal `IS DISTINCT FROM 'wot'` in the SQL. It is equivalent for everything `->>` returns:
+   an absent key and a JSON null both arrive as null and count as non-wot, as under `IS DISTINCT
+   FROM`. Keeping it in JS lets the mocked-pool specs feed raw op rows rather than a precomputed
+   verdict. The real-Postgres file pins the no-method case end to end. A latest `revoke` still
+   misses, and the sanction guard still runs after the gate (AC3 spec).
+2. **Handler comments.** The gate comment and the opening of the "Ever-sanctioned guard" comment
+   now say what the gate checks. A third sentence became false with the change and is narrowed the
+   same way: "Metadata-update routing" said "a re-confirm of an already-accredited account returns
+   the prior tx_id"; an at-threshold WoT enrollee is accredited and now misses.
+3. **Docblock.** Both items deleted. In the same docblock, also cut by deletion:
+   - the opening "is this account currently accredited?";
+   - the claim that every other accreditation-state read uses latest-action-wins, with its file
+     list (`activeAccreditationsCteBody` ignores a legacy revoke);
+   - the "(the gate is 'what is the account's current accreditation status?' ...)" parenthetical;
+   - ", and silently lock the user out of re-accreditation" (no state reaches it after this change).
+
+   Added: a "WoT handling" paragraph, and the sanction guard in the fall-through order.
+
+   The same false WoT-revoke-producer claim sat in two test files, and is deleted there too:
+   `tests/lib/idempotency.test.ts` (with its `wot.ts:347`-style line anchors) and the revoke spec
+   in `tests/routes/accreditation-idempotency.test.ts`.
+
+**Acceptance criteria:**
+1. Route spec 'latest op is a wot accredit → gate falls through, a method:email accredit is
+   broadcast'. It queues the gate, the sanction guard and the per-token read, and asserts 200 with
+   no `outcome`, a payload `{ action: 'accredit', account, method: 'email' }` and 3 HAF reads. The
+   route reads no threshold, so "below the live threshold" is modelled only as the latest op.
+2. Route `it.each` over `email`, `orcid`, `manual`: `already_accredited`, no broadcast, 1 HAF
+   read. Unit `it.each` adds a null method, and the real-Postgres file adds a missing method.
+3. Route spec 'sanctioned account whose latest op is a wot accredit → 403
+   ACCREDITATION_SANCTIONED, no broadcast' (2 HAF reads).
+4. The pre-commit `anchor_violation` over every added line: 0 hits, control line fires.
+
+**Tests:**
+- `tests/lib/idempotency.test.ts`: wot → null; email/orcid/manual/null → hit; SQL regex
+  `'method' AS method`; a structured forward citation of the new file, token
+  `[findExistingAccreditation]`.
+- `tests/lib/existing-accreditation-gate-real-postgres.test.ts` (new, 8 specs): the production
+  function against synthetic `hafsql` views in a rolled-back transaction, with the reverse
+  declaration back to `idempotency.test.ts`. Real HAF has no `wot` accredit under `pevotest`
+  (read-only query, 2026-10-07: 20 `email` and 1 `manual` accredits, no revoke).
+- `tests/routes/accreditation-idempotency.test.ts`: the 5 specs above.
+- `tests/lib/idempotency-real-haf.test.ts`: the positive-hit spec now projects `method` and expects
+  a miss when the namespace's latest authority op is a `wot` accredit. It would have gone red for
+  good once a WoT auto-accreditation became the newest op. Its `lines 340-343` anchor is gone.
+
+**Evidence:**
+- Red before the fix: the unit wot and SQL-shape specs, both real-Postgres wot specs, and route
+  AC1 and AC3. The hit specs were green throughout (characterization).
+- Each file alone after the fix: `idempotency` 34/34, the real-Postgres file 8/8,
+  `accreditation-verify-sanctioned` 2/2, `accreditation-membership-cte` 11/11,
+  `idempotency-real-haf -t findExistingAccreditation` 3/3. `accreditation-idempotency`: 21 passed,
+  6 failed, exactly the clean-main six that
+  `backend-accreditation-idempotency-specs-skip-the-sanction-guard-read` fixes; the 5 new specs
+  pass. `tests/eslint` 146/146, `tsc` clean, lint 0 errors (1 warning, in
+  `author-supersession.ts`).
+- Mutation probes on a copy, all 7 killed: the pre-fix predicate, no `method` projection, the
+  wrong JSON key, a null method treated as non-pinning, an allowlist, the sanction guard disabled,
+  a `'WOT'` literal. The two SQL-side mutants die only in the real-Postgres file and the SQL regex;
+  the route specs take `method` from mocked rows.
+
+**Sibling tasks:**
+- The new route specs already queue all three HAF reads, so they need nothing from the
+  sanction-guard-read task, which still owns the 11 existing sequences and the header paragraph.
+- `backend-accreditation-release-op` changes `hasUnliftedSanction`'s comparison. If its result
+  columns change, the guard rows queued in the AC1 and AC3 specs change with them.
+
+**For triage (not acted on):**
+- `ARCHITECTURE.md` "Credential Bindings", the `/verify` claim paragraph, ends "An
+  already-accredited account verifying a mailbox claims the row as `bound` at once, with no second
+  `accredit` op." An at-threshold WoT enrollee now gets a second (`email`) op. It could ride the § 2
+  edit in the TODO at archive; `backend-mailbox-binding-registry` builds that claim.
+- UI: `frontend/src/pages/accreditation.js` shows the request form only when `!isAccredited`, so
+  only a below-threshold enrollee can ask for the pin. The 2026-10-05 decision covers at-threshold
+  enrollees too.
+- The pin holds while the email op is the latest accredit. A `wot` accredit landing after it makes
+  the account threshold-dependent again, and `broadcastWotAccreditation` can still broadcast one
+  from its cached membership read. `backend-wot-auto-accredit-reads-stale-membership` covers that
+  read.
+
+**Learnings checkpoint:** `accreditation-state-read-latest-action-wins-2026-05-15.md` is
+contradicted (its canonical SQL lacks `method`, its caller rule reads any `'accredit'` as
+accredited). Its refresh is already in the TODO at archive, so it was not run here. The fence and
+grace-period entries that name the gate still hold. No new entry: the rationale is in the code.
+
+**Code review:** not run on the backend side (the architect's `/ce-code-review` at intake). A
+verification workflow (comment claims, acceptance, mutation; one refuter per finding) confirmed 5
+findings, all fixed before 31994b09, and refuted 5.
