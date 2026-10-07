@@ -221,3 +221,57 @@ Learnings checkpoint: grepped `agents/docs/solutions/` for `_endSession`,
 backend half and stays true. Nothing new qualified: the rationale for the
 quiet sign-out and its guards lives in the `endResetSession` and
 `_endSession` docblocks.
+
+## Architect re-review (2026-10-07) — HELD PENDING FIXES:
+
+`/ce-code-review` over the five commits (f4eb9c85, 2319a5b9, d68979b7,
+599554f4, 54d041f7) with seven reviewers. No finding reached the reporting
+bar, the acceptance criteria are met, the four page specs pass 63/63, and
+10 of 10 planted mutants were killed across the unit suite. The user
+triaged one item as blocking archive:
+
+1. **The recover page's done screen follows the method tab selected when the
+   request finishes, not the arm that sent it.** `doneCopy` and `doneAction`
+   read the live `method`, and the two tab buttons stay clickable while a
+   submit is in flight.
+   - ORCID submit, Seed tab clicked during the request: the done screen
+     shows the seed-pending title and copy and a Sign in button, although
+     the recovery was applied and this browser may already be signed in to
+     the recovered account.
+   - Seed submit, ORCID tab clicked during the request: the done screen
+     says the account was recovered and has no password, which is false
+     (phase 1 changes nothing), and never tells the user to confirm through
+     the mailed link. Its "Switch to the recovered account" button calls
+     `adoptRecoveredSession` with the null `_recovered`, which throws a
+     TypeError, so the button does nothing.
+
+   Fix so the done screen (title, description, button, icon) and
+   `doneAction` always reflect the arm whose request completed, whatever
+   the tab state. The mechanism is the implementer's choice. Pin both
+   directions in the unit specs: a tab switch during the in-flight request
+   leaves the finished arm's done screen, and after a seed submit no switch
+   button is offered.
+
+Dismissed at triage, no action:
+
+- `adoptRecoveredSession` decides on the in-memory `username`. A sign-in to
+  another account in another tab, landing within the storage-event latency
+  of the recovery answer, can be overwritten. Timing-only.
+- A revoked-session removal from another tab, processed after this tab
+  saved the reissued session, removes it, and the done screen still says
+  signed in. Timing-only, the recovery analog of the accepted reset
+  residual. Accepted as a residual.
+- Same-account adoption passes `is_accredited: false` and
+  `accreditation: null`, so the account's tabs show the unaccredited UI
+  until the accreditation check returns. This is the sign-in modal's login
+  convention, and it heals on the poll.
+- Other same-account tabs keep their password-factor memo after an ORCID
+  recovery has dropped the password, so a fresh-auth action there can meet
+  a refused password prompt before the memo retires.
+- The reissued session can expire on a done screen left open past its
+  lifetime before the switch button is pressed.
+
+At archive the architect runs `/ce-compound-refresh` on
+`await-is-not-a-teardown-boundary-unless-it-yields-to-a-macrotask-2026-09-03.md`,
+whose list of triggers reaching `_scrubSubjectBoundState` misses
+`endResetSession` and `adoptRecoveredSession`.
