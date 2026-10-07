@@ -275,3 +275,82 @@ At archive the architect runs `/ce-compound-refresh` on
 `await-is-not-a-teardown-boundary-unless-it-yields-to-a-macrotask-2026-09-03.md`,
 whose list of triggers reaching `_scrubSubjectBoundState` misses
 `endResetSession` and `adoptRecoveredSession`.
+
+## UI re-review signal (2026-10-07, commit 9ca30584)
+
+Hold item 1 fixed in 9ca30584 (`frontend/src/pages/recover.js`,
+`frontend/tests/unit/pages-recover.test.js`).
+
+- `recoverPage` has a new field, `doneMethod`. Each arm of `handleSubmit`
+  sets it to its own method just before `phase = 'done'`. `doneCopy`,
+  `doneAction` and the two done-screen icon `x-show` bindings read it in
+  place of the live `method`. The tabs still stay clickable while a
+  request is in flight, as the hold allows; only the done screen ignores
+  them.
+- `pages-recover.test.js`, new describe "a method tab picked while the
+  request is in flight". It holds the answer on a deferred promise, writes
+  `method` while `isSubmitting` is true, and reads the done screen through
+  the shipped template bindings (title, description, button label, visible
+  icon, the button's `@click`):
+  - ORCID submit, seed tab picked: check icon, `doneTitle`,
+    `orcidDoneSignedIn`, Go to Settings, which navigates to `/settings`.
+  - Seed submit, ORCID tab picked: envelope icon, `seedPendingTitle`,
+    `seedPendingDescription`, `goToLogin` and no switch button. The click
+    navigates to `/login` and `adoptRecoveredSession` is not called.
+  Both cases fail against the parent, ba3b008f, for the hold's reasons.
+
+Verification:
+
+- Full frontend unit suite green at 9ca30584: 98 files, 2288 tests, exit 0.
+- Four-lens adversarial verification of 9ca30584 (4 agents, none died, no
+  findings, so no refuter ran):
+  - Mutation: the two new cases fail on the parent tree. These mutants were
+    killed: each of the four done-screen reads put back on `method`, the
+    seed write dropped, the two arms' writes swapped, `doneMethod = this.method`
+    set at completion, in `finally`, or after the `deriveAllKeys` await, and
+    `doneAction`'s seed branch removed, or checked after `signedIn` against
+    the live tab. Every
+    survivor is behavior-equivalent. Dropping the `'orcid'` write is inert
+    because the default is null and only `'seed'` is tested. With a `'seed'`
+    default it becomes load-bearing, and 5 specs catch its removal.
+  - Races: probes with the real store held the request, switched the tab,
+    then released it. For the seed arm (signed out, same account, another
+    account), the session was unchanged and adopt was not called. For the
+    ORCID arm in the same three states, the done screen showed the right
+    copy and the switch button adopted the reissued session. Failure-then-
+    success sequences in both orders were checked, plus a second submit
+    with the tab switched: one request only. Draft restore, bfcache and
+    SPA navigation left no path to a done screen with a stale `doneMethod`.
+  - Browser: headless Chromium against vite-served copies of 9ca30584 and
+    ba3b008f, with every `/api` call answered by the probe. At ba3b008f
+    both hold bugs reproduce, including `TypeError` at
+    `adoptRecoveredSession` from the switch button. At 9ca30584 both
+    directions show the finished arm's title, text, button and icon, and
+    the click goes to `/settings` or `/login` with no page error. So does
+    the other-account ORCID case, whose switch adopts the session.
+  - Comments and conventions: the new comments are true, the commit
+    message claims hold, no copy or i18n keys changed, and the frontend
+    eslint canaries pass (18/18).
+- E2E not rerun. The change is confined to the done screen's reads, which
+  the browser lens drove in Chromium. Rebuilding the test-mode stack would
+  bake a sibling's uncommitted backend edits into the image.
+- Simplify skipped (13 changed source lines). `/ce-code-review` not run, per
+  `agents/ui/CLAUDE.md`: review is the architect's at intake.
+
+Out of scope, pre-existing, noted for filing if wanted (none touched here):
+
+- `handleOrcidVerify` does not check `isSubmitting`. During an in-flight
+  seed request the user can pick the ORCID tab and press Verify with ORCID,
+  which leaves the page, so the "check your new email" screen is never
+  shown. The server has already mailed the link.
+- A seed-phrase recovery started while signed in ends on a Sign in button
+  that sends a signed-in user to `/login`.
+- `handleSubmit` clears `error` before its `isSubmitting` guard, so a
+  refused second submit can clear an error shown meanwhile. Cosmetic.
+
+Learnings checkpoint: grepped `agents/docs/solutions/` for `doneCopy`,
+`doneAction`, `doneMethod`, `recoverPage` and `recover.js`. The one hit
+(`storage-scope-localstorage-vs-sessionstorage-for-spa-flow-state-2026-05-17.md`)
+is about the ORCID return-path keys and stays true. Nothing new
+qualified: the rationale is in the `doneMethod` comment, and a grep for
+tab-style `@click` assignments found no other page with request-time tabs.
