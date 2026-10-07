@@ -1,250 +1,250 @@
-## The password reset response does not name the account it reset (archived 2026-10-07): clean review; contract applied, one low follow-up filed, five residuals dismissed
+## Seven latest-op HAF lookups walk the whole blocks index when nothing matches (archived 2026-10-07): two rounds, clean re-review; one pre-existing canary finding filed
 
 ### Architect archive note (2026-10-07)
 
-- **Review:** `/ce-code-review` full path over `5ff7d3f8..b56695ab` (branch-remote, read from `git show` snapshots; code `0aa0bf78`, docs `c1f23108`, `dccc0064`, `b5066a6b`, `b56695ab`), seven reviewers: correctness, security, adversarial (in-process, no cross-model peer), testing, api-contract, project-standards, learnings. Verdict "Ready to merge": no findings at any severity. The two reset files at `b56695ab`: 22/22, exit 0. Testing planted five mutants (token predicate neutralised, bearer `sub` ignored, always false, try/catch removed, `username` added to `data`), all killed; `tests/eslint` 146/146.
-- **Triage (user, 2026-10-07):** no hold. The `[TODO Architect]` lines are applied to `api-contracts/auth.md` § POST /api/auth/reset (optional bearer that never fails the reset, `session_ended`, a token redeems once). Filed: `backend-reset-token-lookup-has-no-index` (low).
-- **Dismissed:** (1) the `not a JWT` row's generated test title says the bearer names the reset account, which `Bearer not-a-jwt` does not (assertions correct); (2) the expired-token branch clears by `id` alone (one-round-trip window; the cost is one re-request); (3) the account names answered by `recover/verify`, signup `verify` and accreditation `verify` (none turns a token-only holder's knowledge of the name into a sign-in it lacks; the leaked-link root is `backend-access-log-records-mailed-link-tokens`); (4) no account-state row for the ORCID+email+password F shape (same path as email-path F); (5) a recovery-minted session can outlive a concurrent reset (pre-existing; a recovery that cleared the reset token would make that reset match no row, which is `backend-reset-tokens-outlive-email-changes-and-recovery`).
-- **UI consumer:** the reset half landed during the review (`d68979b7`): `resetPassword` sends the bearer through plain `request()`, and the page ends the session through `endResetSession(sentToken)`. Reviewed with its own task.
-- **Learnings checkpoint:** `/ce-compound-refresh` narrowed `credential-setting-token-redeem-must-not-name-the-account.md` to the reset route (`a9e6be45`): its general rule read onto `recover/verify` and signup `verify`, which answer with the account's name. The implementer's other new entry and refresh check out against the code. `CONCEPTS.md` scanned, no new terms.
+- **Review:** `/ce-code-review` focused path on `8fccf4f0`, `35e4cac3` and `d442a4b7` (branch-remote over `07a4dff6..d442a4b7` through a synthetic head holding only the two reviewed files; the sibling commits in that range touched neither). Orchestrator pass plus one local adversarial reviewer, no cross-model peer. Verdict "Ready to merge". Both hold items met. Item 1, re-run in a scratch copy: each `AS MATERIALIZED` to `AS` mutant fails exactly its own spec on the new assertion; the unmutated file passes, 29 passed, exit 0 (with Redis reachable; without it two Redis-dependent specs time out). Item 2: the three prescribed edits, no sentence added; `d442a4b7` only deletes the pre-`id` timing and re-wraps.
+- **Finding (pre-existing, P2), filed as `backend-wot-threshold-fence-canary-matches-its-own-comment` (low):** the `loadWotThreshold` fence canary in `wot-threshold-signer-gate.test.ts` cannot fail. A `--` comment inside the SQL literal contains "AS MATERIALIZED", which the unanchored regex matches. Fence removed, comment kept: 7 passed, exit 0; control red. The hold had cited that canary as the precedent for the three new assertions.
+- **Triage (user, "approved" as recommended).** Dismissed: anchoring the three new `idempotency.test.ts` assertions the same way (no such comment in those literals today). Residuals the signal already disclosed: the custody arm passes with `ORDER BY ... LIMIT` moved inside the CTE (sort-order spec dismissed at the hold triage); the assertions pin SQL text on a mocked pool, not the live plan.
+- **Learnings checkpoint:** the fence entry's Examples claim that the canary fails red on a dropped fence is false for `loadWotThreshold`; its `/ce-compound-refresh` is scope item 3 of the filed task, which makes the claim true again. Whether the inverse comment case (a comment satisfying a presence check) extends `source-discipline-canary-comment-normalization-and-lens-vs-probe-coverage-2026-09-08.md` or needs a new entry is that task's checkpoint, once the fix is measured. `CONCEPTS.md` scanned, no new terms.
 
 **Owner:** backend
 **Created:** 2026-10-05
 **Priority:** high
 
-## Why
-
-`POST /api/auth/reset` revokes every session of the account (the UPDATE
-stamps `sessions_invalidated_at`) and answers with only a message. A browser
-that is signed in when its user completes a reset there keeps the revoked
-token until its next bearer request. That request, possibly the notification
-poll minutes later, then tears every tab down with the signed-out message and
-opens the sign-in prompt, unprompted.
-
-The SPA should end that session at the moment of the reset, but only when it
-belongs to the account that was reset: a session for another account must
-survive. The response does not say which account was reset, and the reset
-link carries only the token, so the SPA cannot tell. The user chose this fix
-over a client-side probe on 2026-10-05. The UI task
-`ui-recover-and-reset-leave-a-revoked-session-signed-in` waits on it in
-`blocked/` for its reset half.
-
-## Scope
-
-1. Add `username` to the success `data` of `POST /api/auth/reset`: the reset
-   row's `username`, which the handler already selects. The row type declares
-   it nullable; check against `ARCHITECTURE.md` § 6.1 and § 6.3 (the reset
-   transitions name states A and B only) whether a row without a username can
-   reach a successful reset, and document the field as always present or as
-   nullable to match.
-2. Record the field in the `POST /api/auth/reset` section of
-   `agents/docs/api-contracts/auth.md` (architect zone; the commit that edits
-   it needs `[skip-zone-audit]`, or hand the line to the architect).
-3. Move `agents/docs/tasks/blocked/ui-recover-and-reset-leave-a-revoked-session-signed-in.md`
-   back to `pending/` once the field lands (root `CLAUDE.md` rule 6; a ui-slug
-   move needs `[skip-zone-audit]`).
-
-## Acceptance criteria
-
-1. A successful reset answers `data.username` with the account's username.
-2. The error paths are unchanged.
-3. A test pins the field on the success response.
-
-## Backend implementation signal (2026-10-07, commits 0aa0bf78, c1f23108, dccc0064, b56695ab, b5066a6b)
-
-User decisions on 2026-10-07 replace scope item 1 and add one fix:
-
-- **The response does not name the account.** A read-only check of every
-  reset-token leak path (a skeptic pass could not refute it) found that
-  `data.username` hands a party holding only the token the login identifier
-  it lacks: the access log, the proxy log, browser history and sync, or an
-  old mailbox after an email change. With the password it just set, that is
-  a takeover of a light A/B account. The user chose a bearer match instead.
-  The SPA may send its stored session token as `Authorization: Bearer`, and
-  the success `data` carries `session_ended: boolean`, true only when the
-  bearer verifies and names the reset account. A missing, foreign, forged or
-  malformed bearer answers false and never fails the reset.
-- **A reset token rotates a password once.** The rotating UPDATE also keys
-  on `reset_token = $3` and returns `username`. Before, two redemptions that
-  both passed the lookup both rotated the password and both answered 200.
-
-Scope item 1's nullability question: rows with no username do reach a
-successful reset (state E and email-path F, pinned by
-`auth-reset-account-state.test.ts`). Under the boolean shape such a row
-always answers `session_ended: false`.
-
-What landed (0aa0bf78):
-
-- `backend/src/routes/auth.ts`: `bearerNamesAccount`, and the UPDATE with
-  `reset_token = $3 ... RETURNING username`. The fresh-auth sweep, the audit
-  row and the session match read the returned username, and the token lookup
-  no longer selects it.
-- `backend/tests/routes/auth-reset-session-match.test.ts` (new): a bearer for
-  the reset account answers true. Another account, another secret and not a
-  JWT answer false, with the password still rotated. Two redemptions held at
-  a row lock give one 200 and one invalid-token 400, and the stored hash
-  matches the winner. Red before the fix: the field was missing, and both
-  redemptions answered 200.
-- `backend/tests/routes/auth-reset-account-state.test.ts`: the success `data`
-  is asserted whole (`{ message, session_ended: false }`) for every
-  resettable state.
-
-Acceptance criteria, against the decided shape:
-
-1. Replaced by the decision: a successful reset answers `session_ended`, not
-   the username.
-2. Error paths unchanged: same codes and messages. A second redemption of a
-   spent token gets the existing invalid-token answer.
-3. Pinned by the two test files above.
-
-Verification: the two reset files 22/22 with `--retry=0`; the other
-reset-route files plus `tests/eslint` 216/216; typecheck and lint clean. Full
-backend suite: 15 failed, 2802 passed, all 15 in the six standing
-pre-existing files (idempotency-real-haf 2, accreditation-idempotency 6,
-papers-enrichment-parity-gate 1, profile-auth-bypass 3, reviews gate 2,
-cast-hardening 1), none on the reset route. Simplify pass: one local test
-helper (`hexToken`), five optional items skipped.
-
-UI: `ui-recover-and-reset-leave-a-revoked-session-signed-in` moved from
-`blocked/` to `pending/` with a note on the changed shape (b5066a6b).
-
-[TODO Architect] `agents/docs/api-contracts/auth.md`, `POST /api/auth/reset`:
-
-- Request: optional `Authorization: Bearer <session token>`. Never required,
-  never answered with 401.
-- Response `data`: `{ "message": "...", "session_ended": false }`.
-  `session_ended` is true only when the bearer verifies and names the
-  account the reset revoked.
-- Errors: unchanged. A token redeems once, so a concurrent second redemption
-  gets `INVALID_TOKEN`.
-- The § 6.3 and § 6.4 reset rows still name A and B only; that gap is
-  already filed as `architect-password-reset-gate-docs`.
-
-Out of scope, for filing if wanted:
-
-- The expired-token branch of `/reset` clears by `id` alone, so it could in
-  theory clear a fresh token issued between its lookup and its clear.
-  Considered and not built: the window is one round trip and the cost is one
-  re-request.
-- `accounts.reset_token` has no index, so the token lookup scans the table
-  (pre-existing).
-- `POST /api/auth/recover/verify` returns `username` with a session token,
-  signup `POST /api/auth/verify` returns `email`, and accreditation
-  `POST /verify` returns `username`. Not assessed against the
-  identifier-disclosure question this task raised; the first hands back a
-  session for the account anyway, and the last is authenticated.
-- `auth-reset-account-state.test.ts` has no row for the combined
-  ORCID+email+password F shape (email, password and ORCID set, no username),
-  which resets like email-path F.
-
-Learnings checkpoint: new
-`conventions/credential-setting-token-redeem-must-not-name-the-account.md`
-(c1f23108; the same commit widens the CONCEPTS.md Session Invalidation entry
-from light accounts to any account). New
-`conventions/real-postgres-race-test-holds-the-row-lock-and-follows-the-blocker-chain.md`
-(b56695ab). `/ce-compound-refresh` narrowed
-`conventions/auth-gate-revives-pre-existing-read-side-oracle-2026-05-17.md`,
-whose claim that a stolen JWT alone can broadcast no longer holds
-(dccc0064). Other entries naming the reset route were checked; none is
-contradicted.
-
-## Seed-phrase recovery cannot be completed: its mailed links have no page (archived 2026-10-07): two rounds, clean re-review; four residuals dismissed
-
-### Architect archive note (2026-10-07)
-
-- **Review:** `/ce-code-review` full path on `ba103a7d` (branch-remote over `264ad721..ba103a7d`, read from `git show` snapshots; the sibling commits that landed during the review touched none of the four files), seven reviewers: correctness, project-standards, testing, learnings, security, adversarial (in-process, no cross-model peer), julik-frontend-races. Verdict "Ready to merge": no findings at any severity. Both hold items met: the page-gone comment, the teardown test's comment and its title say only that the answer goes to `adoptRecoveredSession`; `console.warn` sits only in the failed arm on both pages. Correctness drove 14 rejection shapes through both pages, mounted and destroyed, at `ba103a7d` and its parent: the only behavior change is the three mapped-code warns (`INVALID_TOKEN` on both pages, `DUPLICATE` on the confirm page). Six recovery suites at `ba103a7d`: 6 files, 178 passed, exit 0. Testing planted 15 mutants: 13 killed; M9 and M15 survived, both disclosed in the signal.
-- **Triage (user, "approved" as recommended):** no hold.
-- **Dismissed:** (1) the confirm page's teardown test rejects only with `INTERNAL_ERROR`, so moving the catch's `_mounted` guard into the failed arm only survives the suites (its effect is a state write on a destroyed component, which no user sees; the guard is intact; disclosed); (2) the stop page has no failure-after-teardown test, so deleting its catch guard survives (pre-existing, disclosed in the first signal); (3) the signal's "only effect is a warn" for (2) leaves out the same invisible state write (signal prose, true in observable terms); (4) `frontend-error-sanitization-2026-04-21.md` still links a task file that no longer exists (pre-existing; covered by `architect-solutions-entries-carry-coordination-context`).
-- **Earlier round:** the 2026-10-06 review held on two items and dispositioned the signal's out-of-scope list (contract drift fixed; six follow-ups filed; one already filed).
-- **Learnings checkpoint:** nothing qualified. The sanitization entry is honored as written; the one non-obvious point (moving the warn left a sibling no-warn assertion vacuous) is covered by `vacuous-state-unchanged-assertion-sentinel-pattern-2026-05-20.md`; the stale link is in the open sweep task. `CONCEPTS.md` scanned, no new terms.
-
-**Owner:** ui
-**Created:** 2026-10-05
-**Priority:** high
+Filed from the accreditation and Web of Trust audit. The learnings pass flagged the query shape;
+the architect then measured it on the HAF node with the user's permission. Widened the same day
+from three lookups to seven, after a plan-only `EXPLAIN` of the sibling reads (user decision).
 
 ## Why
 
-Seed-phrase recovery has two phases (`api-contracts/auth.md` § POST
-/api/auth/recover, `ARCHITECTURE.md` § 6.3 and § 6.4). Phase 1,
-`POST /api/auth/recover` with `memo_key`, changes nothing on the account. It
-answers `{ recovery: 'pending_verification', message }` and mails two links,
-built in `backend/src/routes/recover.ts`:
+Measured on the HAF node on 2026-10-05 with `EXPLAIN (ANALYZE, BUFFERS)`, appTag `pevotest`: the
+query in `findExistingAccreditation` (`backend/src/lib/idempotency.ts`) took 19.75 s for an
+account with no accredit or revoke op. The plan drives a nested loop from
+`Index Only Scan Backward using pk_hive_blocks` (110,520,295 rows read) and probes the
+`custom_id` candidate set, which is empty, once per block. The candidate scan itself took 0.2 ms.
+With the candidates in an `AS MATERIALIZED` CTE and the `ORDER BY ... LIMIT 1` outside it, the
+same lookup took 2.4 ms.
 
-- to the new address, `/recover/verify?token=...`, whose
-  `POST /api/auth/recover/verify` applies the staged email and password swap,
-  revokes every earlier session, and returns a reissued session in the login
-  envelope;
-- to the old address, `/recover/dispute?token=...`, whose
-  `POST /api/auth/recover/dispute` voids a staged swap within 48 hours.
+A plan-only `EXPLAIN` shows the same backward scan of `pk_hive_blocks`, as the outer side of
+the nested loop, for six more lookups. None of the six was executed, so the 19.75 s is measured
+for the gate only:
 
-The SPA has neither route. `router.js` knows `/recover` only, so both links
-fall through `parsePath`'s unmatched-path fallback to the home page, and
-`api.js` has no client for either endpoint. A seed-phrase recovery started
-from the app can never be completed, and the old address's owner cannot stop
-one. The phase-1 done screen also says the account "has been recovered with
-the new email and password" and asks the user to sign in with the new
-credentials, which fails, because nothing has changed yet.
+- `findAccreditationBroadcastByIdempotencyKey` (`backend/src/lib/idempotency.ts`);
+- `getLatestAccreditOp` (`backend/src/accreditation.ts`);
+- both reads in `findAccreditedAccountWithOrcid` (`backend/src/lib/orcid-binding.ts`): the latest
+  accredit op that carries the ORCID, and the account's latest accredit or revoke op;
+- `getExistingAccreditation` (`backend/src/routes/orcid.ts`);
+- the custom_json arm of `findCustodyBroadcastByIdempotencyKey` (`backend/src/lib/idempotency.ts`).
 
-Surfaced while working `ui-recover-and-reset-leave-a-revoked-session-signed-in`;
-the user chose to track it here, at high priority, on 2026-10-05.
+What it costs today:
+
+- `POST /api/accreditation/verify`. A first-time verifier has no accredit or revoke op, and a
+  fresh token's idempotency key matches nothing. The route awaits `findExistingAccreditation` and
+  then `lookupAccreditationBroadcastIdempotency`, which calls
+  `findAccreditationBroadcastByIdempotencyKey` unless a cached hit exists, before it broadcasts.
+  The SPA aborts a request after 30 s (`DEFAULT_TIMEOUT_MS` in `frontend/src/api.js`) while the
+  handler keeps running, so the page can show a timeout for an accreditation that then lands. The
+  HAF pool's `statement_timeout` is also 30 s (`getPool` in `backend/src/db.ts`); a gate lookup
+  that runs past it answers 503 `ACCREDITATION_GATE_UNAVAILABLE`.
+- `PATCH /api/accreditation/metadata`. `getLatestAccreditOp` is its first HAF read. A caller with
+  no accredit op takes the no-match path.
+- The ORCID flows. `findAccreditedAccountWithOrcid` runs in the ORCID accredit and link handlers
+  (`backend/src/routes/orcid.ts`) and on the ORCID signup path
+  (`backend/src/routes/signup-verify.ts`). For an ORCID no accredit op carries, its first read
+  matches nothing. `getExistingAccreditation` runs in the link handler.
+- The custody arm does not run today. `POST /api/custody/broadcast` calls the lookup only when
+  the request body carries an `idempotency_key`, and nothing in `frontend/src` sends one.
+- Each such query holds one of the HAF pool's three connections while it runs.
+
+The fix pattern is the one `loadWotThreshold` (`backend/src/wot.ts`) and `aa_params_latest`
+(`backend/src/hafsql.ts`) already use. It is written up in
+`agents/docs/solutions/conventions/haf-custom-json-latest-op-materialized-fence-2026-06-14.md`.
 
 ## Scope
 
-1. **Phase-1 done screen.** Say that the change waits for confirmation and
-   that a link went to the new address, which must be opened within 24 hours.
-   The current `recover.doneDescription` is used by this arm only (see
-   `recoverPage.doneCopy`); reword it in place or replace it, per the
-   `STUBS.md` Added/Updated rule.
-2. **`/recover/verify` page.** Read the token from the query, post it to
-   `POST /api/auth/recover/verify`, and on success hand the response to the
-   auth store's `adoptRecoveredSession`, the same handling the ORCID arm of
-   `recoverPage.handleSubmit` uses: a browser signed out or signed in to the
-   recovered account takes up the reissued session, and a browser signed in to
-   another account keeps it, with the switch `recoverPage.doneAction` offers.
-   Show the outcome and a next step to match. Map
-   `INVALID_TOKEN` (one generic message for unknown, used, disputed, expired),
-   `DUPLICATE` (the new email was taken meanwhile) and the 503 to localized
-   copy. Decide whether the page posts on load or behind a confirm button: a
-   mail scanner that renders the page would consume the single-use token on
-   load.
-3. **`/recover/dispute` page.** Read the token, post it to
-   `POST /api/auth/recover/dispute`, and show the uniform success copy (the
-   response does not say whether a swap had already applied). Map
-   `INVALID_TOKEN` and the 503.
-4. Router entries and page titles for both routes, `api.js` clients, and the
-   copy in all sixteen locales per the stub convention.
+1. In each of the seven lookups, put the row match in an `AS MATERIALIZED` CTE that carries no
+   `ORDER BY` and no `LIMIT`, and order and limit outside it. Keep every predicate of that lookup
+   (`custom_id`, the action filter where there is one, the subject field,
+   `required_posting_auths ?|`) inside the CTE. Keep each lookup's existing sort order. Do not
+   add a `block_num >=` floor.
+
+   The form that was measured for the gate (no-match input only):
+
+   ```sql
+   WITH candidates AS MATERIALIZED (
+     SELECT cj.id, cj.block_num, cj.json::jsonb ->> 'action' AS action
+     FROM hafsql.operation_custom_json_view cj
+     WHERE cj.custom_id = $1
+       AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
+       AND cj.json::jsonb ->> 'account' = $2
+       AND cj.required_posting_auths ?| $3::text[]
+   )
+   SELECT op.included_trx_id AS trx_id, c.block_num, c.action
+   FROM candidates c
+   JOIN hafsql.haf_operations op ON op.id = c.id
+   ORDER BY c.block_num DESC, c.id DESC
+   LIMIT 1
+   ```
+
+2. `hafsql.ts` keeps `AS MATERIALIZED` inline in its SQL literals for the
+   `pevo/no-custom-id-block-num-floor` lint canary (see the comment on `aa_vouch_ranked`). Check
+   whether that rule reads these files before you move the CTE into a shared fragment.
+3. Re-measure each of the seven after the change, for a no-match input and for a matching one, and
+   put the numbers in the signal block. If you cannot run `EXPLAIN` against the HAF node, say so
+   there and the architect measures at review.
+
+## Out of scope
+
+- The gate's semantics. `backend-verify-gate-treats-wot-enrollee-as-accredited` changes which
+  rows count as a hit and lands after this task, because both edit the same query.
+- The comment arm of `findCustodyBroadcastByIdempotencyKey`. Its plan-only `EXPLAIN` shows an
+  index scan on the comment author with the block floor and no backward blocks scan. Leave it.
+- The `update_weights` read in `reputation.ts`. It has the same `ORDER BY block_num DESC LIMIT 1`
+  shape, runs under a 5 s `SET LOCAL statement_timeout`, and was not plan-checked. It belongs to
+  `architect-audit-reputation`.
 
 ## Acceptance criteria
 
-1. A seed-phrase recovery started on `/recover` completes through the mailed
-   link: the account takes the new email and password, and the browser that
-   opens the link ends up as `adoptRecoveredSession` decides.
-2. The dispute link stops a staged recovery and says so.
-3. The phase-1 done screen no longer claims the account was recovered.
-4. Unit tests pin both pages and the phase-1 copy. An E2E over the mailed
-   links is the real-path companion. Only SHA-256 digests of the verify and
-   dispute tokens are stored, so it reads the links from the test stack's
-   Mailpit sink.
+1. The seven lookups return what they returned before, for matching and non-matching inputs. Name
+   the specs that cover each in the signal block.
+2. The signal block carries the measured timings, or says they could not be taken.
+3. A comment that states a timing cites only a number this task or its implementer measured, and
+   says for which input. Comments follow root `CLAUDE.md` "Comment anchors".
 
-## UI implementation signal (2026-10-06, commits d297d2e4, cb8b610f)
+## Backend implementation signal (2026-10-06, commits 3c76c235 and 10888287)
 
-Landed on main in two commits, each verified with
-`git merge-base --is-ancestor <sha> main`:
+**Landed.** `3c76c235` (code and tests), `10888287` (learnings refresh, `[skip-zone-audit]`). Both
+verified on main with `git merge-base --is-ancestor`.
 
-- `d297d2e4`: the change: `verifyRecovery` / `disputeRecovery` in `api.js`,
-  the `recover-verify` and `recover-dispute` pages and routes, the phase-1
-  done screen, 22 new `recover.*` keys in all sixteen locales with
-  `recover.doneDescription` removed from all sixteen, one STUBS.md Added
-  sweep, the unit suites and the Mailpit E2E.
-- `cb8b610f`: copy and comment fixes from a verification pass (listed
-  below), and the E2E fixture's `fullName` after it moved onto
-  `seedLightAccount`.
+- All seven lookups now put the row match in `WITH candidates AS MATERIALIZED (...)` and order and
+  limit outside it: the custom_json arm of `findCustodyBroadcastByIdempotencyKey`,
+  `findAccreditationBroadcastByIdempotencyKey`, `findExistingAccreditation`
+  (`backend/src/lib/idempotency.ts`), `getLatestAccreditOp` (`backend/src/accreditation.ts`), both
+  reads in `findAccreditedAccountWithOrcid` (`backend/src/lib/orcid-binding.ts`), and
+  `getExistingAccreditation` (`backend/src/routes/orcid.ts`). Every predicate, the params array,
+  the projected column names and each sort order are unchanged. The custody arm still orders by
+  `block_num DESC` only. No `block_num >=` floor.
+- Scope item 2: the CTE stays inline in each literal. Both SQL lint rules apply to every
+  `**/*.ts` file (`files: ['**/*.ts', '**/*.tsx']` in `backend/eslint.config.mjs`).
+  `pevo/no-accred-state-read-missing-id-tiebreaker` still fires on the new shape: a temp copy of
+  `getLatestAccreditOp` with `, c.id DESC` removed failed lint, and the copy was deleted.
+- Comments: each site has a short fence comment that points to `loadWotThreshold` for the planner
+  shape. None states a timing (AC 3). Comments that quoted the old ORDER BY text now name the key
+  without an alias (`block_num DESC, id DESC`). The `findCustodyBroadcastByIdempotencyKey`
+  docblock sentence "the JOIN cost is negligible at LIMIT 1 because both sides have indexes on
+  `id`" was deleted: the fenced arm joins the candidate set, which has no index. In
+  `idempotency-real-haf.test.ts`, the `(lines ~282-345)` pointer became the function name, and
+  "mirrors findExistingAccreditation's SQL shape" was narrowed to "reads ... view and join".
+- Tests: the two shape pins in `backend/tests/lib/idempotency.test.ts` now expect
+  `ORDER BY c.block_num DESC, c.id DESC`. Red observed first: 2 failed before the code change.
 
-**Decision taken with the user before implementing:** the E2E seeds the
-account's encrypted memo key with `CUSTODY_ENCRYPTION_KEY` read from the
-gitignored `frontend/.env.test` (process-env override
-`E2E_CUSTODY_ENCRYPTION_KEY`), documented in `frontend/.env.test.example`
-the same way as `SESSION_SECRET`. The fixture
-(`tests/e2e/fixtures/recoverable-account.js`) copies the backend's HKDF +
-AES-256-GCM `encryptKey`; drift fails phase 1, so the spec catches it.
+**AC 1: same results, matching and non-matching.** The user chose a one-off live comparison over
+a new real-HAF spec file for the four lookups no spec runs for real. A scratchpad script took the
+old SQL from HEAD and the new SQL from the working tree, byte for byte, and ran both read-only on
+HAF (`BEGIN; SET LOCAL statement_timeout; ...; ROLLBACK`). appTag `pevotest` holds 22 custom_json
+ops; 21 are authority-signed accredits, and none carries an `idempotency_key`.
 
+| Lookup | Matching inputs, old = new rows | Non-matching (new returns no row) | Specs |
+|---|---|---|---|
+| custody custom_json arm | 1 of 1 (swapped field, see below) | yes | `tests/lib/idempotency.test.ts`, `tests/routes/custody-idempotency.test.ts` (mocked); `tests/lib/idempotency-real-haf.test.ts`: negative miss, opType `comment`, opType `custom_json` (real HAF, pass) |
+| `findAccreditationBroadcastByIdempotencyKey` | 1 of 1 (swapped field) | yes | `tests/lib/idempotency.test.ts` (mocked); real-HAF negative miss and non-authority scoping (pass); positive hit skips, no fixture |
+| `findExistingAccreditation` | 11 of 11 accounts | yes | `tests/lib/idempotency.test.ts`, `tests/routes/accreditation-idempotency.test.ts` (mocked); real-HAF negative miss, positive hit, non-authority scoping (pass) |
+| `getLatestAccreditOp` | 11 of 11 | yes | none run its SQL (`tests/routes/accreditation-metadata-edit.test.ts` mocks the function); one-off check only |
+| `findAccreditedAccountWithOrcid`, ORCID read | 4 of 4 ORCIDs | yes | `tests/routes/orcid.test.ts` (mocked pool, dispatches on predicate text the CTE keeps verbatim); one-off check |
+| `findAccreditedAccountWithOrcid`, status read | 11 of 11 | yes | same as the ORCID read |
+| `getExistingAccreditation` | 11 of 11 | yes | `tests/routes/orcid.test.ts` (mocked pool, `/link`); one-off check |
+
+"Swapped field": with no live `idempotency_key`, the two key lookups were compared and timed with
+`'idempotency_key'` replaced by `'action'` and the key set to `accredit` (custody signer
+`pevotest.admin`), which matches 21 rows. The old form was never executed on a non-matching input;
+plan-only `EXPLAIN` showed `Index Only Scan Backward using pk_hive_blocks` as the outer side of the
+nested loop for all seven.
+
+**AC 2: timings.** `EXPLAIN (ANALYZE, BUFFERS)` execution time on the HAF node; new form median of
+3 runs; old form executed only on matching inputs.
+
+| Lookup | New, no match | New, match | Old, match |
+|---|---|---|---|
+| custody custom_json arm | 0.137 ms | 1.065 ms (swapped) | 1,044 ms, 564,137 backward block rows (swapped) |
+| `findAccreditationBroadcastByIdempotencyKey` | 0.211 ms | 0.630 ms (swapped) | 1,023 ms (swapped) |
+| `findExistingAccreditation` | 0.217 ms | 0.388 ms gijo.george; 0.69 to 0.94 ms pevo.science | 261 ms gijo.george; 26,215 ms pevo.science |
+| `getLatestAccreditOp` | 12.9 ms | 15.1 ms gijo.george; 12.1 to 12.8 ms pevo.science | 259 ms; 26,715 ms |
+| ORCID read | 13.2 ms | 12.7 ms 0000-0002-7487-7441; 12.1 to 17.7 ms 0000-0001-2345-6789 | 211 ms; 26,100 ms |
+| status read | 13.0 ms | 13.8 ms; 12.7 to 13.4 ms | 259 ms; 25,940 ms |
+| `getExistingAccreditation` | 12.7 ms | 13.2 ms; 12.2 to 12.4 ms | 262 ms; 26,081 ms |
+
+- New plans: `pk_hive_blocks` runs only as a forward probe per candidate (0 loops on a no-match
+  input), and the backward scan is gone. The 12 to 13 ms floor on the four lookups without a
+  `haf_operations` join is a `Gather` (parallel) node over the candidate index scan. The three
+  join plans have no Gather.
+- Beyond the task's Why: the old form was slow on matching inputs too. pevo.science has one
+  accredit op (block 105,078,443), and its old plan read 110,548,040 backward block rows: the
+  whole index. gijo.george has three ops, the newest at block 109,983,748, and its old plan read
+  564,212 rows. Old-form wall clock was 12 to 14 s for each of the seven single-op accounts on
+  every account-keyed lookup, and 0.2 to 1.7 s for the multi-op accounts. The old account-keyed
+  plans have an `Incremental Sort` over the backward walk. My reading, not verified, is that it
+  keeps reading until it finds an older match to close the `block_num` group.
+
+**Runs.**
+
+- `npm run typecheck`: exit 0. `npm run lint`: 0 errors. One warning, in
+  `src/lib/author-supersession.ts`, predates this work and is not in this diff.
+- `tests/eslint` + `tests/lib/idempotency.test.ts`: 10 files, 175 passed.
+- `idempotency.test.ts`, `accreditation-idempotency`, `accreditation-metadata-edit`,
+  `accreditation`, `custody-idempotency`, `orcid`, `signup-verify-orcid-binding-guard`,
+  `window-cte-deterministic-tiebreaker`, `lib/accreditation-orcid-cache` and `tests/eslint`:
+  378 passed, 6 failed. All six are in `accreditation-idempotency.test.ts`: the six specs that
+  `backend-accreditation-idempotency-specs-skip-the-sanction-guard-read` documents as failing on
+  clean main (FIFO mock queue, not SQL text).
+- `tests/lib/idempotency-real-haf.test.ts`, whole file: 2 failed, 8 passed, 1 skipped (488 s).
+  This matches the baseline in `backend-idempotency-real-haf-discovery-walks-the-chain`. Both
+  failures die in the test's own `findKnownCustodyIdempotencyOp` with `canceling statement due to
+  statement timeout`, before the production call.
+- Verbose re-run without those two specs: 8 passed, 3 skipped. The negative-miss specs, which run
+  the fenced lookups on a no-match input, took 73 to 149 ms.
+
+**Review passes.**
+
+- `/ce-code-review` was not run (backend role; the architect reviews at intake). A read-only
+  verification workflow ran three lenses (SQL equivalence and caller contracts, comment truth,
+  system-wide impact), each finding checked by a refuter. SQL lens: no defects. Impact lens: no
+  breakage. Every mocked dispatcher still matches. 3 P3 comment findings were confirmed and fixed
+  (listed under Comments); 6 were refuted as pre-existing text the diff left true.
+- `/ce-simplify-code`: reuse 0, efficiency 0, quality 2 applied (the alias-free tiebreaker
+  wording; a garbled clause in the `recent` read comment). Skipped: fusing the two
+  `findAccreditedAccountWithOrcid` reads into one statement (saves one round trip on infrequent
+  paths, harder to read).
+
+**Learnings checkpoint.** `/ce-compound-refresh` on two entries, committed as `10888287`:
+
+- `haf-custom-json-latest-op-materialized-fence-2026-06-14.md`: its carve-out said an account with
+  matching ops lets the backward scan stop early. The single-op measurement contradicts that, so
+  the carve-out is replaced by the numbers. The verified-sites list now names the seven lookups,
+  and the snippets match current code.
+- `accreditation-state-read-latest-action-wins-2026-05-15.md`: the canonical and example SQL showed
+  an unfenced shape with a `block_num >=` floor and `op.trx_id`. They now show the fenced shape
+  with `included_trx_id` and no floor. The `/verify` caller snippet matches the helper.
+- No new entry: the single-op finding sits in the fence entry. CONCEPTS.md: scanned, no qualifying
+  terms.
+
+**Out of scope, noticed (for triage).**
+
+1. `accreditation-state-read-latest-action-wins-2026-05-15.md` is partly superseded.
+   `getAccreditationFromHaf` (`routes/profile.ts`) and `routes/accreditations.ts` now answer
+   "currently accredited" through `activeAccreditationsCteBody` (sanctions, WoT threshold,
+   legacy revoke). Its site list (line numbers) and its "any state read must use bare
+   latest-action-wins" guidance no longer describe them. Recommend a `/ce-compound-refresh`
+   Replace after `backend-verify-gate-treats-wot-enrollee-as-accredited` lands, since that task
+   changes `findExistingAccreditation`'s semantics. Its Related list also cites a task file that
+   no longer exists, which falls under `architect-solutions-entries-carry-coordination-context`.
+2. Two more unfenced probes in `tests/lib/idempotency-real-haf.test.ts`, both test-only and with
+   a genesis floor: `findKnownExistingAccreditationFixture` and the forged-accredit probe in
+   `findExistingAccreditation`'s per-route scoping spec. They pass but take 11 to 22 s per spec.
+   They fit `backend-idempotency-real-haf-discovery-walks-the-chain`, if that task does not
+   already cover them. The same file's "findExistingAccreditation lines 340-343" cite was already
+   wrong at HEAD.
+3. The `update_weights` read in `loadReputationWeights` (`reputation.ts`) stays out of scope per
+   this task (`architect-audit-reputation`). The single-op finding means a non-empty match set
+   does not protect it.
+4. Scaling note: the fenced form reads every appTag candidate before it sorts. That is trivial at
+   22 ops. Re-measure if appTag custom_json volume grows by orders of magnitude.
