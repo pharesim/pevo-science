@@ -103,9 +103,9 @@
  * `pending_email_token`; its verify branch clears a `verify_token` that is
  * already NULL. And nothing puts a hex token back on such a row afterwards:
  * `POST /signup` answers 409 for a row whose token is NULL, the resend route
- * returns before its UPDATE for a row with a username, and the verify-link
- * handler selects by a token the row must already hold. State G is the row the
- * add-flow clearer reaches.
+ * writes only where the row still holds the hex token it read, and the
+ * verify-link handler selects by a token the row must already hold. State G is
+ * the row the add-flow clearer reaches.
  *
  * The marker is what bounds the rows `custody` DOES let through, which are the
  * finalized light and upgraded rows, whose marker, after the INSERT's default
