@@ -141,13 +141,15 @@ async function rowByUsername(username: string): Promise<AccountRow> {
 
 // A state B row (ARCHITECTURE.md section 6.1): light, with a password and an
 // ORCID. It carries an encrypted memo key so the seed-phrase recovery can run.
+let passwordHash: Promise<string> | undefined;
+
 async function seedStateB(id: Identity): Promise<void> {
-  const passwordHash = await argon2.hash(PASSWORD, { type: argon2.argon2id });
+  passwordHash ??= argon2.hash(PASSWORD, { type: argon2.argon2id });
   const memoEnc = encryptKey(id.username, MEMO_KEY);
   await getAppPool()!.query(
     `INSERT INTO accounts (email, username, password_hash, orcid, custody, memo_key_enc, iv_memo, verify_token)
      VALUES ($1, $2, $3, $4, 'light', $5, $6, NULL)`,
-    [id.email, id.username, passwordHash, id.orcid, memoEnc.ciphertext, memoEnc.iv],
+    [id.email, id.username, await passwordHash, id.orcid, memoEnc.ciphertext, memoEnc.iv],
   );
 }
 

@@ -15,8 +15,8 @@
  * the settings re-issue for an unverified state G row and that re-issue's
  * restore when its mail fails, and both signup upserts over a pending row E.
  * `POST /api/auth/reset-request` writes its token only while the row still
- * matches its lookup, so a recovery that commits between the two leaves no
- * token either.
+ * matches its lookup, so a recovery that moves the row's email between the two
+ * leaves no token either.
  *
  * Tokens are issued by `POST /api/auth/reset-request` where it serves the row.
  * It does not serve an unverified state G row, so for those the token is
@@ -164,8 +164,6 @@ function hexToken(): string {
 }
 
 interface AccountRow {
-  email: string | null;
-  username: string | null;
   password_hash: string | null;
   verify_token: string | null;
   reset_token: string | null;
@@ -174,15 +172,18 @@ interface AccountRow {
 
 async function rowByEmail(email: string): Promise<AccountRow> {
   const { rows } = await getAppPool()!.query<AccountRow>(
-    'SELECT email, username, password_hash, verify_token, reset_token, reset_token_expires_at FROM accounts WHERE email = $1',
+    'SELECT password_hash, verify_token, reset_token, reset_token_expires_at FROM accounts WHERE email = $1',
     [email],
   );
   expect(rows, `row for ${email}`).toHaveLength(1);
   return rows[0];
 }
 
-async function hashOf(password: string): Promise<string> {
-  return argon2.hash(password, { type: argon2.argon2id });
+// One hash of OLD_PASSWORD, shared by every seeded row.
+let oldPasswordHash: Promise<string> | undefined;
+function hashOfOldPassword(): Promise<string> {
+  oldPasswordHash ??= argon2.hash(OLD_PASSWORD, { type: argon2.argon2id });
+  return oldPasswordHash;
 }
 
 // A light row with a password and an encrypted memo key: state A without an
@@ -192,7 +193,7 @@ async function seedLight(id: Identity, withOrcid: boolean): Promise<void> {
   await getAppPool()!.query(
     `INSERT INTO accounts (email, username, password_hash, orcid, custody, memo_key_enc, iv_memo, verify_token)
      VALUES ($1, $2, $3, $4, 'light', $5, $6, NULL)`,
-    [id.email, id.username, await hashOf(OLD_PASSWORD), withOrcid ? id.orcid : null, memoEnc.ciphertext, memoEnc.iv],
+    [id.email, id.username, await hashOfOldPassword(), withOrcid ? id.orcid : null, memoEnc.ciphertext, memoEnc.iv],
   );
 }
 
@@ -203,7 +204,7 @@ async function seedUnverifiedG(id: Identity, verifyToken: string, resetToken: st
     `INSERT INTO accounts (email, username, password_hash, verify_token, expires_at, reset_token, reset_token_expires_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
-      id.email, id.username, await hashOf(OLD_PASSWORD), verifyToken,
+      id.email, id.username, await hashOfOldPassword(), verifyToken,
       new Date(Date.now() + 3_600_000), resetToken, new Date(Date.now() + 3_600_000),
     ],
   );
@@ -214,7 +215,7 @@ async function seedSignupE(id: Identity): Promise<void> {
   await getAppPool()!.query(
     `INSERT INTO accounts (email, password_hash, verify_token, expires_at)
      VALUES ($1, $2, $3, $4)`,
-    [id.email, await hashOf(OLD_PASSWORD), hexToken(), new Date(Date.now() + 3_600_000)],
+    [id.email, await hashOfOldPassword(), hexToken(), new Date(Date.now() + 3_600_000)],
   );
 }
 

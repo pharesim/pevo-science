@@ -113,8 +113,9 @@ const MAX_LOGIN_FAILURES = 20;
 // known-email DB-update-then-200 path must use this constant.
 export const RESET_REQUEST_OK_MESSAGE = 'If that email belongs to an account whose password can be reset, a reset link has been sent.';
 
-// /reset answer for an unknown token and for a token whose row has no
-// password. One string, so the refusal reads exactly like an unknown token.
+// /reset answer for an unknown token and for a token whose row the /reset
+// UPDATE refuses. One string, so the refusal reads exactly like an unknown
+// token.
 const RESET_TOKEN_INVALID_MESSAGE = 'Invalid or expired reset token';
 
 // Sentinel argon2id hash for timing-equalization at every "cheap" early-return
@@ -1070,8 +1071,8 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
     // state G row whose email is unverified (`username` set and a
     // `verify_token` still on it, ARCHITECTURE.md § 6.1): the link would go
     // to an address the row never proved.
-    const { rows } = await pool.query<{ id: number; username: string | null }>(
-      `SELECT id, username FROM accounts
+    const { rows } = await pool.query<{ id: number }>(
+      `SELECT id FROM accounts
         WHERE email = $1 AND password_hash IS NOT NULL AND (username IS NULL OR verify_token IS NULL)`,
       [normalizedEmail],
     );
@@ -1135,9 +1136,9 @@ router.post('/reset-request', resetRequestLimiter, async (req: Request, res: Res
     const resetToken = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + RESET_TOKEN_EXPIRY_MS);
 
-    // The write re-checks the lookup's predicate, so a recovery, email change
-    // or password drop that commits between the two leaves no token on the
-    // row. The reset mail still goes out, carrying a token no row holds.
+    // The write re-checks the lookup's predicate, so a write that moves the
+    // row's email or drops its password between the two leaves no token on
+    // the row. The reset mail still goes out, carrying a token no row holds.
     await pool.query(
       `UPDATE accounts SET reset_token = $1, reset_token_expires_at = $2
         WHERE id = $3 AND email = $4 AND password_hash IS NOT NULL AND (username IS NULL OR verify_token IS NULL)`,
