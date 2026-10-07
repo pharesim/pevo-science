@@ -354,6 +354,8 @@ Always returns success to prevent email enumeration.
 
 Set a new password using a reset token.
 
+**Headers (optional):** `Authorization: Bearer <session token>`, the session this browser holds, if any. It is never required: a missing, invalid, expired or other-account token never fails the reset and is never answered with 401.
+
 **Body:**
 
 ```json
@@ -367,16 +369,19 @@ Set a new password using a reset token.
 
 ```json
 {
-  "message": "Password has been reset. Please log in with your new password."
+  "message": "Password has been reset. Please log in with your new password.",
+  "session_ended": false
 }
 ```
+
+- `session_ended`: `true` only when the request carried a bearer that verifies and names the account this reset revoked, so the browser can end that session now. The response never names the account.
 
 Invalidates all existing sessions for the account.
 
 **Rate limit:** 5 requests per IP per hour.
 
 **Errors:**
-- `INVALID_TOKEN` — token not found or expired
+- `INVALID_TOKEN`: token not found, expired, or already used. A token redeems once, so a concurrent second redemption gets this error.
 - `VALIDATION_ERROR` — password does not meet requirements
 - `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. See [common.md](common.md).
 

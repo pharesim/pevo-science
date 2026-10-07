@@ -1,3 +1,153 @@
+## The password reset response does not name the account it reset (archived 2026-10-07): clean review; contract applied, one low follow-up filed, five residuals dismissed
+
+### Architect archive note (2026-10-07)
+
+- **Review:** `/ce-code-review` full path over `5ff7d3f8..b56695ab` (branch-remote, read from `git show` snapshots; code `0aa0bf78`, docs `c1f23108`, `dccc0064`, `b5066a6b`, `b56695ab`), seven reviewers: correctness, security, adversarial (in-process, no cross-model peer), testing, api-contract, project-standards, learnings. Verdict "Ready to merge": no findings at any severity. The two reset files at `b56695ab`: 22/22, exit 0. Testing planted five mutants (token predicate neutralised, bearer `sub` ignored, always false, try/catch removed, `username` added to `data`), all killed; `tests/eslint` 146/146.
+- **Triage (user, 2026-10-07):** no hold. The `[TODO Architect]` lines are applied to `api-contracts/auth.md` § POST /api/auth/reset (optional bearer that never fails the reset, `session_ended`, a token redeems once). Filed: `backend-reset-token-lookup-has-no-index` (low).
+- **Dismissed:** (1) the `not a JWT` row's generated test title says the bearer names the reset account, which `Bearer not-a-jwt` does not (assertions correct); (2) the expired-token branch clears by `id` alone (one-round-trip window; the cost is one re-request); (3) the account names answered by `recover/verify`, signup `verify` and accreditation `verify` (none turns a token-only holder's knowledge of the name into a sign-in it lacks; the leaked-link root is `backend-access-log-records-mailed-link-tokens`); (4) no account-state row for the ORCID+email+password F shape (same path as email-path F); (5) a recovery-minted session can outlive a concurrent reset (pre-existing; a recovery that cleared the reset token would make that reset match no row, which is `backend-reset-tokens-outlive-email-changes-and-recovery`).
+- **UI consumer:** the reset half landed during the review (`d68979b7`): `resetPassword` sends the bearer through plain `request()`, and the page ends the session through `endResetSession(sentToken)`. Reviewed with its own task.
+- **Learnings checkpoint:** `/ce-compound-refresh` narrowed `credential-setting-token-redeem-must-not-name-the-account.md` to the reset route (`a9e6be45`): its general rule read onto `recover/verify` and signup `verify`, which answer with the account's name. The implementer's other new entry and refresh check out against the code. `CONCEPTS.md` scanned, no new terms.
+
+**Owner:** backend
+**Created:** 2026-10-05
+**Priority:** high
+
+## Why
+
+`POST /api/auth/reset` revokes every session of the account (the UPDATE
+stamps `sessions_invalidated_at`) and answers with only a message. A browser
+that is signed in when its user completes a reset there keeps the revoked
+token until its next bearer request. That request, possibly the notification
+poll minutes later, then tears every tab down with the signed-out message and
+opens the sign-in prompt, unprompted.
+
+The SPA should end that session at the moment of the reset, but only when it
+belongs to the account that was reset: a session for another account must
+survive. The response does not say which account was reset, and the reset
+link carries only the token, so the SPA cannot tell. The user chose this fix
+over a client-side probe on 2026-10-05. The UI task
+`ui-recover-and-reset-leave-a-revoked-session-signed-in` waits on it in
+`blocked/` for its reset half.
+
+## Scope
+
+1. Add `username` to the success `data` of `POST /api/auth/reset`: the reset
+   row's `username`, which the handler already selects. The row type declares
+   it nullable; check against `ARCHITECTURE.md` § 6.1 and § 6.3 (the reset
+   transitions name states A and B only) whether a row without a username can
+   reach a successful reset, and document the field as always present or as
+   nullable to match.
+2. Record the field in the `POST /api/auth/reset` section of
+   `agents/docs/api-contracts/auth.md` (architect zone; the commit that edits
+   it needs `[skip-zone-audit]`, or hand the line to the architect).
+3. Move `agents/docs/tasks/blocked/ui-recover-and-reset-leave-a-revoked-session-signed-in.md`
+   back to `pending/` once the field lands (root `CLAUDE.md` rule 6; a ui-slug
+   move needs `[skip-zone-audit]`).
+
+## Acceptance criteria
+
+1. A successful reset answers `data.username` with the account's username.
+2. The error paths are unchanged.
+3. A test pins the field on the success response.
+
+## Backend implementation signal (2026-10-07, commits 0aa0bf78, c1f23108, dccc0064, b56695ab, b5066a6b)
+
+User decisions on 2026-10-07 replace scope item 1 and add one fix:
+
+- **The response does not name the account.** A read-only check of every
+  reset-token leak path (a skeptic pass could not refute it) found that
+  `data.username` hands a party holding only the token the login identifier
+  it lacks: the access log, the proxy log, browser history and sync, or an
+  old mailbox after an email change. With the password it just set, that is
+  a takeover of a light A/B account. The user chose a bearer match instead.
+  The SPA may send its stored session token as `Authorization: Bearer`, and
+  the success `data` carries `session_ended: boolean`, true only when the
+  bearer verifies and names the reset account. A missing, foreign, forged or
+  malformed bearer answers false and never fails the reset.
+- **A reset token rotates a password once.** The rotating UPDATE also keys
+  on `reset_token = $3` and returns `username`. Before, two redemptions that
+  both passed the lookup both rotated the password and both answered 200.
+
+Scope item 1's nullability question: rows with no username do reach a
+successful reset (state E and email-path F, pinned by
+`auth-reset-account-state.test.ts`). Under the boolean shape such a row
+always answers `session_ended: false`.
+
+What landed (0aa0bf78):
+
+- `backend/src/routes/auth.ts`: `bearerNamesAccount`, and the UPDATE with
+  `reset_token = $3 ... RETURNING username`. The fresh-auth sweep, the audit
+  row and the session match read the returned username, and the token lookup
+  no longer selects it.
+- `backend/tests/routes/auth-reset-session-match.test.ts` (new): a bearer for
+  the reset account answers true. Another account, another secret and not a
+  JWT answer false, with the password still rotated. Two redemptions held at
+  a row lock give one 200 and one invalid-token 400, and the stored hash
+  matches the winner. Red before the fix: the field was missing, and both
+  redemptions answered 200.
+- `backend/tests/routes/auth-reset-account-state.test.ts`: the success `data`
+  is asserted whole (`{ message, session_ended: false }`) for every
+  resettable state.
+
+Acceptance criteria, against the decided shape:
+
+1. Replaced by the decision: a successful reset answers `session_ended`, not
+   the username.
+2. Error paths unchanged: same codes and messages. A second redemption of a
+   spent token gets the existing invalid-token answer.
+3. Pinned by the two test files above.
+
+Verification: the two reset files 22/22 with `--retry=0`; the other
+reset-route files plus `tests/eslint` 216/216; typecheck and lint clean. Full
+backend suite: 15 failed, 2802 passed, all 15 in the six standing
+pre-existing files (idempotency-real-haf 2, accreditation-idempotency 6,
+papers-enrichment-parity-gate 1, profile-auth-bypass 3, reviews gate 2,
+cast-hardening 1), none on the reset route. Simplify pass: one local test
+helper (`hexToken`), five optional items skipped.
+
+UI: `ui-recover-and-reset-leave-a-revoked-session-signed-in` moved from
+`blocked/` to `pending/` with a note on the changed shape (b5066a6b).
+
+[TODO Architect] `agents/docs/api-contracts/auth.md`, `POST /api/auth/reset`:
+
+- Request: optional `Authorization: Bearer <session token>`. Never required,
+  never answered with 401.
+- Response `data`: `{ "message": "...", "session_ended": false }`.
+  `session_ended` is true only when the bearer verifies and names the
+  account the reset revoked.
+- Errors: unchanged. A token redeems once, so a concurrent second redemption
+  gets `INVALID_TOKEN`.
+- The § 6.3 and § 6.4 reset rows still name A and B only; that gap is
+  already filed as `architect-password-reset-gate-docs`.
+
+Out of scope, for filing if wanted:
+
+- The expired-token branch of `/reset` clears by `id` alone, so it could in
+  theory clear a fresh token issued between its lookup and its clear.
+  Considered and not built: the window is one round trip and the cost is one
+  re-request.
+- `accounts.reset_token` has no index, so the token lookup scans the table
+  (pre-existing).
+- `POST /api/auth/recover/verify` returns `username` with a session token,
+  signup `POST /api/auth/verify` returns `email`, and accreditation
+  `POST /verify` returns `username`. Not assessed against the
+  identifier-disclosure question this task raised; the first hands back a
+  session for the account anyway, and the last is authenticated.
+- `auth-reset-account-state.test.ts` has no row for the combined
+  ORCID+email+password F shape (email, password and ORCID set, no username),
+  which resets like email-path F.
+
+Learnings checkpoint: new
+`conventions/credential-setting-token-redeem-must-not-name-the-account.md`
+(c1f23108; the same commit widens the CONCEPTS.md Session Invalidation entry
+from light accounts to any account). New
+`conventions/real-postgres-race-test-holds-the-row-lock-and-follows-the-blocker-chain.md`
+(b56695ab). `/ce-compound-refresh` narrowed
+`conventions/auth-gate-revives-pre-existing-read-side-oracle-2026-05-17.md`,
+whose claim that a stolen JWT alone can broadcast no longer holds
+(dccc0064). Other entries naming the reset route were checked; none is
+contradicted.
+
 ## Seed-phrase recovery cannot be completed: its mailed links have no page (archived 2026-10-07): two rounds, clean re-review; four residuals dismissed
 
 ### Architect archive note (2026-10-07)
@@ -98,153 +248,3 @@ the same way as `SESSION_SECRET`. The fixture
 (`tests/e2e/fixtures/recoverable-account.js`) copies the backend's HKDF +
 AES-256-GCM `encryptKey`; drift fails phase 1, so the spec catches it.
 
-**Decisions the task left to the implementer:**
-
-1. **Both pages post only from a button.** Opening `/recover/verify` or
-   `/recover/dispute` reads the token and sends nothing; "Confirm recovery" /
-   "Stop the recovery" sends it. A mail scanner that renders the page would
-   otherwise spend the single-use confirm link (and receive the reissued
-   session), or stop every recovery from the old mailbox, the owner's own
-   included. Unit tests pin "nothing sent on open"; the E2E asserts no
-   `POST /api/auth/recover/verify` before the click.
-2. **Phase-1 copy replaced, not reworded.** `recover.doneDescription` was
-   translated in all fifteen locales and its meaning changes from "done,
-   sign in" to "pending, confirm from the new mailbox", so it is removed from
-   all sixteen files and the seed arm uses new `recover.seedPendingTitle` /
-   `recover.seedPendingDescription` (Added sweep, no Updated entry). The seed
-   arm also gets its own title and an envelope icon: `recover.doneTitle`
-   ("Account Recovered") stays on the ORCID arm, where it is true. The
-   button stays "Sign in": the old credentials still work until the link is
-   opened, which the copy says.
-3. **Error mapping.** `INVALID_TOKEN` -> one unusable-link state (also used
-   for a link without a token, which sends nothing); `DUPLICATE` -> its own
-   state with a way back to `/recover`; everything else, including the 503
-   (it arrives as `INTERNAL_ERROR`, the same code as the 500, and
-   `ApiRequestError` carries no status), `RATE_LIMITED` and network or
-   timeout failures -> one retriable state that posts the same token again.
-   The dispute page has no `DUPLICATE` arm.
-4. **Session on the verify page.** The answer goes to
-   `adoptRecoveredSession`, as in the ORCID arm: signed out or signed in to
-   the recovered account -> signed in, "Go to Settings"; signed in to another
-   account -> kept, with "Switch to the recovered account". The reissued
-   session is taken up even if the page was left mid-request, since the
-   server has already spent the link and revoked the other sessions.
-5. **Dispute copy.** The page never shows the server's message ("No change
-   has been made to your account" is false after an applied swap). Its done
-   heading is "Request received" and the body covers both outcomes, with a
-   Contact Us link for the already-confirmed case.
-
-**Scope 1 / AC3.** `recoverPage.doneCopy` seed arm: `seedPendingTitle` +
-`seedPendingDescription` ("Nothing has changed yet ... a confirmation link
-to your new email address. Open it within 24 hours ..."). Pinned in
-`pages-recover.test.js`; the E2E asserts the "Check your new email" heading
-after a real phase 1.
-
-**Scope 2 / AC1.** `recover-verify.js`. Unit: `pages-recover-verify.test.js`
-(states, single post while in flight, error mapping, retry, teardown, every
-template key resolves in en.json) and the real-store matrix added to
-`pages-recover-session.test.js` (same account: token replaced, proof window
-dropped, later bearer requests send the new token; signed out: signed in, no
-bearer on the verify request; another account: kept until the switch). E2E
-`seed-recovery-links.spec.js` test 1: phase 1 on `/recover`, confirm link
-read from Mailpit, click, then the DB row has the new email and a new
-password hash, `pevo_session` holds the reissued token, and
-`POST /api/auth/login` with the new email and password answers 200.
-
-**Scope 3 / AC2.** `recover-dispute.js`, `pages-recover-dispute.test.js`.
-E2E test 2: stop link from the old address's mail, click, then the confirm
-link answers 400 and shows the unusable-link state, and the account row is
-unchanged.
-
-**Scope 4.** Routes `recover-verify` / `recover-dispute` (bare and
-locale-prefixed, `router.test.js`), titles "Confirm Recovery - PEvO" /
-"Stop Recovery - PEvO" (hyphen, as the `admin` entry), registry rows in
-`pages/index.js`, clients pinned in `api.test.js` (no Authorization header).
-i18n: key sets identical across all sixteen files (1292 keys), every new key
-equals the English in the fifteen others, 330 STUBS.md lines (15 per key).
-
-**Verification run.** Full frontend unit suite: 94 files, 2222 tests, exit 0.
-E2E on the test stack (fresh bundle via `./deploy.sh restart`):
-`seed-recovery-links.spec.js` 2/2 and `orcid-no-password.spec.js` 7/7.
-Stack restored to dev routing afterwards.
-
-**Verification pass (five lenses, one refuter per finding; 21 agents, none
-died).** Fixed in `cb8b610f`: the stop page's done heading "Recovery
-stopped" was false when the recovery had already been confirmed (now
-"Request received"); the retriable copy promised "in a moment", false for
-the hourly limiter's 429 (now "later"); both unusable-link texts now include
-an incomplete link, and the confirm page sends a user who started more than
-once to the newest email rather than to start over; four comments narrowed
-(fixture drift answers 500, not 401; the CSP excludes the Mailpit address
-rather than all other origins; APP_URL need not differ from the base URL;
-the api test's reason); the STUBS.md sweep prose no longer says `startAgain`
-is on both pages. Three findings were refuted (no defect today: a
-leak-sentinel assertion, template-wiring coverage, and a "dead end" on the
-stop page's invalid state, which keeps the footer's Contact link). The
-mutation lens killed all fourteen planned mutants. Some extra probes survive
-the unit suites: template wiring (a state name, the done text binding, the
-confirm button's handler; the E2E covers the latter two) and the dispute
-page's `_mounted` check in its catch, whose only effect is a console line
-on a destroyed page.
-
-**Out of scope, for follow-up filing:**
-
-1. `api-contracts/auth.md` drift: the `/recover/verify` `INVALID_TOKEN`
-   entry says the causes "collapse to one generic message", but the handler
-   has three messages (invalid or expired / already used / expired, start
-   again); the 500 `INTERNAL_ERROR` ("Account recovery failed", "Dispute
-   failed") is undocumented. The UI maps on the code only.
-2. Backend `POST /recover/dispute` answers "No change has been made to your
-   account" after an applied swap too, where it is false (the UI no longer
-   shows it).
-3. Backend `POST /recover/verify` consume is not atomic (no `FOR UPDATE`, no
-   `AND consumed_at IS NULL`): two concurrent posts both apply, and the
-   second revokes the first's reissued session. The page's in-flight guard
-   covers one tab only.
-4. The mailed password-reset link is `/auth/reset?token=`, which the SPA
-   does not route (it lands on home); `password-recovery.spec.js` drives
-   `/reset-password?token=` directly. Nothing tracks it.
-5. `signup-verify.js` and `settings-verify-email.js` post their mailed
-   tokens on load, so a scanner that runs the page spends them.
-6. Pre-existing E2E failures, unchanged by this work:
-   `password-recovery.spec.js` and `seed-phrase.spec.js` fail at their first
-   `form button[type="submit"]` click on the known strict-mode clash with the
-   always-rendered reauth modal form. Filed with the user's go-ahead as
-   `ui-e2e-bare-submit-locators-clash-with-reauth-modal` (all twelve sites).
-7. Pre-existing: on a cold load (every mailed link) `initI18n` replaces the
-   route title with `metadata.title`, so route titles show only after
-   in-app navigation.
-
-## Architect re-review (2026-10-06) — HELD PENDING FIXES:
-
-Reviewed d297d2e4 and cb8b610f with `/ce-code-review` (correctness,
-project-standards, testing, security, adversarial, frontend races,
-maintainability, learnings) against a snapshot of cb8b610f. The pages are
-clean: every scope item and acceptance criterion is met, the error states
-map every server outcome to copy that holds, the new strings match the
-backend's windows, and the testing lens killed all 13 mutants it planted
-(the six target suites give 6 files, 177 passed, exit 0 at cb8b610f). The
-hold is for one comment group and the warn placement in both catches.
-
-1. **The page-gone comment and its test claim the session is taken up.**
-   The comment in `recoverVerifyPage.submit()` ("so the reissued session is
-   taken up even if the page has gone"), the comment above the test
-   `still takes up the reissued session when the answer lands after the page
-   is gone` in `pages-recover-verify.test.js`, and that test's title all say
-   the reissued session is taken up. For a browser signed in to another
-   account, `adoptRecoveredSession` returns false and takes nothing up, and
-   the test checks only that the answer was handed to
-   `adoptRecoveredSession`. Narrow all three to that: the answer goes to
-   `adoptRecoveredSession` even after the page has gone.
-
-2. **Warn only on the unexpected branch.** In both pages' `submit()` catch,
-   `console.warn` runs before the code branches, so `INVALID_TOKEN` (both
-   pages) and `DUPLICATE` (confirm page) warn on every routine refusal.
-   `agents/docs/solutions/conventions/frontend-error-sanitization-2026-04-21.md`
-   (exemption for benign semantic codes) keeps the warn on the unexpected
-   branch, as `signup-verify.js` does. Move the warn into the `failed` arm.
-   In the two `it.each` tables ("maps %s to the %s state, with the raw error
-   to console.warn only"), assert no warn for the mapped codes and keep the
-   raw-error pin for the `failed` codes.
-
-**Out-of-scope list, dispositions (user triage 2026-10-06):**
