@@ -769,7 +769,6 @@ const DEFERRED_FILELESS: Readonly<Record<string, number>> = {
   'backend/tests/routes/ipfs.test.ts': 1,
   'backend/tests/routes/orcid.test.ts': 1,
   'backend/tests/routes/reputation-weights-signer-gate.test.ts': 1,
-  'backend/tests/wot-broadcast-timeout.test.ts': 1,
 };
 
 // --- parsing -----------------------------------------------------------------

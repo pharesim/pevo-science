@@ -1,35 +1,33 @@
 /**
  * `broadcastWotAccreditation` tagged-union outcomes (timeout / happy /
- * chain_error), the already-accredited skip, and the ever-sanctioned refusal.
+ * chain_error), the skip for a vouchee that already holds an accredit op, and
+ * the ever-sanctioned refusal.
  *
  * WoT membership is live (a threshold drop self-heals with no `revoke` op), so
- * there is no longer a revocation cascade to exercise — the broadcast surface is
- * the single enrollment op this function emits on the first threshold crossing.
+ * there is no longer a revocation cascade to exercise: the broadcast surface is
+ * the enrollment op this function emits.
  *
- * Carve-out (root CLAUDE.md "Running Tests"): `getPool()`, `getAccreditedSet`,
- * `hasUnliftedSanction`, the reputation seed, and the Hive broadcast are mocked
- * so the broadcast-outcome surface can be driven deterministically — a real
- * broadcast landing or timing out cannot be produced reliably against a live
- * Hive node, and this is a service-level unit with no route (cryptographic
- * verification is out of scope; there is no `verifyHiveSignature` here). The
- * real-path companion is the WoT vouch/retract route suite, which drives
- * `broadcastWotAccreditation` through the real accreditation/vouch reads against
- * HAF. `getVouchStatus` is NOT mocked: it runs against the mocked pool returning
- * the real `vouchStatusSelect` single-row `{ self_method, vouches }` shape, so
- * the eligibility computation under test is real.
+ * Carve-out (root CLAUDE.md "Running Tests"): `getPool()`, Redis (null, so
+ * `hafCache` runs in memory), `hasUnliftedSanction`, the reputation seed, and
+ * the Hive broadcast are mocked so the broadcast-outcome surface can be driven
+ * deterministically — a real broadcast landing or timing out cannot be
+ * produced reliably against a live Hive node, and this is a service-level unit
+ * with no route (cryptographic verification is out of scope; there is no
+ * `verifyHiveSignature` here). `getVouchStatus` and `getAccreditedSet` are NOT
+ * mocked: they run against the mocked pool, which returns the
+ * `vouchStatusSelect` single-row `{ self_method, self_pinned, vouches }` shape.
+ * Real-path companion: `backend/tests/wot-vouch-status-select-real-postgres.test.ts` [self_pinned]
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const {
   hafQueryMock,
   broadcastJsonMock,
-  accreditedSetMock,
   hasUnliftedSanctionMock,
   seedAccreditationBonusMock,
 } = vi.hoisted(() => ({
   hafQueryMock: vi.fn(),
   broadcastJsonMock: vi.fn(),
-  accreditedSetMock: vi.fn(),
   hasUnliftedSanctionMock: vi.fn(),
   seedAccreditationBonusMock: vi.fn(),
 }));
@@ -66,8 +64,8 @@ vi.mock('../src/hive.js', async () => {
   };
 });
 
-vi.mock('../src/accreditation.js', () => ({
-  getAccreditedSet: accreditedSetMock,
+vi.mock('../src/accreditation.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/accreditation.js')>()),
   hasUnliftedSanction: hasUnliftedSanctionMock,
 }));
 
@@ -79,7 +77,7 @@ vi.mock('../src/reputation.js', async () => {
   };
 });
 
-const { broadcastWotAccreditation } = await import('../src/wot.js');
+const { broadcastWotAccreditation, getVouchStatus } = await import('../src/wot.js');
 const { BroadcastTimeoutError } = await import('../src/hive.js');
 const { hafCache } = await import('../src/cache.js');
 const { config } = await import('../src/config.js');
@@ -92,14 +90,15 @@ const originalAdminKey = config.pevoAdminPostingKey;
 const TEST_WIF = PrivateKey.fromSeed('pevo-wot-broadcast-timeout-test-seed').toString();
 
 // Drive getVouchStatus to "eligible" (3 vouches >= default threshold 3). The
-// real vouchStatusSelect returns ONE row: { self_method, vouches }.
-function mockEligibleVouchStatus() {
+// real vouchStatusSelect returns ONE row: { self_method, self_pinned, vouches }.
+// The default row is a vouchee with no accred_pinned row.
+function mockEligibleVouchStatus(self: Record<string, unknown> = { self_method: null, self_pinned: false }) {
   hafQueryMock.mockImplementation(async (sql: string) => {
     if (sql.includes('active_vouches') && sql.includes('ORDER BY av.event_timestamp')) {
       return {
         rows: [
           {
-            self_method: 'wot',
+            ...self,
             vouches: [
               { voucher: 'a', relationship: 'colleague', timestamp: '2026-01-01' },
               { voucher: 'b', relationship: 'colleague', timestamp: '2026-01-02' },
@@ -123,11 +122,9 @@ beforeEach(async () => {
   (config as { pevoAdminPostingKey: string }).pevoAdminPostingKey = TEST_WIF;
   hafQueryMock.mockReset();
   broadcastJsonMock.mockReset();
-  accreditedSetMock.mockReset();
   hasUnliftedSanctionMock.mockReset();
   seedAccreditationBonusMock.mockReset();
-  // Defaults: not already accredited, not sanctioned, reputation seed no-ops.
-  accreditedSetMock.mockResolvedValue(new Set<string>());
+  // Defaults: not sanctioned, reputation seed no-ops.
   hasUnliftedSanctionMock.mockResolvedValue(false);
   seedAccreditationBonusMock.mockResolvedValue(undefined);
 });
@@ -153,6 +150,7 @@ describe('broadcastWotAccreditation tagged union', () => {
 
     const result = await broadcastWotAccreditation('alice');
     expect(result).toEqual({ ok: true, txId: 'tx-happy-abc' });
+    expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
     expect(seedAccreditationBonusMock).toHaveBeenCalledWith('alice');
     // The enrollment op is a method='wot' accredit carrying the 'wot' system marker.
     const payload = JSON.parse(broadcastJsonMock.mock.calls[0][0].json);
@@ -172,9 +170,26 @@ describe('broadcastWotAccreditation tagged union', () => {
     }
   });
 
-  it('skips (no broadcast) when the vouchee is already accredited', async () => {
-    mockEligibleVouchStatus();
-    accreditedSetMock.mockResolvedValue(new Set(['alice']));
+  // `accredited_accounts_all` is warm and lacks the vouchee, as it does for up
+  // to its TTL after the vouchee's accredit op is indexed. The vouchee holds an
+  // accred_pinned row, so no broadcast fires, whatever the row's method.
+  it.each([
+    ['an authority-pinned', 'email'],
+    ['a wot', 'wot'],
+    ['a method-less', null],
+  ])('skips (no broadcast) when the vouchee holds %s accredit op the cached accredited set lacks', async (_label, method) => {
+    await hafCache.set('accredited_accounts_all', ['a', 'b', 'c'], 10 * 60_000, true);
+    mockEligibleVouchStatus({ self_method: method, self_pinned: true });
+    broadcastJsonMock.mockResolvedValue({ id: 'tx-over-existing-op' });
+
+    const result = await broadcastWotAccreditation('alice');
+    expect(result).toEqual({ ok: false, reason: 'skipped' });
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+  });
+
+  it('skips (no broadcast) when the vouch-status row carries no presence flag', async () => {
+    mockEligibleVouchStatus({ self_method: null });
+    broadcastJsonMock.mockResolvedValue({ id: 'tx-unknown-presence' });
 
     const result = await broadcastWotAccreditation('alice');
     expect(result).toEqual({ ok: false, reason: 'skipped' });
@@ -182,11 +197,10 @@ describe('broadcastWotAccreditation tagged union', () => {
   });
 
   it('refuses with reason "sanctioned" (no broadcast) when the vouchee has an un-lifted sanction', async () => {
-    // Eligible by vouches and not already accredited (a sanction suppresses
-    // membership, so the account is absent from getAccreditedSet) — only the
-    // ever-sanctioned guard distinguishes this from a never-enrolled account.
+    // A sanctioned account has no accred_pinned row, so it passes the presence
+    // check; only the ever-sanctioned guard distinguishes it from a
+    // never-enrolled account.
     mockEligibleVouchStatus();
-    accreditedSetMock.mockResolvedValue(new Set<string>());
     hasUnliftedSanctionMock.mockResolvedValue(true);
 
     const result = await broadcastWotAccreditation('alice');
@@ -202,7 +216,8 @@ describe('broadcastWotAccreditation tagged union', () => {
         return {
           rows: [
             {
-              self_method: 'wot',
+              self_method: null,
+              self_pinned: false,
               vouches: [
                 { voucher: 'a', relationship: 'colleague', timestamp: '2026-01-01' },
                 { voucher: 'b', relationship: 'colleague', timestamp: '2026-01-02' },
@@ -217,5 +232,16 @@ describe('broadcastWotAccreditation tagged union', () => {
     const result = await broadcastWotAccreditation('alice');
     expect(result).toEqual({ ok: false, reason: 'skipped' });
     expect(broadcastJsonMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('getVouchStatus', () => {
+  it('leaves self_pinned off the status it returns', async () => {
+    mockEligibleVouchStatus({ self_method: 'email', self_pinned: true });
+
+    const status = await getVouchStatus('alice');
+    expect(Object.keys(status!).sort()).toEqual(
+      ['accreditation_method', 'eligible', 'threshold', 'username', 'vouch_count', 'vouches'],
+    );
   });
 });

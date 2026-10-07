@@ -163,9 +163,9 @@ export const SANCTIONED_ACCREDIT_MESSAGE =
  *
  * Used by the WoT auto-accreditation path (`broadcastWotAccreditation`) to
  * refuse re-admitting a sanctioned account on vouch support. A sanctioned
- * account is already absent from `getAccreditedSet`, so this read is what
- * distinguishes "suppressed by sanction" (refuse the broadcast) from "never
- * enrolled / below threshold" (proceed to enroll).
+ * account has no `accred_pinned` row, so this read is what distinguishes
+ * "suppressed by sanction" (refuse the broadcast) from "never enrolled"
+ * (proceed to enroll).
  *
  * **Fail-closed.** If HAF is unavailable or the query throws, returns `true`
  * (assume sanctioned) so an indeterminate sanction state can never let an

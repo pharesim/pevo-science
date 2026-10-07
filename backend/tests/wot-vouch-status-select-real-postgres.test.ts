@@ -49,6 +49,7 @@ afterAll(async () => {
 
 interface VouchRow {
   self_method: string | null;
+  self_pinned: boolean;
   vouches: Array<{ voucher: string; relationship: string; timestamp: string }>;
 }
 
@@ -58,13 +59,16 @@ interface VouchRow {
  * for this no-`GROUP BY` shape, would itself be a regression).
  *
  * `accreditations` is a list of [account, method] pairs (each becomes an
- * `accredit` custom_json signed by an accreditation authority); `vouches` is a
- * list of [voucher, vouchee] pairs (each a `vouch` custom_json signed by the
- * voucher). The CTE bodies are the real ones from `hafsql.ts`, only their FROM
+ * `accredit` custom_json signed by an accreditation authority; an `undefined`
+ * method leaves the key out); `sanctions` lists accounts that each get an
+ * authority-signed `revoke` with `type: 'sanction'` after every accredit op;
+ * `vouches` is a list of [voucher, vouchee] pairs (each a `vouch` custom_json
+ * signed by the voucher). The CTE bodies are the real ones from `hafsql.ts`, only their FROM
  * redirected at the synthetic `synthetic_cj` relation.
  */
 async function runVouchStatus(opts: {
-  accreditations: Array<[string, string]>;
+  accreditations: Array<[string, string | undefined]>;
+  sanctions?: string[];
   vouches: Array<[string, string]>;
   vouchee: string;
 }): Promise<VouchRow | null> {
@@ -97,6 +101,11 @@ async function runVouchStatus(opts: {
     // Accreditation rows must be signed by an accreditation authority for the
     // `?| accreditationAuthorities` gate to admit them. config.hiveAdminAccount
     // is always in that set.
+    const authsIdx = params.push(JSON.stringify([config.hiveAdminAccount]));
+    valueLines.push(`('id-'||${block}, ${appTagParam}::text, $${jsonIdx}::text, $${authsIdx}::jsonb, ${block++}::bigint)`);
+  }
+  for (const account of opts.sanctions ?? []) {
+    const jsonIdx = params.push(JSON.stringify({ action: 'revoke', account, type: 'sanction' }));
     const authsIdx = params.push(JSON.stringify([config.hiveAdminAccount]));
     valueLines.push(`('id-'||${block}, ${appTagParam}::text, $${jsonIdx}::text, $${authsIdx}::jsonb, ${block++}::bigint)`);
   }
@@ -146,6 +155,7 @@ describe('vouchStatusSelect — combined self_method + vouches read (real Postgr
       expect(row).not.toBeNull();
       // self_method survives even with no accredited vouchers.
       expect(row!.self_method).toBe('wot');
+      expect(row!.self_pinned).toBe(true);
       // COALESCE(..., '[]') collapses the empty-set aggregate to an empty array.
       expect(row!.vouches).toEqual([]);
     },
@@ -199,7 +209,41 @@ describe('vouchStatusSelect — combined self_method + vouches read (real Postgr
 
       expect(row).not.toBeNull();
       expect(row!.self_method).toBeNull();
+      expect(row!.self_pinned).toBe(false);
       expect(row!.vouches.map((v) => v.voucher)).toEqual(['acc1']);
+    },
+  );
+
+  it.skipIf(!pool)(
+    'reports self_pinned for an accredit op that carries no method, while self_method is null',
+    { timeout: 30_000 },
+    async () => {
+      const row = await runVouchStatus({
+        accreditations: [['legacy', undefined], ['acc1', 'email']],
+        vouches: [['acc1', 'legacy']],
+        vouchee: 'legacy',
+      });
+
+      expect(row).not.toBeNull();
+      expect(row!.self_method).toBeNull();
+      expect(row!.self_pinned).toBe(true);
+    },
+  );
+
+  it.skipIf(!pool)(
+    'reports no self_pinned for an account whose accredit op is followed by a sanction',
+    { timeout: 30_000 },
+    async () => {
+      const row = await runVouchStatus({
+        accreditations: [['banned', 'email'], ['acc1', 'email']],
+        sanctions: ['banned'],
+        vouches: [['acc1', 'banned']],
+        vouchee: 'banned',
+      });
+
+      expect(row).not.toBeNull();
+      expect(row!.self_method).toBeNull();
+      expect(row!.self_pinned).toBe(false);
     },
   );
 });

@@ -177,6 +177,39 @@ describe('POST /api/wot/retract — live-threshold self-heal (no revoke broadcas
     expect(broadcastAdminMock).not.toHaveBeenCalled();
   });
 
+  // Each value is a string of at most 50 characters that is not a Hive account
+  // name. Sent by a separate signer so these requests do not share VOUCHER's
+  // wot-write bucket.
+  it.each(['Bob', 'a..b', 'ab', 'abcdefghijklmnopq', 'bob-'])(
+    'rejects vouchee %j, which is not a Hive account name, with 400',
+    async (vouchee) => {
+      hafQueryMock.mockImplementation(makeHafMock({}));
+
+      const res = await request(app)
+        .post('/api/wot/retract')
+        .set('Authorization', `Bearer ${jwtFor('carol')}`)
+        .send({ vouchee });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('BAD_REQUEST');
+      expect(broadcastAdminMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('counts no wot-write slot for a request it rejects as a malformed vouchee', async () => {
+    hafQueryMock.mockImplementation(makeHafMock({}));
+    const auth = `Bearer ${jwtFor('dave')}`;
+
+    // wot-write admits 10 requests per minute per account.
+    for (let i = 0; i < 11; i++) {
+      const res = await request(app).post('/api/wot/retract').set('Authorization', auth).send({ vouchee: 'Bob' });
+      expect(res.status).toBe(400);
+    }
+    const res = await request(app).post('/api/wot/retract').set('Authorization', auth).send({ vouchee: VOUCHEE });
+    // `dave` is not in the accredited set, so the gate answers 403, not the limiter's 429.
+    expect(res.status).toBe(403);
+  });
+
   it('returns a self-heal response (no broadcast) when the vouchee is now below threshold and the retraction is reflected', async () => {
     // Retraction reflected: VOUCHER's edge absent from the vouchee's snapshot,
     // leaving it with 2 vouchers (< threshold 3). Under the OLD op-pinned model

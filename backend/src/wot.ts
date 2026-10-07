@@ -13,7 +13,7 @@ import pg from 'pg';
 import { getPool } from './db.js';
 import { broadcastAdminCustomJson, BroadcastTimeoutError } from './hive.js';
 import { config } from './config.js';
-import { getAccreditedSet, hasUnliftedSanction } from './accreditation.js';
+import { hasUnliftedSanction } from './accreditation.js';
 import { seedAccreditationBonus } from './reputation.js';
 import { logger } from './logger.js';
 import { hafCache } from './cache.js';
@@ -155,6 +155,15 @@ export interface VouchStatus {
 }
 
 /**
+ * `getVouchStatus`'s cached value: the public `VouchStatus` plus `self_pinned`,
+ * whether the account has an `accred_pinned` row (a current, not-sanctioned
+ * `accredit` op of any method). `accreditation_method` cannot carry that: it is
+ * null both without a row and for a row whose op has no `method`.
+ * `getVouchStatus` leaves `self_pinned` off the object it returns.
+ */
+type VouchSnapshot = VouchStatus & { self_pinned: boolean };
+
+/**
  * Cache key for a vouchee's `getVouchStatus` entry. Spelled in one place so the
  * read site (`getVouchStatus`'s getOrSet) and the bust sites (the vouch-poll
  * loop and the retract handler) cannot drift apart — a divergent literal would
@@ -165,10 +174,11 @@ export function vouchStatusCacheKey(vouchee: string): string {
 }
 
 /**
- * SQL for the combined vouch-status read: one row carrying BOTH the account's
- * own op-pinned accreditation `method` (a scalar subquery) AND its accredited-only
- * voucher list (`json_agg`). Exported so the real-planner regression runs this
- * exact SELECT against a synthetic graph rather than a hand-rewritten copy.
+ * SQL for the combined vouch-status read: one row carrying the account's own
+ * op-pinned accreditation `method` and whether it has an `accred_pinned` row at
+ * all (two scalar subqueries), and its accredited-only voucher list
+ * (`json_agg`). Exported so the real-planner regression runs this exact SELECT
+ * against a synthetic graph rather than a hand-rewritten copy.
  *
  * Voucher eligibility joins `accred_pinned` — the op-pinned, not-sanctioned
  * accredited set (every account with a current `accredit` op, INCLUDING a
@@ -185,22 +195,21 @@ export function vouchStatusCacheKey(vouchee: string): string {
  *    `LEFT`-less inner JOIN yields one row even for an account with ZERO
  *    accredited vouchers, with `vouches = []` (the COALESCE collapses the
  *    aggregate-over-empty-set NULL to an empty array). There is no `GROUP BY`:
- *    the scalar subquery plus a single bare aggregate produce exactly one group.
+ *    the scalar subqueries plus a single bare aggregate produce exactly one group.
  *  - `active_vouches` carries one row per (voucher, vouchee) edge, so no DISTINCT
  *    is needed for `vouches.length` to equal the accredited-voucher count.
  *
  * Expects `accred_pinned` (from `activeAccreditationsCteBody`) and `active_vouches`
  * (from `activeVouchesCteBody`) CTEs in scope (combine with
- * `buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody)` in
- * production; the real-Postgres regression substitutes fixture CTEs of the same
- * shape).
+ * `buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody)`).
  *
  * @param usernameParam - `$N` placeholder bound to the account being read (used
- *   in both the self-method subquery and the vouches WHERE filter).
+ *   in both self subqueries and the vouches WHERE filter).
  */
 export function vouchStatusSelect(usernameParam: string): string {
   return `SELECT
            (SELECT method FROM accred_pinned WHERE account = ${usernameParam}) AS self_method,
+           EXISTS (SELECT 1 FROM accred_pinned WHERE account = ${usernameParam}) AS self_pinned,
            COALESCE(
              json_agg(
                json_build_object(
@@ -220,7 +229,14 @@ export function vouchStatusSelect(usernameParam: string): string {
  * Get the vouch status for a user from HAF.
  */
 export async function getVouchStatus(username: string): Promise<VouchStatus | null> {
-  return hafCache.getOrSet<VouchStatus | null>(vouchStatusCacheKey(username), async () => {
+  const snapshot = await getVouchSnapshot(username);
+  if (!snapshot) return null;
+  const { self_pinned: _selfPinned, ...status } = snapshot;
+  return status;
+}
+
+function getVouchSnapshot(username: string): Promise<VouchSnapshot | null> {
+  return hafCache.getOrSet<VouchSnapshot | null>(vouchStatusCacheKey(username), async () => {
     const pool = getPool();
     if (!pool) return null;
 
@@ -233,7 +249,7 @@ export async function getVouchStatus(username: string): Promise<VouchStatus | nu
       // the retract path depends on).
       const cte = buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody);
       const usernameParam = `$${cte.nextIdx}`;
-      const result = await pool.query<{ self_method: string | null; vouches: VouchInfo[] }>(
+      const result = await pool.query<{ self_method: string | null; self_pinned: boolean; vouches: VouchInfo[] }>(
         `${cte.sql}
          ${vouchStatusSelect(usernameParam)}`,
         [...cte.params, username],
@@ -254,6 +270,7 @@ export async function getVouchStatus(username: string): Promise<VouchStatus | nu
         // sees the literal type rather than a bare `string`. An off-enum value
         // compares unequal to every arm, the same as `null`.
         accreditation_method: (row?.self_method ?? null) as AccreditationMethod | null,
+        self_pinned: row?.self_pinned !== false,
       };
     } catch (err) {
       logger.error({ err }, 'Failed to get vouch status');
@@ -267,7 +284,7 @@ export async function getVouchStatus(username: string): Promise<VouchStatus | nu
  * Called after a new vouch is observed.
  *
  * Returns a tagged union surfacing the broadcast outcome so the caller can
- * distinguish "not eligible / already accredited / admin key missing"
+ * distinguish "not eligible / already holds an accredit op / admin key missing"
  * (`reason: 'skipped'`) and "refused because the account is sanctioned"
  * (`reason: 'sanctioned'`) from an actual broadcast failure
  * (`reason: 'timeout'` or `reason: 'chain_error'`). A timeout outcome means
@@ -275,11 +292,10 @@ export async function getVouchStatus(username: string): Promise<VouchStatus | nu
  * degraded-state warning rather than retry blindly.
  *
  * The broadcast enrolls a vouchee into WoT membership (writes the `method='wot'`
- * accredit op). Once enrolled, live-threshold membership tracks the vouch graph
- * with no further broadcasts — a drop below threshold de-accredits and a recovery
- * re-accredits automatically, so this only fires on the FIRST threshold crossing
- * (the already-accredited check skips an enrolled account that currently meets
- * the threshold).
+ * accredit op). Once enrolled, live-threshold membership tracks the vouch graph:
+ * a drop below threshold de-accredits and a recovery re-accredits, with no op.
+ * The broadcast is skipped for a vouchee that has an `accred_pinned` row,
+ * whatever its method.
  */
 export async function broadcastWotAccreditation(vouchee: string): Promise<WotAccreditationResult> {
   if (!config.pevoAdminPostingKey) {
@@ -287,30 +303,28 @@ export async function broadcastWotAccreditation(vouchee: string): Promise<WotAcc
     return { ok: false, reason: 'skipped' };
   }
 
-  const status = await getVouchStatus(vouchee);
-  if (!status || !status.eligible) return { ok: false, reason: 'skipped' };
+  const snapshot = await getVouchSnapshot(vouchee);
+  if (!snapshot || !snapshot.eligible) return { ok: false, reason: 'skipped' };
 
-  // Check if already accredited (live membership). An enrolled account that
-  // currently meets the threshold is already accredited and needs no re-broadcast.
-  const accreditedSet = await getAccreditedSet([vouchee]);
-  if (accreditedSet.has(vouchee)) return { ok: false, reason: 'skipped' };
+  // A vouchee with an accred_pinned row already holds an accredit op: an
+  // authority op this broadcast would replace as the latest, or a wot op whose
+  // standing follows the vouch graph. Only an explicit `false` broadcasts, so a
+  // cached snapshot without the flag (written by an older build) skips.
+  if (snapshot.self_pinned !== false) return { ok: false, reason: 'skipped' };
 
-  // Ever-sanctioned guard: a sanctioned account is absent from getAccreditedSet
-  // for the SAME reason a never-enrolled account is (both fail the membership
-  // filter), so the set check above cannot tell them apart. Vouches must not
-  // re-admit an un-lifted sanction — only a deliberate authority `accredit`
-  // lifts it. Refuse the auto-accreditation broadcast for a sanctioned account.
+  // Ever-sanctioned guard: a sanctioned account has no accred_pinned row, so
+  // the presence check cannot tell it from a never-enrolled account. Vouches
+  // must not re-admit an un-lifted sanction — only a deliberate authority
+  // `accredit` lifts it. Refuse the auto-accreditation broadcast for a
+  // sanctioned account.
   if (await hasUnliftedSanction(vouchee)) {
     logger.info({ vouchee }, 'WoT auto-accreditation refused — account has an un-lifted sanction');
     return { ok: false, reason: 'sanctioned' };
   }
 
-  const pool = getPool();
-  if (!pool) return { ok: false, reason: 'skipped' };
-
   try {
     const now = new Date().toISOString();
-    const evidenceHash = `wot:${status.vouches.map((v) => v.voucher).sort().join(',')}`;
+    const evidenceHash = `wot:${snapshot.vouches.map((v) => v.voucher).sort().join(',')}`;
 
     const payload = {
       action: 'accredit',

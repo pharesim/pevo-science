@@ -5,7 +5,7 @@
  * POST /api/wot/vouch             — process a vouch (called after custom_json is broadcast)
  * POST /api/wot/retract           — process a vouch retraction
  */
-import { Router, type Request, type Response } from 'express';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
@@ -14,6 +14,7 @@ import { getVouchStatus, broadcastWotAccreditation, vouchStatusCacheKey, type Vo
 import { logger } from '../logger.js';
 import { isHafConfigured } from '../db.js';
 import { hafCache } from '../cache.js';
+import { HIVE_ACCOUNT_NAME_REGEX } from '../lib/hive-account-name.js';
 
 const router = Router();
 
@@ -102,6 +103,16 @@ export async function pollForRetraction(
 // retraction-verification gate.
 const wotWriteLimiter = rateLimit({ name: 'wot-write', windowMs: 60_000, max: 10, keyFn: byAccount });
 
+// Mounted before wotWriteLimiter so a malformed vouchee takes no wot-write slot.
+function validateVouchee(req: Request, res: Response, next: NextFunction): void {
+  const { vouchee } = req.body;
+  if (typeof vouchee !== 'string' || !HIVE_ACCOUNT_NAME_REGEX.test(vouchee)) {
+    sendError(res, 400, 'BAD_REQUEST', 'vouchee is required and must be a valid Hive username');
+    return;
+  }
+  next();
+}
+
 // ──────────────────────────────────────────────
 // GET /api/wot/:username — vouch status
 // ──────────────────────────────────────────────
@@ -128,13 +139,9 @@ router.get('/:username', async (req: Request, res: Response) => {
 // via Hive Keychain. The backend then checks if the vouchee has reached the
 // WoT threshold and auto-accredits if so.
 
-router.post('/vouch', verifyHiveSignature, wotWriteLimiter, async (req: Request, res: Response) => {
+router.post('/vouch', verifyHiveSignature, validateVouchee, wotWriteLimiter, async (req: Request, res: Response) => {
   const { vouchee } = req.body;
   const voucher = req.hiveUsername!;
-
-  if (!vouchee || typeof vouchee !== 'string' || vouchee.length > 50) {
-    return sendError(res, 400, 'BAD_REQUEST', 'vouchee is required and must be a valid Hive username');
-  }
 
   if (voucher === vouchee) {
     return sendError(res, 422, 'VALIDATION_ERROR', 'Cannot vouch for yourself');
@@ -152,7 +159,7 @@ router.post('/vouch', verifyHiveSignature, wotWriteLimiter, async (req: Request,
   // expiry (see pollForVouch). On timeout this returns the latest status and
   // the flow falls through to the existing skipped path. Reuse the polled
   // status for the response: broadcastWotAccreditation does not change the
-  // vouch count, and its own getVouchStatus read hits the poll's fresh cache.
+  // vouch count.
   const status = await pollForVouch(vouchee, voucher);
 
   // Check if the vouchee now meets the threshold
@@ -203,7 +210,7 @@ router.post('/vouch', verifyHiveSignature, wotWriteLimiter, async (req: Request,
     });
   }
 
-  // reason === 'skipped' — not eligible, already accredited, or admin key missing.
+  // reason === 'skipped' — not eligible, already holds an accredit op, or admin key missing.
   // reason === 'sanctioned' is DELIBERATELY collapsed into this same generic
   // response: surfacing it would disclose the vouchee's authority-sanction state
   // to a third-party voucher (a moderation-privacy leak). The voucher learns only
@@ -222,13 +229,9 @@ router.post('/vouch', verifyHiveSignature, wotWriteLimiter, async (req: Request,
 // POST /api/wot/retract — process a vouch retraction
 // ──────────────────────────────────────────────
 
-router.post('/retract', verifyHiveSignature, wotWriteLimiter, async (req: Request, res: Response) => {
+router.post('/retract', verifyHiveSignature, validateVouchee, wotWriteLimiter, async (req: Request, res: Response) => {
   const { vouchee } = req.body;
   const voucher = req.hiveUsername!;
-
-  if (!vouchee || typeof vouchee !== 'string' || vouchee.length > 50) {
-    return sendError(res, 400, 'BAD_REQUEST', 'vouchee is required and must be a valid Hive username');
-  }
 
   if (voucher === vouchee) {
     return sendError(res, 422, 'VALIDATION_ERROR', 'Cannot retract a vouch for yourself');
