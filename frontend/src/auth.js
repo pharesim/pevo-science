@@ -245,7 +245,7 @@ export function initAuth() {
     // reset request carried, is one of them. End it now, as part of the user's
     // own action, the way the header's sign-out does: no message and no
     // sign-in prompt. Left stored, it would stay until a later bearer request
-    // met the revocation and `handleRevokedSession` tore every tab down with
+    // met the revocation and `handleRevokedSession` tore the session down with
     // the signed-out message.
     //
     // Returns true when this call ended the session.

@@ -134,7 +134,7 @@ export function initResetPasswordPage() {
 
     destroy() {
       // _teardownTimers flips _mounted so in-flight requestPasswordReset /
-      // resetPassword continuations bail before touching reactive state.
+      // resetPassword continuations bail before touching this page's state.
       this._teardownTimers();
     },
 
