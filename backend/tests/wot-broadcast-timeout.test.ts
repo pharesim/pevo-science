@@ -77,7 +77,7 @@ vi.mock('../src/reputation.js', async () => {
   };
 });
 
-const { broadcastWotAccreditation, getVouchStatus } = await import('../src/wot.js');
+const { broadcastWotAccreditation, getVouchStatus, vouchStatusCacheKey } = await import('../src/wot.js');
 const { BroadcastTimeoutError } = await import('../src/hive.js');
 const { hafCache } = await import('../src/cache.js');
 const { config } = await import('../src/config.js');
@@ -187,8 +187,29 @@ describe('broadcastWotAccreditation tagged union', () => {
     expect(broadcastJsonMock).not.toHaveBeenCalled();
   });
 
-  it('skips (no broadcast) when the vouch-status row carries no presence flag', async () => {
+  it('skips (no broadcast) when the vouch-status row carries no self_pinned column', async () => {
     mockEligibleVouchStatus({ self_method: null });
+    broadcastJsonMock.mockResolvedValue({ id: 'tx-unknown-presence' });
+
+    const result = await broadcastWotAccreditation('alice');
+    expect(result).toEqual({ ok: false, reason: 'skipped' });
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+  });
+
+  it('skips (no broadcast) when the cached vouch status carries no self_pinned field', async () => {
+    hafQueryMock.mockResolvedValue({ rows: [] });
+    await hafCache.set(vouchStatusCacheKey('alice'), {
+      username: 'alice',
+      vouch_count: 3,
+      threshold: 3,
+      vouches: [
+        { voucher: 'a', relationship: 'colleague', timestamp: '2026-01-01' },
+        { voucher: 'b', relationship: 'colleague', timestamp: '2026-01-02' },
+        { voucher: 'c', relationship: 'colleague', timestamp: '2026-01-03' },
+      ],
+      eligible: true,
+      accreditation_method: null,
+    }, 60_000);
     broadcastJsonMock.mockResolvedValue({ id: 'tx-unknown-presence' });
 
     const result = await broadcastWotAccreditation('alice');
