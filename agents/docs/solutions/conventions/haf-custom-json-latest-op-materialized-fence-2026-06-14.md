@@ -61,7 +61,7 @@ sorts and limits the already-tiny materialized result:
 
 ```sql
 WITH candidates AS MATERIALIZED (
-  SELECT json, block_num
+  SELECT json, block_num, id
   FROM operation_custom_json_view
   WHERE custom_id = $1
     AND json::jsonb ->> 'action' = 'update_params'
@@ -69,7 +69,7 @@ WITH candidates AS MATERIALIZED (
 )
 SELECT json
 FROM candidates
-ORDER BY block_num DESC
+ORDER BY block_num DESC, id DESC
 LIMIT 1
 ```
 
@@ -141,13 +141,11 @@ read 564,212 block rows in 259 ms. For a subject with one matching op it read
 accounts was 12 to 14 s per lookup. So a selective filter that returns a row is
 not a reason to skip the fence; the cost depends on how old the matches are and
 whether more than one exists. The fenced form ran in 0.2 to 18 ms on matching and
-non-matching inputs for all of these lookups and returned identical rows.
+non-matching inputs for all of these lookups.
 
 The fence is verified on live HAF for `loadWotThreshold` and, on 2026-10-06, for
-`findCustodyBroadcastByIdempotencyKey` (custom_json arm),
-`findAccreditationBroadcastByIdempotencyKey`, `findExistingAccreditation`,
-`getLatestAccreditOp`, both reads in `findAccreditedAccountWithOrcid`, and
-`getExistingAccreditation`. For other shapes, EXPLAIN before generalizing.
+`findExistingAccreditation`, `getLatestAccreditOp`, both reads in
+`findAccreditedAccountWithOrcid`, and `getExistingAccreditation`. For other shapes, EXPLAIN before generalizing.
 
 **Verification methodology** (for anyone re-confirming): the HAF node has no `psql`
 binary available, and pgbouncer rejects a `statement_timeout` startup parameter.
