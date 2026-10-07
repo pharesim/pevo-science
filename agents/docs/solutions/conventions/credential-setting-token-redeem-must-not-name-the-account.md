@@ -1,5 +1,5 @@
 ---
-title: A token redeem that sets a login credential answers the browser's session question by bearer match, never by naming the account
+title: The password reset answers the browser's session question by bearer match, never by naming the account
 date: 2026-10-07
 category: conventions
 module: backend/src/routes
@@ -7,9 +7,9 @@ problem_type: convention
 component: authentication
 severity: high
 applies_when:
-  - A route redeems a single-use token that a mailed link carried and lets the redeemer set a login credential, as `POST /api/auth/reset` does with a new password
-  - The SPA needs to know whether the session it holds belongs to the account the redeem acted on
-  - Reviewing a proposal to add a username, email or other account identifier to such a route's response
+  - Changing the response of `POST /api/auth/reset`, which redeems the single-use token a mailed link carried and sets a new password
+  - The SPA needs to know whether the session it holds belongs to the account the reset acted on
+  - Reviewing a proposal to add a username, email or other account identifier to the reset response
 tags:
   - account-identifier-disclosure
   - mailed-link-token
@@ -19,7 +19,7 @@ tags:
   - threat-model
 ---
 
-# A token redeem that sets a login credential answers the browser's session question by bearer match, never by naming the account
+# The password reset answers the browser's session question by bearer match, never by naming the account
 
 ## Context
 
@@ -29,7 +29,7 @@ The first answer was to add `data.username` to the reset response. It was recomm
 
 ## Guidance
 
-- Never echo the account (username, email, row id) in the response of a route that redeems a mailed token and lets the redeemer set a login credential.
+- Never echo the account (username, email, row id) in the `POST /api/auth/reset` response.
 - When the browser needs to know whether its own session is the affected account, let it send that session token as an optional `Authorization: Bearer` header and answer a boolean. The bearer is evidence the caller already holds; the answer adds nothing a token-only caller can use.
 - The bearer must never gate the redeem. A missing, foreign, forged or malformed bearer answers `false`, and the redeem lands exactly as it would without one.
 - Compare against the account the write actually touched (`UPDATE ... RETURNING username`), not a value read before the write.
@@ -53,7 +53,7 @@ The success answer is `{ message, session_ended }`.
 
 ## Why This Matters
 
-`POST /api/auth/login` matches its identifier against either column (`WHERE a.username = $1 OR a.email = $1` in `backend/src/routes/auth.ts`). Whether an identifier in a redeem response matters therefore depends on who holds the token:
+`POST /api/auth/login` matches its identifier against either column (`WHERE a.username = $1 OR a.email = $1` in `backend/src/routes/auth.ts`). Whether an identifier in the reset response matters therefore depends on who holds the token:
 
 - **Parties that see the mail** (the mailbox, its relay and providers, link scanners) also see the `To:` address, which already works as a login identifier. The field gives them nothing.
 - **Parties that hold the token without the mail** get the identifier from nowhere else. Paths found: the access log (`httpLogger` in `backend/src/logger.ts` serializes `req.url` with its query string, so opening the link logs the token), the external reverse proxy's log, browser history, sync, extensions and URL-reputation services, and an old mailbox after an email change while an outstanding reset token outlives the change. Without the identifier, such a party can redeem the token but only locks the owner out of an account it cannot name. With it, the same request yields a working (username, password) pair.
@@ -64,8 +64,7 @@ Two leak paths are closed in code and need no answer here: helmet's default `Ref
 
 ## When to Apply
 
-- A route that redeems a mailed single-use token, lets the redeemer set a login credential, and wants to tell the browser something about the account it touched.
-- Reviewing a response-shape change on any unauthenticated route that takes a bearer-equivalent credential from a URL.
+- Changing what `POST /api/auth/reset` tells the browser about the account it touched.
 - Deciding between a backend-named field and a client-side probe: the bearer match is a third option that keeps the comparison deterministic and discloses nothing.
 
 ## Examples
@@ -92,5 +91,5 @@ Tests that pin it: `backend/tests/routes/auth-reset-session-match.test.ts` cover
 
 - `agents/docs/solutions/conventions/timing-equalization-smtp-failure-mode-oracle-2026-04-22.md`: the sibling rule on the same email flow, that `/reset-request` must not distinguish a known from an unknown address by status code.
 - `agents/docs/solutions/conventions/timing-equalization-sub-branch-oracles-2026-04-21.md`: the identity-disclosure family for auth endpoints.
-- `agents/docs/solutions/conventions/recovery-defenses-vs-seed-phrase-holder-non-load-bearing-2026-05-25.md`: its dismissal of response-shape findings against a seed-phrase holder does not extend to a token-only holder on the mailed-link routes.
+- `agents/docs/solutions/conventions/recovery-defenses-vs-seed-phrase-holder-non-load-bearing-2026-05-25.md`: its dismissal of response-shape findings against a seed-phrase holder does not extend to a token-only holder of a reset link.
 - `agents/docs/solutions/conventions/optional-predicate-gate-needs-live-false-case-not-just-absent-2026-09-02.md`: why the tests send a live foreign and a forged bearer, not only none.
