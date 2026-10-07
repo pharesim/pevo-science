@@ -242,6 +242,7 @@ describe('findCustodyBroadcastByIdempotencyKey', () => {
     expect(secondCall[0]).toMatch(/required_posting_auths/);
     expect(secondCall[0]).toMatch(/haf_operations/);
     expect(secondCall[0]).toMatch(/included_trx_id/);
+    expect(secondCall[0]).toMatch(/\bAS\s+MATERIALIZED\b/i);
     expect(secondCall[1][1]).toEqual(['alice']);
     expect(secondCall[1][2]).toBe(KEY);
   });
@@ -334,6 +335,7 @@ describe('findAccreditationBroadcastByIdempotencyKey', () => {
     // `findExistingAccreditation` per convention Rule 2 of
     // `hive-primitive-aware-design-rules-for-pevo-custom-json-ops-2026-05-05.md`.
     expect(sql).toMatch(/ORDER BY c\.block_num DESC, c\.id DESC/);
+    expect(sql).toMatch(/\bAS\s+MATERIALIZED\b/i);
     expect(params[0]).toBe(config.appTag);
     expect(params[1]).toBe(KEY);
     expect(params[2]).toEqual(config.accreditationAuthorities);
@@ -396,6 +398,7 @@ describe('findExistingAccreditation', () => {
     // which operation_custom_json_view does not expose).
     expect(sql).toMatch(/ORDER BY c\.block_num DESC, c\.id DESC/);
     expect(sql).toMatch(/LIMIT 1/);
+    expect(sql).toMatch(/\bAS\s+MATERIALIZED\b/i);
     expect(params[0]).toBe(config.appTag);
     expect(params[1]).toBe('alice');
     expect(params[2]).toEqual(config.accreditationAuthorities);
