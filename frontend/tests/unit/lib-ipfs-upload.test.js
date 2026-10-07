@@ -298,12 +298,8 @@ describe('uploadFile', () => {
   // ─── A mismatch surfacing on a RETRY, not on the first attempt ───────────
   //
   // Both retry legs sit inside the single flat catch that handles the
-  // first-attempt mismatch, so a rejection from either had no enclosing
-  // handler left and escaped raw to the page layer. The reachable interleaving
-  // is narrow but real: the proof is dereferenced into a local before the
-  // upload runs, and the pre-flight hashes the whole file before it reads the
-  // JWT, so a subject change landing in that gap presents the previous
-  // subject's proof under the new subject's token.
+  // first-attempt mismatch, so a rejection from either has no enclosing
+  // handler left.
 
   it('a mismatch surfacing on the re-mint retry tears down like a first-attempt one', async () => {
     mockUploadFileToIpfs
@@ -324,8 +320,7 @@ describe('uploadFile', () => {
   it('a mismatch surfacing on the refused-token retry tears down like a first-attempt one', async () => {
     // The aged-token leg deliberately keeps the window (the 401 came from the
     // upload leg, which says nothing about the window), so its retry
-    // cache-hits the same proof — and that is exactly the proof that can go
-    // stale under a subject change.
+    // cache-hits the same proof.
     mockUploadFileToIpfs
       .mockRejectedValueOnce(codedError('UNAUTHORIZED'))
       .mockRejectedValueOnce(freshAuthRejected('username_mismatch'));
@@ -338,6 +333,68 @@ describe('uploadFile', () => {
     expect(mockUploadFileToIpfs).toHaveBeenCalledTimes(2);
     // The window is still not this leg's to drop.
     expect(mockClearCachedSessionProof).not.toHaveBeenCalled();
+  });
+
+  // ─── A mismatch surfacing after a subject teardown ───────────────────────
+  //
+  // The proof is dereferenced into a local before the upload runs, and the
+  // pre-flight hashes the whole file before it reads the JWT, so a cross-tab
+  // sign-in as another account landing in that gap presents this flight's
+  // proof under the new account's token. That mismatch is the departed
+  // subject's, not a corrupted session of the new one: tearing the session
+  // down here would sign the new account out. Each leg unwinds the way a
+  // torn-down retry does, with one report and the silent code.
+
+  it('a mismatch on the first attempt after a teardown leaves the session alone', async () => {
+    mockUploadFileToIpfs.mockImplementationOnce(async () => {
+      guardTornDown = true;
+      throw freshAuthRejected('username_mismatch');
+    });
+
+    await expect(uploadFile(file())).rejects.toMatchObject({
+      code: UPLOAD_SUBJECT_CHANGED,
+      name: 'UploadSessionError',
+    });
+    expect(mockHandleSessionInconsistency).not.toHaveBeenCalled();
+    expect(mockGuardCancel).toHaveBeenCalledTimes(1);
+    expect(mockUploadFileToIpfs).toHaveBeenCalledTimes(1);
+  });
+
+  it('a mismatch on the re-mint retry after a teardown leaves the session alone', async () => {
+    mockUploadFileToIpfs
+      .mockRejectedValueOnce(freshAuthRejected('expired'))
+      .mockImplementationOnce(async () => {
+        guardTornDown = true;
+        throw freshAuthRejected('username_mismatch');
+      });
+    mockEnsureSessionWindow
+      .mockResolvedValueOnce({ ready: true, proof: 'window-1' })
+      .mockResolvedValueOnce({ ready: true, proof: 'window-2' });
+
+    await expect(uploadFile(file())).rejects.toMatchObject({
+      code: UPLOAD_SUBJECT_CHANGED,
+      name: 'UploadSessionError',
+    });
+    expect(mockHandleSessionInconsistency).not.toHaveBeenCalled();
+    expect(mockGuardCancel).toHaveBeenCalledTimes(1);
+    expect(mockUploadFileToIpfs).toHaveBeenCalledTimes(2);
+  });
+
+  it('a mismatch on the refused-token retry after a teardown leaves the session alone', async () => {
+    mockUploadFileToIpfs
+      .mockRejectedValueOnce(codedError('UNAUTHORIZED'))
+      .mockImplementationOnce(async () => {
+        guardTornDown = true;
+        throw freshAuthRejected('username_mismatch');
+      });
+
+    await expect(uploadFile(file())).rejects.toMatchObject({
+      code: UPLOAD_SUBJECT_CHANGED,
+      name: 'UploadSessionError',
+    });
+    expect(mockHandleSessionInconsistency).not.toHaveBeenCalled();
+    expect(mockGuardCancel).toHaveBeenCalledTimes(1);
+    expect(mockUploadFileToIpfs).toHaveBeenCalledTimes(2);
   });
 
   // ─── A subject teardown landing between an attempt and its retry ─────────

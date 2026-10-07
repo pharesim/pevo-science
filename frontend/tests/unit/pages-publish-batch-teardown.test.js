@@ -92,6 +92,9 @@ import {
   clearPasswordFactorMemo,
   abandonInFlightAcquisitions,
 } from '../../src/lib/fresh-auth.js';
+// The error class `uploadFileToIpfs` rejects with, from the real module, so a
+// staged rejection has the shape production raises.
+const { ApiRequestError } = await vi.importActual('../../src/api.js');
 
 const SESSION_KEY = 'pevo_session';
 const FUTURE = '2099-01-01T00:00:00.000Z';
@@ -261,6 +264,32 @@ describe('publish submit: one subject across every leg', () => {
     expect(auth.username).toBe('mallory');
     // The pre-broadcast gate is a leg too: a prompt or a mint there would
     // spend the new subject's credential on the departed subject's publish.
+    expect(outcome()).toEqual({
+      transfers: 1, prompts: 0, mints: 0, broadcasts: 0, messages: [TEARDOWN_MESSAGE],
+      step: 'idle', errorMessage: '', rowErrors: [], uploading: [],
+    });
+  });
+
+  it('a sign-in as another account inside the PDF pre-flight, answered username_mismatch, leaves that account signed in', async () => {
+    // The pre-flight hashes the file before it reads the JWT, so a sign-in in
+    // another tab landing there sends alice's window under mallory's token,
+    // and the backend answers username_mismatch. The mismatch is alice's:
+    // mallory's session stays, and the user gets the one subject-change
+    // message, not the session-inconsistency sign-out.
+    mockUploadFileToIpfs.mockImplementationOnce(async () => {
+      await tick();
+      crossTabLogin('mallory');
+      throw new ApiRequestError('FRESH_AUTH_REQUIRED', 'FRESH_AUTH_REQUIRED', null, {
+        reason: 'username_mismatch',
+      });
+    });
+    submittableComponent();
+    comp.pdfFile = { name: 'paper.pdf', size: 1024, type: 'application/pdf' };
+
+    await comp.handleSubmit();
+
+    expect(auth).toMatchObject({ username: 'mallory', token: 'mallory-jwt', isConnected: true });
+    expect(JSON.parse(localStorage.getItem(SESSION_KEY))).toMatchObject({ username: 'mallory' });
     expect(outcome()).toEqual({
       transfers: 1, prompts: 0, mints: 0, broadcasts: 0, messages: [TEARDOWN_MESSAGE],
       step: 'idle', errorMessage: '', rowErrors: [], uploading: [],

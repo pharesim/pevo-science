@@ -24,10 +24,10 @@ export const UPLOAD_REAUTH_BUSY = 'UPLOAD_REAUTH_BUSY';
 // broadcast surface). `describeUploadError` maps it to null rather than an
 // i18n key.
 export const UPLOAD_SESSION_TORN_DOWN = 'UPLOAD_SESSION_TORN_DOWN';
-// Already-reported outcome for the other teardown shape: a cross-tab subject
-// change abandoned the batch. Whatever owed the user a word about that
-// teardown has already said it — the guard's own cancel, or the teardown that
-// narrated itself — so this carries the same null-key silence contract as
+// Already-reported outcome for the other teardown shape: a subject teardown
+// abandoned the batch. Whatever owed the user a word about that teardown has
+// already said it — the guard's own cancel, or the teardown that narrated
+// itself — so this carries the same null-key silence contract as
 // UPLOAD_SESSION_TORN_DOWN and the page layer must not stack an
 // upload-cancelled or upload-failed message on top.
 export const UPLOAD_SUBJECT_CHANGED = 'UPLOAD_SUBJECT_CHANGED';
@@ -174,21 +174,39 @@ async function attemptOnce(file, proof, guard) {
   return res;
 }
 
-// Tear the session down and hand the caller the already-reported code. Shared
+// Report the subject teardown once and hand the caller the silent
+// subject-change error. Shared by a torn-down retry and a mismatch that
+// surfaces past a teardown, so the two unwind alike.
+function subjectChangedError(guard) {
+  guard.cancel();
+  return uploadError(UPLOAD_SUBJECT_CHANGED);
+}
+
+// A `username_mismatch`: the proof in hand belongs to a different account than
+// the JWT subject. Returns the already-reported error the caller throws. Shared
 // by the first attempt and both retry legs so a mismatch reports identically
 // whichever attempt surfaces it.
-function tornDownSession() {
+//
+// Once the guard reads torn-down, the mismatch is the departed subject's. The
+// pre-flight hashes the file before it reads the JWT, so a cross-tab sign-in
+// as another account landing in that gap pairs this flight's proof with the
+// new account's token, and that session is not corrupted. The flight unwinds
+// the way a torn-down retry does and leaves the session the tab holds alone.
+//
+// Otherwise tear the session down via the shared teardown, whose re-login
+// message is the whole report.
+function mismatchError(guard) {
+  if (guard.tornDown()) return subjectChangedError(guard);
   handleSessionInconsistency();
   return uploadError(UPLOAD_SESSION_TORN_DOWN);
 }
 
 // One retry attempt: re-acquire the window, then upload. Both retry legs go
 // through here so a `username_mismatch` surfacing on a SECOND attempt takes the
-// same teardown the first attempt does. Written as a wrapper rather than two
+// same branch the first attempt does. Written as a wrapper rather than two
 // copies of the mismatch branch because the retries live in `uploadFile`'s
 // flat catch, where a rejection has no enclosing handler left and would
-// otherwise escape raw — the page layer then stacks a generic upload failure on
-// top of a session that was never torn down.
+// otherwise reach the page layer raw, as a generic upload failure.
 //
 // `windowProof()`'s own UploadSessionErrors (a dismissed prompt, a spent
 // re-auth, a refused round-trip) are the coded vocabulary every consumer
@@ -201,10 +219,7 @@ async function retryOnce(file, guard) {
   // only cross-attempt memory of which subject the batch belongs to, so a
   // torn-down retry reports once and unwinds with the silent code instead of
   // re-acquiring.
-  if (guard.tornDown()) {
-    guard.cancel();
-    throw uploadError(UPLOAD_SUBJECT_CHANGED);
-  }
+  if (guard.tornDown()) throw subjectChangedError(guard);
   try {
     const proof = await windowProof(guard);
     // Same self-custody branch the first attempt takes: no window means no
@@ -216,7 +231,7 @@ async function retryOnce(file, guard) {
     if (!proof) return await uploadFileToIpfs(file);
     return await attemptOnce(file, proof, guard);
   } catch (err) {
-    if (isUsernameMismatch(err)) throw tornDownSession();
+    if (isUsernameMismatch(err)) throw mismatchError(guard);
     if (unwindIfSessionEnded(err, guard)) throw uploadError(UPLOAD_SESSION_TORN_DOWN);
     throw err;
   }
@@ -264,18 +279,9 @@ export async function uploadFile(file) {
       if (!guard.tornDown()) clearCachedSessionProof();
       return retryOnce(file, guard);
     }
-    // username_mismatch means the proof in hand belongs to a different account
-    // than the JWT subject — a corrupted session no re-mint fixes, because a
-    // re-acquisition under the same divergence produces the same pair. Tear the
-    // session down via the shared teardown, matching the broadcast, settings,
-    // and authorship siblings. The cost of NOT doing so is a misreport, not a
-    // lockout: the subject change that produced the divergence already dropped
-    // the cached window, so a resubmit would re-acquire and succeed. But the
-    // user is told "upload failed" (and, on the publish path, "publishing
-    // failed" on top) for a session that needs re-login, which is neither
-    // actionable nor true. The already-reported code aborts the batch while
-    // telling the page layer the teardown's toast was the whole message.
-    if (isUsernameMismatch(err)) throw tornDownSession();
+    // username_mismatch: `mismatchError` either unwinds a flight whose subject
+    // has left or tears the session down.
+    if (isUsernameMismatch(err)) throw mismatchError(guard);
     if (unwindIfSessionEnded(err, guard)) throw uploadError(UPLOAD_SESSION_TORN_DOWN);
     // UNAUTHORIZED comes from the upload leg (`/ipfs/upload`) and means the
     // single-use upload token was refused. Not because a slow transfer outlived

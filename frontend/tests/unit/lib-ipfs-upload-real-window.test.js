@@ -18,8 +18,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // produces travels into `uploadFile` unexamined by any test double.
 //
 // Mocking justification (clause-a of project-CLAUDE.md "Carve-out for
-// deterministic edge-case coverage"): every function mocked here is an `api.js`
-// export that performs a real fetch(). Reproducing a mint that answers with a
+// deterministic edge-case coverage"): every `api.js` export mocked here
+// performs a real fetch(). Reproducing a mint that answers with a
 // malformed proof means a backend that violates its own response contract,
 // which no live deployment can be asked for; and `uploadFileToIpfs` hashes the
 // file through `sha256File` before its first request, and `sha256File` calls
@@ -88,8 +88,13 @@ vi.mock('alpinejs', () => ({
   },
 }));
 
-const { uploadFile, describeUploadError, UPLOAD_REAUTH_FAILED, UPLOAD_SESSION_TORN_DOWN } =
-  await import('../../src/lib/ipfs-upload.js');
+const {
+  uploadFile,
+  describeUploadError,
+  UPLOAD_REAUTH_FAILED,
+  UPLOAD_SESSION_TORN_DOWN,
+  UPLOAD_SUBJECT_CHANGED,
+} = await import('../../src/lib/ipfs-upload.js');
 const { clearCachedSessionProof, clearPasswordFactorMemo, abandonInFlightAcquisitions } =
   await import('../../src/lib/fresh-auth.js');
 const { ApiRequestError } = await import('../../src/api.js');
@@ -122,10 +127,12 @@ beforeEach(() => {
   mockAuthStore.custody = 'light';
   mockAuthStore.username = 'alice';
   // The production disconnect as far as this module can see it: the liveness
-  // flag drops and the subject scrub abandons every flight in the air.
+  // flag drops, the username clears, and the subject scrub abandons every
+  // flight in the air.
   mockAuthStore.isConnected = true;
   mockAuthStore.disconnect.mockImplementation(() => {
     mockAuthStore.isConnected = false;
+    mockAuthStore.username = null;
     abandonInFlightAcquisitions();
   });
   mockFetchEmailStatus.mockResolvedValue({ status: 'ok', data: { hasPassword: true } });
@@ -198,19 +205,21 @@ describe('the upload pre-flight over the real window', () => {
   });
 });
 
-describe('a corrupted session detected on the upload surface', () => {
-  const mismatch = () => new ApiRequestError(
-    'FRESH_AUTH_REQUIRED',
-    'FRESH_AUTH_REQUIRED',
-    null,
-    { reason: 'username_mismatch' },
-  );
+const mismatch = () => new ApiRequestError(
+  'FRESH_AUTH_REQUIRED',
+  'FRESH_AUTH_REQUIRED',
+  null,
+  { reason: 'username_mismatch' },
+);
 
+describe('a corrupted session detected on the upload surface', () => {
   it('two uploads detecting the same corrupted session tear down and report once', async () => {
     // Inline images go up side by side, so one corrupted session can be
     // detected by every transfer in the air. The user is owed one teardown
-    // and one re-login message for it; each upload still rejects with the
-    // already-reported code so the page stacks nothing on top.
+    // and one re-login message for it; each upload still rejects with an
+    // already-reported code so the page stacks nothing on top. The first
+    // detection tears the session down, so the second finds its subject
+    // already gone and unwinds as a subject change.
     const rejects = [];
     mockUploadFileToIpfs.mockImplementation(
       () => new Promise((_, reject) => { rejects.push(reject); }),
@@ -224,11 +233,43 @@ describe('a corrupted session detected on the upload surface', () => {
     rejects[1](mismatch());
 
     expect((await first)?.code).toBe(UPLOAD_SESSION_TORN_DOWN);
-    expect((await second)?.code).toBe(UPLOAD_SESSION_TORN_DOWN);
+    expect((await second)?.code).toBe(UPLOAD_SUBJECT_CHANGED);
     expect(mockAuthStore.disconnect).toHaveBeenCalledTimes(1);
     expect(mockToastStore.show).toHaveBeenCalledTimes(1);
     expect(mockToastStore.show).toHaveBeenCalledWith(
       'Session inconsistency detected. Please sign in again.',
+      'error',
+    );
+  });
+});
+
+describe('a username mismatch after the subject changed', () => {
+  it('a mismatch after a cross-tab sign-in as another account leaves that account signed in', async () => {
+    // The pre-flight hashes the file before it reads the JWT. A sign-in as
+    // another account in a second tab, landing in that gap, scrubs this tab
+    // and adopts the new session, so the pre-flight carries this flight's
+    // proof under the new account's token and is answered username_mismatch.
+    // The new session is not corrupted: the mismatch is the departed
+    // account's, and the user is owed one subject-change message for it.
+    mockUploadFileToIpfs.mockImplementationOnce(async () => {
+      // The adoption as this module sees it: the subject scrub's cache clears
+      // and in-flight abandonment, in the store's order, then the new session.
+      clearCachedSessionProof();
+      clearPasswordFactorMemo();
+      abandonInFlightAcquisitions();
+      mockAuthStore.username = 'bob';
+      throw mismatch();
+    });
+
+    const err = await uploadFile(file()).then(() => null, (e) => e);
+
+    expect(err?.code).toBe(UPLOAD_SUBJECT_CHANGED);
+    expect(describeUploadError(err)).toBeNull();
+    expect(mockAuthStore.disconnect).not.toHaveBeenCalled();
+    expect(mockAuthStore).toMatchObject({ isConnected: true, username: 'bob' });
+    expect(mockToastStore.show).toHaveBeenCalledTimes(1);
+    expect(mockToastStore.show).toHaveBeenCalledWith(
+      'Your session changed, so the confirmation was cancelled.',
       'error',
     );
   });

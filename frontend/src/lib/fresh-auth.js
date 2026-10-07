@@ -140,7 +140,7 @@ export function passwordPromptMessage() {
 // surface the re-login toast. Shared by every surface that routes a mismatch
 // here — broadcastWithFreshAuth (its first-attempt and retry legs), the
 // consent-op retry gate consentOpFreshAuthRetryGate (serving the settings and
-// authorship orchestrators), and the upload surface's tornDownSession
+// authorship orchestrators), and the upload surface's mismatchError
 // (lib/ipfs-upload.js) — so the teardown side-effects cannot drift between
 // surfaces; each caller still reports its own surface-appropriate shape after
 // calling this (the session-kind path returns FRESH_AUTH_REDIRECT_PENDING,
@@ -166,7 +166,8 @@ export function passwordPromptMessage() {
 // teardown claim: each disconnect bumps the generation, so a second
 // disconnect would mint a teardown the claim has never seen. This gate does
 // not protect a session established after the flight began; a detector that
-// finds the store connected always disconnects it.
+// finds the store connected always disconnects it. The upload surface reads
+// its subject guard before calling here for that reason.
 export function handleSessionInconsistency() {
   tearDownSessionWithMessage('sessionInconsistency', 'Session inconsistency detected. Please sign in again.');
 }
@@ -444,12 +445,10 @@ function claimTeardownReport() {
   _reportedTeardownGeneration = _acquireGeneration;
 }
 
-// The corrupted-session discriminator, in one place so the first-attempt and
+// The username-mismatch discriminator, in one place so the first-attempt and
 // retry legs of every fresh-auth surface cannot drift on what a mismatch looks
-// like. The JWT subject and the proof subject diverge; no re-mint fixes it
-// (every re-acquisition would replay the same mismatched pair), so each leg
-// routes it through `handleSessionInconsistency` rather than treating it as a
-// retryable re-auth failure.
+// like. The JWT subject and the proof subject diverge, and no leg treats that
+// as a retryable re-auth failure.
 //
 // `details.reason` is the whole gate, never a status code. The session-kind
 // and authorship consent-op surfaces broadcast through signer.js, which
