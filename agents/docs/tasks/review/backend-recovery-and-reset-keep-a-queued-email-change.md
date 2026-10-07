@@ -114,3 +114,37 @@ not-found 400, deep-equal to an unknown token's answer, and keeps the post-evict
 - Same statement family, different defect: both recovery paths check the new address against
   `accounts.email` only, not against other rows' `pending_email`. Filed in
   `backend-email-change-swap-500s-on-a-taken-address`.
+
+## Backend implementation signal (2026-10-07, commits 4196982f, e9f8214f; learning 3611be12)
+
+Landed in one pass with `backend-reset-tokens-outlive-email-changes-and-recovery`, which carries the
+shared test-run detail.
+
+- **AC 1.** The three statements write `pending_email = NULL, pending_email_token = NULL,
+  pending_email_expires_at = NULL` in their one SET: `routes/recover.ts` `POST /recover` (ORCID
+  method), `routes/recover.ts` `POST /recover/verify` (apply transaction), and `routes/auth.ts`
+  `POST /reset`. `POST /api/custody/upgrade` is unchanged.
+- **AC 2 to 4.** `tests/routes/recovery-and-reset-drop-queued-email-change.test.ts` (new, 3 specs).
+  The change is queued through the real `POST /api/auth/login`, `POST /api/custody/fresh-auth`
+  (`change_email`, password) and `POST /api/settings/email` on the real `verifyHiveSignature` JWT
+  path, and the spec asserts the triple holds the attacker's address and the mailed token before
+  the eviction. After it, the stale link answers a 400 deep-equal to an unknown token's,
+  `accounts.email` is the recovery's `new_email` (ORCID, seed phrase) or the owner's (reset), and
+  the triple is NULL. All three were red before the fix: the link answered 200 and swapped the
+  email. Header: (a) the SMTP transporter and `config.smtpHost`, and the seeded ORCID nonce;
+  (c) `recover.test.ts` [smtp-fail-test.invalid]; no auth middleware mocked.
+- **AC 5.** recover, recover-two-phase, recover-orcid-state-g, auth-reset-account-state,
+  session-proof-invalidation, settings-state-g-unverified-email, settings and `tests/eslint`
+  (including no-accounts-updated-at-write-outside-signup-finalize) are green, each run alone, exit
+  0, no Errors line.
+- **AC 6.** This task's statements add no error code, response string or status (the reworded
+  reset-request message belongs to the sibling), no emdash, and no writer of
+  `accounts.updated_at`.
+- **Comments.** None became false, as the filing found. The simplify pass deleted two `recover.ts`
+  comments that only restated the SET lists.
+- **For ARCHITECTURE.md § 6.3 [TODO Architect].** The three statements above drop a pending email
+  change. The residuals stand as filed: a change request in flight still races the eviction (the
+  change-flow write is keyed on `username` alone), and the owner is not told a change is queued.
+- **Learnings checkpoint.** Covered by the sibling's new entry,
+  `conventions/mailed-credential-token-dies-with-its-address-and-credential.md` (Guidance 1, and
+  the in-flight residual under Guidance 3); no separate entry qualified.
