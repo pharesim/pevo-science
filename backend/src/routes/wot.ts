@@ -105,7 +105,7 @@ const wotWriteLimiter = rateLimit({ name: 'wot-write', windowMs: 60_000, max: 10
 
 // Mounted before wotWriteLimiter so a malformed vouchee takes no wot-write slot.
 function validateVouchee(req: Request, res: Response, next: NextFunction): void {
-  const { vouchee } = req.body;
+  const vouchee = req.body?.vouchee;
   if (typeof vouchee !== 'string' || !HIVE_ACCOUNT_NAME_REGEX.test(vouchee)) {
     sendError(res, 400, 'BAD_REQUEST', 'vouchee is required and must be a valid Hive username');
     return;

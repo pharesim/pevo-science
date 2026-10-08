@@ -165,7 +165,7 @@ type VouchSnapshot = VouchStatus & { self_pinned: boolean };
 
 /**
  * Cache key for a vouchee's `getVouchStatus` entry. Spelled in one place so the
- * read site (`getVouchStatus`'s getOrSet) and the bust sites (the vouch-poll
+ * read site (`getVouchSnapshot`'s getOrSet) and the bust sites (the vouch-poll
  * loop and the retract handler) cannot drift apart — a divergent literal would
  * silently no-op the invalidation and re-introduce the stale-status bug.
  */

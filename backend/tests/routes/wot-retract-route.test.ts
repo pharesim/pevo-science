@@ -196,6 +196,15 @@ describe('POST /api/wot/retract — live-threshold self-heal (no revoke broadcas
     },
   );
 
+  it('rejects a request with no body with 400', async () => {
+    hafQueryMock.mockImplementation(makeHafMock({}));
+
+    const res = await request(app).post('/api/wot/retract').set('Authorization', `Bearer ${jwtFor('carol')}`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
+  });
+
   it('counts no wot-write slot for a request it rejects as a malformed vouchee', async () => {
     hafQueryMock.mockImplementation(makeHafMock({}));
     const auth = `Bearer ${jwtFor('dave')}`;

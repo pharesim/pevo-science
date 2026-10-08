@@ -20,7 +20,7 @@
  *       `vouchStatusSelect()` body verbatim against a live Postgres with the
  *       `active_accreditations` / `active_vouches` CTEs redirected at a synthetic
  *       `operation_custom_json_view` VALUES set (the same FROM-redirect technique
- *       as `active-vouches-signer-gate.test.ts` and `wot-broadcast-timeout.test.ts`).
+ *       as `active-vouches-signer-gate.test.ts`).
  *   (b) No auth middleware: this SELECT sits below the route layer and is
  *       exercised through a raw `pg.Pool`, so there is no cryptographic
  *       verification to run real here.

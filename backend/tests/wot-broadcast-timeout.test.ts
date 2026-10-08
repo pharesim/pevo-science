@@ -13,9 +13,9 @@
  * deterministically — a real broadcast landing or timing out cannot be
  * produced reliably against a live Hive node, and this is a service-level unit
  * with no route (cryptographic verification is out of scope; there is no
- * `verifyHiveSignature` here). `getVouchStatus` and `getAccreditedSet` are NOT
- * mocked: they run against the mocked pool, which returns the
- * `vouchStatusSelect` single-row `{ self_method, self_pinned, vouches }` shape.
+ * `verifyHiveSignature` here). `getVouchStatus` is NOT mocked: it runs against
+ * the mocked pool, which returns the `vouchStatusSelect` single-row
+ * `{ self_method, self_pinned, vouches }` shape.
  * Real-path companion: `backend/tests/wot-vouch-status-select-real-postgres.test.ts` [self_pinned]
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
