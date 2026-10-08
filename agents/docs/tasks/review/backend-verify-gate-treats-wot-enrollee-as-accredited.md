@@ -223,3 +223,117 @@ Triage dispositions (2026-10-08, approved by the user):
   column inside an unchanged `AS MATERIALIZED` fence.
 - Auditing the sibling "latest op = accredit" readers: dismissed. The diff changes only the gate,
   and item 1 is the harm that `getExistingAccreditation` accepting a WoT member reaches.
+
+## Backend re-review signal (2026-10-08, commits 925024f7 and 851fe922)
+
+925024f7 and 851fe922 verified as ancestors of HEAD with `git merge-base --is-ancestor`.
+
+**Hold item 1 (925024f7).** `findExistingAccreditation` now returns `ExistingAccreditationGate`,
+`{ kind: 'hit', tx_id, block_num } | { kind: 'miss', wot_orcid }`, in place of
+`IdempotencyHit | null`. Its fenced query also projects `->> 'orcid'`. A miss on a latest `wot`
+accredit carries that op's non-empty `orcid` as `wot_orcid`. A miss on a latest revoke, on no op,
+or on a wot op with an empty or absent `orcid` carries null. `/verify` stores it in `wotOrcid` and
+spreads `orcid` onto the `method: 'email'` payload only when it is non-empty. The value comes from
+the same chain row the gate reads, so there is no second HAF read. `pending.orcid` never reaches
+the op. The one other consumer, the gate mock in `tests/routes/accreditation.test.ts`, returns the
+miss shape.
+
+**Tests (925024f7).**
+- `tests/routes/accreditation-idempotency.test.ts`: the hold's spec, 'latest op is a wot accredit
+  holding an ORCID → the method:email accredit carries that ORCID'. Its pending row holds a
+  different, self-asserted ORCID. The existing wot spec now seeds a self-asserted pending ORCID and
+  asserts the payload has no `orcid`. New 'latest op is a revoke → the method:email accredit
+  carries no ORCID'.
+- `tests/lib/idempotency.test.ts`: all gate specs move to the union. New specs cover the carry, an
+  empty `orcid`, and a revoke whose payload holds an `orcid`. The SQL regex now includes
+  `'orcid' AS orcid`.
+- `tests/lib/existing-accreditation-gate-real-postgres.test.ts` (11 specs): the union, plus the
+  carry, an empty `orcid` and a revoke after an ORCID-holding wot accredit, against the real SQL.
+- `tests/lib/idempotency-real-haf.test.ts`: the fixture probe projects `orcid`, the positive-hit
+  spec expects the carry when the namespace's latest authority op is a wot accredit, and the other
+  two specs expect the miss shape.
+
+**Evidence.**
+- Red before the fix: the route carry spec failed with the payload missing `"orcid"`. The unit and
+  real-Postgres specs failed with `null` where a miss was expected.
+- Each file alone after the fix:
+  - `idempotency` 37/37 and the real-Postgres file 11/11.
+  - `accreditation` 41/41, `accreditation-verify-sanctioned` 2/2, `pending-decrement-queue` 9/9,
+    `misc` 16/16.
+  - `idempotency-real-haf -t findExistingAccreditation` 3/3, `tests/eslint` 146/146.
+  - `accreditation-idempotency`: 23 passed, 6 failed. A base copy (5184c970) fails the same six
+    by name, owned by `backend-accreditation-idempotency-specs-skip-the-sanction-guard-read`.
+- `npm run typecheck` is clean. Lint: 0 errors, 1 warning, the existing one in
+  `author-supersession.ts`. The anchor gate over every added line in both commits finds 0 hits,
+  and its control line fires.
+
+**Verification workflow on 925024f7.** Five lenses (comment claims, mutation, base comparison,
+adversarial, docs), one refuter per finding, all probes in `git archive` copies.
+- Mutation: 11 of 11 mutants killed, each restore checked with `cmp`. The mutants were: no `orcid`
+  projection; a `'ORCID'` key; a carry on every miss; '' carried; the pre-fix null; an
+  ORCID-holding wot op hitting the gate; the route assignment deleted; `pending.orcid` used;
+  `orcid` written unconditionally; `??` and `||` fallbacks to `pending.orcid`. The two SQL mutants
+  die only in the real-Postgres file and the SQL regex.
+- No blocker or should-fix in the fix. 851fe922 lands the four comment and name defects the claims
+  and docs lenses confirmed:
+  - The real-HAF forged-signer spec name said the gate "returns null". It now says "misses".
+  - That spec's comment said a dropped authority filter allows "a self-bootstrap accreditation",
+    but a gate hit broadcasts nothing. The clause is deleted.
+  - A stale unit-spec comment ("gates only on accredit-tail", "mirrors every sibling read") is
+    deleted.
+  - The `/verify` gate-hit comment said metadata edits never flow through a second
+    `/request` → `/verify`. It now speaks only of an account whose latest op is a non-wot accredit.
+  
+  After 851fe922: `idempotency` 37/37, real-HAF gate 3/3, `tests/eslint` 146/146.
+
+**Accepted residual (user decision, 2026-10-08).** The carry reads indexed HAF only, as the hold
+prescribes and as `PATCH /api/accreditation/metadata` does. A WoT member who links or rebinds an
+ORCID and opens the email link before HAF indexes the link op (seconds, 120 s ceiling) gets an
+email op carrying the ORCID the gate saw, or none. A re-link repairs it.
+
+**[TODO Architect] additions:**
+- The latest-action-wins refresh already in the TODO at archive should also cover the hit/miss
+  union. The entry's helper snippet returns `null` and a bare `{ tx_id, block_num }`. Its route
+  example says the helper "returns null when the latest op is a revoke" and branches on
+  `if (existingForUser)`. Its canonical SQL lacks the `orcid` projection.
+- `api-contracts/accreditation.md`, PATCH /metadata intro: "The `/verify` email-confirm path stays
+  idempotent and does NOT update metadata; all metadata changes route through here." A latest `wot`
+  accredit now misses the gate, and `/verify` broadcasts the `/request` metadata. Narrow it to the
+  gate hit. This dates from 31994b09.
+- `ARCHITECTURE.md` § 2, the "Released" sentence: "Every reader that answers 'is this account
+  accredited now' must follow this rule, including the self-service gates that decide whether to
+  broadcast a new `accredit` op". The `/verify` gate misses on a latest `wot` accredit by design,
+  even for an at-threshold member. This dates from 31994b09.
+- `backend-idempotency-real-haf-discovery-walks-the-chain` quotes the old spec name
+  "non-authority self-broadcast accredit for an account returns null" twice. It is now
+  "... misses".
+
+**For triage (not acted on):**
+- `broadcastWotAccreditation` (`wot.ts`), in HAF lag: an account whose first ORCID-carrying
+  authority accredit is not yet indexed reads as unpinned. If a vouch brings it to threshold in
+  that window, a wot accredit without `orcid` goes out, which unbinds the ORCID and unpins the
+  account. No pending task covers it. It needs an in-flight-accredit record like
+  `backend-sanction-holds-before-haf-indexes`, not a carry.
+- `handleLink` re-broadcasts `method: existing.method`, and `PATCH /metadata` does the same with
+  `prior.method`. If either runs before the email pin is indexed, it writes `method: 'wot'` again,
+  which undoes the pin. No pending task covers it. Recommended: dismiss as narrow to HAF lag.
+- The admin grant drops `orcid`: `backend-orcid-binding-sanction-sticky` scope 3 covers it.
+- The revoke spec's "Both layers ran" comment and its call count of 2 are still wrong (there are
+  three reads). `backend-accreditation-idempotency-specs-skip-the-sanction-guard-read` scope 2
+  owns that. 925024f7 changed only the gate half of the sentence.
+- Older "Round-1 hold item N" prefixes in `idempotency-real-haf.test.ts` and the task-slug label
+  above the unit `findExistingAccreditation` describe were left alone; this round added none.
+- Considered, not filed: a latest typeless revoke after an ORCID-holding accredit. `/verify`
+  carries nothing past it, but no backend writer emits a typeless revoke, and a `release` revoke
+  frees the ORCID by design.
+
+**Learnings checkpoint:** `accreditation-state-read-latest-action-wins-2026-05-15.md` is further
+contradicted by the hit/miss union. Its refresh stays in the TODO at archive, extended above, so it
+was not run here. Grepping `agents/docs/solutions/` for `findExistingAccreditation`,
+`IdempotencyHit` and `wot_orcid` turns up no other entry that names the gate's return. No new entry:
+the carry-forward rule is in `ARCHITECTURE.md` "Credential Bindings", and the rationale is in the
+code.
+
+**Code review:** not run on the backend side (the architect's `/ce-code-review` at intake).
+`ce-simplify-code` was skipped: the change has about 20 substantive `src` lines, under its 30-line
+threshold.
