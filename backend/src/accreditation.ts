@@ -154,8 +154,7 @@ export const SANCTIONED_ACCREDIT_MESSAGE =
   'This account is not eligible for accreditation at this time. Please contact the platform operators if you believe this is an error.';
 
 /**
- * User-facing 503 string for a sanction read that could not be made
- * (`readSanctionState` answered `haf_unavailable`). Like
+ * User-facing 503 string for a sanction read that could not be made. Like
  * `SANCTIONED_ACCREDIT_MESSAGE`, it does not mention sanctions. Emdash-free per
  * project convention.
  */

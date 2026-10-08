@@ -510,10 +510,10 @@ function byAuthToken(req: Request): string {
   return `ip:${byIp(req)}`;
 }
 
-// `refundStatusCodes: [409]` refunds the per-token slot on a 409. The motivating
-// case is 409 LOCK_HELD: the slot was consumed by the concurrent activation
-// holder, not the waiter, so charging the waiter for the holder's slowness would
-// push an auto-retry loop into a 429 cliff with a 1h cooldown. The route's other
+// Refunds the per-token slot on a 409. The motivating case is 409 LOCK_HELD:
+// the slot was consumed by the concurrent activation holder, not the waiter, so
+// charging the waiter for the holder's slowness would push an auto-retry loop
+// into a 429 cliff with a 1h cooldown. The route's other
 // 409 (DUPLICATE — the username/Hive account is already taken) is also refunded
 // since it shares the code, which is benign: Hive account existence is public
 // on-chain data, the limiter is keyed per auth_token (not per probed username),

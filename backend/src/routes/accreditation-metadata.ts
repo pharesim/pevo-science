@@ -125,8 +125,7 @@ router.patch(
     // uncached readSanctionState closes that window: a sanctioned account is
     // refused before any proof is consumed or op broadcast, so a later
     // self-service accredit cannot lift its own sticky sanction. A read that
-    // could not be made answers a retriable 503, likewise before the proof.
-    // Placed AFTER the currently-accredited check and BEFORE consuming the proof.
+    // could not be made answers a retriable 503. Placed AFTER the currently-accredited check and BEFORE consuming the proof.
     const sanction = await readSanctionState(username);
     if (sanction === 'haf_unavailable') {
       res.set('Retry-After', '30');

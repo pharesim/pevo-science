@@ -93,7 +93,7 @@ import { PrivateKey } from '@hiveio/dhive';
 // verifyHiveSignature, the rest of the auth middleware chain, the real Redis
 // client (lock/cache keys are observed via live redis.get / redis.set calls
 // in the test body). The mocked set is: the database pools (db.js getPool,
-// null while a spec sets hafPoolAbsent / isHafConfigured -> true / no-op
+// null while a spec sets hafPoolAbsent; isHafConfigured -> true; no-op
 // closeHafPool; app-db.js getAppPool); the
 // hive.js factory, covering the broadcast seams (broadcast.json,
 // broadcastJsonWithTimeout, broadcastAdminCustomJson — all routed through

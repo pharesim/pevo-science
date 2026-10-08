@@ -32,29 +32,25 @@ const { getAccountsMock, broadcastJsonMock, createClaimedAccountMock, hafMode, s
   sanctionReadFailures: { count: 0 },
 }));
 
-vi.mock('../../src/hive.js', () => ({
-  hiveClient: {
-    database: { getAccounts: getAccountsMock },
-    broadcast: { json: broadcastJsonMock },
-  },
-  broadcastJsonWithTimeout: (...args: unknown[]) =>
-    (broadcastJsonMock as (...a: unknown[]) => unknown)(...args),
-  broadcastAdminCustomJson: (payload: Record<string, unknown>, timeoutMs?: number) =>
-    (broadcastJsonMock as (...a: unknown[]) => unknown)(
-      { required_auths: [], required_posting_auths: [], json: JSON.stringify(payload) },
-      undefined,
-      timeoutMs,
-    ),
-  BroadcastTimeoutError: class BroadcastTimeoutError extends Error {
-    public readonly timeoutMs: number;
-    constructor(timeoutMs: number) {
-      super(`Hive broadcast timed out after ${timeoutMs}ms`);
-      this.name = 'BroadcastTimeoutError';
-      this.timeoutMs = timeoutMs;
-    }
-  },
-  DEFAULT_BROADCAST_TIMEOUT_MS: 30_000,
-}));
+vi.mock('../../src/hive.js', async () => {
+  const { MockBroadcastTimeoutError } = await import('../support/broadcast-mocks.js');
+  return {
+    hiveClient: {
+      database: { getAccounts: getAccountsMock },
+      broadcast: { json: broadcastJsonMock },
+    },
+    broadcastJsonWithTimeout: (...args: unknown[]) =>
+      (broadcastJsonMock as (...a: unknown[]) => unknown)(...args),
+    broadcastAdminCustomJson: (payload: Record<string, unknown>, timeoutMs?: number) =>
+      (broadcastJsonMock as (...a: unknown[]) => unknown)(
+        { required_auths: [], required_posting_auths: [], json: JSON.stringify(payload) },
+        undefined,
+        timeoutMs,
+      ),
+    BroadcastTimeoutError: MockBroadcastTimeoutError,
+    DEFAULT_BROADCAST_TIMEOUT_MS: 30_000,
+  };
+});
 
 vi.mock('../../src/account-creation.js', () => ({
   createClaimedAccount: createClaimedAccountMock,
@@ -119,17 +115,17 @@ const runnable = dbReachable && getPool() !== null;
 
 const usernames: string[] = [];
 
-async function cleanup(username: string, email: string) {
+async function cleanup(username: string) {
   const pool = getAppPool()!;
   await pool.query('DELETE FROM custody_audit_log WHERE username = $1', [username]).catch(() => {});
-  await pool.query('DELETE FROM accounts WHERE username = $1 OR email = $2', [username, email]).catch(() => {});
+  await pool.query('DELETE FROM accounts WHERE username = $1 OR email = $2', [username, `${username}@example.com`]).catch(() => {});
 }
 
 /** A confirmed signup row with its session-binding cookie, as `/signup` + `/verify` leave it. */
 async function seedConfirmedRow(username: string): Promise<{ authToken: string; cookie: string }> {
   const email = `${username}@example.com`;
   usernames.push(username);
-  await cleanup(username, email);
+  await cleanup(username);
   const authToken = `confirmed:${crypto.randomBytes(32).toString('hex')}`;
   const cookieValue = crypto.randomBytes(32).toString('hex');
   const bindingHash = crypto.createHash('sha256').update(cookieValue).digest();
@@ -179,7 +175,7 @@ beforeEach(async () => {
 
 afterAll(async () => {
   if (!dbReachable) return;
-  for (const username of usernames) await cleanup(username, `${username}@example.com`);
+  for (const username of usernames) await cleanup(username);
 });
 
 describe.skipIf(!runnable)('POST /api/auth/confirm when the sanction read cannot be made', () => {

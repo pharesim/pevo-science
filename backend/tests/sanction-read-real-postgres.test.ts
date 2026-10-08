@@ -59,10 +59,9 @@ let redirectedSql: string | null = null;
 function syntheticPool(ops: Op[]) {
   return {
     query: async (sql: string, params: unknown[] = []) => {
-      const rows: Array<[string, Record<string, unknown>, number]> = [
-        ['someone-else', { action: 'accredit', account: 'someone-else', method: 'email' }, 1],
-        ...ops.map((op): [string, Record<string, unknown>, number] => [
-          ACCOUNT,
+      const rows: Array<[Record<string, unknown>, number]> = [
+        [{ action: 'accredit', account: 'someone-else', method: 'email' }, 1],
+        ...ops.map((op): [Record<string, unknown>, number] => [
           {
             action: op.action,
             account: ACCOUNT,
@@ -74,7 +73,7 @@ function syntheticPool(ops: Op[]) {
       ];
       const tuples: string[] = [];
       const extra: unknown[] = [];
-      for (const [, json, block] of rows) {
+      for (const [json, block] of rows) {
         const p = params.length + extra.length + 1;
         tuples.push(`($${p}::text, $${p + 1}::text, $${p + 2}::jsonb, $${p + 3}::integer)`);
         extra.push(config.appTag, JSON.stringify(json), JSON.stringify([config.hiveAdminAccount]), block);

@@ -71,8 +71,7 @@ vi.mock('../../src/hive.js', () => ({
 const { hafQueryMock, hafConfiguredFlag } = vi.hoisted(() => ({
   hafQueryMock: vi.fn(),
   // Mutable container lets individual tests flip configuration presence
-  // (the HAF-unconfigured spec) without re-mocking
-  // the module.
+  // (the HAF-unconfigured spec) without re-mocking the module.
   hafConfiguredFlag: { value: true },
 }));
 
