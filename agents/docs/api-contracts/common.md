@@ -159,9 +159,9 @@ The `verifyHiveSignature` middleware handles **both** JWT and Hive signature aut
 
 When a contract file says `Authorization: Bearer <jwt>` or `X-Hive-Username`/`X-Hive-Signature`, both paths are supported via this single middleware. Do not flag JWT support as "unimplemented" just because the route file only references `verifyHiveSignature`.
 
-### What Still Requires Keychain
+### Signing Hive Chain Operations
 
-Hive chain operations (publish, vote, review, vouch, retract) are signed and broadcast client-side via Keychain. These are NOT session-based — they require the user's posting key to sign the Hive transaction.
+Hive chain operations (publish, vote, review, vouch, retract) need a posting-key signature, which a session JWT does not supply. A self-custody account signs and broadcasts them client-side via Keychain. A light account sends them to `POST /api/custody/broadcast`, which signs server-side and requires a fresh-auth proof in addition to the JWT (see [custody.md](custody.md)).
 
 ---
 

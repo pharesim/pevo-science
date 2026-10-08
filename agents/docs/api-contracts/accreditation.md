@@ -323,7 +323,7 @@ Vouch status for a user in the Web of Trust system. Returns the number of vouche
 
 ### POST /api/wot/vouch
 
-Notify the backend that a vouch `custom_json` has been broadcast. The backend checks whether the vouchee has reached the WoT threshold and auto-accredits them if so. The frontend must first broadcast the `vouch` custom_json via Hive Keychain, then call this endpoint.
+Notify the backend that a vouch `custom_json` has been broadcast. The backend checks whether the vouchee has reached the WoT threshold and auto-accredits them if so. The frontend must first broadcast the `vouch` custom_json, then call this endpoint.
 
 **Headers:** `X-Hive-Username`, `X-Hive-Signature`
 
@@ -357,7 +357,7 @@ When the vouchee has not yet reached the threshold, the message format is `"Vouc
 
 ### POST /api/wot/retract
 
-Notify the backend that a `retract_vouch` custom_json has been broadcast. WoT membership is evaluated live against the current vouch graph, so a retraction is a self-healing non-event: when a vouchee drops below the threshold it simply stops appearing in the accredited set on the next membership read. No `revoke` op is broadcast and no cascade runs. The backend polls HAF until the signer's vouch edge to the vouchee has disappeared from `active_vouches` (so the returned `vouch_status` reflects fresh chain state), then responds. The frontend must first broadcast the `retract_vouch` custom_json via Hive Keychain, then call this endpoint.
+Notify the backend that a `retract_vouch` custom_json has been broadcast. WoT membership is evaluated live against the current vouch graph, so a retraction is a self-healing non-event: when a vouchee drops below the threshold it simply stops appearing in the accredited set on the next membership read. No `revoke` op is broadcast and no cascade runs. The backend polls HAF until the signer's vouch edge to the vouchee has disappeared from `active_vouches` (so the returned `vouch_status` reflects fresh chain state), then responds. The frontend must first broadcast the `retract_vouch` custom_json, then call this endpoint.
 
 **Headers:** `X-Hive-Username`, `X-Hive-Signature`
 
