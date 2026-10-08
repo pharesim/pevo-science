@@ -140,8 +140,8 @@ All measured on 2026-09-30 and 2026-10-01 against main and the configured HAF no
   a loose regex, the literal text `u0000` from the titles and bodies it stores.
 - `chain-walkers.ts` and `papers.ts` are large; keep the change at the sites named here.
 - Architect at archive, not for the implementer: run `/ce-compound-refresh` on
-  `solutions/conventions/hafsql-comments-body-never-follows-an-edit-read-the-replay.md` (its
-  status paragraph and reader list are labelled pending) and on
+  `solutions/conventions/hafsql-comments-body-follows-edits-only-from-hafsql-v2-6-2.md` (its
+  "Where PEvO still replays" section and its `applyHivePatch` pitfall are labelled pending) and on
   `solutions/architecture-patterns/pevo-paper-version-chain-and-edit-semantics-2026-04-30.md`
   (its pre-fill-from-the-head claims hold again once this lands; its line anchors and file
   locations are stale).
