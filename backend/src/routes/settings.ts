@@ -590,7 +590,7 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
       // and this swap replaces or clears the token, so the swap matches no
       // row and the link gets the not-found answer. A reset token is cleared
       // with the swap: it was mailed to the address the swap replaces.
-      const swapped = await pool.query<{ email: string }>(
+      const swapped = await pool.query<{ email: string; username: string }>(
         `UPDATE accounts
          SET email = pending_email,
              pending_email = NULL,
@@ -601,17 +601,18 @@ router.get('/email/verify/:token', readLimiter, async (req: Request, res: Respon
              reset_token = NULL,
              reset_token_expires_at = NULL
          WHERE id = $1 AND pending_email_token = $2
-         RETURNING email`,
+         RETURNING email, username`,
         [row.id, token],
       );
       if (swapped.rowCount === 0) {
         return sendError(res, 400, 'INVALID_TOKEN', 'Invalid or expired verification link');
       }
 
-      // Update notification_preferences.email if it matched the old email
+      // This account's digest address follows the change when it equals the
+      // old account address.
       await pool.query(
-        'UPDATE notification_preferences SET email = $1 WHERE email = $2',
-        [swapped.rows[0].email, oldEmail],
+        'UPDATE notification_preferences SET email = $1 WHERE email = $2 AND username = $3',
+        [swapped.rows[0].email, oldEmail, swapped.rows[0].username],
       );
 
       return sendOk(res, { verified: true });

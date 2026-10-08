@@ -258,6 +258,86 @@ describe('Settings email (with DB)', () => {
     await pool.query('DELETE FROM accounts WHERE username = $1', [TEST_USER]);
   });
 
+  it.skipIf(!dbReachable)('verify token - change flow moves only the verifying account\'s digest address', async () => {
+    // Each user sets their own digest address, so another user's row holding
+    // the same address stays put. X has no accounts row: any Hive account can
+    // write its own prefs row on the signature path.
+    const pool = getAppPool()!;
+    const stamp = Date.now();
+    const userV = `settings_digest_v_${stamp}`;
+    const userX = `settings_digest_x_${stamp}`;
+    const oldEmail = `settings_digest_v_old_${stamp}@example.com`;
+    const newEmail = `settings_digest_v_new_${stamp}@example.com`;
+    const token = `test_digest_change_token_v_${stamp}`;
+
+    try {
+      await pool.query(
+        `INSERT INTO accounts (email, username, verify_token, pending_email, pending_email_token, pending_email_expires_at)
+         VALUES ($1, $2, NULL, $3, $4, NOW() + INTERVAL '24 hours')`,
+        [oldEmail, userV, newEmail, token],
+      );
+      await pool.query(
+        `INSERT INTO notification_preferences (username, email) VALUES ($1, $3), ($2, $3)`,
+        [userV, userX, oldEmail],
+      );
+
+      const res = await request(app)
+        .get(`/api/settings/email/verify/${token}`);
+      expect(res.status).toBe(200);
+
+      const { rows } = await pool.query<{ username: string; email: string }>(
+        'SELECT username, email FROM notification_preferences WHERE username = ANY($1)',
+        [[userV, userX]],
+      );
+      const byUser = Object.fromEntries(rows.map((r) => [r.username, r.email]));
+      expect(byUser).toEqual({ [userV]: newEmail, [userX]: oldEmail });
+    } finally {
+      await pool.query('DELETE FROM notification_preferences WHERE username = ANY($1)', [[userV, userX]]);
+      await pool.query('DELETE FROM accounts WHERE username = $1', [userV]);
+    }
+  });
+
+  it.skipIf(!dbReachable)('verify token - change flow keeps a digest address set apart from the account email', async () => {
+    const pool = getAppPool()!;
+    const stamp = Date.now();
+    const userW = `settings_digest_w_${stamp}`;
+    const oldEmail = `settings_digest_w_old_${stamp}@example.com`;
+    const newEmail = `settings_digest_w_new_${stamp}@example.com`;
+    const digestEmail = `settings_digest_w_own_${stamp}@example.com`;
+    const token = `test_digest_change_token_w_${stamp}`;
+
+    try {
+      await pool.query(
+        `INSERT INTO accounts (email, username, verify_token, pending_email, pending_email_token, pending_email_expires_at)
+         VALUES ($1, $2, NULL, $3, $4, NOW() + INTERVAL '24 hours')`,
+        [oldEmail, userW, newEmail, token],
+      );
+      await pool.query(
+        `INSERT INTO notification_preferences (username, email) VALUES ($1, $2)`,
+        [userW, digestEmail],
+      );
+
+      const res = await request(app)
+        .get(`/api/settings/email/verify/${token}`);
+      expect(res.status).toBe(200);
+
+      const { rows: accRows } = await pool.query(
+        'SELECT email FROM accounts WHERE username = $1',
+        [userW],
+      );
+      expect(accRows[0].email).toBe(newEmail);
+
+      const { rows } = await pool.query(
+        'SELECT email FROM notification_preferences WHERE username = $1',
+        [userW],
+      );
+      expect(rows[0].email).toBe(digestEmail);
+    } finally {
+      await pool.query('DELETE FROM notification_preferences WHERE username = $1', [userW]);
+      await pool.query('DELETE FROM accounts WHERE username = $1', [userW]);
+    }
+  });
+
   it.skipIf(!dbReachable)('verify token - rejects expired', async () => {
     const pool = getAppPool()!;
     const token = 'test_expired_token_' + Date.now();
