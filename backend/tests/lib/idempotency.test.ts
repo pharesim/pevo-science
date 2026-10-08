@@ -356,50 +356,84 @@ describe('findExistingAccreditation', () => {
       rows: [{ trx_id: 'accredit-user-tx-1', block_num: 12345, action: 'accredit' }],
     });
     const pool = { query: queryFn } as unknown as IdempotencyPool;
-    const hit = await findExistingAccreditation(pool, 'alice');
-    expect(hit).toEqual({ tx_id: 'accredit-user-tx-1', block_num: 12345 });
+    const gate = await findExistingAccreditation(pool, 'alice');
+    expect(gate).toEqual({ kind: 'hit', tx_id: 'accredit-user-tx-1', block_num: 12345 });
   });
 
-  it('returns null when the user has no prior accredit op', async () => {
+  it('misses with no ORCID to carry when the user has no prior accredit op', async () => {
     const queryFn = vi.fn().mockResolvedValueOnce({ rows: [] });
     const pool = { query: queryFn } as unknown as IdempotencyPool;
-    const hit = await findExistingAccreditation(pool, 'alice');
-    expect(hit).toBeNull();
+    const gate = await findExistingAccreditation(pool, 'alice');
+    expect(gate).toEqual({ kind: 'miss', wot_orcid: null });
   });
 
   // A revoked user's /verify retry must NOT hit the gate on their old
   // accredit op. Latest-action-wins: if the LIMIT-1 row's action is
-  // 'revoke', return null.
-  it('returns null when latest action is revoke (revoke→re-accredit flow falls through to broadcast)', async () => {
+  // 'revoke', the gate misses. A revoke carries no ORCID forward.
+  it('misses when latest action is revoke (revoke→re-accredit flow falls through to broadcast)', async () => {
     const queryFn = vi.fn().mockResolvedValueOnce({
-      rows: [{ trx_id: 'revoke-tx-after-accredit', block_num: 99999, action: 'revoke' }],
+      rows: [{ trx_id: 'revoke-tx-after-accredit', block_num: 99999, action: 'revoke', method: null, orcid: null }],
     });
     const pool = { query: queryFn } as unknown as IdempotencyPool;
-    const hit = await findExistingAccreditation(pool, 'alice');
-    expect(hit).toBeNull();
+    const gate = await findExistingAccreditation(pool, 'alice');
+    expect(gate).toEqual({ kind: 'miss', wot_orcid: null });
   });
 
   // A wot accredit is vouch-derived, so an account whose latest op is one
   // may sit below the live threshold and not be accredited. /verify must
   // fall through and broadcast the email accredit that pins it.
-  it('returns null when the latest op is a wot accredit', async () => {
+  it('misses when the latest op is a wot accredit', async () => {
     const queryFn = vi.fn().mockResolvedValueOnce({
-      rows: [{ trx_id: 'wot-accredit-tx', block_num: 54321, action: 'accredit', method: 'wot' }],
+      rows: [{ trx_id: 'wot-accredit-tx', block_num: 54321, action: 'accredit', method: 'wot', orcid: null }],
     });
     const pool = { query: queryFn } as unknown as IdempotencyPool;
-    const hit = await findExistingAccreditation(pool, 'alice');
-    expect(hit).toBeNull();
+    const gate = await findExistingAccreditation(pool, 'alice');
+    expect(gate).toEqual({ kind: 'miss', wot_orcid: null });
+  });
+
+  // The email accredit /verify broadcasts becomes the account's latest
+  // accredit, the op the ORCID binding is read from, so it must carry the
+  // ORCID the wot accredit carries.
+  it('carries the ORCID iD of a latest wot accredit on the miss', async () => {
+    const queryFn = vi.fn().mockResolvedValueOnce({
+      rows: [{
+        trx_id: 'wot-accredit-tx', block_num: 54321, action: 'accredit', method: 'wot', orcid: '0000-0002-1825-0097',
+      }],
+    });
+    const pool = { query: queryFn } as unknown as IdempotencyPool;
+    const gate = await findExistingAccreditation(pool, 'alice');
+    expect(gate).toEqual({ kind: 'miss', wot_orcid: '0000-0002-1825-0097' });
+  });
+
+  it('carries no ORCID when the latest wot accredit holds an empty orcid', async () => {
+    const queryFn = vi.fn().mockResolvedValueOnce({
+      rows: [{ trx_id: 'wot-accredit-tx', block_num: 54321, action: 'accredit', method: 'wot', orcid: '' }],
+    });
+    const pool = { query: queryFn } as unknown as IdempotencyPool;
+    const gate = await findExistingAccreditation(pool, 'alice');
+    expect(gate).toEqual({ kind: 'miss', wot_orcid: null });
+  });
+
+  it('carries no ORCID from a latest revoke whose payload holds one', async () => {
+    const queryFn = vi.fn().mockResolvedValueOnce({
+      rows: [{ trx_id: 'revoke-tx', block_num: 54321, action: 'revoke', method: null, orcid: '0000-0002-1825-0097' }],
+    });
+    const pool = { query: queryFn } as unknown as IdempotencyPool;
+    const gate = await findExistingAccreditation(pool, 'alice');
+    expect(gate).toEqual({ kind: 'miss', wot_orcid: null });
   });
 
   it.each(['email', 'orcid', 'manual', null])(
     'returns the hit when the latest op is an accredit with method %s',
     async (method) => {
       const queryFn = vi.fn().mockResolvedValueOnce({
-        rows: [{ trx_id: 'authority-accredit-tx', block_num: 54321, action: 'accredit', method }],
+        rows: [{
+          trx_id: 'authority-accredit-tx', block_num: 54321, action: 'accredit', method, orcid: '0000-0002-1825-0097',
+        }],
       });
       const pool = { query: queryFn } as unknown as IdempotencyPool;
-      const hit = await findExistingAccreditation(pool, 'alice');
-      expect(hit).toEqual({ tx_id: 'authority-accredit-tx', block_num: 54321 });
+      const gate = await findExistingAccreditation(pool, 'alice');
+      expect(gate).toEqual({ kind: 'hit', tx_id: 'authority-accredit-tx', block_num: 54321 });
     },
   );
 
@@ -417,10 +451,11 @@ describe('findExistingAccreditation', () => {
     expect(sql).toMatch(/required_posting_auths \?\| \$3::text\[\]/);
     expect(sql).toMatch(/haf_operations/);
     expect(sql).toMatch(/included_trx_id/);
-    // SELECT projects the action and method columns so the caller can apply
-    // latest-action-wins (gate-hit only on a non-wot accredit tail).
+    // SELECT projects the action, method and orcid columns the gate
+    // predicate and the miss's ORCID read.
     expect(sql).toMatch(/'action' AS action/);
     expect(sql).toMatch(/'method' AS method/);
+    expect(sql).toMatch(/'orcid' AS orcid/);
     // Convention Rule 2 tiebreaker (cj.id substitutes for trx_in_block,
     // which operation_custom_json_view does not expose).
     expect(sql).toMatch(/ORDER BY c\.block_num DESC, c\.id DESC/);

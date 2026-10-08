@@ -101,7 +101,7 @@ config.pevoAdminPostingKey = PrivateKey.fromSeed('pevo-accred-idem-test-admin').
 
 const app = createApp();
 
-async function seedPendingAccreditation(token: string, username: string): Promise<void> {
+async function seedPendingAccreditation(token: string, username: string, orcid = ''): Promise<void> {
   const redis = getRedis();
   if (!redis) throw new Error('Redis required for accreditation idempotency specs');
   const pending = {
@@ -110,7 +110,7 @@ async function seedPendingAccreditation(token: string, username: string): Promis
     institution: 'Test University',
     field: 'physics',
     email: `${username}@university.edu`,
-    orcid: '',
+    orcid,
     token,
     expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
     created_at: new Date().toISOString(),
@@ -691,7 +691,7 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
   // Revoke→re-accredit flow. A user previously accredited and subsequently
   // revoked must NOT hit the gate on their stale accredit op when retrying
   // /verify. The gate selects from action IN ('accredit','revoke') ORDER BY
-  // (block_num, id) DESC LIMIT 1 and returns null when the LIMIT-1 row is
+  // (block_num, id) DESC LIMIT 1 and misses when the LIMIT-1 row is
   // 'revoke'. A regression that filters on action='accredit' only would
   // surface 200 outcome:'already_accredited' with the stale tx_id and eat the
   // fresh token in cleanup.
@@ -703,7 +703,7 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     await seedPendingAccreditation(token, username);
 
     // Gate query returns a row whose latest action is 'revoke'.
-    // The helper inspects the action field and returns null, so the
+    // The helper inspects the action field and misses, so the
     // route should fall through to the per-token check (miss → broadcast).
     hafQueryMock.mockResolvedValueOnce({
       rows: [{ trx_id: 'tx-revoke-after-accredit', block_num: 99999, action: 'revoke' }],
@@ -720,7 +720,7 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     expect(res.body.data.tx_id).toBe('fresh-accred-tx-id');
     expect(res.body.data.outcome).toBeUndefined();
     expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
-    // Both layers ran: gate (returned null from revoke-tail) and per-token
+    // Both layers ran: gate (missed on the revoke tail) and per-token
     // check (returned empty rows).
     expect(hafQueryMock).toHaveBeenCalledTimes(2);
     // Bonus seed fires on the broadcast path.
@@ -736,11 +736,12 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     if (!redis) return;
     const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
     const username = 'gatewotuser';
-    await seedPendingAccreditation(token, username);
+    // The /request form's ORCID is self-asserted and never reaches the op.
+    await seedPendingAccreditation(token, username, '0000-0001-5109-3700');
 
     // Gate (wot accredit), sanction guard (no sanction), per-token lookup (miss).
     hafQueryMock.mockResolvedValueOnce({
-      rows: [{ trx_id: 'tx-wot-enrollment', block_num: 77777, action: 'accredit', method: 'wot' }],
+      rows: [{ trx_id: 'tx-wot-enrollment', block_num: 77777, action: 'accredit', method: 'wot', orcid: null }],
     });
     hafQueryMock.mockResolvedValueOnce({ rows: [{ sanction_block: null, auth_block: null }] });
     hafQueryMock.mockResolvedValueOnce({ rows: [] });
@@ -757,7 +758,66 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
     expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
     const payload = JSON.parse((broadcastJsonMock.mock.calls[0][0] as { json: string }).json) as Record<string, unknown>;
     expect(payload).toMatchObject({ action: 'accredit', account: username, method: 'email' });
+    expect(payload).not.toHaveProperty('orcid');
     expect(hafQueryMock).toHaveBeenCalledTimes(3);
+  });
+
+  // The email accredit becomes the account's latest accredit, the op the
+  // ORCID binding and `active_accreditations.orcid` are read from, so it
+  // carries the ORCID iD the wot accredit holds, never the one typed into
+  // the /request form.
+  it('latest op is a wot accredit holding an ORCID → the method:email accredit carries that ORCID', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
+    const username = 'gatewotorciduser';
+    await seedPendingAccreditation(token, username, '0000-0001-5109-3700');
+
+    hafQueryMock.mockResolvedValueOnce({
+      rows: [{
+        trx_id: 'tx-wot-orcid-link', block_num: 77778, action: 'accredit', method: 'wot', orcid: '0000-0002-1825-0097',
+      }],
+    });
+    hafQueryMock.mockResolvedValueOnce({ rows: [{ sanction_block: null, auth_block: null }] });
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
+
+    const res = await postVerify(token, username);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.tx_id).toBe('fresh-accred-tx-id');
+    expect(res.body.data.outcome).toBeUndefined();
+    expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse((broadcastJsonMock.mock.calls[0][0] as { json: string }).json) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      action: 'accredit',
+      account: username,
+      method: 'email',
+      orcid: '0000-0002-1825-0097',
+    });
+  });
+
+  // Only a latest wot accredit passes its ORCID on; a latest revoke passes
+  // none, even when its payload holds one.
+  it('latest op is a revoke → the method:email accredit carries no ORCID', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
+    const username = 'gaterevokeorcid';
+    await seedPendingAccreditation(token, username, '0000-0001-5109-3700');
+
+    hafQueryMock.mockResolvedValueOnce({
+      rows: [{ trx_id: 'tx-revoke', block_num: 77779, action: 'revoke', method: null, orcid: '0000-0002-1825-0097' }],
+    });
+    hafQueryMock.mockResolvedValueOnce({ rows: [{ sanction_block: null, auth_block: null }] });
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
+
+    const res = await postVerify(token, username);
+
+    expect(res.status).toBe(200);
+    expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse((broadcastJsonMock.mock.calls[0][0] as { json: string }).json) as Record<string, unknown>;
+    expect(payload).toMatchObject({ action: 'accredit', account: username, method: 'email' });
+    expect(payload).not.toHaveProperty('orcid');
   });
 
   it.each(['email', 'orcid', 'manual'])(

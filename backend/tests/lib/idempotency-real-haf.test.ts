@@ -480,17 +480,19 @@ describe('findAccreditationBroadcastByIdempotencyKey — real HAF SQL shape', ()
  *
  * Discovery helper: probe HAF for the most-recent (`ORDER BY block_num
  * DESC, id DESC`) `accredit`-OR-`revoke` op signed by a configured
- * authority. Returns the account, the action and method of the latest op (so
- * the positive-hit arm can predict gate-hit vs gate-miss correctly), and the
- * expected tx_id + block_num when the latest action is `accredit`. When
- * the latest action is `revoke`, `findExistingAccreditation` returns
- * null by design — the positive-hit arm asserts that revoke-latest
- * accounts produce null and non-wot accredit-latest accounts produce the hit.
+ * authority. Returns the account, the action, method and orcid of the latest
+ * op (so the positive-hit arm can predict gate-hit vs gate-miss and the
+ * miss's ORCID correctly), and the expected tx_id + block_num when the latest
+ * action is `accredit`. When the latest action is `revoke`,
+ * `findExistingAccreditation` misses by design — the positive-hit arm asserts
+ * that revoke-latest accounts produce a miss and non-wot accredit-latest
+ * accounts produce the hit.
  */
 type ExistingAccreditationFixture = {
   account: string;
   latestAction: 'accredit' | 'revoke';
   method: string | null;
+  orcid: string | null;
   trxId: string;
   blockNum: number;
 };
@@ -507,6 +509,7 @@ async function findKnownExistingAccreditationFixture(): Promise<ExistingAccredit
     account: string | null;
     action: string | null;
     method: string | null;
+    orcid: string | null;
     trx_id: string | null;
     block_num: number | null;
   }>(
@@ -515,6 +518,7 @@ async function findKnownExistingAccreditationFixture(): Promise<ExistingAccredit
        cj.json::jsonb ->> 'account' AS account,
        cj.json::jsonb ->> 'action' AS action,
        cj.json::jsonb ->> 'method' AS method,
+       cj.json::jsonb ->> 'orcid' AS orcid,
        op.included_trx_id AS trx_id,
        cj.block_num
      FROM ${T.customJson} cj
@@ -536,6 +540,7 @@ async function findKnownExistingAccreditationFixture(): Promise<ExistingAccredit
     account: row.account,
     latestAction: row.action,
     method: row.method,
+    orcid: row.orcid,
     trxId: row.trx_id,
     blockNum: row.block_num,
   };
@@ -543,7 +548,7 @@ async function findKnownExistingAccreditationFixture(): Promise<ExistingAccredit
 
 describe('findExistingAccreditation — real HAF SQL shape', () => {
   it.skipIf(!isHafConfigured())(
-    'returns null for an account that has never been accredited (negative miss)',
+    'misses for an account that has never been accredited (negative miss)',
     { timeout: 60_000, retry: 5 },
     async (ctx) => {
       const pool = getPool();
@@ -560,12 +565,12 @@ describe('findExistingAccreditation — real HAF SQL shape', () => {
       // accredit/revoke op exists for this string.
       const noSuchAccount = `pevo-real-haf-noaccount-${crypto.randomUUID()}`;
       const result = await findExistingAccreditation(pool, noSuchAccount);
-      expect(result).toBeNull();
+      expect(result).toEqual({ kind: 'miss', wot_orcid: null });
     },
   );
 
   it.skipIf(!isHafConfigured())(
-    'positive hit: latest-action-wins returns IdempotencyHit when latest is a non-wot accredit, null otherwise',
+    'positive hit: latest-action-wins returns the hit when latest is a non-wot accredit, a miss otherwise',
     { timeout: 60_000, retry: 5 },
     async (ctx) => {
       const pool = getPool();
@@ -588,14 +593,13 @@ describe('findExistingAccreditation — real HAF SQL shape', () => {
       const result = await findExistingAccreditation(pool, fixture.account);
       if (fixture.latestAction === 'accredit' && fixture.method !== 'wot') {
         // Latest op is a non-wot accredit: gate-hit, function returns the trx.
-        expect(result).not.toBeNull();
-        // Round-1 hold item 3: non-null assertion after the runtime guard.
-        expect(result!.tx_id).toBe(fixture.trxId);
-        expect(result!.block_num).toBe(fixture.blockNum);
+        expect(result).toEqual({ kind: 'hit', tx_id: fixture.trxId, block_num: fixture.blockNum });
+      } else if (fixture.latestAction === 'accredit') {
+        // Latest op is a wot accredit: gate-miss carrying its ORCID iD.
+        expect(result).toEqual({ kind: 'miss', wot_orcid: fixture.orcid || null });
       } else {
-        // Latest op is a revoke or a wot accredit: gate-miss (see
-        // findExistingAccreditation).
-        expect(result).toBeNull();
+        // Latest op is a revoke: gate-miss with no ORCID.
+        expect(result).toEqual({ kind: 'miss', wot_orcid: null });
       }
     },
   );
@@ -642,10 +646,9 @@ describe('findExistingAccreditation — real HAF SQL shape', () => {
       if (forged?.account) {
         const forgedLookup = await findExistingAccreditation(pool, forged.account);
         // The authority filter must reject the forged op. A regression
-        // that drops the predicate would surface here as a non-null
-        // result with the forged signer's tx_id, allowing a self-
-        // bootstrap accreditation.
-        expect(forgedLookup).toBeNull();
+        // that drops the predicate would surface here as a hit with the
+        // forged signer's tx_id, allowing a self-bootstrap accreditation.
+        expect(forgedLookup).toEqual({ kind: 'miss', wot_orcid: null });
       }
     },
   );

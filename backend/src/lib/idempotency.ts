@@ -286,6 +286,11 @@ export async function findAccreditationBroadcastByIdempotencyKey(
   return { tx_id: row.trx_id, block_num: row.block_num };
 }
 
+/** Result of `findExistingAccreditation`. */
+export type ExistingAccreditationGate =
+  | { kind: 'hit'; tx_id: string; block_num: number | null }
+  | { kind: 'miss'; wot_orcid: string | null };
+
 /**
  * User-level existing-accreditation HAF gate for /api/accreditation/verify.
  * Distinct from `findAccreditationBroadcastByIdempotencyKey`:
@@ -307,16 +312,20 @@ export async function findAccreditationBroadcastByIdempotencyKey(
  * in cleanup. Helper picks
  * the LIMIT-1 row by (block_num, id) DESC and returns the hit only when
  * that row is an 'accredit' whose method is not 'wot'; when the latest is a
- * 'revoke' it returns null so /verify falls through to the sanction guard, the
+ * 'revoke' it returns a miss so /verify falls through to the sanction guard, the
  * per-token check and the broadcast, which is correct for a re-accreditation
  * attempt after revoke.
  *
  * WoT handling: a `method: 'wot'` accredit is vouch-derived, and
  * `activeAccreditationsCteBody` (hafsql.ts) drops its account once it falls
  * below the live vouch threshold. When it is the latest op the helper returns
- * null, so /verify goes on to the sanction guard and the broadcast of the
+ * a miss, so /verify goes on to the sanction guard and the broadcast of the
  * `method: 'email'` accredit that pins the account. A missing method counts as
  * non-wot, the `IS DISTINCT FROM 'wot'` test of that CTE's `auth_accredit`.
+ * That email accredit becomes the account's latest accredit, which
+ * `active_accreditations` and `findAccreditedAccountWithOrcid`
+ * (lib/orcid-binding.ts) read the ORCID iD from, so the miss carries the wot
+ * accredit's non-empty `orcid` as `wot_orcid` for /verify to put on the op.
  *
  * Query filters:
  *   - `cj.custom_id = appTag`
@@ -341,7 +350,7 @@ export async function findAccreditationBroadcastByIdempotencyKey(
 export async function findExistingAccreditation(
   pool: IdempotencyPool,
   hiveUsername: string,
-): Promise<IdempotencyHit | null> {
+): Promise<ExistingAccreditationGate> {
   // The row match sits in an AS MATERIALIZED CTE with the ORDER BY and LIMIT
   // outside it, so an account with no accredit or revoke op does not walk the
   // blocks index backward. `loadWotThreshold` (wot.ts) explains the planner
@@ -351,31 +360,34 @@ export async function findExistingAccreditation(
     block_num: number | null;
     action: string;
     method: string | null;
+    orcid: string | null;
   }>(
     `WITH candidates AS MATERIALIZED (
        SELECT cj.id, cj.block_num, cj.json::jsonb ->> 'action' AS action,
-         cj.json::jsonb ->> 'method' AS method
+         cj.json::jsonb ->> 'method' AS method,
+         cj.json::jsonb ->> 'orcid' AS orcid
        FROM ${T.customJson} cj
        WHERE cj.custom_id = $1
          AND cj.json::jsonb ->> 'action' IN ('accredit', 'revoke')
          AND cj.json::jsonb ->> 'account' = $2
          AND cj.required_posting_auths ?| $3::text[]
      )
-     SELECT op.included_trx_id AS trx_id, c.block_num, c.action, c.method
+     SELECT op.included_trx_id AS trx_id, c.block_num, c.action, c.method, c.orcid
      FROM candidates c
      JOIN hafsql.haf_operations op ON op.id = c.id
      ORDER BY c.block_num DESC, c.id DESC
      LIMIT 1`,
     [config.appTag, hiveUsername, config.accreditationAuthorities],
   );
-  if (result.rows.length === 0) return null;
+  if (result.rows.length === 0) return { kind: 'miss', wot_orcid: null };
   const row = result.rows[0];
   // Latest-action-wins: gate-hit ONLY when the most recent op is an
   // 'accredit' whose method is not 'wot'. When the latest is a 'revoke' or a
-  // wot accredit, return null so /verify falls through to the sanction guard,
-  // the per-token check and the broadcast.
-  if (row.action !== 'accredit' || row.method === 'wot') return null;
-  return { tx_id: row.trx_id, block_num: row.block_num };
+  // wot accredit, miss so /verify falls through to the sanction guard, the
+  // per-token check and the broadcast.
+  if (row.action !== 'accredit') return { kind: 'miss', wot_orcid: null };
+  if (row.method === 'wot') return { kind: 'miss', wot_orcid: row.orcid || null };
+  return { kind: 'hit', tx_id: row.trx_id, block_num: row.block_num };
 }
 
 /**

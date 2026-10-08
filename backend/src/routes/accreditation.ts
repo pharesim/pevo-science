@@ -738,6 +738,7 @@ router.post('/verify', verifyHiveSignature, validate(accreditationVerifySchema),
   // contract on `PostBroadcastWriteError` (programmer-error class —
   // operator-actionable, not auto-reconciled).
   const hafPool = isHafConfigured() ? getPool() : null;
+  let wotOrcid: string | null = null;
   if (hafPool) {
     // User-level existing-accreditation gate: hits when the account's latest
     // accredit/revoke op is an accredit whose method is not 'wot'
@@ -762,7 +763,7 @@ router.post('/verify', verifyHiveSignature, validate(accreditationVerifySchema),
     // didn't).
     try {
       const existingForUser = await findExistingAccreditation(hafPool, pending.hive_username);
-      if (existingForUser) {
+      if (existingForUser.kind === 'hit') {
         // Metadata-update routing. Gate-hit short-circuits before the pending
         // row's metadata (full_name, institution, field captured at /request)
         // would be embedded into a fresh accredit op, and /verify stays
@@ -774,7 +775,7 @@ router.post('/verify', verifyHiveSignature, validate(accreditationVerifySchema),
         // admin-signed accredit op behind its own fresh-auth proof. So
         // discarding the /request-captured metadata here is correct — the edit
         // surface lives elsewhere, not in /verify. The gate's latest-action read
-        // (findExistingAccreditation, null on a latest revoke) preserves the
+        // (findExistingAccreditation, a miss on a latest revoke) preserves the
         // re-accreditation path after a revoke: that flow DOES rebroadcast with
         // fresh metadata.
         logger.info(
@@ -806,6 +807,7 @@ router.post('/verify', verifyHiveSignature, validate(accreditationVerifySchema),
           outcome: 'already_accredited',
         });
       }
+      wotOrcid = existingForUser.wot_orcid;
     } catch (gateErr) {
       // The gate considers the latest of ('accredit','revoke'), so a
       // catch-and-degrade here would let a fresh broadcast OVERRIDE a chain-
@@ -1074,6 +1076,11 @@ router.post('/verify', verifyHiveSignature, validate(accreditationVerifySchema),
     institution: pending.institution,
     field: pending.field,
     method: 'email',
+    // This op becomes the account's latest accredit, the op the ORCID binding
+    // is read from, so when it follows a wot accredit it keeps that op's ORCID
+    // iD (`findExistingAccreditation`). `pending.orcid` is self-asserted and
+    // never reaches the op.
+    ...(wotOrcid ? { orcid: wotOrcid } : {}),
     evidence_hash: evidenceHash,
     idempotency_key: idempotencyKey,
     // Self-service email accreditation is issued BY the admin account (the

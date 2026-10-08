@@ -132,7 +132,7 @@ vi.mock('../../src/lib/idempotency.js', async () => {
   );
   return {
     ...actual,
-    findExistingAccreditation: vi.fn().mockResolvedValue(null),
+    findExistingAccreditation: vi.fn().mockResolvedValue({ kind: 'miss', wot_orcid: null }),
   };
 });
 
