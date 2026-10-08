@@ -63,3 +63,13 @@ itself. Neither was read for that.
 `backend-wot-read-side-drops-self-vouch` also names
 `wot-vouch-status-select-real-postgres.test.ts` as a possible home for a new
 spec. If both tasks touch that file, land them one at a time.
+
+## Architect note (2026-10-08): one more stale WoT comment, folded in
+
+Light accounts now vouch and retract through `POST /api/custody/broadcast`, signed server-side.
+The route comment above the `POST /vouch` handler in `backend/src/routes/wot.ts` still says the
+voucher broadcasts the vouch custom_json "via Hive Keychain".
+
+3. Delete "via Hive Keychain" from that comment. Change nothing else in it.
+
+Acceptance: a grep of `backend/src/routes/wot.ts` for "via Hive Keychain" returns nothing.

@@ -1,3 +1,144 @@
+## Light accounts can vouch and retract a vouch on the profile page (archived 2026-10-08): clean review; one P3 filed as a follow-up, stale contract prose fixed, route comment folded, composer task unblocked
+
+### Architect archive note (2026-10-08)
+
+- **Review:** `/ce-code-review` full path on `f3cc369e` and `c064b5ea` (branch-remote, base `e5eec2ff`): correctness, security, adversarial (in-process, no cross-model peer), project-standards, testing, julik-frontend-races, learnings. Verdict "Ready to merge"; every scope item and AC met. Account-state defense review clean: states A, B and C reach the custody route under a session-kind proof, state D and a stale light JWT fail closed, and the voucher is bound server-side. Testing re-ran the signal's seven per-site mutants, all killed (the orchestrator checked each planted mutant against the brief); baseline 24/24.
+- **Triage (user: "approved" as recommended):**
+  - Filed: a 403-refused vouch notify shows success-pending copy (P3, validator-confirmed, incidence not measured; unaccredited Keychain viewers already reached it), plus the ignored `accreditation_outcome` timeout and chain-error copy -> `ui-vouch-notify-refusal-shows-success-copy` (normal). Narrowed at filing to the vouch handler: the vouch status read lists only accredited vouchers, so `canRetract` is false for a voucher outside the accredited set, and the retract twin is out of scope.
+  - Fixed in place: `api-contracts/common.md` "What Still Requires Keychain" now names both signing paths, and `accreditation.md`'s two notify sentences drop "via Hive Keychain" (`443e06dd`).
+  - Folded: the `POST /vouch` route comment in `routes/wot.ts` ("via Hive Keychain") -> `backend-wot-comments-cite-deleted-retract-suite`.
+  - Unblocked: `ui-composer-surfaces-navigate-over-undrafted-work` moved to `pending/`, as its 2026-10-01 sequencing note prescribed.
+  - Dismissed: no spec runs the handlers under light custody and none mounts the profile template (speculative: the handlers read no custody and the template binds the tested getters directly). The lost-notify auto-accreditation gap is covered by `backend-wot-enrollment-has-a-single-trigger`. The global re-auth modal outliving an SPA navigation is shared with votes and comments, user-started and password-gated.
+- **Learnings checkpoint:** no `solutions/` entry names `isLightAccount` or `wot.keychainRequiredToVouch` or claims light accounts cannot vouch (learnings reviewer grep), so none is contradicted. No new entry: the one finding is a plain bug, filed as a task.
+
+**Owner:** ui
+**Created:** 2026-10-01
+**Priority:** normal
+
+## Why
+
+Light accounts are meant to vouch (user decision, 2026-10-01). The profile page hides both
+forms from them: `canVouch` and `canRetract` in `frontend/src/components/vouch-section.js` carry
+`!this.isLightAccount`, and `frontend/src/pages/profile.js` renders `wot.keychainRequiredToVouch`
+in their place. That block only mirrored the custody broadcast's refusal, which
+`backend-custody-admits-vouch-and-retract` lifts.
+
+The handlers need no new broadcast path. `handleVouch` and `handleRetract` already go through
+`broadcastWithFreshAuth`, which takes a light account through the session window and the custody
+route (`ARCHITECTURE.md` § 6.4, the non-consent broadcast row, which now names vouches).
+
+## Scope
+
+1. Drop `!this.isLightAccount` from `canVouch` and `canRetract`. Remove the `isLightAccount`
+   getter if nothing else reads it.
+2. Remove the light-account message branch in `profile.js` and the `wot.keychainRequiredToVouch`
+   key from all 16 locale files under `frontend/public/messages/` (`STUBS.md` has no line for
+   it).
+3. Flip the two specs in `frontend/tests/unit/components-vouch-section.test.js` that pin the
+   light-account refusal: a light account now passes `canVouch` and `canRetract` under the same
+   other conditions as a Keychain account.
+
+## Out of scope
+
+- Keeping the relationship choice and the retraction reason across a passwordless account's
+  ORCID round-trip. `ui-composer-surfaces-navigate-over-undrafted-work` covers that, after this
+  task.
+- The retract handler's branches on `revocation_outcome` values the backend no longer returns.
+
+## Acceptance criteria
+
+1. A light account sees the vouch form on an unaccredited profile it has not vouched for, and the
+   retract control on one it has, and both handlers broadcast through the custody route.
+2. The self, already-vouched and accredited-target conditions still hide the vouch form for a
+   light account.
+3. No locale file carries `wot.keychainRequiredToVouch`.
+4. Each assertion is probed by reverting its own site; list probe and spec in the signal block.
+5. New comments follow root `CLAUDE.md` "Comment anchors".
+
+## [BLOCKED by Architect] (2026-10-01) — sequenced behind the backend task
+
+Until `backend-custody-admits-vouch-and-retract` lands, a light account that submits a vouch gets
+403 from the custody route and sees "Vouch failed". The architect moves this file to `pending/`
+once that task is archived.
+
+## Architect note (2026-10-06): unblocked
+
+`backend-custody-admits-vouch-and-retract` was archived on 2026-10-01 (commit 269297e9). Moved to
+`pending/`.
+
+## UI implementation signal (2026-10-07, commits f3cc369e, c064b5ea)
+
+Both SHAs verified on `main` with `git merge-base --is-ancestor`.
+
+- **f3cc369e** `ui(profile): light accounts can vouch and retract a vouch`. `canVouch` and
+  `canRetract` drop the light-account condition and the `isLightAccount` getter goes (no other
+  reader). The profile page's light-account message branch is removed, and
+  `wot.keychainRequiredToVouch` leaves all 16 locale files, one line each (`STUBS.md` had no line).
+  The two refusal specs flip, and AC 2 gets three light-account specs.
+- **c064b5ea** `ui(tests): pin canRetract false for an account that has not vouched`. The verification
+  sweep found that flipping the light `canRetract` spec removed the file's only `false` assertion
+  on `canRetract`, so a getter returning `true` passed every spec. The Keychain `canVouch` title also
+  claimed a connected requirement that no spec exercises, so it was narrowed to what the spec asserts.
+
+**Acceptance criteria**
+
+1. Vouch form and retract control for a light account: covered by `canVouch is true for a light
+   account on an unaccredited profile it has not vouched for` and `canRetract is true for a light
+   account that has vouched`. The handlers are unchanged and custody-agnostic. They reach the custody
+   route through `broadcastWithFreshAuth`'s light branch (`lib-fresh-auth-session-window.test.js`) and
+   `broadcastOps`'s light-account path (`signer.test.js`, `light account path`). A read-only trace
+   found nothing on the path that refuses a light account. `POST /api/custody/broadcast` accepts every
+   field of the frontend's `vouch` and `retract_vouch` payloads, and `POST /api/wot/vouch` and
+   `/api/wot/retract` accept the session JWT through `verifyHiveSignature`'s Bearer branch.
+2. Self, already-vouched and accredited-target conditions for a light account: `canVouch is false
+   for a light account vouching for itself`, `... that has already vouched`, `... when the target is
+   accredited`. On the base commit these pass only because the light gate already hid the form, so
+   each was probed against its own condition after the change (below).
+3. `grep -rl keychainRequiredToVouch frontend/public/messages` is empty at f3cc369e.
+4. Probes ran in a scratchpad copy (`git archive` of the commit plus a symlinked `node_modules`),
+   never in the checkout. Spec file baseline: 23/23 at f3cc369e and 24/24 at c064b5ea.
+   - Re-add the light gate and getter to `canVouch`: fails only `canVouch is true for a light account
+     on an unaccredited profile it has not vouched for`.
+   - Re-add it to `canRetract`: fails only `canRetract is true for a light account that has vouched`.
+   - Drop `this.username !== this.targetUsername`: fails `canVouch is false for a light account
+     vouching for itself` (and the Keychain self spec).
+   - Drop `!this.currentUserHasVouched`: fails `canVouch is false for a light account that has
+     already vouched`.
+   - Drop `!this.isTargetAccredited`: fails `canVouch is false for a light account when the target
+     is accredited` (and the Keychain accredited spec).
+   - `canRetract` mutated to `return true;`, and separately to `return this.isConnected;`: each fails
+     `canRetract is false for a light account that has not vouched`.
+   - AC 3: restoring `de.json` from f3cc369e~1 makes the grep return `de.json`.
+   - Profile template branch: no committed spec covers it. The check was a throwaway jsdom DOM with
+     real Alpine mounted over the `vouchSection` element sliced from the shipped
+     `profilePageTemplate`, with a light-account auth store. Unvouched target: the form renders and
+     no `keychainRequiredToVouch` text appears. Vouched: retract renders and broadcasts
+     `retract_vouch`. Self and accredited: no form. Clicking Vouch broadcasts `vouch` with
+     `voucher: alice`. The same probe against f3cc369e~1 fails: no form, and the Keychain message
+     renders. Not a browser check (agent-browser cannot start on this host). The light account now
+     gets the markup Keychain accounts already had, so there is no new layout.
+5. No comments were added. Test titles carry no slug, line or positional anchor, and the pre-commit
+   anchor gate passed on both commits.
+
+**Verification:** full frontend unit suite on the f3cc369e tree, 98 files / 2291 tests, exit 0, no
+Errors line. `components-vouch-section.test.js` 24/24 and `tests/unit/eslint` 18/18 at c064b5ea.
+
+**Out of scope, for follow-up filing.** Stale docs outside the ui zone that now contradict the
+light-account path. Each was confirmed by an independent refuter at f3cc369e.
+- `agents/docs/api-contracts/common.md:164` ("What Still Requires Keychain") lists vouch and retract
+  (and publish, vote, review, which were already stale) as Keychain-only, not session-based.
+- `agents/docs/api-contracts/accreditation.md:326` and `:360`: "The frontend must first broadcast the
+  `vouch` / `retract_vouch` custom_json via Hive Keychain".
+- `backend/src/routes/wot.ts:127-128` route comment: "broadcasts the vouch custom_json via Hive
+  Keychain" (narrow by dropping "via Hive Keychain").
+- `blocked/ui-composer-surfaces-navigate-over-undrafted-work.md` still describes the old gate. It is
+  coordination text, so it is left to the architect.
+
+**Learnings checkpoint:** the only `agents/docs/solutions/` entry naming the touched symbols
+(`implementer-signal-todo-ui-block-2026-05-16.md`) cites `vouch-section.js` as a historical
+fresh-auth call site, which nothing here contradicts. No new entry qualified: the vacuous-on-base
+specs were caught by the task's own AC 4 probe rule.
+
 ## State G rows: unverified-email lifecycle and token scoping (archived 2026-10-07): two rounds; held on the recover oracle comment and the resend token write, clean re-review; [TODO Architect] docs applied, follow-ups filed, one dismissed
 
 ### Architect archive note (2026-10-07)
@@ -107,144 +248,3 @@ review. Say in the signal block what the final message is.
 
 ## Backend implementation signal (2026-10-05, commit d33792ce)
 
-d33792ce verified as an ancestor of HEAD with `git merge-base --is-ancestor`. It carries this task
-and the two sibling tasks the user folded into the same pass (the signup upsert task and the
-settings verify-handler task, each with its own signal block). 49aa2c65, committed alongside, is
-the held comments task's two items and touches nothing here.
-
-**User decisions taken during the pass (2026-10-05), beyond the ones at the top of this file:**
-- **Signup evicts a factor-less unverified G claim** instead of answering 409. Reason: the
-  re-issue branch (item 8a) restarts the 24h expiry, and delete-then-re-add works too, so a 409
-  let a Keychain user hold an unverified claim on someone else's address indefinitely. This
-  supersedes the opening section's "answers 409 until that claim expires" for factor-less rows.
-- **`POST /api/auth/verify` matches only an emailed hex token.** This is a security fix: a
-  pending row's leaked `confirmed:` auth_token re-confirmed the row and minted the presenter a
-  fresh signup binding.
-- **The settings `POST /email` duplicate checks use `IS DISTINCT FROM`.** Previously an address a
-  pending signup holds answered 500.
-- **The upgrade's surviving consent proofs are noted only** (see Residuals).
-
-**Per scope item:**
-1. **Login.** The pending block is scoped to `username IS NULL`.
-2. **Cleanup.** The predicate is `ABANDONED_ACCOUNT_ROWS`, exported as a WHERE fragment. The
-   signup arms are scoped to username NULL. The G arm requires unverified, expired, no password
-   and no ORCID.
-3. **`/verify`.** The lookup adds `AND username IS NULL AND verify_token NOT LIKE 'confirmed:%'`.
-4. **Resend.** A row with `username !== null` gets the uniform answer, after the argon2 verify.
-5. **Recover.** The ORCID method refuses on `custodyClaimFor(account) !== 'light'`, with the
-   same 401.
-6. **Set password.** Answers 409 PENDING_UNVERIFIED 'Verify your email before setting a
-   password.' It runs after PASSWORD_ALREADY_SET and before ORCID_REQUIRED and the proof
-   consume.
-7. **ORCID link and accredit.** `refuseUnverifiedEmailRow` runs at `/start` and in both callback
-   handlers, before any HAF read, broadcast, cache write or row write. It answers 409
-   PENDING_UNVERIFIED 'Verify the email you registered in settings, or remove it, before
-   linking an ORCID.' In addition, `updateAccountOrcid` writes only where `verify_token IS
-   NULL`, so a link that passed the gate cannot write onto a G row registered mid-broadcast.
-8. **Settings.**
-   - (a) The re-issue branch, with an SMTP-fail restore of email, token, expiry and the pending
-     triple, scoped by token.
-   - (b) The change-branch verify also clears `verify_token` and `expires_at`.
-   - (c) Done per the sibling task.
-   - Plus the `IS DISTINCT FROM` duplicate checks.
-9. **Upsert.** Done per the sibling task, plus the eviction:
-   - a conditional DELETE keyed on the state the pre-check read, in one transaction with the
-     upsert, and only once the request is past the 422 gate;
-   - `DO UPDATE ... WHERE accounts.username IS NULL AND accounts.verify_token NOT LIKE
-     'confirmed:%'` on both upserts, with an upsert that writes no row answering 409.
-
-   The `WHERE` term closes a window found in the final review. The caller's own settings
-   add-flow INSERT could land while argon2.hash runs, and the upsert would then write a
-   password onto an unverified G row. That would be a squat that can never be evicted or
-   reaped.
-10. **`NO_PASSWORD_SET` final message:** 'This account has no password. Use another sign-in
-    method, such as ORCID or Hive Keychain.' Its comment lists no closed set, and notes the
-    branch also answers pending signup rows.
-11. **Comments.**
-    - The JWT-path comments (admin-roster x2, validation x2, accreditation-metadata) describe
-      the gate by auth mechanism. Their list of who holds a JWT is open and includes the
-      `POST /api/auth/session` JWT.
-    - The settings "no-row-before-JWT" comments are corrected: the header, handler-order item
-      (4), the guard comment, and the `settings-email-fresh-auth.test` header and spec.
-    - The `requireAdminLevel` docblock now says that on the JWT path `hiveUsername` is the
-      verified JWT `sub`.
-    - The `updated_at` canary docblock is rewritten against the new code.
-    - The `recover.test.ts` headers, and every other comment the changes made stale, are
-      corrected.
-12. **Test data.** `seedSigUser` is now a real D row (`upgraded_at = NOW()`). The migration 017
-    test title names G's NULL column.
-
-**Tests.** Each was red before and green after. Where a behaviour already existed, the red was
-observed by mutation.
-- `auth-state-g-rows.test.ts` (new): login x4, resend x2 (one with a timing floor), signup x6:
-  - eviction on the email path;
-  - eviction on the ORCID path;
-  - 409, argon2 burn and an unchanged row for a G row with a factor;
-  - 422 keeps the G row;
-  - ORCID_ALREADY_LINKED keeps it, through the rollback;
-  - a G row written after the pre-check is left untouched and answers 409.
-- `settings-state-g-unverified-email.test.ts` (new):
-  - `/verify`: a G token, an expired G token, and an F `confirmed:` token;
-  - set-password answers 409, and the same proof still works once the row is verified;
-  - re-issue: the pending triple is cleared, the old pending token is dead, the new link
-    verifies;
-  - SMTP-fail restore puts the triple back;
-  - `IS DISTINCT FROM` x2;
-  - the verify task's E, F and add-flow specs;
-  - the change branch clears a hex token.
-- `orcid-state-g-unverified-email.test.ts` (new): refusal at `/start` (link and accredit),
-  refusal at the callback with no broadcast, unaffected callers, and the `updateAccountOrcid`
-  skip and write.
-- `recover-orcid-state-g.test.ts` (new): ORCID recovery answers 401 for a verified G row that
-  has an ORCID.
-- `signup-cleanup.test.ts` (new): runs the job's predicate narrowed to the file's own rows,
-  because vitest runs two files at once and the job's DELETE spans the table.
-- `settings-email-fresh-auth.test.ts`: the add-flow JWT-rejection guard answers 401 and creates
-  no row.
-- Fixture fixes:
-  - `recover.test.ts` and `auth-log-shape.test.ts` seeded a "pending" row with a username and
-    custody 'light', a shape § 6.1 does not list; they now seed the signup shape.
-  - The `settings-set-password-argon-error-translation` mock row gains `verify_token: null`.
-
-**Verification.**
-- Typecheck exits 0. Lint has 0 errors (one pre-existing warning, in `author-supersession.ts`).
-- The pre-commit anchor matcher finds 0 hits on the added lines, and its control line fires.
-- Full suite on this tree: 9 files failed.
-  - 7 are the known clean-main red bar: cast-hardening, idempotency-real-haf,
-    accreditation-idempotency, the accreditation cap specs, papers-enrichment-parity-gate,
-    profile-auth-bypass and the reviews gate.
-  - The other 2 pass when run alone: `signup-verify-activation-recovery` (the known lock spec
-    that poisons itself, 9/9) and `fresh-auth-consent-op-burn-offline-queue` (4/4).
-
-**Considered, not built.**
-- A deterministic test for the eviction DELETE matching 0 rows. Code reading covers it.
-- Restoring an evicted claim when the signup's verification mail fails after the commit. The
-  signup row is deleted, and the G owner can re-add.
-- Keeping the existing expiry on a same-address re-issue. With eviction, a held claim no longer
-  blocks signup, only the victim's own settings add.
-
-**Residuals for triage.**
-- A G row's holder can still keep an unverified claim alive by re-issuing. That blocks the
-  victim's settings add flow (409), not signup. A pending signup row E can likewise block a
-  Keychain user's settings add, since a re-signup refreshes its expiry.
-- Anyone who passes the accreditation gate can cancel a Keychain user's pending email
-  registration (factor-less, unverified) by signing up with that address. They cannot verify
-  it without the mailbox. This is the user's decision.
-- The custody upgrade revokes JWTs and session proofs, but not single-use consent proofs. A
-  password proof minted while the row was light stays consumable for its 5 minutes, given a
-  JWT issued after the upgrade. The settings factor tables' D line says so. User: note only.
-- `POST /api/auth/reset` can still add a password to any row with an email, an unverified G
-  row included. The pending password-reset gating task owns that. The comments in this diff
-  claim only what set-password and the ORCID link refuse.
-
-**Test-isolation issues seen, not caused here.**
-- `custody-session-auth.test.ts` and `custody-non-consent-fresh-auth.test.ts` seed the same
-  fixed ORCID (`0000-0002-3456-7892`) under different usernames. When vitest runs them at the
-  same time, one seed trips `accounts_orcid_unique`. Each passes alone.
-- `recover.test.ts` cleans up with `username LIKE 'recover_%'`, which also matches the
-  `recover2p_` rows of `recover-two-phase.test.ts`.
-- `auth.test.ts` "accepts valid Bearer JWT on authenticated endpoints" times out at 30s with
-  `--retry=0`, on `GET /api/notifications?since_block=1` against real HAF.
-
-**[TODO Architect]** These come from the final review's list of statements the code now
-contradicts.
