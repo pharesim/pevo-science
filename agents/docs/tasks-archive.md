@@ -1,250 +1,250 @@
-## Decide how an owner learns of an email change, and who wins the seed-phrase dispute race (archived 2026-10-08): decided "as recommended" from a grounded brief; twelve tasks filed, fifteen open tasks noted
+## /verify tells a WoT enrollee below the threshold that they are accredited (archived 2026-10-08): clean re-review of the ORCID-carry fix; docs and the latest-action-wins entry updated, five residuals dismissed
 
 ### Architect archive note (2026-10-08)
 
-- **Grounding:** a 31-agent workflow mapped six areas from the code (291 facts, each re-read by a refuter and a gap finder: 0 refuted, 52 corrected, 189 added), ran four designers with distinct priors, three judges, a synthesizer, three attackers (32 non-blocked attacks before revision) and a completeness critic, then a reviser. The architect spot-checked the load-bearing claims in `orcid.ts`, `auth.ts`, `recover.ts` and `settings-verify-email.js`.
-- **Findings that reshaped the options:** a mailed cancel link without a delay is useless (the verify link applies on page open and a script redeems it on arrival); the password reset already drops a queued change and revokes every session, so it is the veto and no new mailed token is needed; the hold is bypassed on accredited state A rows by a password holder linking an ORCID of their own, which no eviction removes and which mints an unheld ORCID change proof and one-step ORCID recovery; the dispute mail goes to the row's current address and nothing records when the address changed.
-- **Decisions (user: "as recommended"):** (1) a password-proven email change on a row with an email is held 72 hours, the current address gets a linkless notice, the owner cancels in settings, the reset is the veto; (2) `accounts.email_changed_at` stamps the three writers that install an address, the displaced address is mailed at apply, and the seed-phrase dispute link goes only to an address held 30 days or more; (3) a password-proven ORCID link or accreditation completes only from a confirm link mailed to the settled current address, fail closed because a planted ORCID is permanent; (4) a password-proven deletion is held the same way; (5) reset re-mails a live token and refuses the current password; (6) the custody upgrade clears the queued change and deletion; (7) signup refuses an address another row holds as a confirmed pending change; (8) settings offers the ORCID factor beside the password for the four held actions; (9) the recover page offers ORCID whenever the public record carries one; (10) 72-hour hold, 30-day settling; (11) the hold is not sequenced behind the ORCID link task, and the A-row bypass is an interim residual. "Holding the password is holding the account" is not adopted as the rule; what the password still buys is recorded in the hold task's notes.
-- **Dropped from the brief:** its § 6.5 invariant 6 rewrite, which would let a light row's posting-key signature stand as a re-auth proof; the user decided the opposite the same day in `backend-light-row-keychain-session-and-signature-proof`, so a light row's exits after a lapsed hold are seed-phrase recovery, ORCID recovery on B, and the custody upgrade.
-- **Recorded:** ARCHITECTURE.md § 6.1, § 6.3, § 6.4, `api-contracts/settings.md`, `auth.md`, `orcid.md` and CONCEPTS.md (six terms) at `d55d4146`. **Filed:** `backend-email-changed-at-stamp-and-displaced-address-notice` (high), `backend-recovery-dispute-only-for-a-settled-address` (high), `backend-email-change-hold-and-owner-notice` (high), `backend-password-proven-orcid-link-completes-from-current-mailbox` (high, blocked behind the ORCID gate task and the settled-address task), `backend-password-proven-deletion-is-held-and-announced` (normal), `backend-reset-link-survives-re-requests-and-refuses-the-current-password` (normal), `ui-recover-offers-orcid-when-the-record-carries-one` (normal), `architect-record-email-change-hold-and-settled-address-decisions` (normal), and, blocked behind their backend halves, `ui-settings-shows-held-email-change-with-cancel`, `ui-settings-shows-held-deletion-with-cancel`, `ui-orcid-link-confirm-page` and `ui-settings-offers-the-orcid-factor-beside-the-password` (normal). Notes appended to fifteen open tasks that co-edit the same statements.
-- **Learnings checkpoint:** no code landed, so no entry is contradicted yet. `recovery-defenses-vs-seed-phrase-holder-non-load-bearing-2026-05-25.md` holds (its password-only carve-out is what makes these defences load-bearing) and is scheduled with `mailed-credential-token-dies-with-its-address-and-credential.md` for `/ce-compound-refresh` at the hold task's archive; `/ce-compound` on the fail-open hold with the credential reset as the veto is deferred to that archive, when the code carries it (tracked in the architect follow-up task).
+- **Review:** `/ce-code-review` full path on `925024f7` and `851fe922` (branch-remote, base `5184c970`): correctness, security, adversarial (in-process, no cross-model peer), testing, project-standards, learnings. Zero findings. Hold item 1 is fixed: the email op carries the latest `wot` op's ORCID from the chain, never `pending.orcid`. The testing reviewer reproduced the signal's counts and killed 7 of 7 mutants; an orchestrator mutant dropping the gate's authority filter fails only the unit SQL-shape spec.
+- **Done at archive:** `eed87d44` (ARCHITECTURE.md section 2 email-pin paragraph; the "Released" and "Credential Bindings" `/verify` sentences narrowed; `api-contracts/accreditation.md` `already_accredited` paragraph and PATCH `/metadata` intro); `31503ef1` (latest-action-wins entry rewritten in place, user-approved; CONCEPTS.md "Accreditation Method"); the real-HAF discovery task's quoted spec name now ends "misses".
+- **Recorded with the accepted residual:** a `handleLink` rebind that lands between the `/verify` gate read and the email op is overwritten by the email op's older ORCID; a re-link repairs it.
+- **Dismissed (user, as recommended):** the WoT auto-accredit broadcasting over a first authority accredit HAF has not indexed (pre-existing, limited to HAF lag, already stated under ARCHITECTURE.md "WoT auto-accreditation"); `handleLink` or PATCH `/metadata` re-writing `method: 'wot'` before the pin is indexed; a typeless revoke after an ORCID-holding accredit (no writer emits one, none under `pevotest`); the authority filter pinned only by the SQL-shape spec; the pre-existing `Round-1 hold item N` and slug labels in the test files.
+- **Learnings checkpoint:** `/ce-compound-refresh` on `accreditation-state-read-latest-action-wins-2026-05-15.md` (rewritten); no new `/ce-compound`, since the ORCID carry-forward rule is in ARCHITECTURE.md "Credential Bindings".
 
-**Owner:** architect
-**Created:** 2026-10-07
-**Priority:** high
-
-Filed from the architect review of `backend-recovery-and-reset-keep-a-queued-email-change` (its
-adversarial lens). That task makes the evictions drop a queued change; this one covers an attacker
-who completes the change before any eviction. Design task: brainstorm with the user, then file
-implementer tasks.
-
-## Why
-
-Someone holding only the password can log in, take a `change_email` fresh-auth proof with that
-password, queue a change to their own address through `POST /api/settings/email`, and click the
-link at once. The change mail goes only to the new address, so the owner is not told.
-`accounts.email` is now the attacker's.
-
-- Password reset mails the attacker.
-- A B owner gets the account back through ORCID recovery, which overwrites the email
-  (`backend-orcid-link-and-accredit-require-fresh-auth` stops the attacker replacing that ORCID).
-- An A owner has only seed-phrase recovery. Phase 1 (`POST /api/auth/recover`) mails the dispute
-  link to the row's current email, which is the attacker's. `POST /api/auth/recover/verify`
-  refuses a staging row the attacker disputed. There is no waiting period, so the owner wins only
-  by clicking the verify link before the attacker clicks the dispute link. A dispute after the
-  apply only marks the staging row. A script that clicks the dispute link as soon as the mail
-  arrives can beat the owner.
-
-## To decide
-
-1. Whether to mail the current address when a change is queued, with a cancel link, and whether
-   the swap waits before it applies.
-2. Who the dispute link goes to after a recent email change, or whether a dispute can void a
-   seed-phrase recovery at all when the current address is that recent.
-3. Or accept: holding the password is holding the account.
-
-Record the decision in ARCHITECTURE.md § 6.3/§ 6.4 and file the implementer tasks.
-
-## Check that a `'self'`-claim session can complete settings critical actions (archived 2026-10-08): ui fix reviewed Ready with fixes; both findings and two follow-ups folded into open tasks, five tasks filed, two dismissed
-
-### Architect archive note (2026-10-08)
-
-- **Review:** `/ce-code-review` full path on `8cbde35e`, `a7753a8b` and `0d80a27c` (branch-remote, a synthetic head of the task's 7 files on base `1e9b3172`): correctness, security, adversarial (in-process, no cross-model peer), testing, julik-frontend-races, project-standards, learnings. Verdict "Ready with fixes": two findings, both new in this diff and confirmed by the validator. The orchestrator re-ran the full frontend suite (98 files / 2305 tests, exit 0) and the build in an isolated copy, and checked the testing reviewer's 11 mutants against the brief (9 killed; the 2 survivors are the signal's).
-- **Folded** (`b7dc4acf`): finding 1's unverified-G cell (a `'self'` set-password submit now detours through an ORCID round-trip the callback refuses, so the "map the 409" option no longer reaches a G user) and finding 2 (stale email-section lines on delete) into `ui-pending-unverified-and-no-password-set-copy`; the cross-tab subject switch during the Keychain prompt (delete and metadata edit) into `ui-keychain-broadcast-subject-teardown`; the `_performKeychainImport` "proven by the account_update sign" comment into `ui-fresh-auth-and-upload-comments-that-overclaim`.
-- **Filed** (`b7dc4acf`): `backend-settings-email-status-reports-orcid` (normal; finding 1's no-row and verified-G-without-ORCID cells, user: "file a task"); `backend-light-row-keychain-session-and-signature-proof` (high; user chose option (a), the backend follows ARCHITECTURE.md § 6.4 and § 6.5 invariant #6); `backend-signature-replay-cache-keys-on-header-text` (high; pre-existing, confirmed against dhive's hex decoding); `ui-keychain-failure-copy-on-settings-actions` (normal; follow-up 4); `ui-delete-account-control-for-rows-without-email` (normal; confirmed against the template and the DELETE handler).
-- **Dismissed:** `signMessage` has no timeout (follow-up 2; theoretical, no reproduction, a reload clears it); `consumeFreshAuthProof` has no registered-factor check (the factor match is checked when the proof is minted).
-- **Learnings checkpoint:** the new entry `conventions/credential-skip-at-the-orchestrator-must-be-pinned-at-the-request-layer.md` and the three CONCEPTS.md edits (`21d16508`) were checked against the code by two reviewers and hold; `9274ee97` is correctly scoped; `defensive-gate-co-land-unblocking-surface-2026-05-16.md` needs no action. `/ce-compound-refresh` narrowed the replay-cache, body-hash and location claims in `hive-signature-request-binding-shape-2026-04-21.md` (`bf933549`).
-
-**Owner:** ui
+**Owner:** backend
 **Created:** 2026-10-05
 **Priority:** high
 
-Raised by the backend in the custody-column alignment (since archived) and
-approved for filing at that task's archive. Reproduce first. This may turn out
-to be a non-issue, and the task is done once that is shown.
+Filed from the accreditation and Web of Trust audit (finding 1). Seven reviewers reported it and
+the validator confirmed it from the code. Incidence was not measured.
+
+**Sequencing:** `backend-latest-op-haf-lookups-walk-the-blocks-index` rewrites the same query.
+Take that task first. If it is not archived when you pick this one up, stop and say so.
 
 ## Why
 
-A state-D account (ARCHITECTURE.md § 6.1: a light account upgraded through
-`POST /api/custody/upgrade`, password and ORCID preserved) can still log in by
-password or by ORCID. Both logins now mint the same derived claim,
-`custody: 'self'`, for that account. ORCID login used to mint a stale
-`'light'`, which the custody-column alignment fixed.
+`POST /api/accreditation/verify` calls `findExistingAccreditation`
+(`backend/src/lib/idempotency.ts`) before anything else that reads the chain. That helper returns
+a hit whenever the account's latest authority-signed op among `accredit` and `revoke` is an
+`accredit`, whatever its `method`. On a hit the route writes the completion record, which deletes
+the pending token, and answers 200 "Accreditation confirmed" with `outcome: 'already_accredited'`.
+It broadcasts nothing.
 
-On the client, `frontend/src/lib/settings-fresh-auth.js` treats any
-`custody !== 'light'` session as a Keychain session whose per-request
-signature is itself the fresh proof, and sends no body proof. On the server,
-§ 6.4 requires a body proof on the JWT path for change-email and
-delete-account. `POST /api/custody/fresh-auth` refuses any session whose
-claim is not `'light'` with 403, so a state-D JWT session cannot mint a
-password proof there.
+For an account in the "Below-threshold (WoT)" state of `ARCHITECTURE.md` § 2, the latest op is a
+`method: 'wot'` accredit and the account is not accredited: `active_accreditations` drops a `wot`
+row that does not meet the live vouch threshold. A user in that state who verifies an
+institutional email is told they are accredited, loses the token, and stays unaccredited.
+`POST /api/wot/retract` broadcasts no revoke, so ordinary retractions lead there.
 
-Whether this is a real gap depends on how a state-D session's settings
-requests actually go out. If the SPA signs them with Keychain, the backend
-takes the signature path, where the middleware signature is the fresh proof,
-and nothing is wrong. If they go out with the JWT bearer and no body proof,
-the backend refuses them, and the user cannot complete the action from that
-session. Password-login state-D sessions were already in this position before
-the custody-column change; ORCID-login ones joined them.
+**Decision (user, 2026-10-05):** an email verification makes any WoT enrollee authority-pinned,
+whether or not the account currently meets the threshold.
 
 ## Scope
 
-1. Reproduce with a state-D account logged in by password, and again by
-   ORCID. Attempt change-email and delete-account from settings, plus
-   set-password if the account has an ORCID and no password. Record for each
-   action which auth path the request took (signature or bearer), whether a
-   body proof was sent, and the response.
-2. If every action completes, record the evidence in this file, move it to
-   `review/`, and stop. No code change.
-3. If any action cannot complete, do not pick a fix on your own. The choices
-   cross the client/server boundary: sign these requests with Keychain for a
-   `'self'` session, route state D to the ORCID fresh-auth factor, or change
-   the backend's proof rule for D. Move this file to `blocked/` with a
-   `[BLOCKED by Architect]` note giving the reproduction and the options you
-   see.
+1. The gate short-circuits only when the latest op is an `accredit` whose method is not `wot`.
+   Use `IS DISTINCT FROM 'wot'`, the test `auth_accredit` applies in `activeAccreditationsCteBody`
+   (`backend/src/hafsql.ts`). When the latest op is a `wot` accredit, `/verify` goes on to the
+   sanction guard, the per-token lookup and the broadcast, so the `method: 'email'` op becomes the
+   account's latest accredit op.
+
+   What stays as it is: a latest `revoke` is still a miss, and `hasUnliftedSanction` still refuses
+   a sanctioned account after the gate. Once the email op is indexed, a second pending token for
+   the same account sees an `email` accredit as the latest op and hits the gate.
+2. Two comments in the `/verify` handler equate a gate hit with "currently accredited": the one
+   at the gate ("is this account already accredited?") and the opening of the "Ever-sanctioned
+   guard" comment ("reaching here means the account is NOT currently accredited (latest op is a
+   revoke or there is no accredit)"). Cut each to what the gate checks.
+3. The `findExistingAccreditation` docblock says "The WoT cleanup path in routes/wot.ts is a live
+   producer of revoke ops" and "Scope per the filing task". No WoT path broadcasts a revoke, and
+   the second is a task redirect. Delete both while you are in that docblock.
+
+## Out of scope
+
+- The per-token idempotency branch (`already_landed`). It stays.
+- The limiters, the session requirement and the mail text. Each has its own task.
 
 ## Acceptance criteria
 
-1. Every action above has a recorded reproduction for both login factors.
-2. No code change lands without an architect decision, unless step 2 applies.
+1. A `/verify` spec for an account whose latest op is a `wot` accredit below the live threshold:
+   the route broadcasts an accredit op with `method: 'email'` and answers 200 with no `outcome`.
+2. An account whose latest op is an `email`, `orcid` or `manual` accredit still answers
+   `already_accredited` and broadcasts nothing.
+3. A sanctioned account whose latest op is a `wot` accredit is refused with 403
+   `ACCREDITATION_SANCTIONED`.
+4. Comments follow root `CLAUDE.md` "Comment anchors".
 
-## Architect note (2026-10-07): widened to every `'self'` session, priority raised to high
+## [TODO Architect] at archive
 
-Folded in at the archive of the state G unverified-row lifecycle task (its `[TODO UI]` item 3).
-User triage: "as recommended". The priority is high because part of this is a broken flow
-already shown by reading the code, not only a suspected one.
+- Update the `already_accredited` paragraph of `api-contracts/accreditation.md`, and say in
+  `ARCHITECTURE.md` § 2 that an email verification pins a WoT enrollee.
+- `/ce-compound-refresh` on `accreditation-state-read-latest-action-wins-2026-05-15.md`.
+  The same refresh deletes the entry's claim that `backend/src/wot.ts:347` produces revoke ops,
+  in its sibling-site list and in "The bug is reachable, not theoretical". `wot.ts` broadcasts no
+  revoke op; the admin sanction route (`/accreditation/sanction` in `routes/admin.ts`) does.
+  (Added 2026-10-07 from the review of `backend-latest-op-haf-lookups-walk-the-blocks-index`.)
+- The same refresh also covers, in that entry: guidance step 4 ("'accredit' means currently
+  accredited"), the canonical SQL (no `method` projection), the caller branching snippet (no
+  `wot` check), the route example's null comment, and the task-file citation in Related.
+  (Added 2026-10-08 from the intake review of `31994b09`.)
+- `ARCHITECTURE.md` "Credential Bindings", the `/verify` paragraph: "An already-accredited
+  account verifying a mailbox claims the row as `bound` at once, with no second `accredit` op."
+  An account whose latest op is a `wot` accredit now gets a `method: 'email'` op. Narrow it.
+  (Added 2026-10-08 from the intake review of `31994b09`.)
 
-`submitEmail`, `deleteEmail` and `setPassword` in `frontend/src/api.js` all go through
-`authenticatedRequest`, which sends the session JWT as a Bearer token; none of them signs with
-Keychain. A Keychain user's session carries the `'self'` claim (`POST /api/auth/session`), so
-these calls take the backend's JWT path:
+## Backend implementation signal (2026-10-07, commit 31994b09)
 
-1. **No row (pure Keychain user adding an email).** `POST /api/settings/email` answers 401
-   `UNAUTHORIZED` to the add flow on the JWT path and writes no row (ARCHITECTURE.md § 6.4
-   "Change email"; `api-contracts/settings.md`). A Keychain user therefore cannot register an
-   email from settings.
-2. **State G row whose email is unverified.** Re-issuing the link (`POST /api/settings/email`)
-   and deleting the row (`DELETE /api/settings/email`) need a fresh-auth proof on the JWT path.
-   The password issuer refuses the row's claim, and the row cannot acquire an ORCID while the
-   email is unverified, so unless it already holds one it has no proof it can mint.
-3. **State D**, as above.
+31994b09 verified as an ancestor of HEAD with `git merge-base --is-ancestor`. The sequencing
+precondition held: `backend-latest-op-haf-lookups-walk-the-blocks-index` was archived in dd4aea20.
 
-Scope addition: reproduce 1 and 2 as well. Items 1 and 2 need no architect decision: § 6.4
-admits those rows only on the Keychain (Hive-signature) path, so the fix is to sign these
-settings requests with Keychain for a `'self'` session, as the SPA already does for
-`POST /api/auth/link`. Step 3 of the Scope still applies to state D, which has factors a JWT-path
-proof could use.
+**Per scope item:**
+1. **Gate predicate.** `findExistingAccreditation` projects `cj.json::jsonb ->> 'method' AS method`
+   and returns null unless the latest op is an `accredit` whose method is not `'wot'`. The test sits
+   in JS next to the existing action check (`row.action !== 'accredit' || row.method === 'wot'`), not
+   as a literal `IS DISTINCT FROM 'wot'` in the SQL. It is equivalent for everything `->>` returns:
+   an absent key and a JSON null both arrive as null and count as non-wot, as under `IS DISTINCT
+   FROM`. Keeping it in JS lets the mocked-pool specs feed raw op rows rather than a precomputed
+   verdict. The real-Postgres file pins the no-method case end to end. A latest `revoke` still
+   misses, and the sanction guard still runs after the gate (AC3 spec).
+2. **Handler comments.** The gate comment and the opening of the "Ever-sanctioned guard" comment
+   now say what the gate checks. A third sentence became false with the change and is narrowed the
+   same way: "Metadata-update routing" said "a re-confirm of an already-accredited account returns
+   the prior tx_id"; an at-threshold WoT enrollee is accredited and now misses.
+3. **Docblock.** Both items deleted. In the same docblock, also cut by deletion:
+   - the opening "is this account currently accredited?";
+   - the claim that every other accreditation-state read uses latest-action-wins, with its file
+     list (`activeAccreditationsCteBody` ignores a legacy revoke);
+   - the "(the gate is 'what is the account's current accreditation status?' ...)" parenthetical;
+   - ", and silently lock the user out of re-accreditation" (no state reaches it after this change).
 
-## UI implementation signal (2026-10-08, commits 8cbde35e, a7753a8b, 0d80a27c)
+   Added: a "WoT handling" paragraph, and the sanction guard in the fall-through order.
 
-### Reproduction (Scope step 1 and the Architect note's items 1 to 3)
+   The same false WoT-revoke-producer claim sat in two test files, and is deleted there too:
+   `tests/lib/idempotency.test.ts` (with its `wot.ts:347`-style line anchors) and the revoke spec
+   in `tests/routes/accreditation-idempotency.test.ts`.
 
-Run against the real backend at e07c3716: a route probe in a scratchpad copy of `backend/` with the real `verifyHiveSignature`, the real session mint routes, the real fresh-auth issue and consume, Postgres `pevo_app` and Redis DB 6. Stubbed: `hiveClient.database.getAccounts` (to publish a posting key the probe controls), the ORCID provider token exchange, the SMTP transporter, the admin broadcast and the three HAF accreditation readers. Sessions came from the real mint routes: `POST /api/auth/session` (Keychain), `POST /api/auth/login` (password), `/api/orcid/start` + `/callback` in mode `login` (ORCID). All three mint the same `{sub, custody: 'self'}` claim, and every result below was identical across the login factors a state admits. The probe rows and their audit rows were deleted afterwards.
+**Acceptance criteria:**
+1. Route spec 'latest op is a wot accredit → gate falls through, a method:email accredit is
+   broadcast'. It queues the gate, the sanction guard and the per-token read, and asserts 200 with
+   no `outcome`, a payload `{ action: 'accredit', account, method: 'email' }` and 3 HAF reads. The
+   route reads no threshold, so "below the live threshold" is modelled only as the latest op.
+2. Route `it.each` over `email`, `orcid`, `manual`: `already_accredited`, no broadcast, 1 HAF
+   read. Unit `it.each` adds a null method, and the real-Postgres file adds a missing method.
+3. Route spec 'sanctioned account whose latest op is a wot accredit → 403
+   ACCREDITATION_SANCTIONED, no broadcast' (2 HAF reads).
+4. The pre-commit `anchor_violation` over every added line: 0 hits, control line fires.
 
-What the SPA sent before the fix (code trace at e07c3716, confirmed after the fix in a real browser): every action went out as a bearer request with no body proof. `withSettingsFreshAuth` returned `run(undefined)` for any non-light custody, and `submitEmail`, `deleteEmail`, `setPassword` and `submitAccreditationMetadata` all used `authenticatedRequest`. The user saw only the handler's generic failure copy.
+**Tests:**
+- `tests/lib/idempotency.test.ts`: wot → null; email/orcid/manual/null → hit; SQL regex
+  `'method' AS method`; a structured forward citation of the new file, token
+  `[findExistingAccreditation]`.
+- `tests/lib/existing-accreditation-gate-real-postgres.test.ts` (new, 8 specs): the production
+  function against synthetic `hafsql` views in a rolled-back transaction, with the reverse
+  declaration back to `idempotency.test.ts`. Real HAF has no `wot` accredit under `pevotest`
+  (read-only query, 2026-10-07: 20 `email` and 1 `manual` accredits, no revoke).
+- `tests/routes/accreditation-idempotency.test.ts`: the 5 specs above.
+- `tests/lib/idempotency-real-haf.test.ts`: the positive-hit spec now projects `method` and expects
+  a miss when the namespace's latest authority op is a `wot` accredit. It would have gone red for
+  good once a WoT auto-accreditation became the newest op. Its `lines 340-343` anchor is gone.
 
-Bearer request with no proof, the shape the SPA sent:
+**Evidence:**
+- Red before the fix: the unit wot and SQL-shape specs, both real-Postgres wot specs, and route
+  AC1 and AC3. The hit specs were green throughout (characterization).
+- Each file alone after the fix: `idempotency` 34/34, the real-Postgres file 8/8,
+  `accreditation-verify-sanctioned` 2/2, `accreditation-membership-cte` 11/11,
+  `idempotency-real-haf -t findExistingAccreditation` 3/3. `accreditation-idempotency`: 21 passed,
+  6 failed, exactly the clean-main six that
+  `backend-accreditation-idempotency-specs-skip-the-sanction-guard-read` fixes; the 5 new specs
+  pass. `tests/eslint` 146/146, `tsc` clean, lint 0 errors (1 warning, in
+  `author-supersession.ts`).
+- Mutation probes on a copy, all 7 killed: the pre-fix predicate, no `method` projection, the
+  wrong JSON key, a null method treated as non-pinning, an allowlist, the sanction guard disabled,
+  a `'WOT'` literal. The two SQL-side mutants die only in the real-Postgres file and the SQL regex;
+  the route specs take `method` from mocked rows.
 
-| State (login factors) | Add / re-issue / change email | Delete account | Set password | Metadata edit |
-|---|---|---|---|---|
-| No row (Keychain) | add: 401 `UNAUTHORIZED` | no row; no Delete control | form renders; 401 `UNAUTHORIZED` | 401 `FRESH_AUTH_REQUIRED` |
-| G, unverified (Keychain) | re-issue: 401 `FRESH_AUTH_REQUIRED` missing | 401 `FRESH_AUTH_REQUIRED` | 409 `PENDING_UNVERIFIED` | 401 `FRESH_AUTH_REQUIRED` |
-| G, verified, no ORCID (Keychain) | change: 401 `FRESH_AUTH_REQUIRED` | 401 | 403 `ORCID_REQUIRED` | 401 |
-| G, verified, ORCID (Keychain, ORCID) | change: 401 | 401 | 401 `FRESH_AUTH_REQUIRED` | 401 |
-| D, password + ORCID (Keychain, password, ORCID) | change: 401 | 401 | section hidden; 409 `PASSWORD_ALREADY_SET` | 401 |
-| D, ORCID, no password (Keychain, ORCID) | change: 401 | 401 | 401 `FRESH_AUTH_REQUIRED` | 401 |
+**Sibling tasks:**
+- The new route specs already queue all three HAF reads, so they need nothing from the
+  sanction-guard-read task, which still owns the 11 existing sequences and the header paragraph.
+- `backend-accreditation-release-op` changes `hasUnliftedSanction`'s comparison. If its result
+  columns change, the guard rows queued in the AC1 and AC3 specs change with them.
 
-- Password factor: `POST /api/custody/fresh-auth` answers 403 `FORBIDDEN` to every 'self' claim, including a D session minted by a password login a moment earlier.
-- Signature headers only, no bearer: 200 for add, re-issue, change, delete and the metadata edit in every state with a row (S0 add: 200, writes the state G row). Bearer plus signature headers takes the JWT path and gets the same 401s.
-- Set-password on the signature path: 401 `FRESH_AUTH_REQUIRED`. Its handler consumes an ORCID proof on every auth path.
-- ORCID factor for a 'self' session whose row holds an ORCID: `/orcid/start` mode `fresh_auth` plus `/callback` mint a proof with mechanism `orcid`. On the bearer path with that proof: change-email, delete and the metadata edit 200; set-password 200 for D without a password and for verified G with an ORCID.
-- Acceptance criterion 1 for set-password: the only D shape it applies to (ORCID, no password) cannot log in by password (`NO_PASSWORD_SET`), so it is recorded for Keychain and ORCID login. D with a password and no ORCID (D from A, or from E/F on the email path) was traced, not seeded: it has no factor on the bearer path, and ORCID login answers 404 `NO_ACCOUNT`.
+**For triage (not acted on):**
+- `ARCHITECTURE.md` "Credential Bindings", the `/verify` claim paragraph, ends "An
+  already-accredited account verifying a mailbox claims the row as `bound` at once, with no second
+  `accredit` op." An at-threshold WoT enrollee now gets a second (`email`) op. It could ride the § 2
+  edit in the TODO at archive; `backend-mailbox-binding-registry` builds that claim.
+- UI: `frontend/src/pages/accreditation.js` shows the request form only when `!isAccredited`, so
+  only a below-threshold enrollee can ask for the pin. The 2026-10-05 decision covers at-threshold
+  enrollees too.
+- The pin holds while the email op is the latest accredit. A `wot` accredit landing after it makes
+  the account threshold-dependent again, and `broadcastWotAccreditation` can still broadcast one
+  from its cached membership read. `backend-wot-auto-accredit-reads-stale-membership` covers that
+  read.
 
-### Outcome
+**Learnings checkpoint:** `accreditation-state-read-latest-action-wins-2026-05-15.md` is
+contradicted (its canonical SQL lacks `method`, its caller rule reads any `'accredit'` as
+accredited). Its refresh is already in the TODO at archive, so it was not run here. The fence and
+grace-period entries that name the gate still hold. No new entry: the rationale is in the code.
 
-Scope step 3 applied. The options were put to the user in session, who chose:
+**Code review:** not run on the backend side (the architect's `/ce-code-review` at intake). A
+verification workflow (comment claims, acceptance, mutation; one refuter per finding) confirmed 5
+findings, all fixed before 31994b09, and refuted 5.
 
-1. Every 'self' session signs change-email, add, re-issue and delete-account with Keychain and sends no bearer, as `adminMutation` and the IPFS pre-flight already do. A D session in a browser whose Keychain lacks the account's posting key cannot complete these, as votes and publishing already cannot there. ARCHITECTURE.md § 6.4 already admits the Keychain path for D and G on these rows, so no doc change.
-2. Set-password: the Architect note's "sign these settings requests with Keychain" does not fix `setPassword`, because the handler consumes an ORCID proof on every auth path. A 'self' session now takes the ORCID round-trip light accounts use; `setPassword` stays on the bearer path with the proof.
-3. The accreditation metadata edit (`PATCH /api/accreditation/metadata`), a fourth broken site no task covered, is folded in with the same fix.
-4. The verified-email state hid the email section's success and error lines inside the change form, so a successful change-email and a failed delete-account showed nothing (pre-existing, light accounts too). Folded in: the lines now sit where the unverified state already places them.
+## Architect re-review (2026-10-08) — HELD PENDING FIXES:
 
-Landed in `8cbde35e` (signing helper `settingsActionRequest` in `api.js`; `withSettingsFreshAuth` no longer exempts `set_password`), `a7753a8b` (State 2 message placement; comments narrowed) and `0d80a27c` (two more comment narrowings from the `/ce-simplify-code` pass). All three are on main (`git merge-base --is-ancestor` checked).
+Reviewed `31994b09` with `/ce-code-review` (correctness, security, adversarial in-process,
+testing, project-standards, learnings, then an independent validator). Reviewers read
+`git show 31994b09` snapshots. Scope 1 to 3 and AC1 to AC4 are met. The testing reviewer
+reproduced the signal's counts in a scratchpad copy (`idempotency` 34/34, the real-Postgres file
+8/8, `idempotency-real-haf -t findExistingAccreditation` 3/3, `tests/eslint` 146/146, each exit 0;
+`accreditation-idempotency` 21 passed and 6 failed, the same six failing on base) and re-planted
+six mutants, each going red where the signal says. The anchor gate finds nothing in the added
+lines, and every new comment sentence checked true. One item holds the archive:
 
-Verification:
-- Frontend unit suite: 98 files, 2305 tests, exit 0. Production build clean in a scratch copy. `/ce-simplify-code`: 2 comment fixes applied, 5 findings skipped (consolidating with `adminMutation` is out of scope and its split is inverted; the proof spread is the file's idiom; test tidies low-value). Code review: deferred to the architect's `/ce-code-review` at intake, per `agents/ui/CLAUDE.md`.
-- New tests: signed shape per action for a 'self' session (no Authorization, signed full `/api/...` path, method, body), `setPassword` stays bearer, light keeps bearer plus proof; the 'self' `set_password` ORCID start and cached-proof run; a template test that no email message or error line sits inside the change form.
-- Real-browser click-through (vite dev, headless Chromium, every `/api` call intercepted, Keychain stubbed): change-email, add (no row), re-issue (G unverified), the metadata edit and delete went out signed with no bearer. Each signed message equals what the backend's `buildCanonicalAuthMessage` rebuilds from the wire. Set-password ran the full ORCID start, callback and resubmit, sending the bearer plus the ORCID proof. With Keychain absent or cancelled, the failure copy now shows in State 2.
-- Mutation probes: 8 of 10 caught. Survivors: `=== 'self'` to `!== 'light'` (a connected store holds only `'light'` or `'self'`) and sending `JSON.stringify(body)` instead of `signed.body` (byte-identical with the real `signRequest`).
-- Adversarial correctness and account-state review: no findings. Comment-truth review: five overclaims, all fixed in `a7753a8b`.
+1. **The email pin drops a linked ORCID (`/verify` in `routes/accreditation.ts`,
+   `customJsonPayload`).** The ORCID binding is the account's latest authority accredit op:
+   `findAccreditedAccountWithOrcid` (`lib/orcid-binding.ts`) returns the account only while its
+   latest accredit/revoke op is an accredit carrying that ORCID, and `accred_latest` in
+   `activeAccreditationsCteBody` takes `orcid` from the latest accredit. `handleLink`
+   (`routes/orcid.ts`) re-broadcasts a WoT member's accredit with `method: existing.method`
+   (`'wot'`) and the linked `orcid`. Before this commit `/verify` hit the gate for that account
+   and broadcast nothing. Now it broadcasts a `method: 'email'` accredit with no `orcid` field,
+   which becomes the latest accredit, so the account's ORCID drops out of `active_accreditations`
+   and `findAccreditedAccountWithOrcid` no longer returns the account for it. `ARCHITECTURE.md`
+   § 2 "Credential Bindings": an authority op that drops the `orcid` field must carry the attested
+   ORCID forward, or the read loses the binding.
 
-### Follow-ups for filing (out of scope; the user chose not to fold them in)
+   Fix: when the gate misses because the latest op is a `wot` accredit carrying an `orcid`, the
+   `method: 'email'` accredit that `/verify` broadcasts carries that `orcid`. Take it from the
+   chain op, never from the self-asserted `pending.orcid`. `PATCH /api/accreditation/metadata`
+   (`orcid: prior.orcid`) is the precedent. Add a route spec: the latest op is a `wot` accredit
+   with an ORCID, and the broadcast payload carries it. Run `tests/eslint` alone as well as the
+   touched files, since comment prose in tests feeds its citation canaries.
 
-- No subject-teardown guard on the self-custody path of `withSettingsFreshAuth`. The Keychain prompt is a long await: if another tab signs in as a different user meanwhile, a successful delete then runs `removeAccountDrafts` and `disconnect()` against the new subject. `ui-keychain-broadcast-subject-teardown` covers only `broadcastWithFreshAuth`.
-- `signMessage` (`keychain.js`) has no timeout. A Keychain callback that never fires leaves the settings submit and delete buttons disabled until reload. Admin actions and uploads share the gap.
-- The set-password form renders where it can never succeed: no row (`GET /api/settings/email` answers `hasPassword: false`) and verified G without an ORCID (403 `ORCID_REQUIRED`). With this change a 'self' session's submit there starts an ORCID round-trip that ends in `orcid.verificationFailed`, instead of failing at once. `ui-pending-unverified-and-no-password-set-copy` covers only the 409 `PENDING_UNVERIFIED` case.
-- Keychain failures (not installed, missing key, cancelled) surface as the generic "try again / contact support" copy, which is the wrong advice on a device without Keychain.
-- Seen, not traced further: a light A/B/C account signing in through Keychain gets a 'self' claim, which hides the upgrade section; a C or D row with no email has no delete control; the `_performKeychainImport` docblock says the account_update signature proved Keychain, but dhive signs that op; `consumeFreshAuthProof` (metadata edit) has no registered-factor mechanism check (backend).
+Triage dispositions (2026-10-08, approved by the user):
 
-Learnings checkpoint: `/ce-compound` wrote `agents/docs/solutions/conventions/credential-skip-at-the-orchestrator-must-be-pinned-at-the-request-layer.md` and refined three `CONCEPTS.md` entries the same evidence contradicted (Self-custody Account, No-row Case, Per-request Hive-signature Auth) in `21d16508`; `/ce-compound-refresh` narrowed the custody posture axis of `mutation-probes-are-per-site-not-per-fix-2026-08-31.md` in `9274ee97`. Not refreshed, for the architect's call: `defensive-gate-co-land-unblocking-surface-2026-05-16.md` says its round-trip worked end-to-end, true then for light sessions only; `hive-signature-request-binding-shape-2026-04-21.md` does not say a signed request must omit the bearer (the new entry carries that rule).
+- Sanction self-lift during HAF indexing lag: filed as `backend-sanction-holds-before-haf-indexes`
+  (high). Not a hold item: the validator found the same window on `PATCH /metadata`, ORCID
+  `handleAccredit` and `/verify` for revoked accounts, and the fix sits in the sanction route and
+  `hasUnliftedSanction`.
+- An at-threshold WoT member has no UI route to the pin: filed as
+  `ui-offer-email-pin-to-wot-members` (normal).
+- The `ARCHITECTURE.md` "Credential Bindings" sentence and the wider staleness of the
+  latest-action-wins entry: added to the TODO at archive.
+- Re-running the live-HAF EXPLAIN for the added `method` projection: dismissed. It is one projected
+  column inside an unchanged `AS MATERIALIZED` fence.
+- Auditing the sibling "latest op = accredit" readers: dismissed. The diff changes only the gate,
+  and item 1 is the harm that `getExistingAccreditation` accepting a WoT member reaches.
 
-## Other accredit-op writers accept line breaks and control characters (archived 2026-10-08): clean backend review; one ui follow-up filed, contract docs updated in place, three residuals dismissed
+## Backend re-review signal (2026-10-08, commits 925024f7 and 851fe922)
 
-### Architect archive note (2026-10-08)
+925024f7 and 851fe922 verified as ancestors of HEAD with `git merge-base --is-ancestor`.
 
-- **Review:** `/ce-code-review` full path on `706cb11c`, `36d54084` and `fd7f0fab` (branch-remote, a synthetic head of the task's 8 files on base `9084f619`): correctness, security, adversarial (in-process, no cross-model peer), testing, project-standards, api-contract, learnings. Verdict "Ready with fixes" on one UI-side finding; the backend change meets every scope item and AC. Testing re-ran the four spec files alone at `fd7f0fab` (124/124, 51/51, 113/113, auth 35/36 with the known JWT timeout) and killed 11 of 11 mutants. Security, on PostgreSQL 16.13: of the 2,124 code points the rules reject, the jsonb input refuses exactly U+0000 and the 2,048 surrogates, and every accepted code point survives `JSON.stringify` plus `::jsonb`. No body-parser bypass, and no transform between validation and broadcast recreates a refused value.
-- **Filed:** `ui-signup-character-rule-refusal-shows-institutional-message` (normal): the signup page shows `signup.orcidOrInstitutional` for the new 400 (validator confirmed).
-- **In place:** `acb140b3` updates the contract and architecture docs (the signal's four TODOs, a new `POST /api/admin/accreditation/grant` section, a `hive-schemas.md` field note, and the `/signup` non-institutional refusal corrected to 422 `VALIDATION_ERROR`). `f31ebaec` adds `field:` 400s to `ui-accreditation-metadata-edit-sends-only-changed-fields` and replaces the read-side task's claim that this task closes PEvO's own write paths with a pointer to `backend-platform-signed-ops-carry-unchecked-client-text`.
-- **Dismissed:** the author retract reason in an admin-signed op (owned by `backend-platform-signed-ops-carry-unchecked-client-text`, filed during the review); a truthy non-string ORCID name throwing before the mode switch (theoretical: ORCID returns a string or null); the new solutions entry's process narrative (none of the classes root CLAUDE.md bans).
-- **Learnings checkpoint:** the learnings reviewer found no entry the change contradicts or that now overclaims. The new entry `conventions/tightened-validator-misses-values-stored-before-the-deploy.md` was checked against `fd7f0fab` by two reviewers and holds. No refresh or new entry ran.
+**Hold item 1 (925024f7).** `findExistingAccreditation` now returns `ExistingAccreditationGate`,
+`{ kind: 'hit', tx_id, block_num } | { kind: 'miss', wot_orcid }`, in place of
+`IdempotencyHit | null`. Its fenced query also projects `->> 'orcid'`. A miss on a latest `wot`
+accredit carries that op's non-empty `orcid` as `wot_orcid`. A miss on a latest revoke, on no op,
+or on a wot op with an empty or absent `orcid` carries null. `/verify` stores it in `wotOrcid` and
+spreads `orcid` onto the `method: 'email'` payload only when it is non-empty. The value comes from
+the same chain row the gate reads, so there is no second HAF read. `pending.orcid` never reaches
+the op. The one other consumer, the gate mock in `tests/routes/accreditation.test.ts`, returns the
+miss shape.
 
-**Owner:** backend
-**Created:** 2026-10-06
-**Priority:** high
-
-Filed from the review of `backend-accreditation-mail-names-the-account` (the implementer's
-out-of-scope follow-up, extended by the security reviewer; triage: user, "as recommended").
-
-## Why
-
-`accreditationRequestSchema` in `backend/src/validation.ts` now rejects, in `full_name` and
-`institution`, the Unicode Cc characters, U+2028, U+2029, U+202A to U+202E and U+2066 to U+2069
-(`NO_CONTROL_CHARACTERS`), because those values are printed in the verification mail and broadcast
-in the `accredit` op. Other paths put a name, institution or field into an `accredit` op without
-that rule:
-
-- `SignupBodySchema` in `backend/src/routes/auth.ts`: `full_name`, `institution` and `field` are
-  bare `z.string().optional()`. The pending row's values become the op's `name`, `institution`
-  and `field` in `backend/src/routes/signup-verify.ts`.
-- `adminAccreditationGrantSchema` in `backend/src/validation.ts`: `full_name`, `institution` and
-  `field` carry length bounds only.
-- `accreditationRequestSchema.field`: broadcast as `field: pending.field` by `/verify`.
-- The ORCID profile name: `handleAccredit` in `backend/src/routes/orcid.ts` broadcasts
-  `name: orcidName || username`, and the ORCID signup path takes the name from it too.
-
-A value written through one of these paths is also refused later by the settings metadata edit
-when the SPA re-sends it (`ui-accreditation-metadata-edit-sends-only-changed-fields`).
-
-## Scope
-
-1. Export `NO_CONTROL_CHARACTERS` and its message from `backend/src/validation.ts` and apply the
-   rule to `full_name`, `institution` and `field` in `SignupBodySchema` and
-   `adminAccreditationGrantSchema`, and to `field` in `accreditationRequestSchema` (the metadata
-   edit inherits it through `.pick()`).
-2. The ORCID name is not typed into a PEvO form, so refusing it leaves the user no fix inside
-   PEvO. Decide how it is handled before broadcast and state the choice in the signal block.
-
-Out of scope: values already on chain that a later op carries forward unchanged.
-
-## Acceptance criteria
-
-1. Specs pin a 400 for a line break in each newly covered field on each schema, and acceptance of
-   an ordinary non-Latin value.
-2. A spec pins the ORCID-name handling chosen in Scope 2.
-3. No emdash in new response strings. Comments follow root `CLAUDE.md` "Comment anchors".
-
-## Architect note (2026-10-07): raised to high
-
-From the review of `backend-latest-op-haf-lookups-walk-the-blocks-index` (triage: user). The
-character rule also protects the HAF reads:
-
+**Tests (925024f7).**
+- `tests/routes/accreditation-idempotency.test.ts`: the hold's spec, 'latest op is a wot accredit

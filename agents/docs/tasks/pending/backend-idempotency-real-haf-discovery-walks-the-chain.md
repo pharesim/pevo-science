@@ -87,7 +87,7 @@ No production change is needed.
 `findKnownAccreditationIdempotencyOp`, `findKnownExistingAccreditationFixture`, the forged-accredit
 probe in `per-route scoping: non-authority self-broadcast carrying the same key returns null`, and
 the forged-account probe in `per-route scoping: non-authority self-broadcast accredit for an
-account returns null`. Each pairs `custom_id = $1` with a `block_num >=` floor under
+account misses`. Each pairs `custom_id = $1` with a `block_num >=` floor under
 `ORDER BY ... LIMIT 1`. They pass today. In the patched runs the accreditation per-route spec took
 29.6 s and 30.0 s (one production lookup plus the forged probe; the split was not measured), and
 the accreditation positive-hit discovery alone took 11.3 s on its skip path. Their plans were not
@@ -200,7 +200,7 @@ checked. Same defect class and same fix, so they are in scope.
     (`/ocv\.author = \$1/`, `/required_posting_auths/`) plus bound params, so they catch a deleted
     predicate but not a neutered one. `(cj.required_posting_auths ?| $2::text[] OR TRUE)` and
     `(ocv.author = $1 OR TRUE)` each left that file at 29/29 (measured).
-  - `per-route scoping: non-authority self-broadcast accredit for an account returns null`
+  - `per-route scoping: non-authority self-broadcast accredit for an account misses`
     asserts nothing today. Its forged probe finds no row, because every appTag accredit op is
     signed by `pevotest.admin`, the only configured authority. Its comment says the assertion is
     then vacuously true. For the same reason, the accreditation per-route spec asserts only its
