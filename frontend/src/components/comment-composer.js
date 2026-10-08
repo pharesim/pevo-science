@@ -1,5 +1,6 @@
 import Alpine from 'alpinejs';
 import { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING } from '../lib/fresh-auth.js';
+import { takeNavigationStash } from '../lib/navigation-stash.js';
 import { getAppTag, getAppId } from '../config.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
 
@@ -19,6 +20,12 @@ export function initCommentComposer() {
 
     parentAuthor: opts.parentAuthor || '',
     parentPermlink: opts.parentPermlink || '',
+    // The root of the comment tree this composer sits in: the paper for the
+    // discussion, the review for a review's thread. With the parent it names
+    // the one composer on the page that a comment kept across the ORCID
+    // round-trip belongs to.
+    rootAuthor: opts.rootAuthor || '',
+    rootPermlink: opts.rootPermlink || '',
     body: '',
     isSubmitting: false,
     error: null,
@@ -27,6 +34,29 @@ export function initCommentComposer() {
     get isAccredited() { return Alpine.store('auth').isAccredited; },
     get username() { return Alpine.store('auth').username; },
 
+    get _stashTarget() {
+      return {
+        rootAuthor: this.rootAuthor,
+        rootPermlink: this.rootPermlink,
+        parentAuthor: this.parentAuthor,
+        parentPermlink: this.parentPermlink,
+      };
+    },
+
+    // A comment this composer's account submitted just before its ORCID
+    // round-trip comes back into the box. The event and the scroll wait a
+    // tick: a listener on this element is bound only after init returns, and
+    // a reply box the event opens is still hidden until Alpine shows it.
+    init() {
+      const stashed = takeNavigationStash('comment', this._stashTarget, this.username);
+      if (typeof stashed?.body !== 'string') return;
+      this.body = stashed.body;
+      this.$nextTick(() => {
+        this.$dispatch('comment-restored');
+        this.$nextTick(() => this.$el.scrollIntoView?.({ block: 'center' }));
+      });
+    },
+
     destroy() {
       this._teardownTimers();
     },
@@ -34,6 +64,7 @@ export function initCommentComposer() {
     async handleSubmit() {
       const trimmed = this.body.trim();
       if (!trimmed || !this.username) return;
+      const stashTarget = this._stashTarget;
 
       this.isSubmitting = true;
       this.error = null;
@@ -75,7 +106,9 @@ export function initCommentComposer() {
             extensions: [],
           }],
         ];
-        const broadcastResult = await broadcastWithFreshAuth(this.username, operations);
+        const broadcastResult = await broadcastWithFreshAuth(this.username, operations, {
+          stash: { surface: 'comment', target: stashTarget, payload: () => ({ body: this.body }) },
+        });
         if (!this._mounted) return;
         if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) return;
         this.body = '';

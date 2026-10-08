@@ -4958,3 +4958,27 @@ pt: common.mailboxPurposeObject
 sv: common.mailboxPurposeObject
 tr: common.mailboxPurposeObject
 zh: common.mailboxPurposeObject
+
+### Added 2026-10-08 (ui-composer-surfaces-navigate-over-undrafted-work)
+
+The confirm a passwordless account is offered when the review, comment or
+vouch it just submitted could not be kept for the trip to ORCID and back.
+Leaving the page to confirm identity then loses what was written, so the
+copy says so plainly before the user chooses to go. Shown with the
+existing reauthNavigateTitle and reauthNavigate strings.
+
+ar: confirm.reauthNavigateUnkeptMessage
+cs: confirm.reauthNavigateUnkeptMessage
+da: confirm.reauthNavigateUnkeptMessage
+de: confirm.reauthNavigateUnkeptMessage
+es: confirm.reauthNavigateUnkeptMessage
+fa: confirm.reauthNavigateUnkeptMessage
+fr: confirm.reauthNavigateUnkeptMessage
+he: confirm.reauthNavigateUnkeptMessage
+it: confirm.reauthNavigateUnkeptMessage
+nl: confirm.reauthNavigateUnkeptMessage
+pl: confirm.reauthNavigateUnkeptMessage
+pt: confirm.reauthNavigateUnkeptMessage
+sv: confirm.reauthNavigateUnkeptMessage
+tr: confirm.reauthNavigateUnkeptMessage
+zh: confirm.reauthNavigateUnkeptMessage

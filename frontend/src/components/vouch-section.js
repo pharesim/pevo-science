@@ -1,8 +1,11 @@
 import Alpine from 'alpinejs';
 import { fetchVouchStatus, notifyVouch, notifyRetractVouch } from '../api.js';
 import { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING } from '../lib/fresh-auth.js';
+import { takeNavigationStash } from '../lib/navigation-stash.js';
 import { getAppTag } from '../config.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
+
+const RELATIONSHIPS = ['colleague', 'advisor', 'collaborator'];
 
 export function initVouchSection() {
   Alpine.data('vouchSection', (opts = {}) => ({
@@ -55,8 +58,22 @@ export function initVouchSection() {
       return new Date(iso).toLocaleDateString();
     },
 
+    // A vouch or retraction this section's account submitted just before its
+    // ORCID round-trip comes back as it was composed. The vouch form shows
+    // before the status loads, so its choice is restored at once. The
+    // retraction panel shows only once the status confirms the vouch, so its
+    // reason is taken then, and left in the stash when the status cannot be
+    // read.
     init() {
-      this.loadVouchStatus();
+      const vouch = takeNavigationStash('vouch', { vouchee: this.targetUsername }, this.username);
+      if (RELATIONSHIPS.includes(vouch?.relationship)) this.relationship = vouch.relationship;
+      this.loadVouchStatus().then(() => {
+        if (!this._mounted || !this.canRetract) return;
+        const retract = takeNavigationStash('retract', { vouchee: this.targetUsername }, this.username);
+        if (typeof retract?.retractReason !== 'string') return;
+        this.retractReason = retract.retractReason;
+        this.showRetract = true;
+      });
     },
 
     async loadVouchStatus() {
@@ -75,6 +92,7 @@ export function initVouchSection() {
     async handleVouch() {
       if (!this.username) return;
       if (this.step === 'signing') return;
+      const stashTarget = { vouchee: this.targetUsername };
       this.step = 'signing';
       this.message = '';
       try {
@@ -90,7 +108,9 @@ export function initVouchSection() {
             relationship: this.relationship,
             timestamp: new Date().toISOString(),
           }),
-        }]]);
+        }]], {
+          stash: { surface: 'vouch', target: stashTarget, payload: () => ({ relationship: this.relationship }) },
+        });
         if (!this._mounted) return;
         // FRESH_AUTH_REDIRECT_PENDING covers both the ORCID redirect-in-flight
         // case and the 403 username_mismatch disconnect+toast case. Reset
@@ -126,6 +146,7 @@ export function initVouchSection() {
     async handleRetract() {
       if (!this.username) return;
       if (this.step === 'signing') return;
+      const stashTarget = { vouchee: this.targetUsername };
       this.step = 'signing';
       this.message = '';
       try {
@@ -141,7 +162,9 @@ export function initVouchSection() {
             reason: this.retractReason || this.$t('retraction.banner'),
             timestamp: new Date().toISOString(),
           }),
-        }]]);
+        }]], {
+          stash: { surface: 'retract', target: stashTarget, payload: () => ({ retractReason: this.retractReason }) },
+        });
         if (!this._mounted) return;
         // See handleVouch above for the rationale on the explicit step
         // reset; both paths share the same FRESH_AUTH_REDIRECT_PENDING

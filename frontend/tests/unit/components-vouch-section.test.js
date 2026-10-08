@@ -149,7 +149,9 @@ describe('vouchSection', () => {
 
       expect(mockBroadcastWithFreshAuth).toHaveBeenCalledWith('alice', [['custom_json', expect.objectContaining({
         id: 'pevotest',
-      })]]);
+      })]], expect.objectContaining({
+        stash: expect.objectContaining({ surface: 'vouch' }),
+      }));
       const json = JSON.parse(mockBroadcastWithFreshAuth.mock.calls[0][1][0][1].json);
       expect(json.action).toBe('vouch');
       expect(json.voucher).toBe('alice');

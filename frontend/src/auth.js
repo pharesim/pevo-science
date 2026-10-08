@@ -15,8 +15,7 @@ import {
   sessionExpiredMessage,
 } from './lib/fresh-auth.js';
 // TAB_SUBJECT_KEY: the per-tab marker naming the JWT subject this tab's
-// subject-bound sessionStorage state (fresh-auth proof caches, ORCID flow
-// keys) belongs to. Lives in sessionStorage so it shares that state's
+// subject-bound sessionStorage state belongs to. Lives in sessionStorage so it shares that state's
 // lifetime: it survives reloads and the ORCID round-trip alongside the
 // proofs, and a marker that disagrees with an incoming subject is exactly
 // the signal that another subject's leftovers are still in this tab. Written
@@ -473,8 +472,7 @@ export function initAuth() {
       // The shared key list is the storage-removal truth: the proof-cache
       // clears above already removed their own keys (plus module state the
       // list cannot carry), so for those this loop is an idempotent re-remove,
-      // and for the ORCID flow keys and the tab-subject marker it is the
-      // removal itself.
+      // and for every other key it is the removal itself.
       try {
         for (const key of SUBJECT_BOUND_STORAGE_KEYS) sessionStorage.removeItem(key);
       } catch {

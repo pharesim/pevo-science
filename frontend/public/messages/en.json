@@ -1074,7 +1074,8 @@
     "comment": "Post Comment",
     "reauthNavigateTitle": "Confirm your identity",
     "reauthNavigateMessage": "Confirming your identity with ORCID means leaving this page. Your text is saved as a draft and restored when you return. Attached files will need to be selected again.",
-    "reauthNavigate": "Continue to ORCID"
+    "reauthNavigate": "Continue to ORCID",
+    "reauthNavigateUnkeptMessage": "Confirming your identity with ORCID means leaving this page. What you have entered here could not be kept, so it will be lost."
   },
   "upgrade": {
     "title": "Take ownership of your account",

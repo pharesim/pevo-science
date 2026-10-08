@@ -1,6 +1,7 @@
 import Alpine from 'alpinejs';
 import { fetchPaper, submitAnonymousReview } from '../api.js';
 import { broadcastWithFreshAuth, FRESH_AUTH_REDIRECT_PENDING } from '../lib/fresh-auth.js';
+import { takeNavigationStash } from '../lib/navigation-stash.js';
 import { slugify } from '../crypto.js';
 import { getAppTag, getAppId } from '../config.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
@@ -204,7 +205,26 @@ export function initReviewPage() {
     },
 
     init() {
+      this._restoreStashedReview();
       this.loadPaper();
+    },
+
+    // The review a passwordless account submitted just before its ORCID
+    // round-trip, back in the form it was written in. Each field is taken
+    // only in the shape the form holds it.
+    _restoreStashedReview() {
+      const stashed = takeNavigationStash(
+        'review',
+        { author: this.author, permlink: this.permlink },
+        this.username,
+      );
+      if (!stashed) return;
+      if (typeof stashed.reviewBody === 'string') this.reviewBody = stashed.reviewBody;
+      for (const key of RATING_KEYS) {
+        const value = stashed.ratings?.[key];
+        if (Number.isInteger(value) && value >= 0 && value <= 5) this.ratings[key] = value;
+      }
+      if (typeof stashed.isAnonymous === 'boolean') this.isAnonymous = stashed.isAnonymous;
     },
 
     destroy() {
@@ -252,6 +272,9 @@ export function initReviewPage() {
 
     async handleSubmit() {
       const username = this.username;
+      // The paper the review is written for, read before any await: the
+      // router params can move under this instance while the confirm is open.
+      const stashTarget = { author: this.author, permlink: this.permlink };
       if (!username || !this.isConnected || !this.allRated) return;
       // Defense in depth — the template already swaps the submit slot for an
       // accreditation CTA when !isAccredited, but a programmatic form submit
@@ -316,7 +339,17 @@ export function initReviewPage() {
               extensions: [],
             }],
           ];
-          const broadcastResult = await broadcastWithFreshAuth(username, reviewOps);
+          const broadcastResult = await broadcastWithFreshAuth(username, reviewOps, {
+            stash: {
+              surface: 'review',
+              target: stashTarget,
+              payload: () => ({
+                reviewBody: this.reviewBody,
+                ratings: { ...this.ratings },
+                isAnonymous: this.isAnonymous,
+              }),
+            },
+          });
           if (!this._mounted) return;
           if (broadcastResult === FRESH_AUTH_REDIRECT_PENDING) {
             // FRESH_AUTH_REDIRECT_PENDING covers both the ORCID redirect-in-

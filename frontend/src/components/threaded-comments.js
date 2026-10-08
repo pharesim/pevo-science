@@ -76,7 +76,8 @@ function renderCommentTree(comments, depth, t) {
             </template>
           </div>
           <div x-show="replyOpen['${commentId}']" class="mt-2">
-            <div x-data="commentComposer({ parentAuthor: '${safeAuthor}', parentPermlink: '${safePermlink}' })"
+            <div x-data="commentComposer({ parentAuthor: '${safeAuthor}', parentPermlink: '${safePermlink}', rootAuthor: paperAuthor, rootPermlink: paperPermlink })"
+                 x-on:comment-restored.self="replyOpen['${commentId}'] = true"
                  x-on:comment-posted.window="if ($event.detail.parentPermlink === '${safePermlink}') { replyOpen['${commentId}'] = false; loadComments(); }">
               <textarea class="w-full rounded-md border border-parchment-dark bg-white px-3 py-2 text-sm text-ink placeholder:text-ink-muted focus:border-pevo-teal focus:outline-none focus:ring-1 focus:ring-pevo-teal resize-y"
                         rows="2" :placeholder="$t('comments.replyTo', { author: '${safeAuthor}' })"

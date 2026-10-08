@@ -19,6 +19,11 @@ import {
   RETURN_PATH_KEY,
   ORCID_MODE_KEY,
 } from './subject-bound-keys.js';
+import {
+  writeNavigationStash,
+  clearNavigationStash,
+  takeNavigationStash,
+} from './navigation-stash.js';
 
 // In-tab cache of the session-kind fresh_auth_proof WINDOW, stored under
 // `SESSION_PROOF_KEY`. The proof is
@@ -107,10 +112,9 @@ export const REMINTABLE_REASONS = Object.freeze(['missing', 'expired', 'malforme
 //                         open, so this one was refused before the user ever
 //                         saw it (distinct from CANCELLED, which is the user's
 //                         own decision to stop).
-//   FRESH_AUTH_REAUTH_REQUIRED  a window was needed and none was open, but the
-//                         account's only factor is a full-page ORCID
-//                         round-trip and the caller asked for acquisition
-//                         without navigation (see `allowRedirect`).
+//   FRESH_AUTH_REAUTH_REQUIRED  a window was needed and none was open, and the
+//                         full-page ORCID round-trip that is the account's
+//                         only factor was refused before it started.
 //   FRESH_AUTH_ORCID_FALLBACK  the password factor was ASSUMED (the account
 //                         status was unavailable) and the backend rejected the
 //                         mint: the account most likely has no password, so
@@ -981,14 +985,14 @@ export async function resolvePasswordFactor() {
 }
 
 // Start the ORCID round-trip that opens a session window. The only factor a
-// passwordless account has, and a full-page navigation — callers must have
-// nothing unsaved in flight when this fires (see `ensureSessionWindow`).
+// passwordless account has, and a full-page navigation.
 // `isStale` is the acquisition's teardown predicate, threaded through to the
 // redirect helper's pre-navigation re-check; `acquireSessionProof`, the one
 // caller, always threads its flight's guard, so no production flight reaches
-// the redirect without one.
-export async function beginSessionAuthOrcidRedirect(isStale) {
-  return beginOrcidFreshAuthRedirect('session_auth', {}, '/', isStale);
+// the redirect without one. `beforeNavigate` is the flight's navigation stash
+// write (see `stashBeforeNavigating`), run at the navigating moment.
+export async function beginSessionAuthOrcidRedirect(isStale, beforeNavigate) {
+  return beginOrcidFreshAuthRedirect('session_auth', {}, '/', isStale, beforeNavigate);
 }
 
 // Acquire a session-kind window: reuse the cached one, or open a new one
@@ -1014,6 +1018,13 @@ export async function beginSessionAuthOrcidRedirect(isStale) {
 // fired out from under them. Only the passwordless branch is suppressed — the
 // password factor's modal is inline and costs nothing to show mid-flow.
 //
+// `stash` is a caller's navigation stash record, as a function read at the
+// navigating moment. It is registered on the flight whether this call
+// installs the flight or joins it, so a caller that joins a flight another
+// caller started still has its work written before the navigation fires. A
+// write that fails refuses the navigation: the flight resolves
+// FRESH_AUTH_REAUTH_REQUIRED.
+//
 // Concurrent callers — a submit and a vote button racing in the same tick, or a
 // page batch and an inline editor image — are coalesced through the
 // module-level `_acquireInFlight` promises, so only one password modal or one
@@ -1024,12 +1035,18 @@ export async function beginSessionAuthOrcidRedirect(isStale) {
 // The slot is keyed on the redirect policy: a caller only joins an
 // acquisition that shares its `allowRedirect` posture. Joined promises hand
 // the joiner the FIRST caller's outcome, and the two postures resolve the
-// passwordless branch oppositely — suppressed refuses where permissive
-// navigates — so a submit entitled to navigate must never inherit the
-// refusal of an inline-image acquisition it happened to race, nor the other
-// way round. Cross-posture collisions on the password factor surface as the
-// modal's own busy sentinel, which callers already handle.
+// passwordless branch differently, so a submit entitled to navigate must
+// never inherit the refusal of an inline-image acquisition it happened to
+// race, nor the other way round. Cross-posture collisions on the password
+// factor surface as the modal's own busy sentinel, which callers already
+// handle.
 const _acquireInFlight = { permissive: null, suppressed: null };
+
+// The navigation stash records registered on the flight in each slot (see
+// `acquireSessionProof`'s `stash`). Set and released together with
+// `_acquireInFlight`, so a record can only join the flight it was registered
+// on.
+const _acquireStashes = { permissive: null, suppressed: null };
 
 // Pairs the in-flight acquisition state with `abandonInFlightAcquisitions()`:
 // a flight captures the generation before its awaits and, when a teardown
@@ -1062,6 +1079,8 @@ export function abandonInFlightAcquisitions() {
   _acquireGeneration += 1;
   _acquireInFlight.permissive = null;
   _acquireInFlight.suppressed = null;
+  _acquireStashes.permissive = null;
+  _acquireStashes.suppressed = null;
   _factorResolutionInFlight = null;
   _factorResolutionSubject = null;
 }
@@ -1110,7 +1129,10 @@ function evictUnnamedAcquisition(proof) {
   return proof;
 }
 
-async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } = {}) {
+async function acquireSessionProof(
+  minRemainingMs = 0,
+  { allowRedirect = true, stash = null } = {},
+) {
   const cached = getCachedSessionProof(minRemainingMs);
   if (cached) return evictUnnamedAcquisition(cached);
   const slot = allowRedirect ? 'permissive' : 'suppressed';
@@ -1118,7 +1140,11 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
   // drops an unnamed result before its `finally` releases the slot, so by the
   // time a joiner or a later cold caller can look, it has already happened once
   // for everyone.
-  if (_acquireInFlight[slot]) return _acquireInFlight[slot];
+  if (_acquireInFlight[slot]) {
+    if (stash) _acquireStashes[slot].push(stash);
+    return _acquireInFlight[slot];
+  }
+  const stashes = stash ? [stash] : [];
 
   // Opened before any await: a teardown bumping the generation mid-flight
   // turns every later step into a clean cancel (see
@@ -1147,7 +1173,10 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
     // report belongs here.
     const orcidOrRefuse = async () => {
       if (!allowRedirect) return FRESH_AUTH_REAUTH_REQUIRED;
-      const started = await beginSessionAuthOrcidRedirect(guard.tornDown);
+      const started = await beginSessionAuthOrcidRedirect(
+        guard.tornDown,
+        () => stashBeforeNavigating(stashes),
+      );
       return started === FRESH_AUTH_CANCELLED ? guard.cancel() : started;
     };
 
@@ -1226,13 +1255,38 @@ async function acquireSessionProof(minRemainingMs = 0, { allowRedirect = true } 
   })();
 
   _acquireInFlight[slot] = flight;
+  _acquireStashes[slot] = stashes;
   try {
     return evictUnnamedAcquisition(await flight);
   } finally {
     // A teardown may have cleared the slot and a newer flight may have
     // claimed it since; only the flight that installed itself may clear it.
-    if (_acquireInFlight[slot] === flight) _acquireInFlight[slot] = null;
+    if (_acquireInFlight[slot] === flight) {
+      _acquireInFlight[slot] = null;
+      _acquireStashes[slot] = null;
+    }
   }
+}
+
+// The navigation stash write a session-auth flight runs at its navigating
+// moment, answering whether the navigation may go ahead. The slot is replaced
+// with this navigation's work: removed when no caller registered any, written
+// when one did. It keeps one record, so a navigation carrying two callers'
+// work is refused rather than keep one and lose the other, and so is one
+// whose record cannot be built or stored.
+function stashBeforeNavigating(stashes) {
+  if (stashes.length === 0) {
+    clearNavigationStash();
+    return true;
+  }
+  if (stashes.length > 1) return false;
+  let record;
+  try {
+    record = stashes[0]();
+  } catch {
+    return false;
+  }
+  return writeNavigationStash(record);
 }
 
 // ---------------------------------------------------------------------------
@@ -1296,10 +1350,10 @@ export function windowOutcomeKey(outcome) {
 //              modal. The user never saw a prompt for THIS action, so saying
 //              nothing would look like the button did nothing.
 //   reauthRequired  no window is open and the account's only factor navigates,
-//              but the caller asked for a non-navigating acquisition. The work
-//              was refused before anything was lost — that is the point of
-//              suppressing — but a silent refusal reads as a dead button, so
-//              tell the user the way through: re-authenticate, then try again.
+//              but the navigation was refused. The work was refused before
+//              anything was lost, but a silent refusal reads as a dead button,
+//              so tell the user the way through: re-authenticate, then try
+//              again.
 const WINDOW_OUTCOME_TOASTS = Object.freeze({
   redirect: null,
   cancelled: null,
@@ -1359,8 +1413,8 @@ export function showWindowOutcomeToast(outcomeKey) {
 //   { ready: false, failed: true }    re-auth could not be completed
 //   { ready: false, busy: true }      another action's prompt owns the modal
 //   { ready: false, reauthRequired: true }  no window is open and the only
-//                                     factor navigates, but the caller asked
-//                                     for a non-navigating acquisition
+//                                     factor navigates, but the navigation
+//                                     was refused
 //
 // The non-ready outcome keys come from `WINDOW_OUTCOME_BY_SENTINEL` above: a
 // new way for an acquisition to end is registered there, never by adding a
@@ -1525,10 +1579,9 @@ export async function freshAuthWindowReady(opts = {}) {
       return false;
     }
     if (!offered) return false;
-    // A yes buys one navigating acquisition and no second offer: with the
-    // factor allowed, the passwordless branch navigates rather than refusing,
-    // so this cannot recur. The gate still answers false, because the caller
-    // must unwind the work it was gating — the page is leaving.
+    // A yes buys one navigating acquisition and no second offer. The gate
+    // still answers false, because the caller must unwind the work it was
+    // gating — the page is leaving.
     return freshAuthWindowReady({ ...acquireOpts, allowRedirect: true });
   }
   // Every non-ready outcome surfaces through the shared dispatch: the table
@@ -1539,13 +1592,20 @@ export async function freshAuthWindowReady(opts = {}) {
 }
 
 // Generic ORCID fresh-auth redirect. Stashes the return path + per-tab mode
-// marker, starts the OAuth round-trip with the caller's target `extra`, validates
-// the redirect host against the shared allowlist, and navigates. Callers supply
+// marker, starts the OAuth round-trip with the caller's target `extra`, and
+// validates the redirect host against the shared allowlist. Callers supply
 // the OAuth `mode` ('session_auth' for the target-less broadcast/upload window,
 // 'fresh_auth' for the target-bound consent-op and settings surfaces), the
 // `extra` (the action plus any target fields the backend binds) and a default
 // return path used only when `window.location.pathname` is empty. Returns
-// FRESH_AUTH_REDIRECT_PENDING; throws on transport / config / invalid-host errors.
+// FRESH_AUTH_REDIRECT_PENDING once it navigates; throws on transport / config /
+// invalid-host errors.
+//
+// `beforeNavigate` (optional) runs after the host check, with nothing awaited
+// between it and the navigation, so it sees exactly the navigations that fire.
+// A false answer refuses the navigation: the flow keys are unwound and
+// FRESH_AUTH_REAUTH_REQUIRED is returned. The session leg passes its flight's
+// navigation stash write; the consent-op starters pass none.
 //
 // `isStale` (optional) is a teardown predicate re-checked after the start
 // round-trip: the round-trip is an await a subject teardown can land inside,
@@ -1576,7 +1636,7 @@ export async function freshAuthWindowReady(opts = {}) {
 // `completeOrcid` reads the mode marker to decide whether the callback carries
 // the session JWT, so a flow whose marker went missing posts an
 // authenticated-mode callback unauthenticated and dead-ends on return.
-async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault, isStale) {
+async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault, isStale, beforeNavigate) {
   const returnPath = window.location.pathname || returnPathDefault;
   try {
     sessionStorage.setItem(RETURN_PATH_KEY, returnPath);
@@ -1625,6 +1685,11 @@ async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault, isSta
   if (!ORCID_REDIRECT_HOSTS.includes(target.hostname)) {
     unwindFlowKeys();
     throw new Error('Invalid ORCID redirect URL');
+  }
+
+  if (beforeNavigate && !beforeNavigate()) {
+    unwindFlowKeys();
+    return FRESH_AUTH_REAUTH_REQUIRED;
   }
 
   window.location.href = data.redirect_url;
@@ -1827,6 +1892,38 @@ function acquisitionAborted(proof) {
   return true;
 }
 
+const UNKEPT_NAVIGATION_FALLBACK =
+  'Confirming your identity with ORCID means leaving this page. What you have entered here could not be kept, so it will be lost.';
+
+// The way through a navigation the stash write refused, offered by the
+// broadcast whose work could not be kept. Nothing else in the tab can open a
+// window for a passwordless account, so the refusal alone would be a dead end:
+// the user is told the work will not survive the round-trip, and a yes sends
+// them to ORCID without it. It asks through the same confirm, title and
+// button the publish and edit pages use for their navigation cost.
+//
+// Asked, and a yes honoured, only while the tab still shows the page the
+// broadcast started on and the account is still a light one. A composer's
+// mount state cannot be read from here, and the confirm store answers yes
+// unasked for any other custody. A teardown during the dialog outranks the
+// answer, since the subject scrub does not close this dialog. A no, or a
+// dialog another action already holds, refuses in silence, the way a
+// dismissed password modal does.
+async function navigateWithoutStash(guard, startPath) {
+  const onStartPage = () => window.location.pathname === startPath
+    && Alpine.store('auth')?.custody === 'light';
+  if (!onStartPage()) return FRESH_AUTH_CANCELLED;
+  const copy = Alpine.store('i18n')?.messages?.confirm;
+  const confirmed = await Alpine.store('broadcastConfirm')?.request?.({
+    title: copy?.reauthNavigateTitle || 'Confirm your identity',
+    message: copy?.reauthNavigateUnkeptMessage || UNKEPT_NAVIGATION_FALLBACK,
+    confirmLabel: copy?.reauthNavigate || 'Continue to ORCID',
+  });
+  if (guard.tornDown()) return guard.cancel();
+  if (!confirmed || !onStartPage()) return FRESH_AUTH_CANCELLED;
+  return acquireSessionProof(0, { allowRedirect: true });
+}
+
 // High-level wrapper around `broadcastOps`: acquires a session window if one is
 // not already open, attaches its proof to the broadcast, and handles the
 // FRESH_AUTH_REQUIRED retry / re-login fallout per the custody contract.
@@ -1854,8 +1951,15 @@ function acquisitionAborted(proof) {
 // submit-handler locals; every other call site keeps the permissive default.
 // The suppressed refusal unwinds through `acquisitionAborted`'s
 // reauthRequired branch with the re-authenticate toast.
+//
+// `opts.stash` (optional) is consumed here too: the work on screen behind this
+// broadcast, as `{ surface, target, payload }`, where `payload()` is read at
+// the moment a navigation fires. Both acquisitions register it, so a
+// passwordless account's round-trip writes it to the navigation stash
+// (lib/navigation-stash.js) for the composer to take back on return, and a
+// broadcast that succeeds removes its own record.
 export async function broadcastWithFreshAuth(username, operations, opts = {}) {
-  const { allowRedirect = true, ...broadcastOpts } = opts;
+  const { allowRedirect = true, stash = null, ...broadcastOpts } = opts;
   const auth = Alpine.store('auth');
   if (auth?.custody !== 'light') {
     return broadcastOps(username, operations, broadcastOpts);
@@ -1869,6 +1973,31 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
   // cross-attempt memory of which subject the broadcast belongs to.
   const guard = subjectTeardownGuard();
 
+  // The page the broadcast started on, read before the first await: the way
+  // through a refused stash write is offered only while the tab still shows it.
+  const startPath = window.location.pathname;
+
+  const stashRecord = stash && (() => ({
+    surface: stash.surface,
+    target: stash.target,
+    subject: username,
+    payload: stash.payload(),
+    savedAt: Date.now(),
+  }));
+
+  // Both acquisitions, the first and the 401 retry's, go through here, so the
+  // stash reaches every navigation this broadcast can fire. On the permissive
+  // posture a reauthRequired refusal can only come from the flight's stash
+  // write. A caller with no work in it joined a flight whose write was
+  // refused; the caller whose work it was is the one asked, so this one stays
+  // silent rather than be told to try again over that work.
+  const acquire = async () => {
+    const acquired = await acquireSessionProof(0, { allowRedirect, stash: stashRecord });
+    if (acquired !== FRESH_AUTH_REAUTH_REQUIRED || !allowRedirect) return acquired;
+    if (!stashRecord) return FRESH_AUTH_CANCELLED;
+    return navigateWithoutStash(guard, startPath);
+  };
+
   // One consume of the window: broadcast, then replay the idle slide the
   // backend performed but echoed nothing about. Both the first attempt and the
   // 401 retry go through here so "consume without sliding" — the bug class that
@@ -1880,14 +2009,19 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
   // unkeyed entry with no subject binding, so once the guard reads torn-down
   // the entry in it was minted by whoever the tab represents next, and
   // re-anchoring its idle deadline on the departed subject's response would
-  // extend the successor's window on traffic that was never theirs.
+  // extend the successor's window on traffic that was never theirs. The
+  // stash clear is gated the same way: past a teardown the slot is the
+  // successor's.
   const attemptOnce = async (windowProof) => {
     const res = await broadcastOps(username, operations, { ...broadcastOpts, freshAuthProof: windowProof });
-    if (!guard.tornDown()) slideSessionWindow();
+    if (!guard.tornDown()) {
+      slideSessionWindow();
+      if (stash) takeNavigationStash(stash.surface, stash.target, username);
+    }
     return res;
   };
 
-  const proof = await acquireSessionProof(0, { allowRedirect });
+  const proof = await acquire();
   if (acquisitionAborted(proof)) return FRESH_AUTH_REDIRECT_PENDING;
 
   try {
@@ -1937,10 +2071,11 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
         // of the original FRESH_AUTH_REQUIRED context, and a call site that
         // inspects the rejection shape would misclassify the failure.
         try {
-          // The re-acquisition inherits the caller's redirect posture: a
+          // The re-acquisition goes through `acquire` like the first: a
           // suppressed call site's retry must refuse (reauthRequired toast)
-          // rather than navigate, exactly like its initial acquisition.
-          const reacquired = await acquireSessionProof(0, { allowRedirect });
+          // rather than navigate, and a permissive one's navigation carries
+          // the stash.
+          const reacquired = await acquire();
           if (acquisitionAborted(reacquired)) return FRESH_AUTH_REDIRECT_PENDING;
           return await attemptOnce(reacquired);
         } catch (retryErr) {

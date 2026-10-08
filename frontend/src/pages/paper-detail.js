@@ -10,6 +10,7 @@ import { titleCaseDiscipline } from '../lib/discipline-display.js';
 import { canonicalOrcid, shouldShowDiscrepancyIndicator } from '../lib/authors.js';
 import { safeExternalUrl } from '../lib/safe-url.js';
 import { createTimerGuard } from '../lib/timer-guard.js';
+import { hasNavigationStash } from '../lib/navigation-stash.js';
 
 const template = `
       <div x-data="paperDetailPage" class="container-narrow py-8">
@@ -740,7 +741,7 @@ const template = `
                       <div class="text-sm text-ink-light leading-relaxed prose prose-sm max-w-none" x-markdown="rev.body"></div>
 
                       <!-- Review comments (lazy-loaded) -->
-                      <div class="mt-4 pt-3 border-t border-parchment-dark/30" x-data="{ showComments: false }">
+                      <div class="mt-4 pt-3 border-t border-parchment-dark/30" x-data="{ showComments: hasRestorableComment(rev) }">
                         <button type="button"
                                 class="text-xs text-ink-muted hover:text-pevo-teal transition-colors flex items-center gap-1"
                                 @click="showComments = !showComments">
@@ -764,7 +765,7 @@ const template = `
                             <div x-show="!loading && totalCount > 0" x-html="commentsHtml" class="space-y-3"></div>
                             <!-- Composer -->
                             <template x-if="$store.auth.isConnected">
-                              <div class="mt-3" x-data="commentComposer({ parentAuthor: rev.author, parentPermlink: rev.permlink })">
+                              <div class="mt-3" x-data="commentComposer({ parentAuthor: rev.author, parentPermlink: rev.permlink, rootAuthor: rev.author, rootPermlink: rev.permlink })">
                                 <textarea class="w-full rounded-md border border-parchment-dark bg-white px-3 py-2 text-sm text-ink placeholder:text-ink-muted focus:border-pevo-teal focus:outline-none focus:ring-1 focus:ring-pevo-teal resize-y"
                                           rows="2" :placeholder="$t('comments.replyTo', { author: rev.is_anonymous ? $t('review.anonymousReviewer') : rev.author })"
                                           x-model="body" :disabled="isSubmitting"></textarea>
@@ -817,7 +818,7 @@ const template = `
 
               <!-- Top-level comment composer -->
               <template x-if="$store.auth.isConnected">
-                <div class="mb-4" x-data="commentComposer({ parentAuthor: paper.author, parentPermlink: paper.permlink })">
+                <div class="mb-4" x-data="commentComposer({ parentAuthor: paper.author, parentPermlink: paper.permlink, rootAuthor: paper.author, rootPermlink: paper.permlink })">
                   <textarea class="w-full rounded-md border border-parchment-dark bg-white px-3 py-2 text-sm text-ink placeholder:text-ink-muted focus:border-pevo-teal focus:outline-none focus:ring-1 focus:ring-pevo-teal resize-y"
                             rows="3" :placeholder="$t('comments.startDiscussion')"
                             x-model="body" :disabled="isSubmitting"></textarea>
@@ -922,6 +923,17 @@ export function initPaperDetailPage() {
 
     init() {
       this.loadPaper();
+    },
+
+    // Whether a comment kept across the ORCID round-trip belongs to this
+    // review's thread. A review card opens its comments when it does, so the
+    // composer that takes the comment back gets mounted.
+    hasRestorableComment(rev) {
+      return hasNavigationStash(
+        'comment',
+        { rootAuthor: rev.author, rootPermlink: rev.permlink },
+        this.$store.auth.username,
+      );
     },
 
     destroy() {

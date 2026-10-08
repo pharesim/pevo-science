@@ -19,8 +19,7 @@
 // fixture mirror against each other on top of it.
 //
 // The semantics of what each key holds stay documented next to the code that
-// reads and writes it (the cache docblocks in fresh-auth.js, the marker
-// docblock in auth.js, the mode-marker protocol at the ORCID flow starters).
+// reads and writes it.
 
 // The session-kind fresh_auth_proof window cache (lib/fresh-auth.js).
 export const SESSION_PROOF_KEY = 'pevo_fresh_auth_session_proof';
@@ -46,6 +45,10 @@ export const ORCID_RETURN_TO_KEY = 'pevo_orcid_return_to';
 // (written and read by the auth store's `_adoptSubject`).
 export const TAB_SUBJECT_KEY = 'pevo_tab_subject';
 
+// The composed work carried across the session-auth ORCID round-trip
+// (lib/navigation-stash.js).
+export const NAVIGATION_STASH_KEY = 'pevo_navigation_stash';
+
 export const SUBJECT_BOUND_STORAGE_KEYS = Object.freeze([
   SESSION_PROOF_KEY,
   CONSENT_OP_PROOF_KEY,
@@ -53,4 +56,5 @@ export const SUBJECT_BOUND_STORAGE_KEYS = Object.freeze([
   ORCID_MODE_KEY,
   ORCID_RETURN_TO_KEY,
   TAB_SUBJECT_KEY,
+  NAVIGATION_STASH_KEY,
 ]);

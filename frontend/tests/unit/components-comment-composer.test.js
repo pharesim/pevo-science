@@ -78,7 +78,9 @@ describe('commentComposer', () => {
         author: 'alice',
         body: 'Great paper!',
       })]),
-    ]));
+    ]), expect.objectContaining({
+      stash: expect.objectContaining({ surface: 'comment' }),
+    }));
 
     // Check json_metadata
     const ops = mockBroadcastWithFreshAuth.mock.calls[0][1];
