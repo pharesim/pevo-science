@@ -40,6 +40,8 @@ const ACCEPTED: Array<[string, string]> = [
   ['Latin with diacritics and punctuation', "Dr. Zoë Núñez-O'Brien"],
   ['Portuguese institution', 'Universidade do Porto'],
   ['CJK', '东京大学'],
+  ['Hangul, below the surrogate block', '서울대학교'],
+  ['fullwidth punctuation, above the surrogate block', '東京大学（理学部）'],
   ['a character outside the BMP (a surrogate pair)', '\ud842\udfb7野家'],
   ['right-to-left mark', 'محمد\u200f علي'],
   ['left-to-right mark', 'ACME\u200e Lab'],

@@ -12,9 +12,9 @@ const NO_CONTROL_CHARACTERS = /^[^\p{Cc}\u2028\u2029\u202a-\u202e\u2066-\u2069]*
 const NO_CONTROL_CHARACTERS_MESSAGE = 'must not contain line breaks or control characters';
 
 // Rejects an unpaired surrogate. Under the `u` flag a surrogate pair reads as
-// one code point above U+FFFF, so this class matches only an unpaired half.
-// JSON.stringify writes one as a `\uXXXX` escape, which PostgreSQL's jsonb
-// input refuses.
+// one code point above U+FFFF, so only an unpaired half falls in the excluded
+// range. JSON.stringify writes one as a `\uXXXX` escape, which PostgreSQL's
+// jsonb input refuses.
 const NO_LONE_SURROGATES = /^[^\ud800-\udfff]*$/u;
 const NO_LONE_SURROGATES_MESSAGE = 'must be well-formed Unicode text';
 
