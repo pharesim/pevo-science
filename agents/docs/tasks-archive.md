@@ -1,3 +1,146 @@
+## Check that a `'self'`-claim session can complete settings critical actions (archived 2026-10-08): ui fix reviewed Ready with fixes; both findings and two follow-ups folded into open tasks, five tasks filed, two dismissed
+
+### Architect archive note (2026-10-08)
+
+- **Review:** `/ce-code-review` full path on `8cbde35e`, `a7753a8b` and `0d80a27c` (branch-remote, a synthetic head of the task's 7 files on base `1e9b3172`): correctness, security, adversarial (in-process, no cross-model peer), testing, julik-frontend-races, project-standards, learnings. Verdict "Ready with fixes": two findings, both new in this diff and confirmed by the validator. The orchestrator re-ran the full frontend suite (98 files / 2305 tests, exit 0) and the build in an isolated copy, and checked the testing reviewer's 11 mutants against the brief (9 killed; the 2 survivors are the signal's).
+- **Folded** (`b7dc4acf`): finding 1's unverified-G cell (a `'self'` set-password submit now detours through an ORCID round-trip the callback refuses, so the "map the 409" option no longer reaches a G user) and finding 2 (stale email-section lines on delete) into `ui-pending-unverified-and-no-password-set-copy`; the cross-tab subject switch during the Keychain prompt (delete and metadata edit) into `ui-keychain-broadcast-subject-teardown`; the `_performKeychainImport` "proven by the account_update sign" comment into `ui-fresh-auth-and-upload-comments-that-overclaim`.
+- **Filed** (`b7dc4acf`): `backend-settings-email-status-reports-orcid` (normal; finding 1's no-row and verified-G-without-ORCID cells, user: "file a task"); `backend-light-row-keychain-session-and-signature-proof` (high; user chose option (a), the backend follows ARCHITECTURE.md § 6.4 and § 6.5 invariant #6); `backend-signature-replay-cache-keys-on-header-text` (high; pre-existing, confirmed against dhive's hex decoding); `ui-keychain-failure-copy-on-settings-actions` (normal; follow-up 4); `ui-delete-account-control-for-rows-without-email` (normal; confirmed against the template and the DELETE handler).
+- **Dismissed:** `signMessage` has no timeout (follow-up 2; theoretical, no reproduction, a reload clears it); `consumeFreshAuthProof` has no registered-factor check (the factor match is checked when the proof is minted).
+- **Learnings checkpoint:** the new entry `conventions/credential-skip-at-the-orchestrator-must-be-pinned-at-the-request-layer.md` and the three CONCEPTS.md edits (`21d16508`) were checked against the code by two reviewers and hold; `9274ee97` is correctly scoped; `defensive-gate-co-land-unblocking-surface-2026-05-16.md` needs no action. `/ce-compound-refresh` narrowed the replay-cache, body-hash and location claims in `hive-signature-request-binding-shape-2026-04-21.md` (`bf933549`).
+
+**Owner:** ui
+**Created:** 2026-10-05
+**Priority:** high
+
+Raised by the backend in the custody-column alignment (since archived) and
+approved for filing at that task's archive. Reproduce first. This may turn out
+to be a non-issue, and the task is done once that is shown.
+
+## Why
+
+A state-D account (ARCHITECTURE.md § 6.1: a light account upgraded through
+`POST /api/custody/upgrade`, password and ORCID preserved) can still log in by
+password or by ORCID. Both logins now mint the same derived claim,
+`custody: 'self'`, for that account. ORCID login used to mint a stale
+`'light'`, which the custody-column alignment fixed.
+
+On the client, `frontend/src/lib/settings-fresh-auth.js` treats any
+`custody !== 'light'` session as a Keychain session whose per-request
+signature is itself the fresh proof, and sends no body proof. On the server,
+§ 6.4 requires a body proof on the JWT path for change-email and
+delete-account. `POST /api/custody/fresh-auth` refuses any session whose
+claim is not `'light'` with 403, so a state-D JWT session cannot mint a
+password proof there.
+
+Whether this is a real gap depends on how a state-D session's settings
+requests actually go out. If the SPA signs them with Keychain, the backend
+takes the signature path, where the middleware signature is the fresh proof,
+and nothing is wrong. If they go out with the JWT bearer and no body proof,
+the backend refuses them, and the user cannot complete the action from that
+session. Password-login state-D sessions were already in this position before
+the custody-column change; ORCID-login ones joined them.
+
+## Scope
+
+1. Reproduce with a state-D account logged in by password, and again by
+   ORCID. Attempt change-email and delete-account from settings, plus
+   set-password if the account has an ORCID and no password. Record for each
+   action which auth path the request took (signature or bearer), whether a
+   body proof was sent, and the response.
+2. If every action completes, record the evidence in this file, move it to
+   `review/`, and stop. No code change.
+3. If any action cannot complete, do not pick a fix on your own. The choices
+   cross the client/server boundary: sign these requests with Keychain for a
+   `'self'` session, route state D to the ORCID fresh-auth factor, or change
+   the backend's proof rule for D. Move this file to `blocked/` with a
+   `[BLOCKED by Architect]` note giving the reproduction and the options you
+   see.
+
+## Acceptance criteria
+
+1. Every action above has a recorded reproduction for both login factors.
+2. No code change lands without an architect decision, unless step 2 applies.
+
+## Architect note (2026-10-07): widened to every `'self'` session, priority raised to high
+
+Folded in at the archive of the state G unverified-row lifecycle task (its `[TODO UI]` item 3).
+User triage: "as recommended". The priority is high because part of this is a broken flow
+already shown by reading the code, not only a suspected one.
+
+`submitEmail`, `deleteEmail` and `setPassword` in `frontend/src/api.js` all go through
+`authenticatedRequest`, which sends the session JWT as a Bearer token; none of them signs with
+Keychain. A Keychain user's session carries the `'self'` claim (`POST /api/auth/session`), so
+these calls take the backend's JWT path:
+
+1. **No row (pure Keychain user adding an email).** `POST /api/settings/email` answers 401
+   `UNAUTHORIZED` to the add flow on the JWT path and writes no row (ARCHITECTURE.md § 6.4
+   "Change email"; `api-contracts/settings.md`). A Keychain user therefore cannot register an
+   email from settings.
+2. **State G row whose email is unverified.** Re-issuing the link (`POST /api/settings/email`)
+   and deleting the row (`DELETE /api/settings/email`) need a fresh-auth proof on the JWT path.
+   The password issuer refuses the row's claim, and the row cannot acquire an ORCID while the
+   email is unverified, so unless it already holds one it has no proof it can mint.
+3. **State D**, as above.
+
+Scope addition: reproduce 1 and 2 as well. Items 1 and 2 need no architect decision: § 6.4
+admits those rows only on the Keychain (Hive-signature) path, so the fix is to sign these
+settings requests with Keychain for a `'self'` session, as the SPA already does for
+`POST /api/auth/link`. Step 3 of the Scope still applies to state D, which has factors a JWT-path
+proof could use.
+
+## UI implementation signal (2026-10-08, commits 8cbde35e, a7753a8b, 0d80a27c)
+
+### Reproduction (Scope step 1 and the Architect note's items 1 to 3)
+
+Run against the real backend at e07c3716: a route probe in a scratchpad copy of `backend/` with the real `verifyHiveSignature`, the real session mint routes, the real fresh-auth issue and consume, Postgres `pevo_app` and Redis DB 6. Stubbed: `hiveClient.database.getAccounts` (to publish a posting key the probe controls), the ORCID provider token exchange, the SMTP transporter, the admin broadcast and the three HAF accreditation readers. Sessions came from the real mint routes: `POST /api/auth/session` (Keychain), `POST /api/auth/login` (password), `/api/orcid/start` + `/callback` in mode `login` (ORCID). All three mint the same `{sub, custody: 'self'}` claim, and every result below was identical across the login factors a state admits. The probe rows and their audit rows were deleted afterwards.
+
+What the SPA sent before the fix (code trace at e07c3716, confirmed after the fix in a real browser): every action went out as a bearer request with no body proof. `withSettingsFreshAuth` returned `run(undefined)` for any non-light custody, and `submitEmail`, `deleteEmail`, `setPassword` and `submitAccreditationMetadata` all used `authenticatedRequest`. The user saw only the handler's generic failure copy.
+
+Bearer request with no proof, the shape the SPA sent:
+
+| State (login factors) | Add / re-issue / change email | Delete account | Set password | Metadata edit |
+|---|---|---|---|---|
+| No row (Keychain) | add: 401 `UNAUTHORIZED` | no row; no Delete control | form renders; 401 `UNAUTHORIZED` | 401 `FRESH_AUTH_REQUIRED` |
+| G, unverified (Keychain) | re-issue: 401 `FRESH_AUTH_REQUIRED` missing | 401 `FRESH_AUTH_REQUIRED` | 409 `PENDING_UNVERIFIED` | 401 `FRESH_AUTH_REQUIRED` |
+| G, verified, no ORCID (Keychain) | change: 401 `FRESH_AUTH_REQUIRED` | 401 | 403 `ORCID_REQUIRED` | 401 |
+| G, verified, ORCID (Keychain, ORCID) | change: 401 | 401 | 401 `FRESH_AUTH_REQUIRED` | 401 |
+| D, password + ORCID (Keychain, password, ORCID) | change: 401 | 401 | section hidden; 409 `PASSWORD_ALREADY_SET` | 401 |
+| D, ORCID, no password (Keychain, ORCID) | change: 401 | 401 | 401 `FRESH_AUTH_REQUIRED` | 401 |
+
+- Password factor: `POST /api/custody/fresh-auth` answers 403 `FORBIDDEN` to every 'self' claim, including a D session minted by a password login a moment earlier.
+- Signature headers only, no bearer: 200 for add, re-issue, change, delete and the metadata edit in every state with a row (S0 add: 200, writes the state G row). Bearer plus signature headers takes the JWT path and gets the same 401s.
+- Set-password on the signature path: 401 `FRESH_AUTH_REQUIRED`. Its handler consumes an ORCID proof on every auth path.
+- ORCID factor for a 'self' session whose row holds an ORCID: `/orcid/start` mode `fresh_auth` plus `/callback` mint a proof with mechanism `orcid`. On the bearer path with that proof: change-email, delete and the metadata edit 200; set-password 200 for D without a password and for verified G with an ORCID.
+- Acceptance criterion 1 for set-password: the only D shape it applies to (ORCID, no password) cannot log in by password (`NO_PASSWORD_SET`), so it is recorded for Keychain and ORCID login. D with a password and no ORCID (D from A, or from E/F on the email path) was traced, not seeded: it has no factor on the bearer path, and ORCID login answers 404 `NO_ACCOUNT`.
+
+### Outcome
+
+Scope step 3 applied. The options were put to the user in session, who chose:
+
+1. Every 'self' session signs change-email, add, re-issue and delete-account with Keychain and sends no bearer, as `adminMutation` and the IPFS pre-flight already do. A D session in a browser whose Keychain lacks the account's posting key cannot complete these, as votes and publishing already cannot there. ARCHITECTURE.md § 6.4 already admits the Keychain path for D and G on these rows, so no doc change.
+2. Set-password: the Architect note's "sign these settings requests with Keychain" does not fix `setPassword`, because the handler consumes an ORCID proof on every auth path. A 'self' session now takes the ORCID round-trip light accounts use; `setPassword` stays on the bearer path with the proof.
+3. The accreditation metadata edit (`PATCH /api/accreditation/metadata`), a fourth broken site no task covered, is folded in with the same fix.
+4. The verified-email state hid the email section's success and error lines inside the change form, so a successful change-email and a failed delete-account showed nothing (pre-existing, light accounts too). Folded in: the lines now sit where the unverified state already places them.
+
+Landed in `8cbde35e` (signing helper `settingsActionRequest` in `api.js`; `withSettingsFreshAuth` no longer exempts `set_password`), `a7753a8b` (State 2 message placement; comments narrowed) and `0d80a27c` (two more comment narrowings from the `/ce-simplify-code` pass). All three are on main (`git merge-base --is-ancestor` checked).
+
+Verification:
+- Frontend unit suite: 98 files, 2305 tests, exit 0. Production build clean in a scratch copy. `/ce-simplify-code`: 2 comment fixes applied, 5 findings skipped (consolidating with `adminMutation` is out of scope and its split is inverted; the proof spread is the file's idiom; test tidies low-value). Code review: deferred to the architect's `/ce-code-review` at intake, per `agents/ui/CLAUDE.md`.
+- New tests: signed shape per action for a 'self' session (no Authorization, signed full `/api/...` path, method, body), `setPassword` stays bearer, light keeps bearer plus proof; the 'self' `set_password` ORCID start and cached-proof run; a template test that no email message or error line sits inside the change form.
+- Real-browser click-through (vite dev, headless Chromium, every `/api` call intercepted, Keychain stubbed): change-email, add (no row), re-issue (G unverified), the metadata edit and delete went out signed with no bearer. Each signed message equals what the backend's `buildCanonicalAuthMessage` rebuilds from the wire. Set-password ran the full ORCID start, callback and resubmit, sending the bearer plus the ORCID proof. With Keychain absent or cancelled, the failure copy now shows in State 2.
+- Mutation probes: 8 of 10 caught. Survivors: `=== 'self'` to `!== 'light'` (a connected store holds only `'light'` or `'self'`) and sending `JSON.stringify(body)` instead of `signed.body` (byte-identical with the real `signRequest`).
+- Adversarial correctness and account-state review: no findings. Comment-truth review: five overclaims, all fixed in `a7753a8b`.
+
+### Follow-ups for filing (out of scope; the user chose not to fold them in)
+
+- No subject-teardown guard on the self-custody path of `withSettingsFreshAuth`. The Keychain prompt is a long await: if another tab signs in as a different user meanwhile, a successful delete then runs `removeAccountDrafts` and `disconnect()` against the new subject. `ui-keychain-broadcast-subject-teardown` covers only `broadcastWithFreshAuth`.
+- `signMessage` (`keychain.js`) has no timeout. A Keychain callback that never fires leaves the settings submit and delete buttons disabled until reload. Admin actions and uploads share the gap.
+- The set-password form renders where it can never succeed: no row (`GET /api/settings/email` answers `hasPassword: false`) and verified G without an ORCID (403 `ORCID_REQUIRED`). With this change a 'self' session's submit there starts an ORCID round-trip that ends in `orcid.verificationFailed`, instead of failing at once. `ui-pending-unverified-and-no-password-set-copy` covers only the 409 `PENDING_UNVERIFIED` case.
+- Keychain failures (not installed, missing key, cancelled) surface as the generic "try again / contact support" copy, which is the wrong advice on a device without Keychain.
+- Seen, not traced further: a light A/B/C account signing in through Keychain gets a 'self' claim, which hides the upgrade section; a C or D row with no email has no delete control; the `_performKeychainImport` docblock says the account_update signature proved Keychain, but dhive signs that op; `consumeFreshAuthProof` (metadata edit) has no registered-factor mechanism check (backend).
+
+Learnings checkpoint: `/ce-compound` wrote `agents/docs/solutions/conventions/credential-skip-at-the-orchestrator-must-be-pinned-at-the-request-layer.md` and refined three `CONCEPTS.md` entries the same evidence contradicted (Self-custody Account, No-row Case, Per-request Hive-signature Auth) in `21d16508`; `/ce-compound-refresh` narrowed the custody posture axis of `mutation-probes-are-per-site-not-per-fix-2026-08-31.md` in `9274ee97`. Not refreshed, for the architect's call: `defensive-gate-co-land-unblocking-surface-2026-05-16.md` says its round-trip worked end-to-end, true then for light sessions only; `hive-signature-request-binding-shape-2026-04-21.md` does not say a signed request must omit the bearer (the new entry carries that rule).
+
 ## Other accredit-op writers accept line breaks and control characters (archived 2026-10-08): clean backend review; one ui follow-up filed, contract docs updated in place, three residuals dismissed
 
 ### Architect archive note (2026-10-08)
@@ -105,146 +248,3 @@ Each SHA self-verified with `git merge-base --is-ancestor <sha> main`.
    value. A name with nothing left falls back to the username (`orcidName || username` in
    `handleAccredit`; `account.full_name || username` at signup-verify). Why: the name is not typed
    into a PEvO form, so a refusal leaves the user no fix inside PEvO, and dropping the whole name
-   for one stray character loses a correct name. Fuzzed: 200,000 random strings built from the
-   rules' edge code points; every output passes `accreditOpText(z.string())`, and an already-valid
-   input changes only by trimming.
-3. Scope addition (lone surrogate). `NO_LONE_SURROGATES = /^[^<U+D800>-<U+DFFF>]*$/u` (written with
-   `\u` escapes in source): under the `u` flag a pair reads as one astral code point, so only an
-   unpaired half is rejected. Checked read-only on the local PostgreSQL 16: the jsonb casts of
-   `"\ud800"`, `"\udc00"` and `"\u0000"` error, and a surrogate pair parses.
-
-**Acceptance evidence**
-
-- AC1 and the AC addition. Signup, route level (`auth.test.ts`, "POST /api/auth/signup: character
-  rules on full_name, institution and field"): a line break, U+0000 and a lone surrogate in each of
-  the three fields answer 400 `Invalid request body`; Arabic, Japanese and Spanish values pass the
-  body parse (they reach `Email is required`, so no DB write). Admin grant, route level
-  (`admin-endpoints.test.ts`): the same 9 cases answer 400 with a `<field>:` message and no
-  broadcast; non-Latin values are broadcast unchanged. Request schema, schema level
-  (`validation-accreditation-text-fields.test.ts`): the full rejected set, now including both
-  surrogate halves, on all three fields, plus the metadata edit's inheritance. ACCEPTED adds a
-  surrogate pair, Hangul (below the surrogate block) and fullwidth punctuation (above it).
-- AC2: `orcid.test.ts` "ORCID profile name rewritten to pass the accredit-op character rules".
-  A name carrying RLI/PDI, CRLF and an unpaired surrogate comes back as `Jane Smith` in the signup
-  response and in the stored `orcid_verified` value, and as the accredit op's `name`; a name with
-  nothing left gives `alice` (the username).
-- AC3: the one new response string, `must be well-formed Unicode text`, has no emdash. The
-  pre-commit anchor gate passed on all three commits; `tests/eslint` 146/146.
-
-**Verification**
-
-- Red first: every new spec failed against the pre-change code for the expected reason (signup 9,
-  admin 9, validation 56, orcid 3).
-- Touched files: validation 116/116, admin-endpoints 51/51, orcid 113/113 at 706cb11c; auth 36/36
-  alone. Its "accepts valid Bearer JWT" spec times out intermittently on
-  `GET /api/notifications?since_block=1`: item 3 of
-  `backend-route-test-isolation-and-a-notifications-timeout`, untouched here. At 36d54084:
-  validation 124/124 plus `tests/eslint` 146/146. Typecheck (src and tests) and eslint on the
-  touched files are clean.
-- Full suite at 706cb11c, run while the verification workflow's probes loaded the same stack: exit 1,
-  13 files / 22 specs red. Standing red bar: `idempotency-real-haf` 2, `accreditation-idempotency` 6,
-  `papers-enrichment-parity-gate` 1, `profile-auth-bypass` 3, `reviews` 2,
-  `cast-hardening-author-index-weight` 1. Green when re-run alone: `notifications`, `profile`,
-  `signup-verify-orcid-binding-guard`, `signup-verify-concurrent-activation`, `auth`. Red alone and
-  identically on a `706cb11c~1` copy, so not this change: `lib/bridge-queue` 1 (`leaseNextEntry`
-  reads leftover queue rows in the shared database), `lib/cache` 1 (a different single-flight spec
-  each run).
-- Verification workflow (path completeness, comment truth, spec mutation kill; one refuter per
-  finding; probes on `git archive` copies): 22 mutants, 21 killed. The survivor, a widened
-  surrogate range, is killed by the 36d54084 ACCEPTED entries. All seven accredit-op builders were
-  traced (`/verify`, `PATCH /metadata`, admin grant, `broadcastAccreditationAndSeed`,
-  `handleAccredit`, `handleLink`, `broadcastWotAccreditation`); every request- and ORCID-sourced
-  value now passes a rule. `handleLink` and the metadata edit's `prior.*` carry chain values forward
-  (out of scope), and WoT uses the validated vouchee name and constants. One comment defect was
-  fixed in 36d54084 (the `NO_LONE_SURROGATES` comment said the negated class "matches only an
-  unpaired half"). A "dropped mail rationale" finding was refuted: `accreditation.test.ts` "POST
-  /api/accreditation/request — verification mail and character gate" pins it.
-- Simplify: skipped, under the 30-line threshold (about 25 substantive code lines in three src files).
-- Code review: left to the architect's intake review, per the backend protocol.
-
-**Decision (user, 2026-10-08): values stored before the deploy.** `/verify` broadcasts the pending
-fields from a Redis token (24h) written under the old rule, and that token can hold a U+0000 or
-lone-surrogate escape. Signup `/confirm` and `/link` broadcast from pending `accounts` rows (up to
-30 days), and `orcid_verified` nonces last 30 minutes. Those Postgres-stored values cannot hold NUL
-or a lone surrogate, so they carry no jsonb risk. A read-only check on this stack before deciding
-found 0 `pending_accred` keys, 0 `orcid_verified` keys, 0 pending signup rows, and 0 `accounts`
-rows with a rule-violating character. The user chose: **accept the window and redeploy soon**,
-with no broadcast-time re-check.
-
-**[TODO Architect] contract and architecture notes** (outside the backend zone):
-
-- `api-contracts/accreditation.md`: the `/request` `BAD_REQUEST` bullet, the `/metadata` bounds
-  paragraph and its `BAD_REQUEST` bullet name only `full_name`/`institution` and only the
-  control-character message. `field` is covered too now, and all three also refuse an unpaired
-  surrogate with `<field>: must be well-formed Unicode text`.
-- `ARCHITECTURE.md` § 6.4, the `PATCH /api/accreditation/metadata` row: same correction.
-- `api-contracts/auth.md`, `/signup` `VALIDATION_ERROR`: add the character rules on
-  `full_name`/`institution`/`field` (message `Invalid request body`).
-- `api-contracts/orcid.md`, `/callback`: the profile name is rewritten (rule in item 2) before it is
-  returned, stored and broadcast; an empty result makes the accredit op use the username.
-
-**Out-of-scope observations, for filing**
-
-- Other admin-key-signed ops carry client text with no character rule.
-  `POST /api/papers/:author/:permlink/retract` takes `reason` as `(req.body.reason as string) || ''`
-  from the paper's author and broadcasts it through `broadcastAdminCustomJson`. The admin sanction,
-  retract and authorship-revoke `reason` fields have only `max(500)`. The admin grant's `account`
-  (`hiveAccount`) has no Hive-name format check. Each can put a U+0000 or lone-surrogate escape into
-  an authority-signed custom_json; only the read-side task covers that today.
-- Light-account custody `custom_json`: the server signs the client's json text as given (read-side
-  task).
-- `SignupBodySchema` `full_name`/`institution`/`field` have no length bounds (the request and grant
-  schemas allow 200/200/100), and the ORCID name is unbounded. That is a length rule, outside this
-  task.
-- `toAccreditOpText(tokenData.name || '')` throws (a generic 500) if ORCID ever returns a truthy
-  non-string name. ORCID's API returns a string.
-
-**Learnings checkpoint:** existing entries naming the touched symbols
-(`account-keyed-limiter-after-auth-validator-before-limiter.md`,
-`postgres-e-string-backslash-v-not-recognized-2026-05-20.md`) still hold, so no refresh ran.
-`/ce-compound` wrote `conventions/tightened-validator-misses-values-stored-before-the-deploy.md`
-(fd7f0fab).
-
-## Port the after-close brace rule into the frontend enclosingSymbol walk, and correct its docblock (archived 2026-10-08): clean review; three residuals dismissed, the backend twin list folded into the open backend docblock task, one low ui follow-up filed
-
-### Architect archive note (2026-10-08)
-
-- **Review:** `/ce-code-review` full path on `78abead8` and `a2085733` (branch-remote, base `a5b139f5`): correctness, adversarial (in-process, no cross-model peer), testing, project-standards, learnings. Verdict "Ready to merge", 0 findings; AC1 to AC5 met. The orchestrator ran the full frontend unit suite at `a2085733` in an isolated copy (91 files / 2135 tests, exit 0) and checked the testing mutants against the brief (5 of 6 killed; the survivor is the `!inTemplate` guard, a hardening candidate). Correctness: the four table rows resolve to module scope in both copies, and a 150k-file differential found 0 divergences outside template-literal declarations. Adversarial: a base-vs-head A/B over `frontend/src`, `backend/src` and both test trees gives 0 symbol, region and comment diffs.
-- **Dismissed:** R1, the line-leading close arm has no template guard (it matches the backend rule, fails closed against the current allowed maps, and neither tree has the shape); R2, the `isCommentLine` clause "a member the consuming set-equality can see" (it says a key is minted and weighed, not that the check fails closed, which is true); the missing probe for re-entry after an untracked close (covered by the 2026-10-05 dismissal of that mutant).
-- **Folded:** the signal's seven backend twin sentences into `backend-enclosing-symbol-brace-gloss-and-suite-citation` as items 3 to 9, each checked against the backend code at `5404b32c`.
-- **Filed:** `ui-enclosing-symbol-planted-probe-sentence-names-own-suite` (low), the frontend twin of that backend task's item 2.
-- **Learnings checkpoint:** no solutions entry is contradicted. The composite-probe entry enumerates the tracked-region decision points, which the port left unchanged, and the fail-closed entry already sends the reader to each copy's own SET-EQUALITY bullet. Nothing for `/ce-compound` or `/ce-compound-refresh`.
-
-**Owner:** ui
-**Created:** 2026-10-05
-**Priority:** low
-
-Routed out of the architect re-review of `backend-enclosing-symbol-port-backreference`
-(archived 2026-10-05). The two enclosing-symbol copies stay separate by ratified decision
-(dialect divergence, no shared module). This task brings the shared brace walk back in
-line where the backend copy moved, and fixes three frontend docblock statements.
-User decision 2026-10-05: port the rule rather than decline it.
-
-## Why
-
-1. **The brace walks split at a comment close.** Since `146ce7de` (2026-10-01) the
-   backend `enclosingSymbol` in `backend/tests/support/enclosing-symbol.ts` reads a
-   comment close that begins its trimmed line even when no tracked region is open, and
-   takes a `}` leading the code after any close it reads, at any indentation
-   (`afterClose || indentOf(line) <= declIndent`). The frontend walk in
-   `frontend/tests/unit/eslint/enclosing-symbol.js` only takes a `}` at or left of the
-   declaration's indentation. Measured on both files at HEAD `9e731556`:
-
-   | Shape (target line after the block) | Correct | Backend | Frontend |
-   |---|---|---|---|
-   | `ok(); /* note` then `  */ }` ending the function | module | module | inner (INWARD) |
-   | `/* note` then `   */ }`, indented right of the declaration | module | module | inner (INWARD) |
-   | `   */ }` closing an inner `if`, target still inside `f` | `f` | module (OUTWARD) | `f` |
-   | control: `*/ }` at the declaration's indentation | module | module | module |
-
-   INWARD is the direction a set-equality canary absorbs silently when the inner
-   declaration is a licensed key. OUTWARD fails closed unless the allowlist holds the
-   enclosing scope. The backend took the third row's OUTWARD cost on purpose, and its
-   docblock's OUTWARD bullet names it ("a `}` after a read close ends the declaration even
-   where it really closes an inner block"). No line in `frontend/src` or `backend/src`
-   has a line-leading comment close followed by code today, so the exposure is latent.
