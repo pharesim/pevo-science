@@ -172,3 +172,22 @@ _performUpgradeKeyRotation". That `account_update` is signed by dhive with an ow
 holds (`client.broadcast.sendOperations([['account_update', op]], ownerKey)`), not by Keychain, so
 it proves nothing about the extension. Repair the parenthetical under this task's rules. The
 Scope's file list gains `frontend/src/pages/settings.js` for this one comment.
+
+## Architect note (2026-10-09): two more sentences, from the navigation-stash review
+
+Folded in at the architect review of `ui-composer-surfaces-navigate-over-undrafted-work`. User
+triage: "as recommended".
+
+The navigation-stash change added a third reader of `acquireSessionProof`'s raw result: the
+`acquire` closure in `broadcastWithFreshAuth`, which tests it for `FRESH_AUTH_REAUTH_REQUIRED` and
+returns anything else unchanged. That change narrowed the tally in `evictUnnamedAcquisition`'s
+docblock for this reason and left two sentences that make the same count:
+
+- the `ensureSessionWindow` fail-closed guard comment: "where those two legs and the two readings
+  of the raw result pass through one drop";
+- `acquireSessionProof`'s docblock: "Every consumer refuses either as an unnamed result". The
+  `acquire` closure and `navigateWithoutStash` pass the value on instead of refusing it; the
+  refusal happens downstream, in `acquisitionAborted`.
+
+Repair both under this task's rules: delete the count, or narrow it to what the code shows. Do not
+add a new tally.
