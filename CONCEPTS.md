@@ -279,7 +279,7 @@ Accreditation status is computed live from authority-signed attestation and revo
 The provenance tag on an accreditation grant recording how trust was established, splitting grants into authority-pinned (a deliberate platform attestation such as email, ORCID, or manual verification) versus vouch-derived (granted automatically when an account that holds no current grant and is not sanctioned crosses the vouch threshold).
 *Avoid:* verification method.
 
-Authority-pinned grants hold status on their own and keep it unless the account is sanctioned or releases; the vouch-derived method makes status conditional on continuing to meet the live vouch threshold, so the method determines whether an account's standing can silently lapse. A vouch-derived account drops out of membership the instant it falls below the threshold, with no revocation operation, and re-enters automatically when support returns.
+Authority-pinned grants hold status on their own and keep it unless the account is sanctioned or releases; the vouch-derived method makes status conditional on continuing to meet the live vouch threshold, so the method determines whether an account's standing can silently lapse. A vouch-derived account drops out of membership the instant it falls below the threshold, with no revocation operation, and re-enters automatically when support returns. An unsanctioned vouch-derived account that verifies an institutional email receives an authority-pinned grant whatever its current vouch standing, so its standing stops depending on the threshold.
 
 ### Web of Trust
 
@@ -577,6 +577,13 @@ The client-side ordering rule that a session proof must be in hand BEFORE starti
 *Avoid:* pre-flight gate, acquire-first.
 
 The rule exists because one of the auth factors acquires by full-page navigation, which destroys whatever the page was holding: a selected file, a completed upload, a half-entered submit sequence. Acquiring at the moment the work needs a proof would therefore throw that work away for exactly the accounts that have no other factor, which is what would otherwise put inline upload out of reach for a passwordless account. Acquiring first is also what spares the platform from persisting what a composer draft cannot hold, such as selected files and finished uploads. The typed text is the one thing the round-trip can still cost, so a composer draft is saved just before the gate can navigate, and the text is restored on return. A gate applying this rule asks only whether the work may start, and it must not itself reject: it sits ahead of the caller's own error handling, so an error escaping it leaves the interface stuck with nothing said. Because a window that is open but nearly closed would strand a sequence halfway, such a gate treats a window closing sooner than its own margin as already spent and re-authenticates deliberately instead.
+
+### Navigation Stash
+
+The single per-tab record of the work a composer held when a passwordless account's re-authentication navigated the tab away, written at the moment of that navigation and taken back by the matching composer when the tab returns, so a review, comment, vouch or retraction composed without a Composer Draft survives the round-trip.
+*Avoid:* draft, autosave, saved draft.
+
+A record is bound to the kind of composer that wrote it, the thing it was composing for, and the account that wrote it. Only a composer matching all three takes it back, and taking it removes it. A composer that does not match leaves it for the one that does, because several composers on one page mount at different times. A successful submit removes its own record, the next such navigation replaces whatever the slot holds, and a Subject Teardown discards it. When the record cannot be stored, the navigation is refused and the user is asked whether to leave without the work. It is a bridge across one round-trip in one tab, not persistence, and it carries no expiry.
 
 ### Acquisition Outcome
 
