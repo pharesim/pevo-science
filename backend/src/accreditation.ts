@@ -155,8 +155,9 @@ export const SANCTIONED_ACCREDIT_MESSAGE =
 
 /**
  * User-facing 503 string for a sanction read that could not be made
- * (`readSanctionState` answered `haf_unavailable`). Like the 403 string above,
- * it does not mention sanctions. Emdash-free per project convention.
+ * (`readSanctionState` answered `haf_unavailable`). Like
+ * `SANCTIONED_ACCREDIT_MESSAGE`, it does not mention sanctions. Emdash-free per
+ * project convention.
  */
 export const SANCTION_READ_UNAVAILABLE_MESSAGE =
   'Accreditation eligibility could not be checked right now. Please retry shortly.';

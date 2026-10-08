@@ -520,19 +520,25 @@ function byAuthToken(req: Request): string {
 // and the legitimate user simply retries with a different name. The brute-force
 // vector this limiter exists to bound — 400 invalid-token spraying against one
 // auth_token value — still consumes a slot on every attempt.
+//
+// 503 is refunded too. Each 503 on these routes comes either before the
+// auth_token is looked up or after the caller has shown the signup is theirs,
+// so it gives a token sprayer nothing, and it asks the client to retry: a user
+// retrying through a HAF outage would otherwise spend the bucket and stay
+// locked out past STUCK_RECOVERY_WINDOW.
 const confirmTokenLimiter = rateLimit({
   name: 'signup-confirm-token',
   windowMs: 3_600_000,
   max: 5,
   keyFn: byAuthToken,
-  refundStatusCodes: [409],
+  refundStatusCodes: [409, 503],
 });
 const linkTokenLimiter = rateLimit({
   name: 'signup-link-token',
   windowMs: 3_600_000,
   max: 5,
   keyFn: byAuthToken,
-  refundStatusCodes: [409],
+  refundStatusCodes: [409, 503],
 });
 
 // ─────────────────────────────────────────────────────────────

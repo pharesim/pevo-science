@@ -114,6 +114,13 @@ describe.skipIf(!realPool)('readSanctionState over a synthetic op set (real Post
     expect(await readOver([{ action: 'revoke', type: 'sanction', block: 100 }])).toBe('sanctioned');
   });
 
+  it('answers sanctioned for an authority-accredited account sanctioned later', async () => {
+    expect(await readOver([
+      { action: 'accredit', method: 'email', block: 100 },
+      { action: 'revoke', type: 'sanction', block: 200 },
+    ])).toBe('sanctioned');
+  });
+
   it('answers not_sanctioned once a later authority accredit lifts the sanction', async () => {
     expect(await readOver([
       { action: 'revoke', type: 'sanction', block: 100 },

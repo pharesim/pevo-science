@@ -214,6 +214,35 @@ describe.skipIf(!runnable)('POST /api/auth/confirm when the sanction read cannot
     expect(createClaimedAccountMock).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the link usable through repeated 503s: six on one auth_token, then the retry issues the session', async () => {
+    const username = `sncr${SUFFIX}`;
+    const { authToken, cookie } = await seedConfirmedRow(username);
+    const keys = confirmKeys(username);
+    hafMode.value = 'sanction-read-fails';
+
+    // The first attempt finalizes the row and the rest reach the stuck-resume
+    // lookup. The per-auth_token limiter gives each 503's slot back.
+    expectSanctionReadUnavailable(await request(app)
+      .post('/api/auth/confirm')
+      .set('Cookie', cookie)
+      .send({ auth_token: authToken, username, keys }));
+    publishPostingKey(username, keys.posting_public);
+    for (let i = 0; i < 5; i++) {
+      expectSanctionReadUnavailable(await request(app)
+        .post('/api/auth/confirm')
+        .send({ auth_token: authToken, username, keys }));
+    }
+    expect(sanctionReadFailures.count).toBe(6);
+
+    hafMode.value = 'real';
+    const last = await request(app)
+      .post('/api/auth/confirm')
+      .send({ auth_token: authToken, username, keys });
+
+    expect(last.status).toBe(200);
+    expect(last.body.data.token).toBeTruthy();
+  });
+
   it('answers the same 503 when there is no HAF pool', async () => {
     const username = `sncn${SUFFIX}`;
     const { authToken, cookie } = await seedConfirmedRow(username);
@@ -262,6 +291,26 @@ describe.skipIf(!runnable)('POST /api/auth/link when the sanction read cannot be
     expect(second.body.data.token).toBeTruthy();
     expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
     expect(JSON.parse(broadcastJsonMock.mock.calls[0][0].json)).toMatchObject({ action: 'accredit', account: username });
+  });
+
+  it('keeps the link usable through repeated 503s: six on one auth_token, then the retry issues the session', async () => {
+    const username = `snlr${SUFFIX}`;
+    const { authToken, cookie } = await seedConfirmedRow(username);
+    const postingKey = PrivateKey.fromSeed(`${username}-p`);
+    publishPostingKey(username, postingKey.createPublic().toString());
+    hafMode.value = 'sanction-read-fails';
+
+    expectSanctionReadUnavailable(await postLink(username, postingKey, authToken, cookie));
+    for (let i = 0; i < 5; i++) {
+      expectSanctionReadUnavailable(await postLink(username, postingKey, authToken));
+    }
+    expect(sanctionReadFailures.count).toBe(6);
+
+    hafMode.value = 'real';
+    const last = await postLink(username, postingKey, authToken);
+
+    expect(last.status).toBe(200);
+    expect(last.body.data.token).toBeTruthy();
   });
 
   it('answers the same 503 when there is no HAF pool', async () => {

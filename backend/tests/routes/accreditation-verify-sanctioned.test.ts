@@ -8,8 +8,8 @@
  *
  * Carve-out (root CLAUDE.md "Running Tests"): `readSanctionState` is mocked to
  * `'sanctioned'` because the read-only public HAF has no sanctioned `pevotest`
- * account to seed against; the rest of accreditation.js (the existing-accreditation gate
- * via the real HAF pool) runs real, and `broadcastAdminCustomJson` is mocked so
+ * account to seed against; the rest of accreditation.js runs real, and
+ * `broadcastAdminCustomJson` is mocked so
  * the no-broadcast invariant is asserted deterministically. `verifyHiveSignature`
  * is not mocked. The shared guard logic
  * itself (`readSanctionState` SQL) is covered against real Postgres in
