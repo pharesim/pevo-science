@@ -13,18 +13,18 @@ this task is archived.
 
 All measured on 2026-09-30 and 2026-10-01 against main and the configured HAF node.
 
-- **`hafsql.comments.body` never takes an edit.** HafSQL's sync (`updateEditedComment` in its
-  `src/app/sync/comments.ts`) passes the incoming op body and the stored body to `patchBody` in
-  swapped roles: it parses the stored prose as a patch, that throws, and the `catch` writes the
-  stored body back. Title, `json_metadata` and `last_edited` follow the latest op. Measured on
-  every edited post sampled (patch edits and full-body edits alike), including PEvO's one edited
-  paper: the default detail serves its version 1 (13711 chars) while `?version=2`,
-  `condenser_api.get_content` and `bridge.get_post` hold 13523.
-- `fetchPaperDetailFromHaf` in `backend/src/routes/papers.ts` reads `c.body` from
-  `hafsql.comments` and replaces it with the walker's replay only `if (chain.length > 1)`. Every
-  PEvO paper today is a single post. So the paper page never shows an edit, and the edit page
-  builds its form and its diff base from the creation body: every edit after the first is a patch
-  against text the chain no longer holds, applied fuzzily over the edited body.
+- **The detail body comes from a different source than its version list.**
+  `fetchPaperDetailFromHaf` in `backend/src/routes/papers.ts` runs `reconstructVersionsFromHaf`
+  for every paper, but reads `body`, `title` and `json_metadata` from the `hafsql.comments` row,
+  and takes them from the replay only `if (chain.length > 1)`. Until HafSQL v2.6.2 that column
+  never took an edit, so the paper page showed the creation body of PEvO's one edited paper for
+  six months while `?version=2` and `get_content` held the edit. The node runs the fix with its
+  rows rebuilt (confirmed 2026-10-08), so today the two sources agree. Scope 1 still makes the
+  replay the only source: the detail already computes it, body, `versions[]` and the head marker
+  then cannot disagree within one fill, and the one text readers cite stops depending on a
+  third-party sync's edit logic.
+- **The edit page's diff base follows the detail body.** With the column fixed, it is the current
+  body again. Scope 1 keeps it that way regardless of what HafSQL stores.
 - **A failed walk is stable-cached.** `reconstructVersionsFromHaf` returns `[]` on any swallowed
   query error; the fetcher then substitutes a one-entry stub (`block_num: 0`), and
   `hafCache.getOrSet(cacheKey, ..., 30 * 60_000, true)` serves that stub, or a degraded partial
@@ -98,8 +98,9 @@ All measured on 2026-09-30 and 2026-10-01 against main and the configured HAF no
 
 ## Out of scope
 
-- The listing abstract, profile, search, review and comment readers that also read
-  `hafsql.comments.body`. They are a separate task, held until the upstream report is answered.
+- The listing, profile and search readers, which show a continued paper's root post rather than
+  its head. That is `backend-chain-paper-rows-show-the-root-not-the-head`. The column they read
+  is correct again, so they need nothing from this task.
 - The ui side (the composers' use of the endpoint, the marker and `current_version`).
 - `/invalidate` semantics. It keeps its shape; nothing here relies on it beyond what it does now.
 
@@ -133,9 +134,10 @@ All measured on 2026-09-30 and 2026-10-01 against main and the configured HAF no
 
 ## Notes
 
-- The HafSQL defect is upstream and is being reported by the user. Do not work around it
-  anywhere except through Scope 1. If it is fixed upstream, Scope 1 still stands: the replay is
-  the body hivemind serves, whatever HafSQL stores.
+- The HafSQL defect is fixed upstream (v2.6.2) and deployed on the configured node, with its rows
+  rebuilt (confirmed 2026-10-08). Scope 1 stands as written, for the reasons in Why. One known
+  difference remains on the column side: v2.6.3's `cleanString` strips NUL characters and, through
+  a loose regex, the literal text `u0000` from the titles and bodies it stores.
 - `chain-walkers.ts` and `papers.ts` are large; keep the change at the sites named here.
 - Architect at archive, not for the implementer: run `/ce-compound-refresh` on
   `solutions/conventions/hafsql-comments-body-never-follows-an-edit-read-the-replay.md` (its

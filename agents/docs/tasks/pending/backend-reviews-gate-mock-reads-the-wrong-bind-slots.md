@@ -112,9 +112,9 @@ the 404s come from the gate. The probe does not cover HAF column-shape drift.
   - `backend-accreditation-release-op` changes `activeAccreditationsCteBody`, which the gate
     composes. The slot-reading responder does not depend on the prefix's bind count, so landing
     order does not matter.
-  - `blocked/backend-display-reads-frozen-hafsql-body` names `routes/reviews.ts` for its body
-    column. If it rewrites the review SELECT, the responder's
-    `SELECT c.author, c.permlink, c.body, c.json_metadata` matcher has to follow.
+  - The task that named `routes/reviews.ts` for its body column was rescoped on 2026-10-09
+    (HafSQL fixed the column upstream) and no longer touches the review SELECT, so the
+    responder's `SELECT c.author, c.permlink, c.body, c.json_metadata` matcher can stay as it is.
 - Follow-ups once this lands, not in scope: the "reviews gate" entries in task signal blocks'
   known-red lists go stale. `reviews-real-haf.test.ts` says the unaccredited-404 branch
   "remains pinned in mocked-pool coverage" in this block. The fix makes that true again, so it
