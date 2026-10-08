@@ -170,3 +170,13 @@ Test-only. No change under `backend/src`.
     from `hafsql.ts`, and no test under `backend/tests` references the guard's `sanction_block`
     column. For triage.
 - No doc follow-up: the change is test-only and no contract moves.
+
+## Backend note (2026-10-09): the guard is now `readSanctionState`
+
+From `backend-failed-sanction-read-is-not-a-sanction` (commits 4ccf730e, 74c796e8). The guard's query
+and the queued row `{ sanction_block: null, auth_block: null }` are unchanged, but a rejected guard query
+now answers 503 `SERVICE_UNAVAILABLE`, not a 403. 'HAF lookup throw degrades gracefully ...' therefore
+gets a 503 where the Why table says 403; the same six specs fail. The file also gained 'sanction read
+throws → retriable 503 SERVICE_UNAVAILABLE, ...' (gate row, then a rejection), and its HAF-unconfigured
+spec now expects a 503; both pass. The residual about the `accreditation-verify-sanctioned.test.ts`
+header is resolved: it now cites `sanction-read-real-postgres.test.ts`.

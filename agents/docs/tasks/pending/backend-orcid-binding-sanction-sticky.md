@@ -59,3 +59,11 @@ calling `hasUnliftedSanction`.
 ## [TODO Architect] at archive
 
 - `api-contracts/orcid.md`: the sanctioned-holder 409 and the `handleLink` 403.
+
+## Backend note (2026-10-09): `hasUnliftedSanction` is now `readSanctionState`
+
+From `backend-failed-sanction-read-is-not-a-sanction` (commits 4ccf730e, 74c796e8). The read answers
+`sanctioned`, `not_sanctioned` or `haf_unavailable` (`backend/src/accreditation.ts`). The existing
+sanction gates, `handleAccredit` among them, answer `haf_unavailable` with 503 `SERVICE_UNAVAILABLE`,
+`details.retriable: true`, `Retry-After: 30` and `SANCTION_READ_UNAVAILABLE_MESSAGE`, and broadcast
+nothing; scope 4's `handleLink` guard fits that shape.

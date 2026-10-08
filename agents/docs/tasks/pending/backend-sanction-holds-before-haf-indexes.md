@@ -65,3 +65,12 @@ The approach below is intent only. Verify it against the code before building on
 ## [TODO Architect] at archive
 
 - `ARCHITECTURE.md` § 2 "Sanctions are sticky": say that a sanction holds from its broadcast.
+
+## Backend note (2026-10-09): the sanction read is now tri-state
+
+From `backend-failed-sanction-read-is-not-a-sanction` (commits 4ccf730e, 74c796e8).
+`hasUnliftedSanction` is now `readSanctionState` (`backend/src/accreditation.ts`) and answers
+`sanctioned`, `not_sanctioned` or `haf_unavailable`. A HAF error no longer answers "sanctioned": it is
+`haf_unavailable`, which every HTTP caller answers with a retriable 503 and the WoT path skips. Scope 2
+and AC2 ("A failed read of the record also returns true, as a HAF error already does") predate that, so
+the outcome of a failed read of the in-flight record needs restating before this is built.

@@ -105,3 +105,11 @@ which breaks two ARCHITECTURE § 2 sentences:
 - "Release is ordinary": "its vouches stop counting". They would keep counting.
 
 Apply the release exclusion inside `accred_pinned`, and cover both in the membership SQL tests.
+
+## Backend note (2026-10-09): `hasUnliftedSanction` is now `readSanctionState`
+
+From `backend-failed-sanction-read-is-not-a-sanction` (commits 4ccf730e, 74c796e8). Scope 2's
+comparison change applies to `readSanctionState` (`backend/src/accreditation.ts`), which answers
+`sanctioned`, `not_sanctioned` or `haf_unavailable`. The existing sanction gates answer
+`haf_unavailable` with 503 `SERVICE_UNAVAILABLE`, `details.retriable: true`, `Retry-After: 30` and
+`SANCTION_READ_UNAVAILABLE_MESSAGE`, and broadcast nothing; the two new endpoints' gates fit that shape.
