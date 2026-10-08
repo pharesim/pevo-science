@@ -165,3 +165,86 @@ write, which throws before the collection is removed, so the cites stay in it.
 
 Architect-side, not part of this hold: the signal block's in-flight-submit cite loss is still open with the
 user (file a `ui-` task or dismiss).
+
+## UI implementation signal, re-review round (2026-10-09, commits e8ee1de0, 23b67acb)
+
+**Hold item 1 (e8ee1de0).** `_prefillEmptyAuthorFields` fills the empty author fields as before, then moves
+the baseline of every author field that holds the prefill's value (`authorName === acc.name`,
+`authorAffiliation === acc.institution`), filled or not. `_prefilledFields` stays fill-only. One difference
+from the hold's candidate form: the fill loop no longer moves the baseline itself, because a filled field
+holds the prefill's value and the two at-value lines move it. The `_prefillEmptyAuthorFields` and `_applyDraft`
+docblocks now say so. The move covers the choice card's Restore and the silent restore (`_applyDraft`), and an
+accreditation that arrives after either (`_onAccreditationChange`).
+
+Pins in `composer-drafts-real-editors.test.js`, both ending on `drafts()` `{}` once the restored title is cleared:
+(a) "the choice card's Restore of a draft whose author fields hold the accreditation's values ...", the hold's
+Restore shape with a draft holding 'Eve E' / 'Uni E'; (b) "a silent restore after an email sign-in, of a draft
+whose author fields hold the accreditation's values ...". In (b), `ACCREDITATIONS.eve` is withheld (restored in
+`finally`), so the check at sign-in finds none. The pin asserts `auth.accreditation` is null right after the
+restore, and the 60 s poll then brings it. That fixes the order instead of leaving it to Alpine's scheduling.
+
+**Added by the user's triage of my verification pass (2026-10-09), 23b67acb.**
+- A regression from e8ee1de0, now fixed. The at-value move also ran at the first adoption, and
+  `_readoptAccount` gave back only the fill-only `_prefilledFields` baselines. An author name typed signed out
+  at the first account's accreditation (choice card standing, then another account signs in) kept that
+  account's baseline. The next account's draft dropped the name once the rest of the form was cleared, which
+  the parent commit did not do. `_readoptAccount` now resets both author baselines to `""` and still empties
+  only the prefilled values. `""` is the signed-out load's baseline: only an instance with no captured account
+  adopts, and the store holds no accreditation without a username. Pin: "a takeover of a provisional adoption
+  keeps an author value the user typed at the first account's accreditation, as the next account's work".
+  It also fails if `_prefilledFields` records at-value fields; until now no test checked fill-only.
+- Comment narrowings. The docblocks say "the prefill's value", because the accreditation also carries an ORCID
+  the code does not move. The pin (b) setup comment no longer claims the withheld accreditation is what puts
+  the restore first. e8ee1de0's commit message still says "every author field holding the accreditation's
+  value"; read it as the narrowed form.
+
+**Probes.** Run in scratchpad copies of `git archive <sha> frontend`, never in the checkout. Mutants were
+applied by an exactly-once string replace, each run on composer-drafts-real-editors + pages-publish.
+
+| Mutant | Red |
+|---|---|
+| e8ee1de0's `_prefillEmptyAuthorFields` back to the pre-fix loop | pins (a) and (b) only |
+| drop the authorName at-value line / drop the affiliation one | (a), (b) and six older prefill tests each |
+| 23b67acb's `_readoptAccount` back to the e8ee1de0 loop | the takeover pin only |
+| drop the authorName baseline reset | the takeover pin only |
+| drop the affiliation baseline reset | "a provisional adoption gives back only the author fields its prefill filled, value and baseline" |
+| at-value fields also pushed onto `_prefilledFields` | the takeover pin (at the kept 'Eve E') |
+| drop the `acc.name &&` / `acc.institution &&` guards | survives; equivalent in reachable states (needs an accreditation value going non-empty to empty under one instance) |
+
+All three hold reproductions were planted, including (c), Restore after a name typed before a Keychain
+sign-in. So was the "accreditation arrives after the Restore click" variant. Each is red before e8ee1de0 and
+green after. (c) gets no pin of its own: no revert slips past (a) and (b), and the only mutant that does is a
+constructed gate, not a revert. The pins hold up across 3 whole-file runs, each pin alone, and two shuffled
+orders. Forcing a failure inside or after (b)'s `try` leaves later tests green. Without the `finally`, four
+later eve tests go red, so a leak would show.
+
+**For the architect, not built (user's triage).**
+1. `_onAccreditationChange` moves the baselines but writes nothing. When the accreditation arrives and the
+   prefill fills nothing (an accreditation with no institution, both author fields typed, or the email check
+   failing and retrying after 60 s), a draft stored earlier that holds only the author values stays. The next
+   load shows "draft restored" over a form equal to a fresh load. Behaviour is the same before e8ee1de0. One
+   rarer instance is new with 23b67acb: two accounts with identical accreditations, the second signing in by
+   email during a takeover while its first check fails. Before 23b67acb, the stale first-account baseline
+   covered that one by coincidence. The obvious fix (`_writeDraft()` after the prefill) also fires on a
+   cross-tab session restore, and a second tab's write could remove the other tab's newer draft. So any fix
+   needs a design call. File a `ui-` task or dismiss.
+2. ARCHITECTURE.md § 8. "is restored silently over a form that holds nothing typed yet" is no longer exact: a
+   form whose only typed text equals the signing-in account's author prefill now restores silently, per the
+   approved rule. "A draft holds user work only" does not record that rule, and the provisional-adoption
+   sentence does not record the takeover's reset of both author baselines.
+3. Same before and after: an author value the user types at the drafting account's accreditation after that
+   account's prefill already ran still counts as work. The baseline moves only at prefill events, not on typing.
+
+**Dismissed at triage.** Author-only drafts stored before this fix show "draft restored" once more, and the
+restore's own write then removes them. The `_onAccreditationChange` sentence "The card's Discard applies it
+instead." predates this round and was refuted as a finding.
+
+**Verification.** Both SHAs are ancestors of main. Composer trio at 23b67acb: 301/301, exit 0. Full frontend
+unit suite, run in an isolated copy: 2461/2461, exit 0 at e8ee1de0. At 23b67acb, 2461 passed and 1 failed:
+the /edit test "a restore that reorders the ticks does not date the draft as new" saw '2 days ago' for a draft
+saved 3 days back. That run started at 00:28 under full-suite load. `relativeTime` is elapsed-time only, and
+the file re-run alone at 23b67acb gives 63/63. No /edit code changed. Self-verification ran two workflows:
+four lenses plus a critic with a refuter per finding, then two lenses on the follow-up. Every finding above is
+from them. Simplify skipped: under 30 changed code lines. Code review is the architect's at intake
+(`agents/ui/CLAUDE.md`). Learnings checkpoint: no `solutions/` entry names the touched symbols, and the
+takeover lesson lives in the `_readoptAccount` docblock, so nothing qualified for an entry.
