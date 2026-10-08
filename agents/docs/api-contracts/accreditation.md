@@ -110,7 +110,7 @@ The `X-Hive-Signature` header proves the requester controls the Hive account. Th
 **Errors:**
 - `UNAUTHORIZED`: invalid or missing Hive signature
 - `VALIDATION_ERROR` (422): non-institutional email domain
-- `BAD_REQUEST`: body fails validation: a missing required field, a field over its length bound, an invalid `email`, or a line break, another control character, or a bidi embedding, override or isolate character in `full_name` or `institution` (message `<field>: must not contain line breaks or control characters`)
+- `BAD_REQUEST`: body fails validation: a missing required field, a field over its length bound, an invalid `email`, or, in `full_name`, `institution` or `field`, a line break, another control character, or a bidi embedding, override or isolate character (message `<field>: must not contain line breaks or control characters`) or an unpaired surrogate (message `<field>: must be well-formed Unicode text`)
 - `RATE_LIMITED`: too many requests from this account
 
 ---
@@ -188,7 +188,7 @@ This is the canonical path for filling in metadata that first-accreditation left
 }
 ```
 
-At least one of `full_name`, `institution`, `field` is required (an all-empty body is rejected). Bounds mirror `accreditationRequestSchema`: `full_name` and `institution` 1 to 200 chars, `field` 1 to 100 chars, and `full_name` and `institution` reject line breaks, other control characters and the bidi embedding, override and isolate characters. Each supplied field overlays the prior op's value; omitted fields carry forward unchanged. `fresh_auth_proof` is required only on the JWT/light-account path.
+At least one of `full_name`, `institution`, `field` is required (an all-empty body is rejected). Bounds mirror `accreditationRequestSchema`: `full_name` and `institution` 1 to 200 chars, `field` 1 to 100 chars, and `full_name`, `institution` and `field` reject line breaks, other control characters, the bidi embedding, override and isolate characters, and unpaired surrogates. Each supplied field overlays the prior op's value; omitted fields carry forward unchanged. `fresh_auth_proof` is required only on the JWT/light-account path.
 
 **Response `data`:**
 
@@ -210,7 +210,7 @@ At least one of `full_name`, `institution`, `field` is required (an all-empty bo
 
 **Errors:**
 - `UNAUTHORIZED` (401): missing or invalid Hive signature.
-- `BAD_REQUEST` (400): body fails validation (all three fields absent, a field over its length bound, or a rejected character in `full_name` or `institution`, message `<field>: must not contain line breaks or control characters`).
+- `BAD_REQUEST` (400): body fails validation (all three fields absent, a field over its length bound, or a rejected character in `full_name`, `institution` or `field`, message `<field>: must not contain line breaks or control characters`, or `<field>: must be well-formed Unicode text` for an unpaired surrogate).
 - `FRESH_AUTH_REQUIRED` (401|403): missing, expired, or mismatched fresh-auth proof on the JWT path. 401 when no usable proof is present; 403 on a binding violation (proof for a different user or action). `details.reason` discriminates; status mapping per [custody.md](custody.md).
 - `FORBIDDEN` (403): the caller is not currently accredited (no authority `accredit` op on chain, or a WoT account below the live vouch threshold). There is nothing to edit.
 - `ACCREDITATION_SANCTIONED` (403): the account carries an un-lifted `type:"sanction"` `revoke`. A self-service metadata edit cannot lift a moderation sanction (it would otherwise re-broadcast a fresh `accredit` op and self-clear the sanction); only a deliberate admin `accredit` restores the account. Same refusal and message as the sibling `/verify` path. This check is non-cached and closes the membership-cache staleness window.
@@ -252,6 +252,46 @@ Operator manual-reset for the per-token broadcast-attempts counter. Use when the
 - `SERVICE_UNAVAILABLE` (503): Redis was unavailable at gate-check time. `details.retriable: true`. Emits `Retry-After: 30` (server-driven backoff floor matching the `/api/accreditation/verify` 503 cadence and the in-process drainer's cycle period, so one drainer cycle has elapsed by the time the operator retries).
 
 **Auto-recovery alternative.** Most counter inflations under Redis flap auto-recover via the in-process pending-decrement queue + drainer cycle, which operates on the same key namespace via the exported `broadcastAttemptsKey`. This admin endpoint is the manual-reset lever for inflations the auto-recovery cannot converge: e.g., the queue overflowed under sustained outage, the inflation predates the drainer's process lifetime (process restart), or the inflation came from a class the drainer does not retry.
+
+---
+
+### POST /api/admin/accreditation/grant
+
+Grant accreditation to an account by hand. Broadcasts an admin-signed `accredit` custom_json carrying the request's `full_name` (as `name`), `institution`, `field` and `method`. The latest authority `accredit` op is authoritative for the accreditation's metadata, so a grant also lifts a prior sanction.
+
+**Headers:** `X-Hive-Username`, `X-Hive-Signature`.
+
+**Authorization:** admin-tier (resolved from the on-chain admin roster) AND a fresh re-auth proof for action `admin_grant_accreditation`, minted and consumed the same way as the sanction route's proof (`POST /api/admin/accreditation/sanction`).
+
+**Request Body:**
+
+```json
+{
+  "account": "scientist1",
+  "full_name": "Dr. Jane Smith",
+  "institution": "Universidade do Porto",
+  "field": "Physics",
+  "method": "manual",
+  "fresh_auth_proof": "<single-use proof token>"
+}
+```
+
+`full_name` is required (1 to 200 chars). `institution` (max 200 chars) and `field` (max 100 chars) are optional and default to the empty string. `method` is one of `manual`, `email`, `orcid` and defaults to `manual`. `full_name`, `institution` and `field` reject line breaks, other control characters, the bidi embedding, override and isolate characters, and unpaired surrogates. `fresh_auth_proof` is required only on a JWT-authenticated request; a request signed with the Hive signature headers omits it.
+
+**Response `data`:**
+
+```json
+{
+  "message": "Accreditation granted to scientist1",
+  "tx_id": "<Hive custom_json transaction ID>"
+}
+```
+
+**Errors:**
+- `FORBIDDEN` (403): the caller is not an admin-roster member.
+- `BAD_REQUEST` (400): request body fails validation: an `account` outside 1 to 50 chars, a missing `full_name`, a field over its length bound, an unknown `method`, or a rejected character in `full_name`, `institution` or `field` (message `<field>: must not contain line breaks or control characters`, or `<field>: must be well-formed Unicode text` for an unpaired surrogate).
+- `FRESH_AUTH_REQUIRED` (401/403): missing, expired, or mismatched fresh-auth proof. Reason-to-status mapping per [custody.md](custody.md).
+- `BROADCAST_FAILED` (502) / `BROADCAST_TIMEOUT` (504): the chain rejected the broadcast or it timed out. Wire shape per [common.md](common.md).
 
 ---
 

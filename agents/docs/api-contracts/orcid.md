@@ -107,6 +107,8 @@ State is consumed on a 500 INTERNAL_ERROR only when the throw originates downstr
 
 **Behavior by mode:**
 
+The ORCID profile name is rewritten before any mode uses it: each run of control characters (Unicode Cc) and line or paragraph separators becomes one space, the bidi embedding, override and isolate characters and unpaired surrogates are dropped, and the result is trimmed. The `signup` response `name`, the stored `orcid_verified` value and the `accredit` op's `name` carry the rewritten name. In `accredit` mode an empty name makes the op's `name` the username.
+
 #### signup
 
 1. Exchange code for token, fetch ORCID profile and works.
