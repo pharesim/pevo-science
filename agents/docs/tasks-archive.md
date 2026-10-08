@@ -1,3 +1,191 @@
+## An upload's username mismatch after a cross-tab sign-in signs the new account out (archived 2026-10-08): clean review; Remintable Rejection reason dropped, two pre-existing misreports filed, two items already filed, two dismissed
+
+### Architect archive note (2026-10-08)
+
+- **Review:** `/ce-code-review` full path on `ffbfce29` and `083e2577` (branch-remote, base `2401ad5d`): correctness, security, adversarial (in-process, no cross-model peer), julik-frontend-races, testing, project-standards, learnings. Verdict "Ready to merge"; every scope item and AC met, zero findings. Account-state defense review clean: the new branch keys on the client-side subject generation only, every generation bump runs through `_scrubSubjectBoundState`, which clears the session-proof slot first, and no JWT-only path is added. Testing re-measured the signal's six mutants, all killed; m4 killed 4, not the claimed 3 (the extra is the real-window "two uploads" test). The orchestrator checked each planted mutant against the brief, re-ran all six with identical counts, and re-ran the full suite (98 files, 2297 tests, exit 0) and `npm run build` on `083e2577` in an isolated copy.
+- **Triage (user: "approved" as recommended):**
+  - Fixed in place: `CONCEPTS.md` "Remintable Rejection" drops the corrupt-session because-clause; the mismatch stays terminal (`2a9d3cb8`, signal out-of-scope item 2).
+  - Filed: signal out-of-scope items 3 and 4 -> `ui-upload-misreports-a-mid-upload-account-switch` (low). At filing, the self-custody branch was found to rethrow the transfer's 401 raw too, so the task covers both transfer codes there.
+  - Already filed: item 1 -> `ui-orcid-callback-caches-a-departed-subjects-proof`; item 5 -> item 2 of `ui-teardown-message-and-mapper-mock-wording`.
+  - Dismissed: the broadcast and consent-op mismatch arms read no subject guard (reaching them needs an already-corrupted departed session, the ORCID task closes the main source, and the task ruled out symmetry-only changes). The guard-report learnings entry's "sign in again" sentence (historical, true wherever a teardown fires).
+- **Learnings checkpoint:** the learnings reviewer checked `guard-report-dedupes-per-event-not-per-holder-2026-09-02.md`, `await-is-not-a-teardown-boundary-unless-it-yields-to-a-macrotask-2026-09-03.md` (the `083e2577` narrowing is accurate), `subject-divergence-guard-earns-its-place-only-where-the-flow-acts-unpinned-2026-09-03.md`, `fresh-auth-guard-coverage-must-sweep-the-callee-graph-2026-09-01.md` and `shared-verifier-primitive-canonical-status-mapping-2026-05-16.md`; none is contradicted. The only contradicted text was the `CONCEPTS.md` sentence, fixed above. No new entry: the rationale lives in `mismatchError`'s docblock.
+
+**Owner:** ui
+**Created:** 2026-10-01
+**Priority:** normal
+
+Routed out of the architect archive of the fresh-auth count-tally task (archived
+2026-10-01). The implementer's last sweep reported it as behaviour outside that
+comment-only task; an architect-side check against the code confirmed it, and the
+user approved filing it.
+
+## Why
+
+`uploadFile` (`lib/ipfs-upload.js`) opens a subject teardown guard at entry and checks it
+before each retry leg re-acquires, so a cross-tab subject change during an upload unwinds
+with `UPLOAD_SUBJECT_CHANGED` instead of acting for the new account. The two mismatch
+branches do not check it: on `isUsernameMismatch(err)` both the first-attempt catch and
+`retryOnce`'s catch throw `tornDownSession()`, which calls `handleSessionInconsistency()`.
+That function disconnects whenever the store is connected, and its own docblock says so:
+"This gate does not protect a session established after the flight began; a detector
+that finds the store connected always disconnects it."
+
+A reachable sequence: account X starts an upload. `uploadFileToIpfs` (`api.js`) hashes the
+file (`sha256File`) before `authenticatedRequest` reads the JWT for the pre-flight. While
+the file hashes, the user signs in as Y in another tab. The storage event scrubs this tab
+and adopts Y. The pre-flight then sends X's window proof with Y's JWT, and the backend
+answers 403 `username_mismatch`. The upload leg tears down Y's session, which removes the
+stored session and signs Y out in every tab, with "Session inconsistency detected".
+
+The mismatch is the departed subject's, not a corrupted session belonging to Y. The
+retry legs already treat a teardown that landed mid-upload as the departed subject's
+business; the mismatch branches should too.
+
+The broadcast and consent-op mismatch arms are also unguarded, but this sequence does not
+reach them: signer.js reads the token before its first await, and the consent-op `run`
+callbacks call the API directly. Check this before deciding whether they need the same
+treatment; do not change them on symmetry alone.
+
+## Scope
+
+1. A `username_mismatch` surfacing on any upload leg after the guard reads torn-down must
+   not end the session the tab now holds. It unwinds the way the retry legs' torn-down
+   branch does (`guard.cancel()`, then the subject-change code).
+2. A mismatch while the guard is NOT torn down keeps today's behaviour (tear the session
+   down, `UPLOAD_SESSION_TORN_DOWN`).
+3. Update the comments that describe the mismatch branches and
+   `handleSessionInconsistency`'s new-session caveat so they match, without line
+   numbers, slugs or round ordinals.
+4. Pin both halves with unit tests: a mismatch after a teardown leaves the new session
+   connected and resolves the subject-change code; a mismatch without a teardown still
+   tears down. Use the real guard and the real window where the existing upload suites
+   already do.
+
+## Acceptance criteria
+
+1. The sequence in "Why" no longer disconnects the new account; the user sees the
+   subject-change outcome, once.
+2. A same-subject mismatch still tears the session down exactly as before.
+3. Both halves are pinned by tests that fail if the torn-down check is removed.
+4. Full frontend unit suite green; `npm run build` clean.
+
+## Notes
+
+`ui-session-inconsistency-report-idempotency` (in review at filing) changes how a second
+detector behaves once the store is already disconnected. This task covers a different
+case, a store connected as a different subject, and should compose with whichever way
+that task lands. Check the state of `handleSessionInconsistency` on main before starting.
+
+## UI implementation signal (2026-10-07, commits ffbfce29, 083e2577)
+
+Both SHAs verified on `main` with `git merge-base --is-ancestor`.
+
+- **ffbfce29** `ui(upload): a mismatch after a subject change no longer signs the new account out`.
+  `tornDownSession()` becomes `mismatchError(guard)` in `lib/ipfs-upload.js`, called from both
+  upload catch sites (`uploadFile` and `retryOnce`). When the guard reads torn-down it returns
+  `subjectChangedError(guard)` (`guard.cancel()`, then `UPLOAD_SUBJECT_CHANGED`), the same helper
+  `retryOnce`'s torn-down prologue now uses. Otherwise it keeps `handleSessionInconsistency()` plus
+  `UPLOAD_SESSION_TORN_DOWN`.
+- **083e2577** `ui(learnings): narrow the macrotask-boundary entry's coverage claim [skip-zone-audit]`.
+  This is the learnings checkpoint (see the last line of this block).
+
+**Acceptance criteria**
+
+1. The "Why" sequence no longer disconnects the new account, and the user gets one subject-change
+   message. Two tests pin this:
+   - `a mismatch after a cross-tab sign-in as another account leaves that account signed in`
+     (`lib-ipfs-upload-real-window.test.js`, real guard and real window).
+   - `a sign-in as another account inside the PDF pre-flight, answered username_mismatch, leaves
+     that account signed in` (`pages-publish-batch-teardown.test.js`). It runs the real auth store,
+     its storage-event handler and scrub, and the real publish page, and checks that the store stays
+     `mallory`, the stored session survives, and the messages are `[TEARDOWN_MESSAGE]`.
+2. A same-subject mismatch still tears down. The existing `a mismatched session tears down instead
+   of reporting a generic failure` and both retry-leg mismatch tests are unchanged. The first
+   upload in `two uploads detecting the same corrupted session ...` still gets
+   `UPLOAD_SESSION_TORN_DOWN`, with one disconnect and the inconsistency message.
+3. Both halves are pinned. Mutation probes ran in scratchpad copies against a green baseline, and
+   every mutant was killed:
+   - Removing the guard check fails 6 tests, including both cross-tab cases and the three new
+     per-leg torn-down tests in `lib-ipfs-upload.test.js`.
+   - Always taking the subject-change path fails 4 (the same-subject half).
+   - Unguarding only the retry leg fails 2. Unguarding only the first attempt fails 3.
+   - Dropping the cancel in `subjectChangedError` fails 7.
+   - Returning `UPLOAD_SESSION_TORN_DOWN` on the torn-down branch fails 5.
+4. Full frontend unit suite: 98 files, 2297 tests, exit 0. `npm run build` is clean (only the
+   standing dhive `eval` and chunk-size warnings).
+
+**Notes**
+
+- **Changed expectation.** In the real-window `two uploads ...` test, the second upload now expects
+  `UPLOAD_SUBJECT_CHANGED`. The first detector's disconnect bumps the generation, so the second
+  guard reads torn-down. Both codes describe to `null`, and the disconnect and message counts are
+  unchanged. `handleSessionInconsistency` on main already has the repeat-detection behaviour
+  (790eee0e), and this composes with it.
+- **Broadcast and consent-op arms: checked, left unchanged.**
+  - Broadcast: `broadcastWithFreshAuth` calls `signer.js` `broadcastOps`, which reads `auth.token`
+    before its first await.
+  - Consent-op: `mintViaPasswordFactor` re-checks the guard after the mint await. Every `run`
+    callback (four in `settings.js`, plus `admin.js` and `paper-detail.js`) calls
+    `authenticatedRequest` or `broadcastOps`, and both read the token synchronously.
+  - So the hash-gap sequence reaches neither arm. Out-of-scope finding 1 is a different sequence
+    that reaches all three arms; its fix belongs at the write site, not in the arms.
+- **Comments.**
+  - Rewritten or narrowed: the `mismatchError` and `retryOnce` docblocks, the `uploadFile` catch
+    comment, and the `UPLOAD_SUBJECT_CHANGED` docblock ("a subject teardown" instead of "a
+    cross-tab subject change").
+  - `handleSessionInconsistency`: the new-session caveat gained one sentence naming the upload
+    surface's guard read.
+  - `isUsernameMismatch`: narrowed to "no leg treats that as a retryable re-auth failure".
+  - Real-window suite header, clause-a: narrowed to "every `api.js` export mocked here performs a
+    real fetch()". Its `alpinejs` mock made the old wording false.
+- **Verification before commit.**
+  - Adversarial workflow: four lenses (correctness, comment truth, sibling arms, test quality), two
+    refuters per finding. The correctness lens found no defect. In-scope findings were fixed before
+    the commit: a stale "stale under a subject change" test comment, the cross-tab case moved out of
+    the "corrupted session" describe, the store-state matcher made able to fail, the real-store page
+    case added, and the `mismatchError` re-mint claim deleted.
+  - `/ce-simplify` applied the shared `subjectChangedError`, the real `ApiRequestError` in the page
+    test, and comment trims. Skipped: two optional new test helpers and a rename.
+
+**Out-of-scope findings, for follow-up filing**
+
+1. **Medium, pre-existing.** `pages/orcid-callback.js` `_verify` writes a departed subject's proof.
+   - `await completeOrcid(...)` mints for X, the `/start` user.
+   - A cross-tab sign-in as Y during that round-trip scrubs both proof slots.
+   - `_handleSessionAuth` / `_handleFreshAuth` then call `cacheSessionProof` /
+     `cacheConsentOpProof` with no guard.
+   - Y's next broadcast, upload, or consent op on the same target opens a fresh guard, which is not
+     torn down. It meets `username_mismatch`, and `handleSessionInconsistency` signs Y out in every
+     tab.
+   - A verifier probe reproduced this on all three surfaces.
+   - Suggested ui task: `_verify` opens a `subjectTeardownGuard()` before `completeOrcid`. For the
+     `session_auth` and `fresh_auth` modes it skips the cache write when the guard reads torn-down.
+2. **Low, docs, architect-owned.** `CONCEPTS.md` "Remintable Rejection" says a mismatch "means the
+   session is corrupt and a fresh proof would be rejected the same way". That rationale is false
+   for a mismatch after a subject change: a fresh proof minted under the new JWT would be accepted.
+   Terminal still holds, because no retry on that pair can succeed. Suggest narrowing the reason.
+3. **Low, pre-existing.** A self-custody upload with a cross-tab sign-in as a light account in the
+   hash gap misreports. `uploadFileToIpfs` reads `auth.custody` after hashing and throws
+   `FRESH_AUTH_REQUIRED`/`missing` client-side. `uploadFile`'s self-custody branch only consults
+   `unwindIfSessionEnded`, so the error surfaces as "upload failed" with no subject-change message.
+   The reverse direction (light to self) signs with Keychain as the departed username.
+4. **Low, pre-existing.** A subject change between the pre-flight and the transfer, with an
+   unaccredited successor: the transfer answers 403 `FORBIDDEN`, which is rethrown raw as "upload
+   failed".
+5. **Low, pre-existing.** In `tests/unit/pages-publish.test.js`, the `describeUploadError` mock says
+   it "Mirrors the real mapper" but maps only `UPLOAD_SESSION_TORN_DOWN` to null. It is harmless
+   today because that suite mocks `uploadFile`.
+
+**Learnings checkpoint**
+
+- `/ce-compound-refresh` (Update) ran on
+  `await-is-not-a-teardown-boundary-unless-it-yields-to-a-macrotask-2026-09-03.md` and landed in
+  083e2577. It deleted "which is exactly the set of points the code already checks". The upload's
+  hash await was an unchecked real I/O point.
+- `guard-report-dedupes-per-event-not-per-holder-2026-09-02.md` was checked and still holds:
+  `mismatchError`'s torn-down cancel follows its "speaks because nothing below will" rule.
+- No new entry. The rationale lives in `mismatchError`'s docblock and the ffbfce29 message.
+
 ## Light accounts can vouch and retract a vouch on the profile page (archived 2026-10-08): clean review; one P3 filed as a follow-up, stale contract prose fixed, route comment folded, composer task unblocked
 
 ### Architect archive note (2026-10-08)
@@ -60,191 +248,3 @@ route (`ARCHITECTURE.md` § 6.4, the non-consent broadcast row, which now names 
 Until `backend-custody-admits-vouch-and-retract` lands, a light account that submits a vouch gets
 403 from the custody route and sees "Vouch failed". The architect moves this file to `pending/`
 once that task is archived.
-
-## Architect note (2026-10-06): unblocked
-
-`backend-custody-admits-vouch-and-retract` was archived on 2026-10-01 (commit 269297e9). Moved to
-`pending/`.
-
-## UI implementation signal (2026-10-07, commits f3cc369e, c064b5ea)
-
-Both SHAs verified on `main` with `git merge-base --is-ancestor`.
-
-- **f3cc369e** `ui(profile): light accounts can vouch and retract a vouch`. `canVouch` and
-  `canRetract` drop the light-account condition and the `isLightAccount` getter goes (no other
-  reader). The profile page's light-account message branch is removed, and
-  `wot.keychainRequiredToVouch` leaves all 16 locale files, one line each (`STUBS.md` had no line).
-  The two refusal specs flip, and AC 2 gets three light-account specs.
-- **c064b5ea** `ui(tests): pin canRetract false for an account that has not vouched`. The verification
-  sweep found that flipping the light `canRetract` spec removed the file's only `false` assertion
-  on `canRetract`, so a getter returning `true` passed every spec. The Keychain `canVouch` title also
-  claimed a connected requirement that no spec exercises, so it was narrowed to what the spec asserts.
-
-**Acceptance criteria**
-
-1. Vouch form and retract control for a light account: covered by `canVouch is true for a light
-   account on an unaccredited profile it has not vouched for` and `canRetract is true for a light
-   account that has vouched`. The handlers are unchanged and custody-agnostic. They reach the custody
-   route through `broadcastWithFreshAuth`'s light branch (`lib-fresh-auth-session-window.test.js`) and
-   `broadcastOps`'s light-account path (`signer.test.js`, `light account path`). A read-only trace
-   found nothing on the path that refuses a light account. `POST /api/custody/broadcast` accepts every
-   field of the frontend's `vouch` and `retract_vouch` payloads, and `POST /api/wot/vouch` and
-   `/api/wot/retract` accept the session JWT through `verifyHiveSignature`'s Bearer branch.
-2. Self, already-vouched and accredited-target conditions for a light account: `canVouch is false
-   for a light account vouching for itself`, `... that has already vouched`, `... when the target is
-   accredited`. On the base commit these pass only because the light gate already hid the form, so
-   each was probed against its own condition after the change (below).
-3. `grep -rl keychainRequiredToVouch frontend/public/messages` is empty at f3cc369e.
-4. Probes ran in a scratchpad copy (`git archive` of the commit plus a symlinked `node_modules`),
-   never in the checkout. Spec file baseline: 23/23 at f3cc369e and 24/24 at c064b5ea.
-   - Re-add the light gate and getter to `canVouch`: fails only `canVouch is true for a light account
-     on an unaccredited profile it has not vouched for`.
-   - Re-add it to `canRetract`: fails only `canRetract is true for a light account that has vouched`.
-   - Drop `this.username !== this.targetUsername`: fails `canVouch is false for a light account
-     vouching for itself` (and the Keychain self spec).
-   - Drop `!this.currentUserHasVouched`: fails `canVouch is false for a light account that has
-     already vouched`.
-   - Drop `!this.isTargetAccredited`: fails `canVouch is false for a light account when the target
-     is accredited` (and the Keychain accredited spec).
-   - `canRetract` mutated to `return true;`, and separately to `return this.isConnected;`: each fails
-     `canRetract is false for a light account that has not vouched`.
-   - AC 3: restoring `de.json` from f3cc369e~1 makes the grep return `de.json`.
-   - Profile template branch: no committed spec covers it. The check was a throwaway jsdom DOM with
-     real Alpine mounted over the `vouchSection` element sliced from the shipped
-     `profilePageTemplate`, with a light-account auth store. Unvouched target: the form renders and
-     no `keychainRequiredToVouch` text appears. Vouched: retract renders and broadcasts
-     `retract_vouch`. Self and accredited: no form. Clicking Vouch broadcasts `vouch` with
-     `voucher: alice`. The same probe against f3cc369e~1 fails: no form, and the Keychain message
-     renders. Not a browser check (agent-browser cannot start on this host). The light account now
-     gets the markup Keychain accounts already had, so there is no new layout.
-5. No comments were added. Test titles carry no slug, line or positional anchor, and the pre-commit
-   anchor gate passed on both commits.
-
-**Verification:** full frontend unit suite on the f3cc369e tree, 98 files / 2291 tests, exit 0, no
-Errors line. `components-vouch-section.test.js` 24/24 and `tests/unit/eslint` 18/18 at c064b5ea.
-
-**Out of scope, for follow-up filing.** Stale docs outside the ui zone that now contradict the
-light-account path. Each was confirmed by an independent refuter at f3cc369e.
-- `agents/docs/api-contracts/common.md:164` ("What Still Requires Keychain") lists vouch and retract
-  (and publish, vote, review, which were already stale) as Keychain-only, not session-based.
-- `agents/docs/api-contracts/accreditation.md:326` and `:360`: "The frontend must first broadcast the
-  `vouch` / `retract_vouch` custom_json via Hive Keychain".
-- `backend/src/routes/wot.ts:127-128` route comment: "broadcasts the vouch custom_json via Hive
-  Keychain" (narrow by dropping "via Hive Keychain").
-- `blocked/ui-composer-surfaces-navigate-over-undrafted-work.md` still describes the old gate. It is
-  coordination text, so it is left to the architect.
-
-**Learnings checkpoint:** the only `agents/docs/solutions/` entry naming the touched symbols
-(`implementer-signal-todo-ui-block-2026-05-16.md`) cites `vouch-section.js` as a historical
-fresh-auth call site, which nothing here contradicts. No new entry qualified: the vacuous-on-base
-specs were caught by the task's own AC 4 probe rule.
-
-## State G rows: unverified-email lifecycle and token scoping (archived 2026-10-07): two rounds; held on the recover oracle comment and the resend token write, clean re-review; [TODO Architect] docs applied, follow-ups filed, one dismissed
-
-### Architect archive note (2026-10-07)
-
-- **Re-review:** `/ce-code-review` full path on `8f4a8287` and `09e006ed` (branch-remote via a synthetic head holding the four backend files; base `9ca30584`; interleaved task-file commits excluded): correctness, security, adversarial (in-process, no cross-model peer), testing, project-standards, learnings. Verdict "Ready to merge", zero findings. Both hold items fixed: the oracle claim deleted in `recover.ts` and the test header, matching the hold's literal forms; the resend UPDATE keyed on the token read, with no mail on no match. A real-path race probe (base vs head, `pool.query` spy plus a held row lock) reproduced the hold's defect at base (a finalized light row left holding a signup hex token) and showed it gone at head for finalize, confirm, delete and a concurrent resend; the uncontended and expiry-bump cases still mail once. Testing re-ran the signal's seven green claims alone (all exit 0); mutants on the happy path were killed (the orchestrator re-ran one), and dropping the token conjunct survives, as the hold accepted.
-- **Triage (user: "approved" as recommended):**
-  - Filed: the resend comment's "the token read above" (P3 residual) and the anchor rot in `auth-log-shape.test.ts` and `recover.test.ts` -> `backend-test-comment-anchors-and-resend-comment` (low).
-  - Filed: the shared custody ORCID, the `recover_%` cleanup wildcard and the `auth.test.ts` notifications timeout (first signal's test-isolation list) -> `backend-route-test-isolation-and-a-notifications-timeout` (low).
-  - Folded: the `/login` expired-signup DELETE keyed on `id` alone -> `backend-verify-link-argon-spec-and-expiry-delete-key`.
-  - Filed: `[TODO UI]` items 1 and 2 -> `ui-pending-unverified-and-no-password-set-copy` (normal).
-  - Folded: `[TODO UI]` item 3 (every settings email call sends the Bearer JWT, so a Keychain user's add flow gets 401) -> `ui-state-d-session-settings-critical-actions`, widened to every `'self'` session and raised to high.
-  - Dismissed: the `/resume-signup` UPDATE keyed on `id` alone. It does not fire today: `/confirm` and `/link` select by the `confirmed:` token, the login pending block and the cleanup's signup arms are scoped to `username IS NULL`, and its G arm needs a hex token.
-  - Noted only: an unverified G row can be kept alive by re-issuing, blocking another Keychain user's settings add (409). Signup is not blocked, because signup evicts the claim.
-- **[TODO Architect]:** applied in `8d27a8f3` (§ 6.3 eviction transition; § 6.4 change-email add-flow 401 and re-issue, ORCID recovery on the derived claim, set-password `PENDING_UNVERIFIED`; `auth.md`, `settings.md` and `orcid.md` per the list). Two oracle claims the code contradicts were deleted on the way (the recover 401 contract and the § 6.4 ORCID-recovery row). Overlap recorded on `architect-accreditation-docs-drift-sweep` (item 4 done, item 3 partly).
-- **Learnings checkpoint:** no entry contradicted (learnings reviewer plus a grep for resend-verification, `WHERE id = $3`, custody oracle and token-keyed writes); no hold-time entries to refresh. No new entry: guidance 3 of `mailed-credential-token-dies-with-its-address-and-credential` already states the token-keyed write principle.
-
-**Owner:** backend
-**Created:** 2026-10-05
-**Priority:** high
-
-Surfaced by the state-G sweep on the account-state comments task (its signal block,
-"Needs triage", items 1-11). The user triaged every item to "fix" on 2026-10-05 and
-made two decisions:
-
-- **Unverified G rows: verify the email first.** A state G row (ARCHITECTURE.md § 6.1)
-  whose settings-registered email is still unverified may not acquire auth factors:
-  setting a password and linking an ORCID are refused until the email is verified. An
-  expired unverified G row then carries nothing but the email claim, so the hourly
-  cleanup may keep deleting it (back to the no-row case, email released). Login never
-  deletes a G row. Re-adding an email on an unverified G row re-sends its verification
-  link instead of going through the change flow.
-- **Include the two pending sibling tasks** in the same pass:
-  `backend-signup-upsert-overwrites-finalized-row` and
-  `backend-settings-verify-clears-any-row-token`. Each keeps its own task file, signal
-  block and move to review.
-
-The signup flow itself is unchanged: signup rows (E/F) have `username` NULL and never
-reach the G-only branches. The one signup-visible change comes from the upsert task: a
-signup for an email an unverified G row holds answers 409 until that claim expires and
-is reaped (at most the 24h link expiry plus the hourly cleanup).
-
-## Scope
-
-1. **Login (`POST /api/auth/login`).** The pending-signup branch (PENDING_SIGNUP,
-   PENDING_UNVERIFIED, the expiry DELETE and SIGNUP_EXPIRED) applies only to signup rows
-   (`username` NULL). A G row with a password and an unverified email logs in normally
-   and is never deleted here.
-2. **Signup cleanup (`signup-cleanup.ts`).** Signup rows keep today's two expiry arms. A G
-   row is deleted only when its email is unverified (hex `verify_token`), its link has
-   expired, and it carries no password and no ORCID. A G row carrying a factor (a legacy
-   row from before the gates in items 6-7) is never deleted by the job.
-3. **Signup verify link (`POST /api/auth/verify`).** The token lookup is scoped to signup
-   rows (`username` NULL). A G row's settings token answers exactly what an unknown token
-   answers, and the row is untouched.
-4. **Resend verification (`POST /api/auth/resend-verification`).** A row with `username`
-   set (any finalized row, G included) is treated as not pending: uniform message, no
-   token rewrite, no mail. Timing equalisation is preserved.
-5. **ORCID recovery (`POST /api/auth/recover`, ORCID method).** Refused for any row whose
-   custody claim is not light (`custodyClaimFor`), which excludes G as well as D, with the
-   same 401 and generic message the upgraded and no-ORCID branches already return. This
-   matches § 6.4 (ORCID recovery: B and C). The seed-phrase method already excludes G and
-   D (no `memo_key_enc`).
-6. **Set password (`POST /api/settings/set-password`).** Refuses a G row whose email is
-   unverified (409 `PENDING_UNVERIFIED`, an existing error code).
-7. **ORCID link and accredit (`/api/orcid` callback, `mode='link'` and `mode='accredit'`).**
-   Refuse, before any broadcast, a caller whose row is a G row with an unverified email
-   (409 `PENDING_UNVERIFIED`). A caller with no row is unaffected. Accredit is included
-   because it writes the same `accounts.orcid` factor onto the row.
-8. **Settings email.** (a) `POST /api/settings/email` on an existing unverified G row
-   re-issues the add-flow verification (new `email`, `verify_token`, `expires_at`)
-   instead of writing the pending-change fields; the JWT-path fresh-auth gate and the
-   duplicate checks are unchanged. (b) The verify handler's change branch also clears a
-   hex `verify_token`, since proving control of the new address verifies the row's email
-   (legacy rows that used the change flow while unverified). (c) The add-flow lookup in
-   the verify handler is scoped per `backend-settings-verify-clears-any-row-token`.
-9. **Signup upsert** per `backend-signup-upsert-overwrites-finalized-row`.
-10. **Login `NO_PASSWORD_SET` message.** One uniform message that is true for every
-    passwordless row and leaks nothing per row (the branch is unauthenticated).
-11. **Comments.** The JWT-path-equals-light-account comments (`admin-roster.ts`,
-    `validation.ts`, `accreditation-metadata.ts`) and the "no-row-before-JWT invariant"
-    comments (`settings.ts`, `settings-email-fresh-auth.test.ts`), plus every comment the
-    code changes above make stale.
-12. **Test data.** `settings-email-delete-fresh-auth` seeds a real § 6.1 shape; the
-    migration 017 test title names G's NULL column.
-
-## Acceptance criteria
-
-1. Each behaviour in items 1-10 is pinned by a route or job test that fails against the
-   pre-change code and passes after it.
-2. No new error code: refusals reuse `PENDING_UNVERIFIED`; the recovery refusal reuses the
-   existing 401 envelope.
-3. Timing equalisation and uniform messages are preserved on every unauthenticated branch
-   touched (login, resend, signup, recover).
-4. No new writer of `accounts.updated_at`.
-5. Comment-anchor conventions hold in everything written.
-
-## Architect note (2026-10-05): item 10 and its comment
-
-The `/login` `NO_PASSWORD_SET` comment in `routes/auth.ts` currently names one row whose
-remedies the message misses: a state G row with no ORCID. That list is incomplete. A null-hash D
-row (upgraded from C, or an ORCID-path `/link` D) cannot recover by seed phrase either (no
-`memo_key_enc`) and is past ORCID recovery once `upgraded_at` is set. A pending ORCID-path F
-row also reaches this branch, because the null-hash check runs before the pending checks. When
-item 10 makes the message uniform, rewrite that comment so it lists no closed set of
-exceptions. The architect updates the 403-versus-401 rationale in `api-contracts/auth.md` at
-review. Say in the signal block what the final message is.
-
-## Backend implementation signal (2026-10-05, commit d33792ce)
-
