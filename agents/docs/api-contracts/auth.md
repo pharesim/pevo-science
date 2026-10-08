@@ -393,7 +393,7 @@ Invalidates all existing sessions for the account.
 
 **Errors:**
 - `INVALID_TOKEN`: token not found, expired, or already used. A token redeems once, so a concurrent second redemption gets this error.
-- `VALIDATION_ERROR` — password does not meet requirements. Decided 2026-10-08 (lands with the reset-hardening task): also a password that verifies against the account's current one, message `Choose a password that differs from your current one.`; the token is not spent by this refusal.
+- `VALIDATION_ERROR`: password does not meet requirements. Decided 2026-10-08 (lands with the reset-hardening task): also a password that verifies against the account's current one, message `Choose a password that differs from your current one.`; the token is not spent by this refusal.
 - `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. See [common.md](common.md).
 
 ---

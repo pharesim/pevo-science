@@ -28,7 +28,7 @@ Read the authenticated account's email and password status. Used by the settings
 ```
 
 - `hasPassword`: `true` when the account has `password_hash` set, `false` when it has none (and for a caller with no row). `POST /api/settings/set-password` accepts only a row with no password, a linked ORCID and a verified email, so `false` alone does not make it available. Renamed from snake_case `has_password` to align with the rest of the response object's camelCase casing.
-- `hasEmail` / `email` / `verified` — existing email-management fields (unchanged).
+- `hasEmail` / `email` / `verified`: existing email-management fields (unchanged).
 - `pendingChange`: `true` while a change is queued. Decided 2026-10-08 (lands with the hold task): true only while the queued change is confirmed or its verify token is unexpired.
 - `pendingEmailChange` (decided 2026-10-08, lands with the hold task): `null`, or `{ "email": "<masked pending address>", "confirmed": false, "effectiveAt": "<ISO date>" }`. `confirmed` is true once the new address has opened its verify link; `effectiveAt` is the end of the hold, or `null` on a change that carries no hold (one proven by an ORCID proof or on the Keychain path). The pending address is masked like `email`.
 - `pendingDeletion` (decided 2026-10-08, lands with the held-deletion task): `null`, or `{ "effectiveAt": "<ISO date>" }` while a password-proven deletion is queued.
@@ -58,7 +58,7 @@ Add or change the authenticated account's email. Sends a verification link to th
 **Response `data`:** `{ "message": "Verification email sent" }`
 
 **Errors:**
-- `VALIDATION_ERROR` — invalid or missing email. Decided 2026-10-08 (lands with the hold task): also an address equal to the account's current email, message `This is already the email address on this account.`, checked after the fresh-auth gate.
+- `VALIDATION_ERROR`: invalid or missing email. Decided 2026-10-08 (lands with the hold task): also an address equal to the account's current email, message `This is already the email address on this account.`, checked after the fresh-auth gate.
 - `DUPLICATE` (409): email is already held by another account row, a pending signup included, or is another account's `pending_email`
 - `PENDING_CHANGE` (409, decided 2026-10-08, lands with the hold task): a password-proven request while a change that carries no hold is queued. Message: `Another email change is already queued and cannot be replaced with this proof.`
 - `UNAUTHORIZED` (401): the add flow (no row) reached on the JWT path.
