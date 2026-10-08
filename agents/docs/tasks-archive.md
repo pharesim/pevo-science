@@ -1,3 +1,157 @@
+## Port the after-close brace rule into the frontend enclosingSymbol walk, and correct its docblock (archived 2026-10-08): clean review; three residuals dismissed, the backend twin list folded into the open backend docblock task, one low ui follow-up filed
+
+### Architect archive note (2026-10-08)
+
+- **Review:** `/ce-code-review` full path on `78abead8` and `a2085733` (branch-remote, base `a5b139f5`): correctness, adversarial (in-process, no cross-model peer), testing, project-standards, learnings. Verdict "Ready to merge", 0 findings; AC1 to AC5 met. The orchestrator ran the full frontend unit suite at `a2085733` in an isolated copy (91 files / 2135 tests, exit 0) and checked the testing mutants against the brief (5 of 6 killed; the survivor is the `!inTemplate` guard, a hardening candidate). Correctness: the four table rows resolve to module scope in both copies, and a 150k-file differential found 0 divergences outside template-literal declarations. Adversarial: a base-vs-head A/B over `frontend/src`, `backend/src` and both test trees gives 0 symbol, region and comment diffs.
+- **Dismissed:** R1, the line-leading close arm has no template guard (it matches the backend rule, fails closed against the current allowed maps, and neither tree has the shape); R2, the `isCommentLine` clause "a member the consuming set-equality can see" (it says a key is minted and weighed, not that the check fails closed, which is true); the missing probe for re-entry after an untracked close (covered by the 2026-10-05 dismissal of that mutant).
+- **Folded:** the signal's seven backend twin sentences into `backend-enclosing-symbol-brace-gloss-and-suite-citation` as items 3 to 9, each checked against the backend code at `5404b32c`.
+- **Filed:** `ui-enclosing-symbol-planted-probe-sentence-names-own-suite` (low), the frontend twin of that backend task's item 2.
+- **Learnings checkpoint:** no solutions entry is contradicted. The composite-probe entry enumerates the tracked-region decision points, which the port left unchanged, and the fail-closed entry already sends the reader to each copy's own SET-EQUALITY bullet. Nothing for `/ce-compound` or `/ce-compound-refresh`.
+
+**Owner:** ui
+**Created:** 2026-10-05
+**Priority:** low
+
+Routed out of the architect re-review of `backend-enclosing-symbol-port-backreference`
+(archived 2026-10-05). The two enclosing-symbol copies stay separate by ratified decision
+(dialect divergence, no shared module). This task brings the shared brace walk back in
+line where the backend copy moved, and fixes three frontend docblock statements.
+User decision 2026-10-05: port the rule rather than decline it.
+
+## Why
+
+1. **The brace walks split at a comment close.** Since `146ce7de` (2026-10-01) the
+   backend `enclosingSymbol` in `backend/tests/support/enclosing-symbol.ts` reads a
+   comment close that begins its trimmed line even when no tracked region is open, and
+   takes a `}` leading the code after any close it reads, at any indentation
+   (`afterClose || indentOf(line) <= declIndent`). The frontend walk in
+   `frontend/tests/unit/eslint/enclosing-symbol.js` only takes a `}` at or left of the
+   declaration's indentation. Measured on both files at HEAD `9e731556`:
+
+   | Shape (target line after the block) | Correct | Backend | Frontend |
+   |---|---|---|---|
+   | `ok(); /* note` then `  */ }` ending the function | module | module | inner (INWARD) |
+   | `/* note` then `   */ }`, indented right of the declaration | module | module | inner (INWARD) |
+   | `   */ }` closing an inner `if`, target still inside `f` | `f` | module (OUTWARD) | `f` |
+   | control: `*/ }` at the declaration's indentation | module | module | module |
+
+   INWARD is the direction a set-equality canary absorbs silently when the inner
+   declaration is a licensed key. OUTWARD fails closed unless the allowlist holds the
+   enclosing scope. The backend took the third row's OUTWARD cost on purpose, and its
+   docblock's OUTWARD bullet names it ("a `}` after a read close ends the declaration even
+   where it really closes an inner block"). No line in `frontend/src` or `backend/src`
+   has a line-leading comment close followed by code today, so the exposure is latent.
+
+2. **Three frontend docblock statements are false or one-directional.**
+   - "The ordinary single-boundary form of that second shape, a close sharing its line
+     with the real closing brace, IS handled: the walk reads the code after the close."
+     Today this holds only when the close's line sits at or left of the declaration's
+     indentation and the comment opened at a line start (rows 1 and 2 above are not
+     handled).
+   - The SET-EQUALITY bullet says set-equality assertions "fail closed: a wrong symbol is
+     a new member and therefore a red bar, never a silent pass." That contradicts the
+     same docblock's INWARD bullet, which says the multi-boundary miss "resolves INWARD,
+     which is the direction a licensed key can absorb." An INWARD answer that names a
+     licensed declaration is absorbed. The backend copy's SET-EQUALITY bullet was
+     rewritten to say so.
+   - The frontend file names its sibling only as "the backend's declaration shapes" and
+     "the backend port", with no path. The backend file docblock carries a path pointer
+     to this file and a two-way obligation; this file has no pointer back, so a change made
+     only here never prompts a reader to check the backend copy. (Held out of scope for the
+     backend task at its 2026-09-08 review as ui-zone; picked up here because this task
+     edits the same docblock.)
+
+## Scope
+
+1. Port the backend's line-leading close read and after-close brace arm into the frontend
+   `enclosingSymbol`, keeping the frontend's own dialect machinery (the template-literal
+   declaration branch and the rest). Pin rows 1 to 3 as planted probes in the suite that
+   pins the walk, row 3 as the accepted OUTWARD residual.
+2. Update the frontend file docblock: the statement(s) of which brace the walk sees,
+   including the OUTWARD cost the port takes on; the "IS handled" sentence; the
+   SET-EQUALITY bullet; and a reciprocal pointer naming
+   `backend/tests/support/enclosing-symbol.ts` by path with the obligation that a change
+   to the walk, the region pass, or the comment predicate in either file is a prompt to
+   read the other.
+
+## Acceptance criteria
+
+1. The four shapes in the table resolve the same in both copies.
+2. Every frontend docblock sentence about which brace the walk sees is true against the
+   code at the HEAD you land on.
+3. The SET-EQUALITY bullet no longer claims a wrong symbol can never be a silent pass.
+4. The frontend file docblock names `backend/tests/support/enclosing-symbol.ts` by path
+   and states the two-way obligation.
+5. The frontend unit suite passes, including every canary built on this module, with no
+   change to an allowlist (the port must not newly absorb an existing occurrence).
+   No anchor-rot form in added lines; the `.githooks/pre-commit` gate passes.
+
+## Notes
+
+- Do not add a "which copy is ahead" claim to the frontend docblock. The backend paragraph
+  sends the reader to the sibling for that on purpose, because the direction has flipped
+  twice already.
+- A backend task (`backend-enclosing-symbol-brace-gloss-and-suite-citation`) corrects the
+  backend docblock's description of the shared brace test. The two can land in either
+  order. Do not cite either task, or any slug or SHA, in the docblock.
+- Do not edit `backend/`.
+
+UI implementation signal (2026-10-05, commits `78abead8`, `a2085733`):
+
+- `78abead8`: the port (line-leading close read, `afterClose`, brace condition
+  `afterClose || indentOf(line) <= declIndent`, textually the backend walk apart from the
+  template-literal branch), the docblock rewrite, and the suite probes. `a2085733`: the canary
+  header narrowing below (user-approved fold-in). Both verified on main
+  (`git merge-base --is-ancestor`), file lists match.
+- AC1: the four table rows give module/module/module/module on both copies (HEAD frontend gave
+  f/f/f/module). A differential over about 12M generated files (37M + 25M targets) found 0 walk
+  divergences between the copies outside dialect-only declaration shapes; a mixed-dialect corpus
+  attributes every divergence to a declaration only one dialect recognizes.
+- AC2: one rule statement (WHICH BRACE THE WALK SEES) with OUTWARD/INWARD bullets replaces the
+  two-boundary paragraph and the "IS handled" sentence; the OUTWARD bullet carries the port's
+  inner-block cost. Three adversarial verification rounds planted every shape the bullets name.
+  Sentences the port or the new bullet made false were narrowed or deleted beyond the three the
+  task names: the walk comment (tracking, re-entry, after-close brace, "fails closed" now per
+  allowed key, "silent" dropped from the inward label); the region-pass docblock's "Openers are
+  recognized at line start only, which is the same boundary the rest of this module draws"
+  (deleted: the walk now also reads after an untracked line-leading close); the rule summary
+  ("demonstrably" dropped, "a close the walk reads"); "two shapes the backend copy does not"; the
+  isCommentLine cross-reference; sourcesUnder "a deliberate divergence"; in the suite, the
+  header's false "both resolve outward to module scope" rationale and "and no other", plus three
+  probe comments (width-pin "absorbs", "The residual resolves outward", "every declaration the
+  walk tests") and the region-pass OPENER comment's "same boundary the brace walk draws".
+- AC3: the SET-EQUALITY bullet now says set-equality fails closed when the wrong key is not
+  allowed, that keys alone absorb an allowed wrong key, and that a per-key count pin turns an
+  absorbed addition into a moved count.
+- AC4: a "Hand-ported sibling." paragraph names `backend/tests/support/enclosing-symbol.ts` and
+  the two-way obligation; no which-copy-is-ahead claim, no slug or SHA.
+- AC5: eslint dir 2 files / 18 tests green; full frontend unit suite 91 files / 2135 tests green
+  (two-level scratch copy; later edits were comment-only); no allowlist change; A/B of the HEAD
+  and ported walk over all 88 `frontend/src` files gives symbolDiff=0; zero line-leading closes
+  followed by code in `frontend/src` or `backend/src`; the anchor gate on added lines is clean
+  (control line fires); babel parse shows the block-comment count unchanged (no escaped close
+  ended a docblock early).
+- User decisions (2026-10-05): (1) four surviving mutants of the new arm (close read widened to
+  `includes`, `afterClose` hoisted out of the per-line loop, the opener test skipped after an
+  untracked close, `lastIndexOf` in the slice) are DISMISSED as preemptive hardening; the backend
+  suite has the same gaps. (2) The canary header's "an unresolvable or wrongly resolved symbol
+  fails closed as an unexpected member" overclaim was folded in (`a2085733`, "or wrongly
+  resolved" deleted).
+- Code review: not run here; agents/ui/CLAUDE.md assigns it to the architect at intake.
+- Out of scope, for follow-up filing (backend twins of sentences narrowed here, all in
+  `backend/tests/support/`): `blockCommentInterior`'s "Openers are recognized at line start only,
+  which is the same boundary the rest of this module draws" (false there since the backend walk
+  reads after an untracked line-leading close); the WHICH BRACE tracking sentence lacks
+  "multi-line" (a self-contained `/* note */ }` reads as tracked); the walk comment's "A `}`
+  leading the code after a close ends the declaration WHATEVER the line's indentation" lacks
+  "the walk reads"; the rule summary's "demonstrably" and its unqualified "after a comment
+  close"; the INWARD item "the close of a comment opened mid-line" and the walk comment's "does
+  not see a comment opened mid-line" lack "after other code"; the INWARD item "a `}` indented
+  right of its own declaration" (a `}` after a read close is taken at any indentation); the suite
+  comment "OPENER, line start only: the same boundary the brace walk draws". The frontend twin of
+  the backend sibling task's item 2 also stands: the file docblock's "in the canary that consumes
+  it" omits the module's own suite (incomplete, not false).
+
 ## The WoT auto-accredit decides "already accredited" from a stale cache (archived 2026-10-08): clean review; one P3 contract-doc line fixed in place, five follow-ups folded into open tasks, three items already covered
 
 ### Architect archive note (2026-10-08)
@@ -94,157 +248,3 @@ Inside that window, for a vouchee at or above the vouch threshold:
 - State in `ARCHITECTURE.md` § 2 that the WoT auto-accreditation never broadcasts over an
   existing accredit op.
 - Move `backend-wot-enrollment-has-a-single-trigger` from `blocked/` to `pending/`.
-
-## Backend implementation signal (2026-10-08, commits dc14b5e6, 72e96c3a, e07c3716, 4f47b955; learnings cc3c3498)
-
-Each SHA self-verified with `git merge-base --is-ancestor <sha> main`.
-
-**What landed, per scope item**
-
-1. `vouchStatusSelect` gains `EXISTS (SELECT 1 FROM accred_pinned WHERE account = $N) AS self_pinned`
-   in the same read as eligibility. `getVouchStatus`'s cached value is now an internal
-   `VouchSnapshot` (the public `VouchStatus` plus `self_pinned`), read by `broadcastWotAccreditation`
-   through the private `getVouchSnapshot`. `getVouchStatus` strips the field, so GET
-   `/api/wot/:username` and `vouch_status` on `/vouch` and `/retract` keep their six documented
-   keys: no API shape change (pinned by the spec "leaves self_pinned off the status it returns").
-   The broadcast skips unless `self_pinned === false`. Both the row mapping and the guard fail
-   closed: a mocked row without the column, and a `vouch_status` entry cached by an older build
-   without the field, both skip (one spec each). `getAccreditedSet` is no longer read here; its
-   import is gone.
-2. The `hasUnliftedSanction` refusal stays, after the presence check.
-3. The dead `getPool()` / `skipped` lines are deleted.
-4. `validateVouchee` (body-only, `typeof` plus `HIVE_ACCOUNT_NAME_REGEX`, read through
-   `assertBodyRecord`) is mounted `verifyHiveSignature, validateVouchee, wotWriteLimiter` on both
-   routes, per `solutions/conventions/account-keyed-limiter-after-auth-validator-before-limiter.md`,
-   so a malformed vouchee takes no wot-write slot (pinned on `/retract`). The old in-handler
-   type/length checks are gone. A POST with no JSON body now gets this 400 instead of a 500
-   TypeError (user-approved in triage, 2026-10-08).
-5. The docblock now says the broadcast "is skipped for a vouchee that has an `accred_pinned` row,
-   whatever its method". The "FIRST threshold crossing" sentence is gone. Also narrowed, because
-   this change made them false: the inline already-accredited and sanction-guard comments, the
-   `/vouch` "hits the poll's fresh cache" clause and skipped-arm comment, the `hasUnliftedSanction`
-   docblock's "absent from `getAccreditedSet`" sentence, and the `vouchStatusCacheKey` docblock.
-
-**Acceptance evidence**
-
-- AC1: `wot-broadcast-timeout.test.ts` runs the real `getAccreditedSet`: an `importOriginal` partial
-  mock replaces only `hasUnliftedSanction`. `accredited_accounts_all` is warmed stable with a set
-  lacking the vouchee. With base `9744046d` `src/wot.ts`, the same spec broadcasts (`{ ok: true }`)
-  for the authority-pinned (`email`) case and the `wot` case, and for the method-less case too.
-  Observed in my red run and again in the verification workflow's base-control run. All skip at head.
-- AC2: happy path asserts `toHaveBeenCalledTimes(1)`. The sanctioned spec still returns
-  `reason: 'sanctioned'`.
-- AC3: `Bob`, `a..b`, `ab`, a 17-character name and `bob-` each answer 400 `BAD_REQUEST` on both
-  routes. Old code: `/retract` 403, `/vouch` 500.
-- AC4: the pre-commit anchor gate passed on every commit, and `tests/eslint` is 146/146.
-- Real-Postgres SQL (`wot-vouch-status-select-real-postgres.test.ts`): `self_pinned` is true for a
-  `wot` account with no accredited vouchers and for a method-less op (while `self_method` is null),
-  and false for an unaccredited account and for an accredit op followed by a sanction.
-
-**Verification**
-
-- WoT and related specs: 18 files, 218 tests green with `--retry=0` at 4f47b955.
-- Typecheck clean. Lint shows 0 errors and 1 pre-existing warning in `lib/author-supersession.ts`.
-- Full suite at e07c3716: exit 1, 6 files and 15 specs red, all on the standing red bar
-  (`idempotency-real-haf` 2, `accreditation-idempotency` 6, `papers-enrichment-parity-gate` 1,
-  `profile-auth-bypass` 3, `reviews` 2, `cast-hardening-author-index-weight` 1). No WoT file is red.
-  `accreditation-idempotency` fails identically on a clean HEAD copy.
-- Verification workflow (mutation prober, correctness adversary, comment auditor, one refuter per
-  finding): 11 planted mutants, 10 killed. The survivor swaps the presence and sanction guards and
-  has no observable output change. No path leaks `self_pinned` or broadcasts over an op HAF has
-  already indexed. EXPLAIN on the EXISTS column showed one extra InitPlan over the
-  already-materialized `accred_pinned`.
-- Simplify: `/ce-simplify-code` ran with 3 reviewers. Applied 5: `assertBodyRecord`, a shared
-  `ELIGIBLE_VOUCHES` fixture, a cached-status spec that a cache miss would fail, a dead mock, and a
-  stale comment. Skipped 3: an exported row type, a `pushRow` closure over pre-existing helper
-  lines, and deleting the docblock skip sentence that Scope 5 asks for.
-- Code review: deferred to the architect's `/ce-code-review` at intake (backend role rule).
-
-**User triage (2026-10-08) of verified findings**
-
-- Fixed: the real-Postgres companion's header no longer says `wot-broadcast-timeout` uses its
-  FROM-redirect technique. The body-less POST now gets a 400.
-- Declined, as hardening against a future edit: non-string vouchee specs, a `/vouch` twin of the
-  limiter-slot spec, and pinning the guard order.
-
-**Learnings checkpoint:** `/ce-compound-refresh` Updated
-`conventions/test-haf-sql-selection-redirect-cte-from-synthetic-values-2026-06-09.md` and
-`conventions/vouch-three-senses-consented-not-vouched-2026-06-06.md`, and narrowed the auto-grant
-sentence in CONCEPTS.md "Vouch" and "Vouch Threshold" (cc3c3498, `[skip-zone-audit]`).
-
-The first entry's examples named the deleted `cascadeDiscoverySelect` and a `runDiscovery` helper.
-The second claimed three vouches always trigger a `wot` accredit. `/ce-compound` wrote nothing,
-because both candidates fall below the bar:
-- `RegExp.test` coerces `undefined` to the valid name "undefined". With `assertBodyRecord`'s
-  `unknown`, tsc now rejects any unguarded `.test(vouchee)`.
-- The cached-membership gate lesson is carried by the guard and `VouchSnapshot` comments, plus
-  item 11 of `backend-accreditation-wot-comment-and-dead-code-pass`.
-
-**[TODO Architect] additions**
-
-1. The first bullet of the archive TODO ("never broadcasts over an existing accredit op")
-   overclaims. An accredit op broadcast but not yet indexed has no `accred_pinned` row, so a
-   `/vouch` in that gap still broadcasts, which Out of scope accepts. Suggested § 2 wording: "the WoT
-   auto-accreditation skips any vouchee that HAF shows holding a current, not-sanctioned `accredit`
-   op of any method, and refuses a vouchee with an un-lifted sanction". CONCEPTS.md "Accreditation
-   Method" ("granted automatically once the vouch threshold is crossed") may want the same
-   precondition.
-2. `api-contracts/accreditation.md`: the `/vouch` and `/retract` `BAD_REQUEST` lines should read
-   "`vouchee` missing or not a valid Hive account name". That also covers a request with no JSON body.
-3. Pre-existing doc drift: `ARCHITECTURE.md` § 2 and CONCEPTS.md "Vouch", "Accreditation Authority
-   Whitelist" and "Active Accreditations" say vouches are validated against the live membership
-   view. The code counts them against `accred_pinned` holders (`aa_wot_counts`, `vouchStatusSelect`),
-   which include below-threshold WoT members. The `vouchStatusSelect` docblock says this is
-   deliberate.
-4. For `backend-wot-enrollment-has-a-single-trigger` when it is unblocked: `HIVE_ACCOUNT_NAME_REGEX`
-   is checked only in the route validator. A sweep that feeds HAF-sourced vouchee strings into
-   `broadcastWotAccreditation` needs its own name check.
-5. For `backend-accreditation-release-op`: this guard broadcasts only when `accred_pinned` has no
-   row. If the release exclusion lands in `active_accreditations` only, a released account with
-   threshold vouches keeps its row and is never re-enrolled, contrary to ARCHITECTURE § 2 ("the WoT
-   path re-enrols it"). It must exclude released accounts from `accred_pinned` for that sentence to
-   hold.
-6. Clause (c) gap: no real-path test exercises `hasUnliftedSanction`. Every suite that touches it
-   mocks it.
-
-**Out of scope, for follow-up filing:** `wot-broadcast-timeout.test.ts` still carries two
-pre-existing inaccurate comments ("PrivateKey.fromString(...) runs first", and "Threshold params
-query (update_params): no rows => default 3", where the default actually comes from the rejected
-`pool.connect`).
-
-## An upload's username mismatch after a cross-tab sign-in signs the new account out (archived 2026-10-08): clean review; Remintable Rejection reason dropped, two pre-existing misreports filed, two items already filed, two dismissed
-
-### Architect archive note (2026-10-08)
-
-- **Review:** `/ce-code-review` full path on `ffbfce29` and `083e2577` (branch-remote, base `2401ad5d`): correctness, security, adversarial (in-process, no cross-model peer), julik-frontend-races, testing, project-standards, learnings. Verdict "Ready to merge"; every scope item and AC met, zero findings. Account-state defense review clean: the new branch keys on the client-side subject generation only, every generation bump runs through `_scrubSubjectBoundState`, which clears the session-proof slot first, and no JWT-only path is added. Testing re-measured the signal's six mutants, all killed; m4 killed 4, not the claimed 3 (the extra is the real-window "two uploads" test). The orchestrator checked each planted mutant against the brief, re-ran all six with identical counts, and re-ran the full suite (98 files, 2297 tests, exit 0) and `npm run build` on `083e2577` in an isolated copy.
-- **Triage (user: "approved" as recommended):**
-  - Fixed in place: `CONCEPTS.md` "Remintable Rejection" drops the corrupt-session because-clause; the mismatch stays terminal (`2a9d3cb8`, signal out-of-scope item 2).
-  - Filed: signal out-of-scope items 3 and 4 -> `ui-upload-misreports-a-mid-upload-account-switch` (low). At filing, the self-custody branch was found to rethrow the transfer's 401 raw too, so the task covers both transfer codes there.
-  - Already filed: item 1 -> `ui-orcid-callback-caches-a-departed-subjects-proof`; item 5 -> item 2 of `ui-teardown-message-and-mapper-mock-wording`.
-  - Dismissed: the broadcast and consent-op mismatch arms read no subject guard (reaching them needs an already-corrupted departed session, the ORCID task closes the main source, and the task ruled out symmetry-only changes). The guard-report learnings entry's "sign in again" sentence (historical, true wherever a teardown fires).
-- **Learnings checkpoint:** the learnings reviewer checked `guard-report-dedupes-per-event-not-per-holder-2026-09-02.md`, `await-is-not-a-teardown-boundary-unless-it-yields-to-a-macrotask-2026-09-03.md` (the `083e2577` narrowing is accurate), `subject-divergence-guard-earns-its-place-only-where-the-flow-acts-unpinned-2026-09-03.md`, `fresh-auth-guard-coverage-must-sweep-the-callee-graph-2026-09-01.md` and `shared-verifier-primitive-canonical-status-mapping-2026-05-16.md`; none is contradicted. The only contradicted text was the `CONCEPTS.md` sentence, fixed above. No new entry: the rationale lives in `mismatchError`'s docblock.
-
-**Owner:** ui
-**Created:** 2026-10-01
-**Priority:** normal
-
-Routed out of the architect archive of the fresh-auth count-tally task (archived
-2026-10-01). The implementer's last sweep reported it as behaviour outside that
-comment-only task; an architect-side check against the code confirmed it, and the
-user approved filing it.
-
-## Why
-
-`uploadFile` (`lib/ipfs-upload.js`) opens a subject teardown guard at entry and checks it
-before each retry leg re-acquires, so a cross-tab subject change during an upload unwinds
-with `UPLOAD_SUBJECT_CHANGED` instead of acting for the new account. The two mismatch
-branches do not check it: on `isUsernameMismatch(err)` both the first-attempt catch and
-`retryOnce`'s catch throw `tornDownSession()`, which calls `handleSessionInconsistency()`.
-That function disconnects whenever the store is connected, and its own docblock says so:
-"This gate does not protect a session established after the flight began; a detector
-that finds the store connected always disconnects it."
-
-A reachable sequence: account X starts an upload. `uploadFileToIpfs` (`api.js`) hashes the
-file (`sha256File`) before `authenticatedRequest` reads the JWT for the pre-flight. While
-the file hashes, the user signs in as Y in another tab. The storage event scrubs this tab
-and adopts Y. The pre-flight then sends X's window proof with Y's JWT, and the backend

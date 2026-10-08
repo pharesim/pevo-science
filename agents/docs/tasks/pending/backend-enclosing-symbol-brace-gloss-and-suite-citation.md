@@ -73,3 +73,40 @@ the same file. Docblock only, no code change.
 - Do not touch the frontend copy.
 - Measure each sentence you write against both files before landing it, per
   `agents/docs/solutions/conventions/comment-sweep-expansion-must-audit-added-clause-behavioral-accuracy-2026-05-20.md`.
+
+## Folded in at the frontend port's review (2026-10-08)
+
+The frontend port of the after-close arm landed (`78abead8`, archived 2026-10-08). Its
+implementer listed backend sentences that its own frontend docblock rewrite had to narrow.
+Each was checked against `backend/tests/support/enclosing-symbol.ts` and its suite at HEAD
+`5404b32c` (neither changed since the port). Delete or narrow each one; add no exception list
+and no new claim. Measure the result against the code, as for items 1 and 2.
+
+3. `blockCommentInterior` docblock: "Openers are recognized at line start only, which is the
+   same boundary the rest of this module draws." Delete it. The region pass also reads an
+   opener in the code after a close it reads (`*/ /* second` re-enters), and the walk reads
+   the code after a line-leading close even when no region is tracked.
+4. WHICH BRACE THE WALK SEES: "It tracks a block comment opened at the start of a line, ...".
+   Narrow it to a multi-line block comment. `opensUnterminatedBlock` refuses a comment that
+   closes on its own line, so `/* note */ }` is not tracked, which the INWARD bullet states.
+5. The walk comment in `enclosingSymbol`: "A `}` leading the code after a close ends the
+   declaration WHATEVER the line's indentation." Narrow "a close" to a close the walk reads.
+   The close of a comment opened mid-line after other code is not read when it does not begin
+   its line, and a `}` after it is not taken.
+6. The file docblock's rule summary: drop "demonstrably" (an after-close `}` that really closes
+   an inner block also rejects the declaration), and narrow "after a comment close" to a
+   comment close the walk reads.
+7. "a comment opened mid-line", in the INWARD item ("the close of a comment opened mid-line
+   when that close does not begin its line") and in the walk comment ("the walk does not see a
+   comment opened mid-line"): narrow both to a comment opened mid-line after other code. The
+   walk can track an opener at the start of the code after a close it reads.
+8. The INWARD item "a `}` indented right of its own declaration": narrow it to a `}` leading
+   its line indented right of its own declaration. A `}` after a close the walk reads is taken
+   at any indentation.
+9. `enclosing-symbol.test.ts`, the region-pass comment "OPENER, line start only: the same
+   boundary the brace walk draws.": delete "the same boundary the brace walk draws". The walk
+   also reads an opener after a close it reads.
+
+Acceptance for items 3 to 9: each named sentence is deleted or narrowed so it is true against
+the code at the HEAD you land on. Run `npx vitest run --retry=0 tests/eslint` and
+`tests/support/enclosing-symbol.test.ts` alone and quote the result in the signal block.
