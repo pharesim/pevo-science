@@ -1,3 +1,165 @@
+## The email-change link rewrites other users' digest addresses (archived 2026-10-08): clean review of the username-scoped digest move
+
+### Architect archive note (2026-10-08)
+
+- **Review:** `/ce-code-review` full path on `f96090c4` (branch-remote, base `e72a99b8`): correctness, security, adversarial (in-process, no cross-model peer), testing, project-standards, learnings. Zero findings. The testing reviewer reproduced 26 passed with 0 skipped and killed 6 of 6 mutants: the four in AC2, plus `RETURNING email` without the username and `$3` bound to `oldEmail`. The orchestrator re-ran `npm run typecheck`, eslint on both files and `tests/eslint` (146 passed), all exit 0.
+- **Noted, no action:** the pending `backend-email-change-hold-and-owner-notice` moves this swap and the prefs move into its apply function, which its sweep also runs. The moved statement carries both predicates, and the V/X route spec catches a dropped username predicate on the route path. A sweep-path spec for it would be preemptive hardening.
+- **Pre-existing, left as recorded in the Notes and signal block:** the swap and the move are two statements with no transaction; a mixed-case own prefs row does not move; both recovery paths leave the prefs email alone.
+- **Learnings checkpoint:** a grep of `agents/docs/solutions/` for `notification_preferences` finds no entry, and `mailed-credential-token-dies-with-its-address-and-credential.md` stays accurate (the swap's SET list and key are unchanged). No new `/ce-compound`: the username predicate and the commit message carry the lesson.
+
+**Owner:** backend
+**Created:** 2026-10-06
+**Priority:** high
+
+Filed at the user's request from the pre-existing findings in the signal block of
+`backend-settings-verify-clears-any-row-token` (its items 1 and 3), after a scoping pass that
+measured both on 02c66d99 through the real routes.
+
+## Why
+
+After the swap, the change branch of `GET /api/settings/email/verify/:token` (`routes/settings.ts`)
+moves the digest address with
+
+```
+UPDATE notification_preferences SET email = $1 WHERE email = $2
+```
+
+The new address comes from the swap's `RETURNING email`, and the old one from the change-branch
+lookup. There is no username predicate. Every other writer of `notification_preferences` is keyed
+on username: the `PUT /api/profile/:username/notification-preferences` upsert, the unsubscribe
+route, `digest.ts` `updateLastDigestBlock`, and the `DELETE /api/settings/email` erasure.
+
+`notification_preferences.email` is an address the user sets, not a mirror of `accounts.email`.
+The table is keyed `username TEXT PRIMARY KEY`, and `email` is nullable with no UNIQUE.
+`PUT /api/profile/:username/notification-preferences` stores any syntactically valid address
+without verifying it. Any Hive account holder can write their own row on the signature path,
+with no `accounts` row.
+
+**Disclosure (measured).** X sets its prefs email to V's current account address A0. V verifies
+an email change to A. X's row now holds A, and `GET /api/profile/X/notification-preferences`
+returns it to X. So anyone who knows a user's address learns every new address that user
+verifies, including a user who changes address to get away from someone. It also works as a slow
+membership check: a guessed address in your own prefs row changes only if it was an account
+email whose owner changed it.
+
+**Misdirected digest (code reading).** `digest.ts` `getDigestUsers` mails each row's `email`. A
+third user whose digest address equalled V's old address therefore gets their digest sent to V's
+new mailbox. That needs the digest scheduler running (it starts only when SMTP is configured),
+`email_digest` true, and a prefs row written by a direct API call, since no frontend code calls
+the prefs endpoints today.
+
+**Nothing pins the move.** Feeding it `[oldEmail, oldEmail]`, or deleting it, keeps every spec
+that hits the route green: `tests/routes/settings.test.ts` and
+`tests/routes/settings-state-g-unverified-email.test.ts` (measured).
+`frontend/tests/e2e/settings.spec.js` follows the link but asserts only `accounts` columns.
+
+## Scope
+
+1. Add `username` to the swap's `RETURNING` and scope the move to that account:
+   `UPDATE notification_preferences SET email = $1 WHERE email = $2 AND username = $3`, bound to
+   the swapped row. Keep `email = $2`: the verifying account's own digest address moves only when
+   it was the old account address, and a digest address set separately stays.
+2. Narrow the comment above the move to what the code does. No new response, status or error
+   code.
+3. Specs in `tests/routes/settings.test.ts`, next to "verify token - change flow". Seed by INSERT
+   against real Postgres. The route has no auth middleware, so no mock is needed.
+   - V has a pending change. Prefs rows: V holds V's old account address, and X (no `accounts`
+     row) holds the same address. After the 200, V's prefs email is the new address and X's is
+     unchanged.
+   - A second account W with a pending change, whose prefs email differs from its old account
+     address, keeps that prefs email after its link verifies. This case pins `email = $2`.
+
+## Acceptance criteria
+
+1. The move carries a username predicate bound to the swapped row.
+2. The specs above. The signal block carries mutation evidence from a scratch copy:
+   - fails on HEAD's unscoped UPDATE (X's row moves);
+   - fails with the move fed `[oldEmail, oldEmail]` or deleted (V's row stays);
+   - fails with `email = $2` dropped (W's row is overwritten);
+   - passes with the fix.
+3. The diff changes no `sendOk` or `sendError` call and no status in the handler.
+4. `tests/routes/settings.test.ts` and `tests/routes/settings-state-g-unverified-email.test.ts`
+   are green by exit code and the Errors line. tsc and eslint are clean.
+
+## Notes
+
+- Account-state check: the change branch reaches only rows that carry a `pending_email_token`.
+  Only `POST /api/settings/email` writes one, on a row it found by username (states A, B, C, D
+  and G per ARCHITECTURE.md § 6.1). The swapped row always has a username, so the new predicate
+  defends no fictional state.
+- Overlap: the same swap UPDATE is edited by `backend-reset-tokens-outlive-email-changes-and-recovery`
+  (Scope item 2, the `reset_token` clear) and by `backend-email-change-swap-500s-on-a-taken-address`.
+  These are adjacent edits, and whichever lands second merges onto the other. This task builds on
+  the token-keyed swap from 02c66d99, which is in review: if that review reshapes the swap,
+  re-anchor the username source.
+- Out of scope, reported as fact: both recovery paths (`POST /api/auth/recover`,
+  `POST /api/auth/recover/verify`) move `accounts.email` but leave the prefs email alone. After a
+  recovery away from a compromised mailbox, a digest address equal to it keeps mailing it. That is
+  not this defect (no cross-account write). File it separately only if the user wants recovery to
+  carry the digest address.
+- `PUT /api/profile/:username/notification-preferences` accepting an unverified address is a
+  separate property, covered by `architect-audit-admin-profile-search-routes`.
+- Rows already rewritten on a deployment cannot be told apart from addresses users set
+  deliberately. No repair is proposed.
+- The prefs email is stored as typed and the account email is lowercased, so a mixed-case own row
+  does not move on a change. This is pre-existing and not proposed for change.
+
+## Architect note (2026-10-08): the swap moves into an exported apply function
+
+`backend-email-change-hold-and-owner-notice` (high, filed 2026-10-08) splits the change branch of
+`GET /api/settings/email/verify/:token` into an exported apply function that is the one site
+swapping the address, and `backend-email-changed-at-stamp-and-displaced-address-notice` (high)
+adds `email_changed_at = NOW()` to the same UPDATE. Land this task first if you can; otherwise
+merge the username-scoped `notification_preferences` move into the apply function, after the
+swap and before the displaced-address mail.
+
+## Backend implementation signal (2026-10-08, commit f96090c4)
+
+- Landed in `f96090c4` (`backend(settings): an email change moves only the verifying account's
+  digest address`), ahead of the hold and `email_changed_at` tasks, so nothing needed merging into
+  an apply function. Self-verified: `git merge-base --is-ancestor f96090c4 main` exits 0, and
+  `git show --name-status f96090c4` lists `M backend/src/routes/settings.ts` and
+  `M backend/tests/routes/settings.test.ts`.
+- Scope 1: the swap returns `email, username`, and the move is
+  `UPDATE notification_preferences SET email = $1 WHERE email = $2 AND username = $3`, where `$3`
+  is the swapped row's username. `email = $2` is kept.
+- Scope 2: the comment above the move now reads "This account's digest address follows the change
+  when it equals the old account address." No `sendOk` or `sendError` call and no status changed
+  (AC3).
+- Scope 3: two specs in `tests/routes/settings.test.ts` after "verify token - change flow":
+  "verify token - change flow moves only the verifying account's digest address" (V, plus X with
+  no `accounts` row) and "verify token - change flow keeps a digest address set apart from the
+  account email" (W). Both seed by INSERT against real Postgres and delete their rows in `finally`.
+- AC2 mutation evidence, from a `git archive f96090c4` copy on Redis DB 6, whole
+  `settings.test.ts` per variant:
+  - parent's unscoped UPDATE: exit 1, the V/X spec fails, X's row received
+    `settings_digest_v_new_*` (it moved);
+  - move fed `[oldEmail, oldEmail, username]`: exit 1, the V/X spec fails, V's row stays
+    `settings_digest_v_old_*`;
+  - move deleted: exit 1, the V/X spec fails, V's row stays `settings_digest_v_old_*`;
+  - `email = $2` dropped (`WHERE username = $2`, params renumbered so the SQL stays valid): exit 1,
+    the W spec fails, expected `settings_digest_w_own_*`, received `settings_digest_w_new_*`;
+  - the fix: exit 0, 26 passed.
+  The V/X spec was also red in the live checkout before the fix (X's row moved).
+- AC4: `tests/routes/settings.test.ts` with `tests/routes/settings-state-g-unverified-email.test.ts`
+  gives Test Files 2 passed, Tests 39 passed, exit 0, no Errors line. `npm run typecheck` exits 0,
+  eslint on both changed files exits 0, and `tests/eslint` gives 9 files, 146 passed, exit 0. The
+  other two files that drive the route (`recovery-and-reset-drop-queued-email-change.test.ts`,
+  `reset-token-cleared-by-account-writes.test.ts`) give 12 passed, exit 0. Full backend suite not
+  run: the change is confined to one handler, and the suite has a standing red bar.
+- Supplementary adversarial review (two lenses on `f96090c4`, correctness/conventions and spec
+  quality, each re-running the mutations in its own copy): zero findings. The backend does not run
+  `/ce-code-review`; that is the architect's at intake.
+- Out of scope, reported as fact (pre-existing, not touched): the swap and the digest move are two
+  statements with no transaction around them. If the move throws after the swap commits, the client
+  gets a 500, a re-click gets `INVALID_TOKEN`, and the digest address stays on the old address. If
+  this should close, the apply function from `backend-email-change-hold-and-owner-notice` is where
+  both statements will sit.
+- No `[TODO Architect]` contract change: no response shape, status or error code changed.
+- Learnings checkpoint: a grep of `agents/docs/solutions/` for `notification_preferences`,
+  `getDigestUsers` and "digest address" found no entry, so nothing to refresh. Nothing new
+  qualified, since the username predicate and the commit message carry the lesson.
+
 ## /verify tells a WoT enrollee below the threshold that they are accredited (archived 2026-10-08): clean re-review of the ORCID-carry fix; docs and the latest-action-wins entry updated, five residuals dismissed
 
 ### Architect archive note (2026-10-08)
@@ -86,165 +248,3 @@ whether or not the account currently meets the threshold.
 - `ARCHITECTURE.md` "Credential Bindings", the `/verify` paragraph: "An already-accredited
   account verifying a mailbox claims the row as `bound` at once, with no second `accredit` op."
   An account whose latest op is a `wot` accredit now gets a `method: 'email'` op. Narrow it.
-  (Added 2026-10-08 from the intake review of `31994b09`.)
-
-## Backend implementation signal (2026-10-07, commit 31994b09)
-
-31994b09 verified as an ancestor of HEAD with `git merge-base --is-ancestor`. The sequencing
-precondition held: `backend-latest-op-haf-lookups-walk-the-blocks-index` was archived in dd4aea20.
-
-**Per scope item:**
-1. **Gate predicate.** `findExistingAccreditation` projects `cj.json::jsonb ->> 'method' AS method`
-   and returns null unless the latest op is an `accredit` whose method is not `'wot'`. The test sits
-   in JS next to the existing action check (`row.action !== 'accredit' || row.method === 'wot'`), not
-   as a literal `IS DISTINCT FROM 'wot'` in the SQL. It is equivalent for everything `->>` returns:
-   an absent key and a JSON null both arrive as null and count as non-wot, as under `IS DISTINCT
-   FROM`. Keeping it in JS lets the mocked-pool specs feed raw op rows rather than a precomputed
-   verdict. The real-Postgres file pins the no-method case end to end. A latest `revoke` still
-   misses, and the sanction guard still runs after the gate (AC3 spec).
-2. **Handler comments.** The gate comment and the opening of the "Ever-sanctioned guard" comment
-   now say what the gate checks. A third sentence became false with the change and is narrowed the
-   same way: "Metadata-update routing" said "a re-confirm of an already-accredited account returns
-   the prior tx_id"; an at-threshold WoT enrollee is accredited and now misses.
-3. **Docblock.** Both items deleted. In the same docblock, also cut by deletion:
-   - the opening "is this account currently accredited?";
-   - the claim that every other accreditation-state read uses latest-action-wins, with its file
-     list (`activeAccreditationsCteBody` ignores a legacy revoke);
-   - the "(the gate is 'what is the account's current accreditation status?' ...)" parenthetical;
-   - ", and silently lock the user out of re-accreditation" (no state reaches it after this change).
-
-   Added: a "WoT handling" paragraph, and the sanction guard in the fall-through order.
-
-   The same false WoT-revoke-producer claim sat in two test files, and is deleted there too:
-   `tests/lib/idempotency.test.ts` (with its `wot.ts:347`-style line anchors) and the revoke spec
-   in `tests/routes/accreditation-idempotency.test.ts`.
-
-**Acceptance criteria:**
-1. Route spec 'latest op is a wot accredit → gate falls through, a method:email accredit is
-   broadcast'. It queues the gate, the sanction guard and the per-token read, and asserts 200 with
-   no `outcome`, a payload `{ action: 'accredit', account, method: 'email' }` and 3 HAF reads. The
-   route reads no threshold, so "below the live threshold" is modelled only as the latest op.
-2. Route `it.each` over `email`, `orcid`, `manual`: `already_accredited`, no broadcast, 1 HAF
-   read. Unit `it.each` adds a null method, and the real-Postgres file adds a missing method.
-3. Route spec 'sanctioned account whose latest op is a wot accredit → 403
-   ACCREDITATION_SANCTIONED, no broadcast' (2 HAF reads).
-4. The pre-commit `anchor_violation` over every added line: 0 hits, control line fires.
-
-**Tests:**
-- `tests/lib/idempotency.test.ts`: wot → null; email/orcid/manual/null → hit; SQL regex
-  `'method' AS method`; a structured forward citation of the new file, token
-  `[findExistingAccreditation]`.
-- `tests/lib/existing-accreditation-gate-real-postgres.test.ts` (new, 8 specs): the production
-  function against synthetic `hafsql` views in a rolled-back transaction, with the reverse
-  declaration back to `idempotency.test.ts`. Real HAF has no `wot` accredit under `pevotest`
-  (read-only query, 2026-10-07: 20 `email` and 1 `manual` accredits, no revoke).
-- `tests/routes/accreditation-idempotency.test.ts`: the 5 specs above.
-- `tests/lib/idempotency-real-haf.test.ts`: the positive-hit spec now projects `method` and expects
-  a miss when the namespace's latest authority op is a `wot` accredit. It would have gone red for
-  good once a WoT auto-accreditation became the newest op. Its `lines 340-343` anchor is gone.
-
-**Evidence:**
-- Red before the fix: the unit wot and SQL-shape specs, both real-Postgres wot specs, and route
-  AC1 and AC3. The hit specs were green throughout (characterization).
-- Each file alone after the fix: `idempotency` 34/34, the real-Postgres file 8/8,
-  `accreditation-verify-sanctioned` 2/2, `accreditation-membership-cte` 11/11,
-  `idempotency-real-haf -t findExistingAccreditation` 3/3. `accreditation-idempotency`: 21 passed,
-  6 failed, exactly the clean-main six that
-  `backend-accreditation-idempotency-specs-skip-the-sanction-guard-read` fixes; the 5 new specs
-  pass. `tests/eslint` 146/146, `tsc` clean, lint 0 errors (1 warning, in
-  `author-supersession.ts`).
-- Mutation probes on a copy, all 7 killed: the pre-fix predicate, no `method` projection, the
-  wrong JSON key, a null method treated as non-pinning, an allowlist, the sanction guard disabled,
-  a `'WOT'` literal. The two SQL-side mutants die only in the real-Postgres file and the SQL regex;
-  the route specs take `method` from mocked rows.
-
-**Sibling tasks:**
-- The new route specs already queue all three HAF reads, so they need nothing from the
-  sanction-guard-read task, which still owns the 11 existing sequences and the header paragraph.
-- `backend-accreditation-release-op` changes `hasUnliftedSanction`'s comparison. If its result
-  columns change, the guard rows queued in the AC1 and AC3 specs change with them.
-
-**For triage (not acted on):**
-- `ARCHITECTURE.md` "Credential Bindings", the `/verify` claim paragraph, ends "An
-  already-accredited account verifying a mailbox claims the row as `bound` at once, with no second
-  `accredit` op." An at-threshold WoT enrollee now gets a second (`email`) op. It could ride the § 2
-  edit in the TODO at archive; `backend-mailbox-binding-registry` builds that claim.
-- UI: `frontend/src/pages/accreditation.js` shows the request form only when `!isAccredited`, so
-  only a below-threshold enrollee can ask for the pin. The 2026-10-05 decision covers at-threshold
-  enrollees too.
-- The pin holds while the email op is the latest accredit. A `wot` accredit landing after it makes
-  the account threshold-dependent again, and `broadcastWotAccreditation` can still broadcast one
-  from its cached membership read. `backend-wot-auto-accredit-reads-stale-membership` covers that
-  read.
-
-**Learnings checkpoint:** `accreditation-state-read-latest-action-wins-2026-05-15.md` is
-contradicted (its canonical SQL lacks `method`, its caller rule reads any `'accredit'` as
-accredited). Its refresh is already in the TODO at archive, so it was not run here. The fence and
-grace-period entries that name the gate still hold. No new entry: the rationale is in the code.
-
-**Code review:** not run on the backend side (the architect's `/ce-code-review` at intake). A
-verification workflow (comment claims, acceptance, mutation; one refuter per finding) confirmed 5
-findings, all fixed before 31994b09, and refuted 5.
-
-## Architect re-review (2026-10-08) — HELD PENDING FIXES:
-
-Reviewed `31994b09` with `/ce-code-review` (correctness, security, adversarial in-process,
-testing, project-standards, learnings, then an independent validator). Reviewers read
-`git show 31994b09` snapshots. Scope 1 to 3 and AC1 to AC4 are met. The testing reviewer
-reproduced the signal's counts in a scratchpad copy (`idempotency` 34/34, the real-Postgres file
-8/8, `idempotency-real-haf -t findExistingAccreditation` 3/3, `tests/eslint` 146/146, each exit 0;
-`accreditation-idempotency` 21 passed and 6 failed, the same six failing on base) and re-planted
-six mutants, each going red where the signal says. The anchor gate finds nothing in the added
-lines, and every new comment sentence checked true. One item holds the archive:
-
-1. **The email pin drops a linked ORCID (`/verify` in `routes/accreditation.ts`,
-   `customJsonPayload`).** The ORCID binding is the account's latest authority accredit op:
-   `findAccreditedAccountWithOrcid` (`lib/orcid-binding.ts`) returns the account only while its
-   latest accredit/revoke op is an accredit carrying that ORCID, and `accred_latest` in
-   `activeAccreditationsCteBody` takes `orcid` from the latest accredit. `handleLink`
-   (`routes/orcid.ts`) re-broadcasts a WoT member's accredit with `method: existing.method`
-   (`'wot'`) and the linked `orcid`. Before this commit `/verify` hit the gate for that account
-   and broadcast nothing. Now it broadcasts a `method: 'email'` accredit with no `orcid` field,
-   which becomes the latest accredit, so the account's ORCID drops out of `active_accreditations`
-   and `findAccreditedAccountWithOrcid` no longer returns the account for it. `ARCHITECTURE.md`
-   § 2 "Credential Bindings": an authority op that drops the `orcid` field must carry the attested
-   ORCID forward, or the read loses the binding.
-
-   Fix: when the gate misses because the latest op is a `wot` accredit carrying an `orcid`, the
-   `method: 'email'` accredit that `/verify` broadcasts carries that `orcid`. Take it from the
-   chain op, never from the self-asserted `pending.orcid`. `PATCH /api/accreditation/metadata`
-   (`orcid: prior.orcid`) is the precedent. Add a route spec: the latest op is a `wot` accredit
-   with an ORCID, and the broadcast payload carries it. Run `tests/eslint` alone as well as the
-   touched files, since comment prose in tests feeds its citation canaries.
-
-Triage dispositions (2026-10-08, approved by the user):
-
-- Sanction self-lift during HAF indexing lag: filed as `backend-sanction-holds-before-haf-indexes`
-  (high). Not a hold item: the validator found the same window on `PATCH /metadata`, ORCID
-  `handleAccredit` and `/verify` for revoked accounts, and the fix sits in the sanction route and
-  `hasUnliftedSanction`.
-- An at-threshold WoT member has no UI route to the pin: filed as
-  `ui-offer-email-pin-to-wot-members` (normal).
-- The `ARCHITECTURE.md` "Credential Bindings" sentence and the wider staleness of the
-  latest-action-wins entry: added to the TODO at archive.
-- Re-running the live-HAF EXPLAIN for the added `method` projection: dismissed. It is one projected
-  column inside an unchanged `AS MATERIALIZED` fence.
-- Auditing the sibling "latest op = accredit" readers: dismissed. The diff changes only the gate,
-  and item 1 is the harm that `getExistingAccreditation` accepting a WoT member reaches.
-
-## Backend re-review signal (2026-10-08, commits 925024f7 and 851fe922)
-
-925024f7 and 851fe922 verified as ancestors of HEAD with `git merge-base --is-ancestor`.
-
-**Hold item 1 (925024f7).** `findExistingAccreditation` now returns `ExistingAccreditationGate`,
-`{ kind: 'hit', tx_id, block_num } | { kind: 'miss', wot_orcid }`, in place of
-`IdempotencyHit | null`. Its fenced query also projects `->> 'orcid'`. A miss on a latest `wot`
-accredit carries that op's non-empty `orcid` as `wot_orcid`. A miss on a latest revoke, on no op,
-or on a wot op with an empty or absent `orcid` carries null. `/verify` stores it in `wotOrcid` and
-spreads `orcid` onto the `method: 'email'` payload only when it is non-empty. The value comes from
-the same chain row the gate reads, so there is no second HAF read. `pending.orcid` never reaches
-the op. The one other consumer, the gate mock in `tests/routes/accreditation.test.ts`, returns the
-miss shape.
-
-**Tests (925024f7).**
-- `tests/routes/accreditation-idempotency.test.ts`: the hold's spec, 'latest op is a wot accredit
