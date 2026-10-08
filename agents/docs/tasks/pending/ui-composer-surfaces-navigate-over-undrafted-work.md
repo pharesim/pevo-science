@@ -291,3 +291,11 @@ The sign-in modal that a revoked or expired session opens now links to /login in
 passwordless account whose session ends on /review can leave the undrafted review that way, as it already
 could by going to /login by hand. After ORCID sign-in from /login, `_handleLogin` in `orcid-callback.js`
 navigates to /papers, because login mode records no return path.
+
+## Architect note (2026-10-08): unblocked
+
+`ui-light-account-vouch` was archived on 2026-10-08. `canVouch` and `canRetract` no longer read
+custody, the profile page's Keychain-only branch is gone, and `wot.keychainRequiredToVouch` has left
+every locale file. A light account now reaches both vouch handlers, so AC 3 and AC 8's
+vouch-handler probe can be demonstrated. Section "2. AC 3 is unreachable" in the 2026-09-22 block
+describes the gate as it stood then. Blocker 1 cleared on 2026-09-30. Moved to `pending/`.
