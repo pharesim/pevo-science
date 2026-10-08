@@ -605,7 +605,7 @@ describe('findExistingAccreditation — real HAF SQL shape', () => {
   );
 
   it.skipIf(!isHafConfigured())(
-    'per-route scoping: non-authority self-broadcast accredit for an account returns null',
+    'per-route scoping: non-authority self-broadcast accredit for an account misses',
     { timeout: 60_000, retry: 5 },
     async (ctx) => {
       const pool = getPool();
@@ -646,8 +646,8 @@ describe('findExistingAccreditation — real HAF SQL shape', () => {
       if (forged?.account) {
         const forgedLookup = await findExistingAccreditation(pool, forged.account);
         // The authority filter must reject the forged op. A regression
-        // that drops the predicate would surface here as a hit with the
-        // forged signer's tx_id, allowing a self-bootstrap accreditation.
+        // that drops the predicate can surface here as a hit with the
+        // forged signer's tx_id.
         expect(forgedLookup).toEqual({ kind: 'miss', wot_orcid: null });
       }
     },

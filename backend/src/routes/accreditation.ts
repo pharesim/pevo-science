@@ -768,9 +768,9 @@ router.post('/verify', verifyHiveSignature, validate(accreditationVerifySchema),
         // row's metadata (full_name, institution, field captured at /request)
         // would be embedded into a fresh accredit op, and /verify stays
         // idempotent: a re-confirm of an account whose latest op is a non-wot
-        // accredit returns the prior tx_id without re-broadcasting. Metadata
-        // edits do NOT flow through a second /request -> /verify; they have
-        // their own dedicated path,
+        // accredit returns the prior tx_id without re-broadcasting. For such an
+        // account, metadata edits do NOT flow through a second /request ->
+        // /verify; they have their own dedicated path,
         // PATCH /api/accreditation/metadata, which re-broadcasts a merged
         // admin-signed accredit op behind its own fresh-auth proof. So
         // discarding the /request-captured metadata here is correct — the edit

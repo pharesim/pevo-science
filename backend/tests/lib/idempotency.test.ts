@@ -443,9 +443,6 @@ describe('findExistingAccreditation', () => {
     await findExistingAccreditation(pool, 'alice');
     const [sql, params] = queryFn.mock.calls[0];
     expect(sql).toMatch(/cj\.custom_id = \$1/);
-    // Round-1 hold #1: action IN ('accredit','revoke') mirrors every
-    // sibling accreditation-state read in PEvO. The caller inspects the
-    // returned action and gates only on accredit-tail.
     expect(sql).toMatch(/'action' IN \('accredit', 'revoke'\)/);
     expect(sql).toMatch(/'account' = \$2/);
     expect(sql).toMatch(/required_posting_auths \?\| \$3::text\[\]/);
