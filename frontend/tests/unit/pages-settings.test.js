@@ -23,7 +23,7 @@ vi.mock('../../src/api.js', () => ({
 // settings.js routes the three critical-action handlers (change-email,
 // set-password, delete-account) through the settings-action fresh-auth
 // orchestrator. The orchestrator is unit-tested in lib-settings-fresh-auth.test.js;
-// here it is mocked. The default impl is a self-custody-style pass-through —
+// here it is mocked. The default impl is a pass-through —
 // calls run() with no proof and wraps the result in { ok } — so the existing
 // success/error handler tests exercise the underlying api call unchanged.
 // Individual tests override the impl to return { redirect } / { cancelled } /
@@ -143,7 +143,7 @@ vi.mock('alpinejs', () => ({
 }));
 
 import Alpine from 'alpinejs';
-import { initSettingsPage } from '../../src/pages/settings.js';
+import { initSettingsPage, settingsPageTemplate } from '../../src/pages/settings.js';
 // Imported so a regression test can force a deriveHiveKeys call (inside
 // _performKeychainImport's pre-loop work) to throw, simulating an unguarded
 // helper-internal failure that the try/finally wrap around
@@ -3325,5 +3325,26 @@ describe('settingsPage', () => {
         warnSpy.mockRestore();
       });
     });
+  });
+});
+
+// Each email state's success and error lines must stay visible after the
+// handler hides the change form: a successful change and a failed delete both
+// leave `showChangeForm` false.
+describe('settingsPageTemplate email messages', () => {
+  // querySelectorAll does not descend into a <template>'s content.
+  function queryAllDeep(root, selector, found = []) {
+    found.push(...root.querySelectorAll(selector));
+    for (const t of root.querySelectorAll('template')) queryAllDeep(t.content, selector, found);
+    return found;
+  }
+
+  it('renders no email message or error line inside the hidden change form', () => {
+    const tpl = document.createElement('template');
+    tpl.innerHTML = settingsPageTemplate;
+    const lines = queryAllDeep(tpl.content, 'p[x-show="emailMessage"], p[x-show="emailError"]');
+    // Two lines in each of the three email states.
+    expect(lines).toHaveLength(6);
+    for (const line of lines) expect(line.closest('[x-show="showChangeForm"]')).toBeNull();
   });
 });

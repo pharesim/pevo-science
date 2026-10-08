@@ -162,7 +162,7 @@ async function resolveProof(target, guard) {
  */
 export async function withAuthorshipFreshAuth(target, ctx, run) {
   // Self-custody: the per-request signature is itself the fresh proof, so no
-  // body proof is sent. Mirrors broadcastWithFreshAuth / withSettingsFreshAuth.
+  // body proof is sent. Mirrors broadcastWithFreshAuth.
   if (ctx.custody !== 'light') {
     return { ok: await run(undefined) };
   }

@@ -429,8 +429,6 @@ const template = `
                           <button type="submit" class="btn-primary whitespace-nowrap" :disabled="emailSubmitting || !newEmail.trim()"
                                   x-text="$t('settings.emailSendVerification')"></button>
                         </form>
-                        <p x-show="emailMessage" class="text-sm text-pevo-green mt-2" x-text="emailMessage"></p>
-                        <p x-show="emailError" class="text-sm text-red-600 mt-2" x-text="emailError"></p>
                       </div>
 
                       <div class="flex gap-4">
@@ -439,6 +437,9 @@ const template = `
                         <button @click="showDeleteConfirm = !showDeleteConfirm"
                                 class="text-sm text-red-600 hover:underline" x-text="$t('settings.emailDelete')"></button>
                       </div>
+
+                      <p x-show="emailMessage" class="text-sm text-pevo-green mt-2" x-text="emailMessage"></p>
+                      <p x-show="emailError" class="text-sm text-red-600 mt-2" x-text="emailError"></p>
 
                       <!-- Delete confirmation -->
                       <div x-show="showDeleteConfirm" class="mt-4 bg-red-50 border border-red-200 rounded-lg p-4">
@@ -976,8 +977,8 @@ export function initSettingsPage() {
       }
     },
 
-    // Context for the settings fresh-auth orchestrator. `custody` decides
-    // whether a body proof is sent; `withSettingsFreshAuth` holds the rule.
+    // Context for the settings fresh-auth orchestrator; `withSettingsFreshAuth`
+    // holds the body-proof rule.
     // Password-vs-ORCID factor selection is NOT passed in: it lives in
     // `resolvePasswordFactor` (lib/fresh-auth.js), so a failed status fetch
     // on this page cannot route the user to a different factor than the same

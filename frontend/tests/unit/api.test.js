@@ -628,9 +628,8 @@ describe('settings critical-action proof threading', () => {
   });
 });
 
-// The backend tries a bearer before signature headers, and a self-custody
-// session has no factor that mints a body proof for these actions on the
-// bearer path, so its requests must go out signed with no Authorization.
+// The backend tries a bearer before signature headers, so a self-custody
+// session's signed requests must go out with no Authorization.
 describe('settings critical actions: custody dispatch', () => {
   let fetchSpy;
 

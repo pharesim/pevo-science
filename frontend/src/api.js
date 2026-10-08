@@ -769,8 +769,8 @@ export async function searchAccounts(q) {
 // Send a settings critical action on the auth path that carries its re-auth. A
 // self-custody session signs the request with Keychain, and the signature is
 // the proof. It sends no bearer: the backend tries a bearer first and would
-// then refuse the request for lacking a body proof. Every other session sends
-// its bearer, with the caller's `fresh_auth_proof` in `body`.
+// then refuse the request. Every other session sends its bearer, with the
+// caller's `fresh_auth_proof` in `body`.
 async function settingsActionRequest(path, method, body) {
   const auth = Alpine.store('auth');
   if (auth?.custody === 'self') {
