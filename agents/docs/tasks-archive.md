@@ -1,3 +1,217 @@
+## The WoT auto-accredit decides "already accredited" from a stale cache (archived 2026-10-08): clean review; one P3 contract-doc line fixed in place, five follow-ups folded into open tasks, three items already covered
+
+### Architect archive note (2026-10-08)
+
+- **Review:** `/ce-code-review` full path on `dc14b5e6`, `72e96c3a`, `e07c3716`, `4f47b955` and the learnings commit `cc3c3498` (branch-remote, base `905a3d7d`): correctness, security, adversarial (in-process, no cross-model peer), testing, project-standards, api-contract, reliability, learnings. Verdict "Ready with fixes", no code defect; every scope item and AC met. Adversarial reproduced AC1 (base src with the head spec broadcasts for the email, wot and method-less cases; head skips). Testing killed all nine planted mutants; the orchestrator checked the mutation script against the brief. Security found the regex equivalent to hived's account-name rule and linear on a 1M-char input; `self_pinned` never leaves the process.
+- **Fixed in place (`545e02e9`):** the `/vouch` and `/retract` `BAD_REQUEST` lines and the `accreditation_method` null clause in `api-contracts/accreditation.md`; ARCHITECTURE § 2 gains "WoT auto-accreditation" in the implementer's narrower wording (the skip misses an op not yet indexed), and the whitelist paragraph plus CONCEPTS "Vouch", "Accreditation Authority Whitelist", "Active Accreditations" and "Accreditation Method" now say vouches count against `accred_pinned` holders, not the live membership view.
+- **Folded into open tasks:** the `VouchStatus.accreditation_method` docblock (item 21 of `backend-accreditation-wot-comment-and-dead-code-pass`); line-number anchors in `wot-vouch-broadcast-outcomes.test.ts` and two inaccurate comments in `wot-broadcast-timeout.test.ts` (`backend-wot-comments-cite-deleted-retract-suite`); the clause (c) companion for the `hasUnliftedSanction` mock (note on `backend-failed-sanction-read-is-not-a-sanction`); release must leave `accred_pinned` (note on `backend-accreditation-release-op`). `backend-wot-enrollment-has-a-single-trigger` moved to `pending/` with a name-check and fresh-read note.
+- **Dismissed as covered:** the dead `wot-retract-cascaderevocation` citation (`backend-wot-comments-cite-deleted-retract-suite`), the same-block sanction tie in `hasUnliftedSanction` (`backend-accreditation-release-op` Scope 2 and item 14 of the comment pass), the SHA and slug in the vouch-three-senses entry (`architect-solutions-entries-carry-coordination-context`). Dismissed: the "Vouch Threshold" symmetry edit, listing `routes/wot.ts` in the limiter-convention entry, a `/vouch` twin of the limiter-slot spec (declined in the implementer's triage).
+- **Learnings checkpoint:** no solutions entry is contradicted by the change; the implementer's `cc3c3498` refresh of two entries holds against the code. Nothing new for `/ce-compound`.
+
+**Owner:** backend
+**Created:** 2026-10-05
+**Priority:** high
+
+Filed from the accreditation and Web of Trust audit (finding 5, with finding 20 and one item from
+its residual list). Five reviewers reported it independently and the validator confirmed it from
+the code. It was read from code, not exercised against a chain.
+
+## Why
+
+`broadcastWotAccreditation` (`backend/src/wot.ts`) skips the broadcast when
+`getAccreditedSet([vouchee])` contains the vouchee. `getAccreditedSet`
+(`backend/src/accreditation.ts`) answers from the `accredited_accounts_all` cache entry whenever
+that entry is present. The entry is in the stable tier with a 10-minute TTL: `clearVolatile` does
+not flush it, and no `hafCache.invalidate` call in `backend/src` names it. So for up to 10 minutes
+after an account's accredit op is indexed, the cached set can still lack that account.
+
+Inside that window, for a vouchee at or above the vouch threshold:
+
+1. Every `POST /api/wot/vouch` that names the vouchee, from any accredited caller, broadcasts
+   another admin-signed `method: 'wot'` accredit op. The route calls `broadcastWotAccreditation`
+   whether or not the caller's own vouch surfaced in the poll, and `wotWriteLimiter` admits 10
+   calls per minute per account.
+2. If the vouchee's current accredit op is authority-pinned (`email`, `orcid` or `manual`), the new
+   `wot` op becomes the account's latest accredit op. `accred_latest` in
+   `activeAccreditationsCteBody` (`backend/src/hafsql.ts`) takes method and metadata from the
+   latest accredit op, so the account becomes a WoT member: its name is its username, its
+   institution is "Web of Trust", its field is empty, and its membership follows the live vouch
+   count. When those vouches are retracted the account is no longer accredited.
+
+## Scope
+
+1. `broadcastWotAccreditation` broadcasts only when the vouchee has no row in `accred_pinned`,
+   that is, no current, not-sanctioned accredit op of any method. Take that from HAF in the same
+   read that decides eligibility, not from `getAccreditedSet`. `getVouchStatus` already reads
+   `accred_pinned` for the vouchee (the `self_method` subquery in `vouchStatusSelect`), and
+   `pollForVouch` busts that cache entry before the route calls `broadcastWotAccreditation`.
+
+   Carry row presence, not the method value. `self_method` is the op's `method`, which is SQL
+   NULL for an accredit op that carries no method, while `accred_pinned` still holds that account
+   (`activeAccreditationsCteBody` treats an absent method as an authority op). A check on
+   `accreditation_method !== null` alone would broadcast over such an op.
+
+   Why a row means "do not broadcast": an authority-pinned row is accredited, and a `wot` row is
+   already enrolled, with its standing recomputed from the vouch graph on every membership read.
+2. Keep the `hasUnliftedSanction` refusal. A sanctioned account has no `accred_pinned` row, so it
+   still reaches that guard.
+3. Delete the `getPool()` fetch and its `skipped` return that sit between the sanction guard and
+   the `try` block. Nothing reads `pool` there.
+4. `POST /api/wot/vouch` and `POST /api/wot/retract` check `vouchee` for type and length (at most
+   50 characters) only, and their 400 message says it "must be a valid Hive username". Given
+   threshold vouches on chain from accredited accounts that name an arbitrary string, the admin
+   key signs an accredit op whose `account` is that string. Validate `vouchee` with `HIVE_ACCOUNT_NAME_REGEX`
+   (`backend/src/lib/hive-account-name.ts`) in both handlers.
+5. The docblock on `broadcastWotAccreditation` says the broadcast "only fires on the FIRST
+   threshold crossing". Cut that sentence down to what the new guard does. Delete rather than
+   extend.
+
+## Out of scope
+
+- The seconds between a broadcast and HAF indexing it. A second call in that gap can still
+  broadcast. Do not add an in-process guard for it, and do not write a comment that says the gap
+  is closed.
+- `getAccreditedSet` itself and its other callers. The voucher gate on `/vouch` and `/retract`
+  keeps its cached read. `handleAccredit` in `routes/orcid.ts` and the resume probe in
+  `routes/signup-verify.ts` read the same set for the caller's own account and stay as they are.
+- A periodic enrollment sweep. That is `backend-wot-enrollment-has-a-single-trigger`, sequenced
+  behind this task.
+- `VouchStatus.accreditation_method` stays in the response.
+
+## Acceptance criteria
+
+1. With `accredited_accounts_all` warm and lacking the vouchee, an eligible vouchee that holds
+   (a) an authority-pinned accredit op, (b) a `wot` accredit op gets no broadcast. The spec runs
+   the real `getAccreditedSet`, not a mock of it. State in the signal block that the same spec
+   broadcasts in both cases against the code before this change.
+2. An eligible vouchee with no accredit op and no sanction gets exactly one broadcast. A
+   sanctioned vouchee still gets `reason: 'sanctioned'`.
+3. `/vouch` and `/retract` answer 400 for a `vouchee` that fails `HIVE_ACCOUNT_NAME_REGEX`.
+4. Comments follow root `CLAUDE.md` "Comment anchors".
+
+## [TODO Architect] at archive
+
+- State in `ARCHITECTURE.md` § 2 that the WoT auto-accreditation never broadcasts over an
+  existing accredit op.
+- Move `backend-wot-enrollment-has-a-single-trigger` from `blocked/` to `pending/`.
+
+## Backend implementation signal (2026-10-08, commits dc14b5e6, 72e96c3a, e07c3716, 4f47b955; learnings cc3c3498)
+
+Each SHA self-verified with `git merge-base --is-ancestor <sha> main`.
+
+**What landed, per scope item**
+
+1. `vouchStatusSelect` gains `EXISTS (SELECT 1 FROM accred_pinned WHERE account = $N) AS self_pinned`
+   in the same read as eligibility. `getVouchStatus`'s cached value is now an internal
+   `VouchSnapshot` (the public `VouchStatus` plus `self_pinned`), read by `broadcastWotAccreditation`
+   through the private `getVouchSnapshot`. `getVouchStatus` strips the field, so GET
+   `/api/wot/:username` and `vouch_status` on `/vouch` and `/retract` keep their six documented
+   keys: no API shape change (pinned by the spec "leaves self_pinned off the status it returns").
+   The broadcast skips unless `self_pinned === false`. Both the row mapping and the guard fail
+   closed: a mocked row without the column, and a `vouch_status` entry cached by an older build
+   without the field, both skip (one spec each). `getAccreditedSet` is no longer read here; its
+   import is gone.
+2. The `hasUnliftedSanction` refusal stays, after the presence check.
+3. The dead `getPool()` / `skipped` lines are deleted.
+4. `validateVouchee` (body-only, `typeof` plus `HIVE_ACCOUNT_NAME_REGEX`, read through
+   `assertBodyRecord`) is mounted `verifyHiveSignature, validateVouchee, wotWriteLimiter` on both
+   routes, per `solutions/conventions/account-keyed-limiter-after-auth-validator-before-limiter.md`,
+   so a malformed vouchee takes no wot-write slot (pinned on `/retract`). The old in-handler
+   type/length checks are gone. A POST with no JSON body now gets this 400 instead of a 500
+   TypeError (user-approved in triage, 2026-10-08).
+5. The docblock now says the broadcast "is skipped for a vouchee that has an `accred_pinned` row,
+   whatever its method". The "FIRST threshold crossing" sentence is gone. Also narrowed, because
+   this change made them false: the inline already-accredited and sanction-guard comments, the
+   `/vouch` "hits the poll's fresh cache" clause and skipped-arm comment, the `hasUnliftedSanction`
+   docblock's "absent from `getAccreditedSet`" sentence, and the `vouchStatusCacheKey` docblock.
+
+**Acceptance evidence**
+
+- AC1: `wot-broadcast-timeout.test.ts` runs the real `getAccreditedSet`: an `importOriginal` partial
+  mock replaces only `hasUnliftedSanction`. `accredited_accounts_all` is warmed stable with a set
+  lacking the vouchee. With base `9744046d` `src/wot.ts`, the same spec broadcasts (`{ ok: true }`)
+  for the authority-pinned (`email`) case and the `wot` case, and for the method-less case too.
+  Observed in my red run and again in the verification workflow's base-control run. All skip at head.
+- AC2: happy path asserts `toHaveBeenCalledTimes(1)`. The sanctioned spec still returns
+  `reason: 'sanctioned'`.
+- AC3: `Bob`, `a..b`, `ab`, a 17-character name and `bob-` each answer 400 `BAD_REQUEST` on both
+  routes. Old code: `/retract` 403, `/vouch` 500.
+- AC4: the pre-commit anchor gate passed on every commit, and `tests/eslint` is 146/146.
+- Real-Postgres SQL (`wot-vouch-status-select-real-postgres.test.ts`): `self_pinned` is true for a
+  `wot` account with no accredited vouchers and for a method-less op (while `self_method` is null),
+  and false for an unaccredited account and for an accredit op followed by a sanction.
+
+**Verification**
+
+- WoT and related specs: 18 files, 218 tests green with `--retry=0` at 4f47b955.
+- Typecheck clean. Lint shows 0 errors and 1 pre-existing warning in `lib/author-supersession.ts`.
+- Full suite at e07c3716: exit 1, 6 files and 15 specs red, all on the standing red bar
+  (`idempotency-real-haf` 2, `accreditation-idempotency` 6, `papers-enrichment-parity-gate` 1,
+  `profile-auth-bypass` 3, `reviews` 2, `cast-hardening-author-index-weight` 1). No WoT file is red.
+  `accreditation-idempotency` fails identically on a clean HEAD copy.
+- Verification workflow (mutation prober, correctness adversary, comment auditor, one refuter per
+  finding): 11 planted mutants, 10 killed. The survivor swaps the presence and sanction guards and
+  has no observable output change. No path leaks `self_pinned` or broadcasts over an op HAF has
+  already indexed. EXPLAIN on the EXISTS column showed one extra InitPlan over the
+  already-materialized `accred_pinned`.
+- Simplify: `/ce-simplify-code` ran with 3 reviewers. Applied 5: `assertBodyRecord`, a shared
+  `ELIGIBLE_VOUCHES` fixture, a cached-status spec that a cache miss would fail, a dead mock, and a
+  stale comment. Skipped 3: an exported row type, a `pushRow` closure over pre-existing helper
+  lines, and deleting the docblock skip sentence that Scope 5 asks for.
+- Code review: deferred to the architect's `/ce-code-review` at intake (backend role rule).
+
+**User triage (2026-10-08) of verified findings**
+
+- Fixed: the real-Postgres companion's header no longer says `wot-broadcast-timeout` uses its
+  FROM-redirect technique. The body-less POST now gets a 400.
+- Declined, as hardening against a future edit: non-string vouchee specs, a `/vouch` twin of the
+  limiter-slot spec, and pinning the guard order.
+
+**Learnings checkpoint:** `/ce-compound-refresh` Updated
+`conventions/test-haf-sql-selection-redirect-cte-from-synthetic-values-2026-06-09.md` and
+`conventions/vouch-three-senses-consented-not-vouched-2026-06-06.md`, and narrowed the auto-grant
+sentence in CONCEPTS.md "Vouch" and "Vouch Threshold" (cc3c3498, `[skip-zone-audit]`).
+
+The first entry's examples named the deleted `cascadeDiscoverySelect` and a `runDiscovery` helper.
+The second claimed three vouches always trigger a `wot` accredit. `/ce-compound` wrote nothing,
+because both candidates fall below the bar:
+- `RegExp.test` coerces `undefined` to the valid name "undefined". With `assertBodyRecord`'s
+  `unknown`, tsc now rejects any unguarded `.test(vouchee)`.
+- The cached-membership gate lesson is carried by the guard and `VouchSnapshot` comments, plus
+  item 11 of `backend-accreditation-wot-comment-and-dead-code-pass`.
+
+**[TODO Architect] additions**
+
+1. The first bullet of the archive TODO ("never broadcasts over an existing accredit op")
+   overclaims. An accredit op broadcast but not yet indexed has no `accred_pinned` row, so a
+   `/vouch` in that gap still broadcasts, which Out of scope accepts. Suggested § 2 wording: "the WoT
+   auto-accreditation skips any vouchee that HAF shows holding a current, not-sanctioned `accredit`
+   op of any method, and refuses a vouchee with an un-lifted sanction". CONCEPTS.md "Accreditation
+   Method" ("granted automatically once the vouch threshold is crossed") may want the same
+   precondition.
+2. `api-contracts/accreditation.md`: the `/vouch` and `/retract` `BAD_REQUEST` lines should read
+   "`vouchee` missing or not a valid Hive account name". That also covers a request with no JSON body.
+3. Pre-existing doc drift: `ARCHITECTURE.md` § 2 and CONCEPTS.md "Vouch", "Accreditation Authority
+   Whitelist" and "Active Accreditations" say vouches are validated against the live membership
+   view. The code counts them against `accred_pinned` holders (`aa_wot_counts`, `vouchStatusSelect`),
+   which include below-threshold WoT members. The `vouchStatusSelect` docblock says this is
+   deliberate.
+4. For `backend-wot-enrollment-has-a-single-trigger` when it is unblocked: `HIVE_ACCOUNT_NAME_REGEX`
+   is checked only in the route validator. A sweep that feeds HAF-sourced vouchee strings into
+   `broadcastWotAccreditation` needs its own name check.
+5. For `backend-accreditation-release-op`: this guard broadcasts only when `accred_pinned` has no
+   row. If the release exclusion lands in `active_accreditations` only, a released account with
+   threshold vouches keeps its row and is never re-enrolled, contrary to ARCHITECTURE § 2 ("the WoT
+   path re-enrols it"). It must exclude released accounts from `accred_pinned` for that sentence to
+   hold.
+6. Clause (c) gap: no real-path test exercises `hasUnliftedSanction`. Every suite that touches it
+   mocks it.
+
+**Out of scope, for follow-up filing:** `wot-broadcast-timeout.test.ts` still carries two
+pre-existing inaccurate comments ("PrivateKey.fromString(...) runs first", and "Threshold params
+query (update_params): no rows => default 3", where the default actually comes from the rejected
+`pool.connect`).
+
 ## An upload's username mismatch after a cross-tab sign-in signs the new account out (archived 2026-10-08): clean review; Remintable Rejection reason dropped, two pre-existing misreports filed, two items already filed, two dismissed
 
 ### Architect archive note (2026-10-08)
@@ -34,217 +248,3 @@ A reachable sequence: account X starts an upload. `uploadFileToIpfs` (`api.js`) 
 file (`sha256File`) before `authenticatedRequest` reads the JWT for the pre-flight. While
 the file hashes, the user signs in as Y in another tab. The storage event scrubs this tab
 and adopts Y. The pre-flight then sends X's window proof with Y's JWT, and the backend
-answers 403 `username_mismatch`. The upload leg tears down Y's session, which removes the
-stored session and signs Y out in every tab, with "Session inconsistency detected".
-
-The mismatch is the departed subject's, not a corrupted session belonging to Y. The
-retry legs already treat a teardown that landed mid-upload as the departed subject's
-business; the mismatch branches should too.
-
-The broadcast and consent-op mismatch arms are also unguarded, but this sequence does not
-reach them: signer.js reads the token before its first await, and the consent-op `run`
-callbacks call the API directly. Check this before deciding whether they need the same
-treatment; do not change them on symmetry alone.
-
-## Scope
-
-1. A `username_mismatch` surfacing on any upload leg after the guard reads torn-down must
-   not end the session the tab now holds. It unwinds the way the retry legs' torn-down
-   branch does (`guard.cancel()`, then the subject-change code).
-2. A mismatch while the guard is NOT torn down keeps today's behaviour (tear the session
-   down, `UPLOAD_SESSION_TORN_DOWN`).
-3. Update the comments that describe the mismatch branches and
-   `handleSessionInconsistency`'s new-session caveat so they match, without line
-   numbers, slugs or round ordinals.
-4. Pin both halves with unit tests: a mismatch after a teardown leaves the new session
-   connected and resolves the subject-change code; a mismatch without a teardown still
-   tears down. Use the real guard and the real window where the existing upload suites
-   already do.
-
-## Acceptance criteria
-
-1. The sequence in "Why" no longer disconnects the new account; the user sees the
-   subject-change outcome, once.
-2. A same-subject mismatch still tears the session down exactly as before.
-3. Both halves are pinned by tests that fail if the torn-down check is removed.
-4. Full frontend unit suite green; `npm run build` clean.
-
-## Notes
-
-`ui-session-inconsistency-report-idempotency` (in review at filing) changes how a second
-detector behaves once the store is already disconnected. This task covers a different
-case, a store connected as a different subject, and should compose with whichever way
-that task lands. Check the state of `handleSessionInconsistency` on main before starting.
-
-## UI implementation signal (2026-10-07, commits ffbfce29, 083e2577)
-
-Both SHAs verified on `main` with `git merge-base --is-ancestor`.
-
-- **ffbfce29** `ui(upload): a mismatch after a subject change no longer signs the new account out`.
-  `tornDownSession()` becomes `mismatchError(guard)` in `lib/ipfs-upload.js`, called from both
-  upload catch sites (`uploadFile` and `retryOnce`). When the guard reads torn-down it returns
-  `subjectChangedError(guard)` (`guard.cancel()`, then `UPLOAD_SUBJECT_CHANGED`), the same helper
-  `retryOnce`'s torn-down prologue now uses. Otherwise it keeps `handleSessionInconsistency()` plus
-  `UPLOAD_SESSION_TORN_DOWN`.
-- **083e2577** `ui(learnings): narrow the macrotask-boundary entry's coverage claim [skip-zone-audit]`.
-  This is the learnings checkpoint (see the last line of this block).
-
-**Acceptance criteria**
-
-1. The "Why" sequence no longer disconnects the new account, and the user gets one subject-change
-   message. Two tests pin this:
-   - `a mismatch after a cross-tab sign-in as another account leaves that account signed in`
-     (`lib-ipfs-upload-real-window.test.js`, real guard and real window).
-   - `a sign-in as another account inside the PDF pre-flight, answered username_mismatch, leaves
-     that account signed in` (`pages-publish-batch-teardown.test.js`). It runs the real auth store,
-     its storage-event handler and scrub, and the real publish page, and checks that the store stays
-     `mallory`, the stored session survives, and the messages are `[TEARDOWN_MESSAGE]`.
-2. A same-subject mismatch still tears down. The existing `a mismatched session tears down instead
-   of reporting a generic failure` and both retry-leg mismatch tests are unchanged. The first
-   upload in `two uploads detecting the same corrupted session ...` still gets
-   `UPLOAD_SESSION_TORN_DOWN`, with one disconnect and the inconsistency message.
-3. Both halves are pinned. Mutation probes ran in scratchpad copies against a green baseline, and
-   every mutant was killed:
-   - Removing the guard check fails 6 tests, including both cross-tab cases and the three new
-     per-leg torn-down tests in `lib-ipfs-upload.test.js`.
-   - Always taking the subject-change path fails 4 (the same-subject half).
-   - Unguarding only the retry leg fails 2. Unguarding only the first attempt fails 3.
-   - Dropping the cancel in `subjectChangedError` fails 7.
-   - Returning `UPLOAD_SESSION_TORN_DOWN` on the torn-down branch fails 5.
-4. Full frontend unit suite: 98 files, 2297 tests, exit 0. `npm run build` is clean (only the
-   standing dhive `eval` and chunk-size warnings).
-
-**Notes**
-
-- **Changed expectation.** In the real-window `two uploads ...` test, the second upload now expects
-  `UPLOAD_SUBJECT_CHANGED`. The first detector's disconnect bumps the generation, so the second
-  guard reads torn-down. Both codes describe to `null`, and the disconnect and message counts are
-  unchanged. `handleSessionInconsistency` on main already has the repeat-detection behaviour
-  (790eee0e), and this composes with it.
-- **Broadcast and consent-op arms: checked, left unchanged.**
-  - Broadcast: `broadcastWithFreshAuth` calls `signer.js` `broadcastOps`, which reads `auth.token`
-    before its first await.
-  - Consent-op: `mintViaPasswordFactor` re-checks the guard after the mint await. Every `run`
-    callback (four in `settings.js`, plus `admin.js` and `paper-detail.js`) calls
-    `authenticatedRequest` or `broadcastOps`, and both read the token synchronously.
-  - So the hash-gap sequence reaches neither arm. Out-of-scope finding 1 is a different sequence
-    that reaches all three arms; its fix belongs at the write site, not in the arms.
-- **Comments.**
-  - Rewritten or narrowed: the `mismatchError` and `retryOnce` docblocks, the `uploadFile` catch
-    comment, and the `UPLOAD_SUBJECT_CHANGED` docblock ("a subject teardown" instead of "a
-    cross-tab subject change").
-  - `handleSessionInconsistency`: the new-session caveat gained one sentence naming the upload
-    surface's guard read.
-  - `isUsernameMismatch`: narrowed to "no leg treats that as a retryable re-auth failure".
-  - Real-window suite header, clause-a: narrowed to "every `api.js` export mocked here performs a
-    real fetch()". Its `alpinejs` mock made the old wording false.
-- **Verification before commit.**
-  - Adversarial workflow: four lenses (correctness, comment truth, sibling arms, test quality), two
-    refuters per finding. The correctness lens found no defect. In-scope findings were fixed before
-    the commit: a stale "stale under a subject change" test comment, the cross-tab case moved out of
-    the "corrupted session" describe, the store-state matcher made able to fail, the real-store page
-    case added, and the `mismatchError` re-mint claim deleted.
-  - `/ce-simplify` applied the shared `subjectChangedError`, the real `ApiRequestError` in the page
-    test, and comment trims. Skipped: two optional new test helpers and a rename.
-
-**Out-of-scope findings, for follow-up filing**
-
-1. **Medium, pre-existing.** `pages/orcid-callback.js` `_verify` writes a departed subject's proof.
-   - `await completeOrcid(...)` mints for X, the `/start` user.
-   - A cross-tab sign-in as Y during that round-trip scrubs both proof slots.
-   - `_handleSessionAuth` / `_handleFreshAuth` then call `cacheSessionProof` /
-     `cacheConsentOpProof` with no guard.
-   - Y's next broadcast, upload, or consent op on the same target opens a fresh guard, which is not
-     torn down. It meets `username_mismatch`, and `handleSessionInconsistency` signs Y out in every
-     tab.
-   - A verifier probe reproduced this on all three surfaces.
-   - Suggested ui task: `_verify` opens a `subjectTeardownGuard()` before `completeOrcid`. For the
-     `session_auth` and `fresh_auth` modes it skips the cache write when the guard reads torn-down.
-2. **Low, docs, architect-owned.** `CONCEPTS.md` "Remintable Rejection" says a mismatch "means the
-   session is corrupt and a fresh proof would be rejected the same way". That rationale is false
-   for a mismatch after a subject change: a fresh proof minted under the new JWT would be accepted.
-   Terminal still holds, because no retry on that pair can succeed. Suggest narrowing the reason.
-3. **Low, pre-existing.** A self-custody upload with a cross-tab sign-in as a light account in the
-   hash gap misreports. `uploadFileToIpfs` reads `auth.custody` after hashing and throws
-   `FRESH_AUTH_REQUIRED`/`missing` client-side. `uploadFile`'s self-custody branch only consults
-   `unwindIfSessionEnded`, so the error surfaces as "upload failed" with no subject-change message.
-   The reverse direction (light to self) signs with Keychain as the departed username.
-4. **Low, pre-existing.** A subject change between the pre-flight and the transfer, with an
-   unaccredited successor: the transfer answers 403 `FORBIDDEN`, which is rethrown raw as "upload
-   failed".
-5. **Low, pre-existing.** In `tests/unit/pages-publish.test.js`, the `describeUploadError` mock says
-   it "Mirrors the real mapper" but maps only `UPLOAD_SESSION_TORN_DOWN` to null. It is harmless
-   today because that suite mocks `uploadFile`.
-
-**Learnings checkpoint**
-
-- `/ce-compound-refresh` (Update) ran on
-  `await-is-not-a-teardown-boundary-unless-it-yields-to-a-macrotask-2026-09-03.md` and landed in
-  083e2577. It deleted "which is exactly the set of points the code already checks". The upload's
-  hash await was an unchecked real I/O point.
-- `guard-report-dedupes-per-event-not-per-holder-2026-09-02.md` was checked and still holds:
-  `mismatchError`'s torn-down cancel follows its "speaks because nothing below will" rule.
-- No new entry. The rationale lives in `mismatchError`'s docblock and the ffbfce29 message.
-
-## Light accounts can vouch and retract a vouch on the profile page (archived 2026-10-08): clean review; one P3 filed as a follow-up, stale contract prose fixed, route comment folded, composer task unblocked
-
-### Architect archive note (2026-10-08)
-
-- **Review:** `/ce-code-review` full path on `f3cc369e` and `c064b5ea` (branch-remote, base `e5eec2ff`): correctness, security, adversarial (in-process, no cross-model peer), project-standards, testing, julik-frontend-races, learnings. Verdict "Ready to merge"; every scope item and AC met. Account-state defense review clean: states A, B and C reach the custody route under a session-kind proof, state D and a stale light JWT fail closed, and the voucher is bound server-side. Testing re-ran the signal's seven per-site mutants, all killed (the orchestrator checked each planted mutant against the brief); baseline 24/24.
-- **Triage (user: "approved" as recommended):**
-  - Filed: a 403-refused vouch notify shows success-pending copy (P3, validator-confirmed, incidence not measured; unaccredited Keychain viewers already reached it), plus the ignored `accreditation_outcome` timeout and chain-error copy -> `ui-vouch-notify-refusal-shows-success-copy` (normal). Narrowed at filing to the vouch handler: the vouch status read lists only accredited vouchers, so `canRetract` is false for a voucher outside the accredited set, and the retract twin is out of scope.
-  - Fixed in place: `api-contracts/common.md` "What Still Requires Keychain" now names both signing paths, and `accreditation.md`'s two notify sentences drop "via Hive Keychain" (`443e06dd`).
-  - Folded: the `POST /vouch` route comment in `routes/wot.ts` ("via Hive Keychain") -> `backend-wot-comments-cite-deleted-retract-suite`.
-  - Unblocked: `ui-composer-surfaces-navigate-over-undrafted-work` moved to `pending/`, as its 2026-10-01 sequencing note prescribed.
-  - Dismissed: no spec runs the handlers under light custody and none mounts the profile template (speculative: the handlers read no custody and the template binds the tested getters directly). The lost-notify auto-accreditation gap is covered by `backend-wot-enrollment-has-a-single-trigger`. The global re-auth modal outliving an SPA navigation is shared with votes and comments, user-started and password-gated.
-- **Learnings checkpoint:** no `solutions/` entry names `isLightAccount` or `wot.keychainRequiredToVouch` or claims light accounts cannot vouch (learnings reviewer grep), so none is contradicted. No new entry: the one finding is a plain bug, filed as a task.
-
-**Owner:** ui
-**Created:** 2026-10-01
-**Priority:** normal
-
-## Why
-
-Light accounts are meant to vouch (user decision, 2026-10-01). The profile page hides both
-forms from them: `canVouch` and `canRetract` in `frontend/src/components/vouch-section.js` carry
-`!this.isLightAccount`, and `frontend/src/pages/profile.js` renders `wot.keychainRequiredToVouch`
-in their place. That block only mirrored the custody broadcast's refusal, which
-`backend-custody-admits-vouch-and-retract` lifts.
-
-The handlers need no new broadcast path. `handleVouch` and `handleRetract` already go through
-`broadcastWithFreshAuth`, which takes a light account through the session window and the custody
-route (`ARCHITECTURE.md` § 6.4, the non-consent broadcast row, which now names vouches).
-
-## Scope
-
-1. Drop `!this.isLightAccount` from `canVouch` and `canRetract`. Remove the `isLightAccount`
-   getter if nothing else reads it.
-2. Remove the light-account message branch in `profile.js` and the `wot.keychainRequiredToVouch`
-   key from all 16 locale files under `frontend/public/messages/` (`STUBS.md` has no line for
-   it).
-3. Flip the two specs in `frontend/tests/unit/components-vouch-section.test.js` that pin the
-   light-account refusal: a light account now passes `canVouch` and `canRetract` under the same
-   other conditions as a Keychain account.
-
-## Out of scope
-
-- Keeping the relationship choice and the retraction reason across a passwordless account's
-  ORCID round-trip. `ui-composer-surfaces-navigate-over-undrafted-work` covers that, after this
-  task.
-- The retract handler's branches on `revocation_outcome` values the backend no longer returns.
-
-## Acceptance criteria
-
-1. A light account sees the vouch form on an unaccredited profile it has not vouched for, and the
-   retract control on one it has, and both handlers broadcast through the custody route.
-2. The self, already-vouched and accredited-target conditions still hide the vouch form for a
-   light account.
-3. No locale file carries `wot.keychainRequiredToVouch`.
-4. Each assertion is probed by reverting its own site; list probe and spec in the signal block.
-5. New comments follow root `CLAUDE.md` "Comment anchors".
-
-## [BLOCKED by Architect] (2026-10-01) — sequenced behind the backend task
-
-Until `backend-custody-admits-vouch-and-retract` lands, a light account that submits a vouch gets
-403 from the custody route and sees "Vouch failed". The architect moves this file to `pending/`
-once that task is archived.
