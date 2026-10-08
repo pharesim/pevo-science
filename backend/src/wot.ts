@@ -13,7 +13,7 @@ import pg from 'pg';
 import { getPool } from './db.js';
 import { broadcastAdminCustomJson, BroadcastTimeoutError } from './hive.js';
 import { config } from './config.js';
-import { hasUnliftedSanction } from './accreditation.js';
+import { readSanctionState } from './accreditation.js';
 import { seedAccreditationBonus } from './reputation.js';
 import { logger } from './logger.js';
 import { hafCache } from './cache.js';
@@ -284,9 +284,9 @@ function getVouchSnapshot(username: string): Promise<VouchSnapshot | null> {
  * Called after a new vouch is observed.
  *
  * Returns a tagged union surfacing the broadcast outcome so the caller can
- * distinguish "not eligible / already holds an accredit op / admin key missing"
- * (`reason: 'skipped'`) and "refused because the account is sanctioned"
- * (`reason: 'sanctioned'`) from an actual broadcast failure
+ * distinguish "not eligible / already holds an accredit op / admin key missing /
+ * a HAF read failed" (`reason: 'skipped'`) and "refused because the account is
+ * sanctioned" (`reason: 'sanctioned'`) from an actual broadcast failure
  * (`reason: 'timeout'` or `reason: 'chain_error'`). A timeout outcome means
  * the broadcast MAY have landed on chain — the caller should surface a
  * degraded-state warning rather than retry blindly.
@@ -316,8 +316,10 @@ export async function broadcastWotAccreditation(vouchee: string): Promise<WotAcc
   // the presence check cannot tell it from a never-enrolled account. Vouches
   // must not re-admit an un-lifted sanction — only a deliberate authority
   // `accredit` lifts it. Refuse the auto-accreditation broadcast for a
-  // sanctioned account.
-  if (await hasUnliftedSanction(vouchee)) {
+  // sanctioned account, and skip it when the sanction read could not be made.
+  const sanction = await readSanctionState(vouchee);
+  if (sanction === 'haf_unavailable') return { ok: false, reason: 'skipped' };
+  if (sanction === 'sanctioned') {
     logger.info({ vouchee }, 'WoT auto-accreditation refused — account has an un-lifted sanction');
     return { ok: false, reason: 'sanctioned' };
   }

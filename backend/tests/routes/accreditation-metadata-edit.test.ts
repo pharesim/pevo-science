@@ -15,7 +15,7 @@
  *         keypair (the live chain does not seed test accounts with this keypair).
  *       - `broadcastAdminCustomJson` is stubbed so the post-auth positive reaches
  *         a deterministic 200 without broadcasting; it is downstream of both gates.
- *       - `getAccreditedSet` / `getLatestAccreditOp` / `hasUnliftedSanction`
+ *       - `getAccreditedSet` / `getLatestAccreditOp` / `readSanctionState`
  *         (membership / op / sanction reads, NOT auth) are stubbed so the
  *         eligibility guards + merge run deterministically without seeding a
  *         live-HAF accredited graph for a synthetic username. The JWT-path proof
@@ -34,12 +34,12 @@ import request from 'supertest';
 import { PrivateKey } from '@hiveio/dhive';
 import jwt from 'jsonwebtoken';
 
-const { getAccountsMock, broadcastAdminMock, getAccreditedSetMock, getLatestAccreditOpMock, hasUnliftedSanctionMock } = vi.hoisted(() => ({
+const { getAccountsMock, broadcastAdminMock, getAccreditedSetMock, getLatestAccreditOpMock, readSanctionStateMock } = vi.hoisted(() => ({
   getAccountsMock: vi.fn(),
   broadcastAdminMock: vi.fn(async (_payload: Record<string, unknown>) => ({ id: 'txedit' })),
   getAccreditedSetMock: vi.fn(),
   getLatestAccreditOpMock: vi.fn(),
-  hasUnliftedSanctionMock: vi.fn(),
+  readSanctionStateMock: vi.fn(),
 }));
 
 vi.mock('../../src/hive.js', async () => {
@@ -64,7 +64,7 @@ vi.mock('../../src/accreditation.js', async () => {
     ...actual,
     getAccreditedSet: getAccreditedSetMock,
     getLatestAccreditOp: getLatestAccreditOpMock,
-    hasUnliftedSanction: hasUnliftedSanctionMock,
+    readSanctionState: readSanctionStateMock,
   };
 });
 
@@ -117,7 +117,7 @@ describe.skipIf(!redisReachable)('PATCH /api/accreditation/metadata — real ver
     broadcastAdminMock.mockReset().mockResolvedValue({ id: 'txedit' });
     getAccreditedSetMock.mockReset().mockResolvedValue(new Set([USER]));
     getLatestAccreditOpMock.mockReset().mockResolvedValue({ ...PRIOR });
-    hasUnliftedSanctionMock.mockReset().mockResolvedValue(false);
+    readSanctionStateMock.mockReset().mockResolvedValue('not_sanctioned');
     // Reset the per-account edit limiter (max 5/60s, no skipFailedRequests) so
     // each spec starts with a fresh budget — this file fires more than 5 edit
     // requests for the same account across its specs.
@@ -180,7 +180,7 @@ describe.skipIf(!redisReachable)('PATCH /api/accreditation/metadata — real ver
   it('rejects a not-currently-accredited caller with 403 and does not broadcast', async () => {
     // An empty getAccreditedSet models "not a current member" (never accredited or
     // below-threshold WoT). The dedicated sanctioned-account case (caught by the
-    // non-cached hasUnliftedSanction check) has its own spec below.
+    // non-cached readSanctionState read) has its own spec below.
     getAccreditedSetMock.mockResolvedValue(new Set<string>());
     const path = '/api/accreditation/metadata';
     const body = { institution: 'New University' };
@@ -252,9 +252,9 @@ describe.skipIf(!redisReachable)('PATCH /api/accreditation/metadata — real ver
 
   it('rejects a sanctioned caller with 403 ACCREDITATION_SANCTIONED before any proof or broadcast', async () => {
     // getAccreditedSet (cached, 10-min TTL) can still report a freshly-sanctioned
-    // account as a member; the non-cached hasUnliftedSanction is what refuses it.
+    // account as a member; the non-cached readSanctionState is what refuses it.
     // Membership is left as a member so the sanction check is the gate that fires.
-    hasUnliftedSanctionMock.mockResolvedValue(true);
+    readSanctionStateMock.mockResolvedValue('sanctioned');
     const path = '/api/accreditation/metadata';
     const body = { institution: 'New University' };
     const timestamp = new Date().toISOString();
@@ -353,6 +353,29 @@ describe.skipIf(!redisReachable)('PATCH /api/accreditation/metadata — real ver
 
     // The SAME proof now succeeds once HAF recovers (the next op-read uses the
     // beforeEach default) — proving the proof was not spent on the 503 above.
+    const res2 = await request(app)
+      .patch('/api/accreditation/metadata')
+      .set('Authorization', `Bearer ${sessionJwt}`)
+      .send({ institution: 'New University', fresh_auth_proof: token });
+    expect(res2.status).toBe(200);
+    expect(broadcastAdminMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('JWT path: a sanction read that cannot be made returns a retriable 503 (not 403) WITHOUT burning the proof', async () => {
+    const { token } = await issueFreshAuthToken(USER, 'password', editAccreditationMetadataFreshAuthTarget(USER));
+    const sessionJwt = jwt.sign({ sub: USER, custody: 'light', iat: Math.floor(Date.now() / 1000) }, config.sessionSecret);
+
+    readSanctionStateMock.mockResolvedValueOnce('haf_unavailable');
+    const res1 = await request(app)
+      .patch('/api/accreditation/metadata')
+      .set('Authorization', `Bearer ${sessionJwt}`)
+      .send({ institution: 'New University', fresh_auth_proof: token });
+    expect(res1.status).toBe(503);
+    expect(res1.body.error).toMatchObject({ code: 'SERVICE_UNAVAILABLE', details: { retriable: true } });
+    expect(res1.body.error.message.toLowerCase()).not.toContain('sanction');
+    expect(res1.headers['retry-after']).toBe('30');
+    expect(broadcastAdminMock).not.toHaveBeenCalled();
+
     const res2 = await request(app)
       .patch('/api/accreditation/metadata')
       .set('Authorization', `Bearer ${sessionJwt}`)

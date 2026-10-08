@@ -92,17 +92,19 @@ import { PrivateKey } from '@hiveio/dhive';
 // Confirmed STILL UNMOCKED for the new specs (per root CLAUDE.md carve-out):
 // verifyHiveSignature, the rest of the auth middleware chain, the real Redis
 // client (lock/cache keys are observed via live redis.get / redis.set calls
-// in the test body). The mocked set is: the database pools (db.js getPool /
-// isHafConfigured -> true / no-op closeHafPool; app-db.js getAppPool); the
+// in the test body). The mocked set is: the database pools (db.js getPool,
+// null while a spec sets hafPoolAbsent / isHafConfigured -> true / no-op
+// closeHafPool; app-db.js getAppPool); the
 // hive.js factory, covering the broadcast seams (broadcast.json,
 // broadcastJsonWithTimeout, broadcastAdminCustomJson — all routed through
 // the one broadcastJsonMock) plus the hiveClient.database.getAccounts -> []
 // read stub and the BroadcastTimeoutError / DEFAULT_BROADCAST_TIMEOUT_MS
 // stand-ins; and accreditation.js getAccreditedSet (stubbed to an empty
-// accredited set) plus hasUnliftedSanction (stubbed false by default; one spec
-// drives it true for the sanctioned-refusal path), with
-// SANCTIONED_ACCREDIT_MESSAGE pulled from the real module via importActual so
-// the message assertions track the live export. (The fifth vi.mock,
+// accredited set) plus readSanctionState (stubbed 'not_sanctioned' by default;
+// the ever-sanctioned guard specs drive it to 'sanctioned' or hand it to the
+// real function over the mocked HAF pool), with SANCTIONED_ACCREDIT_MESSAGE and
+// SANCTION_READ_UNAVAILABLE_MESSAGE pulled from the real module via
+// importActual so the message assertions track the live export. (The fifth vi.mock,
 // verifyHiveSignature.js, is a delegating wrapper, not a stub — see the
 // verifyHiveSignature.js vi.mock factory's note.) That scope keeps the real
 // verifyHiveSignature auth gate unmocked and does not widen the mock set here.
@@ -123,11 +125,13 @@ const {
   broadcastJsonMock,
   MockBroadcastTimeoutError,
   verifyHiveSignatureFailureToken,
-  hasUnliftedSanctionMock,
+  readSanctionStateMock,
+  hafPoolAbsent,
 } = vi.hoisted(() => {
   const _appQueryMock = vi.fn().mockResolvedValue({ rows: [] });
   return {
-    hasUnliftedSanctionMock: vi.fn().mockResolvedValue(false),
+    readSanctionStateMock: vi.fn().mockResolvedValue('not_sanctioned'),
+    hafPoolAbsent: { value: false },
     hafQueryMock: vi.fn().mockResolvedValue({ rows: [] }),
     appQueryMock: _appQueryMock,
     getAppPoolMock: vi.fn(() => ({ query: _appQueryMock })),
@@ -151,7 +155,7 @@ const {
 });
 
 vi.mock('../../src/db.js', () => ({
-  getPool: () => ({ query: hafQueryMock }),
+  getPool: () => (hafPoolAbsent.value ? null : { query: hafQueryMock }),
   isHafConfigured: () => true,
   closeHafPool: async () => { /* no-op */ },
 }));
@@ -191,8 +195,9 @@ vi.mock('../../src/accreditation.js', async () => {
   const actual = await vi.importActual<typeof import('../../src/accreditation.js')>('../../src/accreditation.js');
   return {
     getAccreditedSet: vi.fn().mockResolvedValue(new Set()),
-    hasUnliftedSanction: hasUnliftedSanctionMock,
+    readSanctionState: readSanctionStateMock,
     SANCTIONED_ACCREDIT_MESSAGE: actual.SANCTIONED_ACCREDIT_MESSAGE,
+    SANCTION_READ_UNAVAILABLE_MESSAGE: actual.SANCTION_READ_UNAVAILABLE_MESSAGE,
   };
 });
 
@@ -319,7 +324,8 @@ function installOrcidFetchStub(opts: OrcidStubOpts): void {
 }
 
 beforeEach(async () => {
-  hasUnliftedSanctionMock.mockReset().mockResolvedValue(false);
+  readSanctionStateMock.mockReset().mockResolvedValue('not_sanctioned');
+  hafPoolAbsent.value = false;
   hafQueryMock.mockReset().mockResolvedValue({ rows: [] });
   appQueryMock.mockReset().mockResolvedValue({ rows: [] });
   // Reset getAppPoolMock to the default-pool factory between tests so a spec
@@ -749,7 +755,7 @@ describe('POST /api/orcid/callback — ever-sanctioned guard', () => {
     // only a deliberate admin accredit lifts it. The guard runs after the
     // already-accredited check and before the works gate, so it fires regardless
     // of works count, without leaking the moderation reason.
-    hasUnliftedSanctionMock.mockResolvedValue(true);
+    readSanctionStateMock.mockResolvedValue('sanctioned');
     installOrcidFetchStub({ orcid: '0000-0001-2222-0099', name: 'Alice', works: 10 });
     const state = await startAuthed('accredit', 'alice');
     const res = await request(app)
@@ -759,6 +765,27 @@ describe('POST /api/orcid/callback — ever-sanctioned guard', () => {
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('ACCREDITATION_SANCTIONED');
     expect(res.body.error.message.toLowerCase()).not.toContain('sanction');
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the sanction query fails', () => { hafQueryMock.mockRejectedValueOnce(new Error('HAF connection terminated')); }],
+    ['there is no HAF pool', () => { hafPoolAbsent.value = true; }],
+  ])('answers a retriable 503 when %s (no broadcast)', async (_label, breakHaf) => {
+    const { readSanctionState } = await vi.importActual<typeof import('../../src/accreditation.js')>('../../src/accreditation.js');
+    readSanctionStateMock.mockImplementation(readSanctionState);
+    installOrcidFetchStub({ orcid: '0000-0001-2222-0098', name: 'Alice', works: 10 });
+    const state = await startAuthed('accredit', 'alice');
+    breakHaf();
+    const res = await request(app)
+      .post('/api/orcid/callback')
+      .set('Authorization', `Bearer ${jwtFor('alice')}`)
+      .send({ code: 'fake', state });
+    expect(res.status).toBe(503);
+    expect(res.body.error).toMatchObject({ code: 'SERVICE_UNAVAILABLE', details: { retriable: true } });
+    expect(res.body.error.message.toLowerCase()).not.toContain('sanction');
+    expect(res.headers['retry-after']).toBe('30');
+    expect(readSanctionStateMock).toHaveBeenCalledWith('alice');
     expect(broadcastJsonMock).not.toHaveBeenCalled();
   });
 });

@@ -71,7 +71,7 @@ vi.mock('../../src/hive.js', () => ({
 const { hafQueryMock, hafConfiguredFlag } = vi.hoisted(() => ({
   hafQueryMock: vi.fn(),
   // Mutable container lets individual tests flip configuration presence
-  // (the HAF-unconfigured idempotency-degraded spec) without re-mocking
+  // (the HAF-unconfigured spec) without re-mocking
   // the module.
   hafConfiguredFlag: { value: true },
 }));
@@ -335,7 +335,7 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     }
   });
 
-  it('HAF unconfigured — broadcast still fires + idempotency_haf_unconfigured warn', async () => {
+  it('HAF unconfigured — retriable 503, no broadcast, token kept + haf_unconfigured warn', async () => {
     const redis = getRedis();
     if (!redis) return;
     const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
@@ -347,17 +347,20 @@ describe('accreditation /verify — idempotency hit (Option A.4)', () => {
     try {
       const res = await postVerify(token, username);
 
-      expect(res.status).toBe(200);
-      expect(res.body.data.tx_id).toBe('fresh-accred-tx-id');
-      // No HAF call because isHafConfigured() returned false.
+      // Without HAF the sanction read cannot run, so nothing broadcasts.
+      expect(res.status).toBe(503);
+      expect(res.body.error).toMatchObject({ code: 'SERVICE_UNAVAILABLE', details: { retriable: true } });
+      expect(res.headers['retry-after']).toBe('30');
       expect(hafQueryMock).not.toHaveBeenCalled();
-      expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
-      // Event discriminator is `_haf_unconfigured`, not `_haf_unavailable`.
+      expect(broadcastJsonMock).not.toHaveBeenCalled();
+      expect(await tokenExists(token)).toBe(true);
+      const counter = await readBroadcastAttemptsCounter(token);
+      expect(counter === null || counter === 0).toBe(true);
       const matchingCall = warnSpy.mock.calls.find((call) => {
         const ctx = call[0] as Record<string, unknown> | undefined;
-        return ctx?.event === 'accreditation.verify.idempotency_haf_unconfigured';
+        return ctx?.event === 'accreditation.verify.haf_unconfigured';
       });
-      expect(matchingCall, 'expected idempotency_haf_unconfigured warn').toBeDefined();
+      expect(matchingCall, 'expected haf_unconfigured warn').toBeDefined();
     } finally {
       warnSpy.mockRestore();
     }
@@ -844,6 +847,30 @@ describe('accreditation /verify — existing-accreditation gate (user-level)', (
       expect(hafQueryMock).toHaveBeenCalledTimes(1);
     },
   );
+
+  it('sanction read throws → retriable 503 SERVICE_UNAVAILABLE, token kept, no broadcast, no cap INCR', async () => {
+    const redis = getRedis();
+    if (!redis) return;
+    const token = `accred-idem-${crypto.randomBytes(8).toString('hex')}`;
+    const username = 'sanctionreadthrows';
+    await seedPendingAccreditation(token, username);
+
+    // Gate miss, then the sanction read's query fails.
+    hafQueryMock.mockResolvedValueOnce({ rows: [] });
+    hafQueryMock.mockRejectedValueOnce(new Error('haf connection drop'));
+
+    const res = await postVerify(token, username);
+
+    expect(res.status).toBe(503);
+    expect(res.body.error).toMatchObject({ code: 'SERVICE_UNAVAILABLE', details: { retriable: true } });
+    expect(res.body.error.message.toLowerCase()).not.toContain('sanction');
+    expect(res.headers['retry-after']).toBe('30');
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+    expect(hafQueryMock).toHaveBeenCalledTimes(2);
+    expect(await tokenExists(token)).toBe(true);
+    const counter = await readBroadcastAttemptsCounter(token);
+    expect(counter === null || counter === 0).toBe(true);
+  });
 
   // A wot accredit after a sanction does not lift it, so the sanction guard
   // refuses once the gate has fallen through.

@@ -7,7 +7,13 @@ import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { validate, accreditationMetadataEditSchema } from '../validation.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
-import { getAccreditedSet, getLatestAccreditOp, hasUnliftedSanction, SANCTIONED_ACCREDIT_MESSAGE } from '../accreditation.js';
+import {
+  getAccreditedSet,
+  getLatestAccreditOp,
+  readSanctionState,
+  SANCTIONED_ACCREDIT_MESSAGE,
+  SANCTION_READ_UNAVAILABLE_MESSAGE,
+} from '../accreditation.js';
 import { getAppPool } from '../app-db.js';
 import { consumeFreshAuthProof, editAccreditationMetadataFreshAuthTarget } from '../lib/fresh-auth.js';
 import { logger } from '../logger.js';
@@ -32,7 +38,7 @@ const accreditationEditLimiter = rateLimit({ name: 'accred-edit', windowMs: 60_0
 // steps before any proof is consumed or broadcast: (1) the latest accredit op
 // loads (also the upstream HAF-reachability gate — a HAF outage here is a
 // retriable 503, not a misleading 403); (2) currently-accredited membership via
-// getAccreditedSet; (3) a non-cached hasUnliftedSanction check that closes the
+// getAccreditedSet; (3) a non-cached readSanctionState read that closes the
 // membership cache's staleness window so a freshly-sanctioned account cannot
 // self-lift. Critical action per ARCHITECTURE.md §6.4 / §6.5 invariant #1: a
 // fresh re-auth proof is required, NOT a JWT alone. The tenure anchor
@@ -66,15 +72,14 @@ router.patch(
     // TTL) can answer WITHOUT touching HAF at all, and the reads run as
     // independent queries — a HAF blip (or a reaped pgbouncer connection) AFTER
     // this op-read succeeds can fail a later read. getAccreditedSet then
-    // safe-fails to empty and hasUnliftedSanction fail-closes to "sanctioned", so
-    // a legitimately-eligible caller transiently gets a misleading 403 (FORBIDDEN
-    // or ACCREDITATION_SANCTIONED) instead of the retriable 503 the op-read path
+    // safe-fails to empty, so a legitimately-eligible caller transiently gets a
+    // misleading 403 FORBIDDEN instead of the retriable 503 the op-read path
     // returns. This is an ACCEPTED, self-correcting tradeoff: it stays fail-closed
     // (no broadcast, the proof is not consumed) and resolves on the client's next
-    // retry once HAF recovers. Surfacing the 503 distinction on these reads would
-    // require throwing variants of getAccreditedSet / hasUnliftedSanction, whose
-    // safe-fail / fail-closed contracts are relied on broadly by other callers and
-    // are deliberately left unchanged.
+    // retry once HAF recovers. Surfacing the 503 distinction on that read would
+    // require a throwing variant of getAccreditedSet, whose safe-fail contract is
+    // relied on broadly by other callers and is deliberately left unchanged. A
+    // failed sanction read answers the retriable 503 itself.
     let prior: Awaited<ReturnType<typeof getLatestAccreditOp>>;
     try {
       prior = await getLatestAccreditOp(username);
@@ -103,8 +108,7 @@ router.patch(
     // HAF artifact. Both resolve to a fail-closed 403 under the same ACCEPTED,
     // self-correcting tradeoff the op-read block documents above: no broadcast, the
     // proof is not consumed, and a real member's next retry succeeds once HAF
-    // recovers. The hasUnliftedSanction check below shares this tradeoff (it
-    // fail-closes to "sanctioned", likewise a fail-closed 403 on a HAF blip).
+    // recovers.
     const accreditedSet = await getAccreditedSet([username]);
     if (!accreditedSet.has(username)) {
       return sendError(
@@ -118,11 +122,17 @@ router.patch(
     // Non-cached sanction check. getAccreditedSet's fast path reads the
     // accredited_accounts_all cache (10-min TTL), so a freshly-sanctioned account
     // can still pass the membership check during the staleness window. The
-    // uncached, fail-closed hasUnliftedSanction closes that window: a sanctioned
-    // account is refused before any proof is consumed or op broadcast, so a later
-    // self-service accredit cannot lift its own sticky sanction. Placed AFTER the
-    // currently-accredited check and BEFORE consuming the proof.
-    if (await hasUnliftedSanction(username)) {
+    // uncached readSanctionState closes that window: a sanctioned account is
+    // refused before any proof is consumed or op broadcast, so a later
+    // self-service accredit cannot lift its own sticky sanction. A read that
+    // could not be made answers a retriable 503, likewise before the proof.
+    // Placed AFTER the currently-accredited check and BEFORE consuming the proof.
+    const sanction = await readSanctionState(username);
+    if (sanction === 'haf_unavailable') {
+      res.set('Retry-After', '30');
+      return sendError(res, 503, 'SERVICE_UNAVAILABLE', SANCTION_READ_UNAVAILABLE_MESSAGE, { retriable: true });
+    }
+    if (sanction === 'sanctioned') {
       return sendError(res, 403, 'ACCREDITATION_SANCTIONED', SANCTIONED_ACCREDIT_MESSAGE);
     }
 

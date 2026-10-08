@@ -37,7 +37,7 @@
  *
  * **Carve-out clause-(a)/(c) justification.** Mocks
  * `broadcastJsonWithTimeout`, `seedAccreditationBonus`, `getAccreditedSet`, and
- * `hasUnliftedSanction` at module level so the broadcast-outcome path and the
+ * `readSanctionState` at module level so the broadcast-outcome path and the
  * ever-sanctioned refusal can be driven deterministically per-test.
  * `SANCTIONED_ACCREDIT_MESSAGE` flows from the real module (the accreditation.js
  * mock spreads `...actual`), so it cannot drift from the source export.
@@ -70,13 +70,13 @@ import request from 'supertest';
 import { PrivateKey } from '@hiveio/dhive';
 import { signRequestBound } from '../support/sign-request.js';
 
-const { getAccountsMock, broadcastJsonMock, createClaimedAccountMock, seedBonusMock, accreditedSetMock, hasUnliftedSanctionMock } = vi.hoisted(() => ({
+const { getAccountsMock, broadcastJsonMock, createClaimedAccountMock, seedBonusMock, accreditedSetMock, readSanctionStateMock } = vi.hoisted(() => ({
   getAccountsMock: vi.fn(),
   broadcastJsonMock: vi.fn(),
   createClaimedAccountMock: vi.fn(),
   seedBonusMock: vi.fn(),
   accreditedSetMock: vi.fn(),
-  hasUnliftedSanctionMock: vi.fn(),
+  readSanctionStateMock: vi.fn(),
 }));
 
 vi.mock('../../src/hive.js', () => ({
@@ -125,7 +125,7 @@ vi.mock('../../src/accreditation.js', async () => {
   return {
     ...actual,
     getAccreditedSet: accreditedSetMock,
-    hasUnliftedSanction: hasUnliftedSanctionMock,
+    readSanctionState: readSanctionStateMock,
   };
 });
 
@@ -315,7 +315,7 @@ beforeEach(() => {
   createClaimedAccountMock.mockReset().mockResolvedValue({ block_num: 12345 });
   seedBonusMock.mockReset().mockResolvedValue(undefined);
   accreditedSetMock.mockReset().mockResolvedValue(new Set<string>());
-  hasUnliftedSanctionMock.mockReset().mockResolvedValue(false);
+  readSanctionStateMock.mockReset().mockResolvedValue('not_sanctioned');
 });
 
 afterEach(() => {
@@ -381,7 +381,7 @@ describe.skipIf(!dbReachable)('signup-verify /confirm stuck-account recovery (Op
     getAccountsMock.mockImplementation(async (names: string[]) =>
       names.includes(username) ? [{ name: username, posting: { key_auths: [[keys.posting_public, 1]] } }] : [],
     );
-    hasUnliftedSanctionMock.mockResolvedValue(true);
+    readSanctionStateMock.mockResolvedValue('sanctioned');
 
     const res = await request(app)
       .post('/api/auth/confirm')
@@ -674,6 +674,7 @@ describe.skipIf(!dbReachable)('signup-verify /link recovery and the upgrade-epoc
   const stuck = `lnkstk${SUFFIX}`;
   const reset = `lnkrst${SUFFIX}`;
   const revoked = `lnkrev${SUFFIX}`;
+  const sanctioned = `lnksan${SUFFIX}`;
 
   const keyFor = (username: string) => {
     const postingPrivate = PrivateKey.fromSeed(`${username}-p`);
@@ -705,6 +706,7 @@ describe.skipIf(!dbReachable)('signup-verify /link recovery and the upgrade-epoc
     await cleanupByUsername(stuck);
     await cleanupByUsername(reset);
     await cleanupByUsername(revoked);
+    await cleanupByUsername(sanctioned);
   });
 
   it('(e) an account upgraded inside its own recovery window is refused (400, no JWT, no broadcast)', async (ctx) => {
@@ -802,5 +804,24 @@ describe.skipIf(!dbReachable)('signup-verify /link recovery and the upgrade-epoc
     expect(res.status).toBe(200);
     expect(res.body.data?.custody).toBe('self');
     expect(res.body.data?.token).toBeTruthy();
+  });
+
+  it('refuses the accreditation broadcast for a sanctioned account (403 ACCREDITATION_SANCTIONED, no broadcast, no JWT)', async (ctx) => {
+    if (!dbReachable) return ctx.skip(true, 'pg unreachable');
+    await seedStaleSelfCustodyAccount({
+      username: sanctioned,
+      email: `lnksan_${RUN_ID}@example.com`,
+      staleInterval: '0 seconds',
+    });
+    readSanctionStateMock.mockResolvedValue('sanctioned');
+    const { postingPrivate, postingPublic } = keyFor(sanctioned);
+
+    const res = await attemptLink(sanctioned, postingPrivate, postingPublic);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error?.code).toBe('ACCREDITATION_SANCTIONED');
+    expect(res.body.error?.message.toLowerCase()).not.toContain('sanction');
+    expect(res.body.data?.token).toBeFalsy();
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
   });
 });

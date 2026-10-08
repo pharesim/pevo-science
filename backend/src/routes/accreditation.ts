@@ -10,7 +10,7 @@ import { sendOk, sendError } from '../response.js';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { validate, accreditationRequestSchema, accreditationVerifySchema } from '../validation.js';
 import { rateLimit, byAccount } from '../middleware/rateLimit.js';
-import { hasUnliftedSanction, SANCTIONED_ACCREDIT_MESSAGE } from '../accreditation.js';
+import { readSanctionState, SANCTIONED_ACCREDIT_MESSAGE, SANCTION_READ_UNAVAILABLE_MESSAGE } from '../accreditation.js';
 import { logger } from '../logger.js';
 import { isInstitutionalEmail } from '../email-validator.js';
 import { hashEmailForLogs, hashTokenForLogs, maskEmail } from '../lib/log-pii.js';
@@ -29,8 +29,7 @@ const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 // Every other outcome consumes a slot, including a client that closes the
 // connection before the response ends: the handler keeps running.
 const accreditationRequestLimiter = rateLimit({ name: 'accred-req', windowMs: 24 * 60 * 60_000, max: 3, keyFn: byAccount, refundStatusCodes: [422, 500] });
-// Refunds 503 (`ACCREDITATION_GATE_UNAVAILABLE` and the counter claim's
-// `SERVICE_UNAVAILABLE`, both before any broadcast) and 504
+// Refunds 503 (each one is sent before any broadcast) and 504
 // (`BROADCAST_TIMEOUT`, after which the token is kept for a retry). Every
 // other outcome consumes a slot, including a client that closes the
 // connection before the response ends.
@@ -852,9 +851,14 @@ router.post('/verify', verifyHiveSignature, validate(accreditationVerifySchema),
     // self-service /verify must NOT lift a moderation
     // sanction (only a deliberate admin accredit lifts it), so refuse before the
     // broadcast-attempt cap claim — a sanctioned account neither broadcasts nor
-    // burns a cap slot. hasUnliftedSanction fails closed (refuse) on a HAF error;
-    // the common HAF-outage case already surfaced as 503 at the gate above.
-    if (await hasUnliftedSanction(pending.hive_username)) {
+    // burns a cap slot. A sanction read that could not be made answers a
+    // retriable 503 and keeps the token, as the gate's HAF failure does.
+    const sanction = await readSanctionState(pending.hive_username);
+    if (sanction === 'haf_unavailable') {
+      res.set('Retry-After', '30');
+      return sendError(res, 503, 'SERVICE_UNAVAILABLE', SANCTION_READ_UNAVAILABLE_MESSAGE, { retriable: true });
+    }
+    if (sanction === 'sanctioned') {
       logger.info(
         {
           event: 'accreditation.verify.sanctioned_refusal',
@@ -947,21 +951,20 @@ router.post('/verify', verifyHiveSignature, validate(accreditationVerifySchema),
       );
     }
   } else {
-    // Event name `idempotency_haf_unconfigured` reflects that
-    // `isHafConfigured()` tests configuration presence, not live
-    // reachability. An earlier `_unavailable` name led operators to mis-read
-    // this branch as an outage signal; the current name makes the
-    // config-only semantics explicit. `accreditation.verify.idempotency_lookup_failed`
-    // remains the real-outage discriminator.
+    // No HAF pool: the existing-accreditation gate and the sanction read cannot
+    // run, and a read that cannot run never lets the broadcast through
+    // (ARCHITECTURE.md "Data Source Policy"). The token is kept.
     logger.warn(
       {
-        event: 'accreditation.verify.idempotency_haf_unconfigured',
+        event: 'accreditation.verify.haf_unconfigured',
         route: 'accreditation.verify',
         username: pending.hive_username,
         email_hash: hashEmailForLogs(pending.email),
       },
-      'accreditation.verify idempotency layer degraded — HAF not configured, proceeding without dedup',
+      'accreditation.verify refused — HAF not configured, returning 503 SERVICE_UNAVAILABLE',
     );
+    res.set('Retry-After', '30');
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', SANCTION_READ_UNAVAILABLE_MESSAGE, { retriable: true });
   }
 
   // Per-token broadcast-attempt cap. The 504 BROADCAST_TIMEOUT envelope

@@ -211,7 +211,8 @@ router.post('/vouch', verifyHiveSignature, validateVouchee, wotWriteLimiter, asy
     });
   }
 
-  // reason === 'skipped' — not eligible, already holds an accredit op, or admin key missing.
+  // reason === 'skipped' — not eligible, already holds an accredit op, admin key
+  // missing, or a HAF read failed.
   // reason === 'sanctioned' is DELIBERATELY collapsed into this same generic
   // response: surfacing it would disclose the vouchee's authority-sanction state
   // to a third-party voucher (a moderation-privacy leak). The voucher learns only

@@ -154,26 +154,36 @@ export const SANCTIONED_ACCREDIT_MESSAGE =
   'This account is not eligible for accreditation at this time. Please contact the platform operators if you believe this is an error.';
 
 /**
- * Whether `account` currently carries an un-lifted sanction (a `type:"sanction"`
+ * User-facing 503 string for a sanction read that could not be made
+ * (`readSanctionState` answered `haf_unavailable`). Like the 403 string above,
+ * it does not mention sanctions. Emdash-free per project convention.
+ */
+export const SANCTION_READ_UNAVAILABLE_MESSAGE =
+  'Accreditation eligibility could not be checked right now. Please retry shortly.';
+
+/** Outcome of `readSanctionState`. */
+export type SanctionState = 'sanctioned' | 'not_sanctioned' | 'haf_unavailable';
+
+/**
+ * Read whether `account` currently carries an un-lifted sanction (a `type:"sanction"`
  * revoke at or after its most-recent authority-pinned `accredit`, or with no
  * authority accredit at all). A sanction is sticky and lifted ONLY by a later
  * authority `accredit` (email/orcid/manual) — a `wot` auto-accredit does NOT
  * lift it. This is the same suppression predicate `activeAccreditationsCteBody`
  * applies, scoped to one account.
  *
- * Used by the WoT auto-accreditation path (`broadcastWotAccreditation`) to
- * refuse re-admitting a sanctioned account on vouch support. A sanctioned
- * account has no `accred_pinned` row, so this read is what distinguishes
- * "suppressed by sanction" (refuse the broadcast) from "never enrolled"
- * (proceed to enroll).
+ * A sanctioned account has no `accred_pinned` row, so for the WoT
+ * auto-accreditation path (`broadcastWotAccreditation`) this read is what
+ * distinguishes "suppressed by sanction" (refuse the broadcast) from "never
+ * enrolled" (proceed to enroll).
  *
- * **Fail-closed.** If HAF is unavailable or the query throws, returns `true`
- * (assume sanctioned) so an indeterminate sanction state can never let an
- * auto-accreditation slip through.
+ * Answers `haf_unavailable` when there is no HAF pool or the query throws. That
+ * is not a verdict either way: a caller must not broadcast on it, and an HTTP
+ * caller answers it with a retriable 503 (ARCHITECTURE.md "Data Source Policy").
  */
-export async function hasUnliftedSanction(account: string): Promise<boolean> {
+export async function readSanctionState(account: string): Promise<SanctionState> {
   const pool = getPool();
-  if (!pool) return true;
+  if (!pool) return 'haf_unavailable';
 
   try {
     const result = await pool.query<{ sanction_block: string | null; auth_block: string | null }>(
@@ -197,13 +207,13 @@ export async function hasUnliftedSanction(account: string): Promise<boolean> {
       [config.appTag, account, config.accreditationAuthorities],
     );
     const row = result.rows[0];
-    if (!row || row.sanction_block === null) return false;
+    if (!row || row.sanction_block === null) return 'not_sanctioned';
     const sanctionBlock = Number(row.sanction_block);
     const authBlock = row.auth_block === null ? null : Number(row.auth_block);
-    return authBlock === null || sanctionBlock >= authBlock;
+    return authBlock === null || sanctionBlock >= authBlock ? 'sanctioned' : 'not_sanctioned';
   } catch (err) {
-    logger.error({ err, account }, 'HAF un-lifted sanction check failed — failing closed');
-    return true;
+    logger.error({ err, account }, 'HAF sanction read failed');
+    return 'haf_unavailable';
   }
 }
 

@@ -18,7 +18,7 @@ import { handleArgonError, ARGON_HANDLED } from '../lib/argon2-error-handler.js'
 import { requestAbortSignal } from '../lib/request-abort-signal.js';
 import { hashEmailForLogs, safeHashEmailForLogs } from '../lib/log-pii.js';
 import { seedAccreditationBonus } from '../reputation.js';
-import { getAccreditedSet, hasUnliftedSanction, SANCTIONED_ACCREDIT_MESSAGE } from '../accreditation.js';
+import { getAccreditedSet, readSanctionState, SANCTIONED_ACCREDIT_MESSAGE, SANCTION_READ_UNAVAILABLE_MESSAGE } from '../accreditation.js';
 import {
   handleBroadcastError,
   PostBroadcastWriteError,
@@ -152,9 +152,8 @@ export const ROUTE_FLAVOR_DERIVATION: Record<
 /**
  * Run the accreditation broadcast + reputation seed for a finalized signup row.
  *
- * Returns `'handled'` when it has already written a 502/504 error envelope (the
- * broadcast threw, or the post-broadcast seed cascade threw): the caller MUST
- * `return` without writing any further response. Returns `'ok'` when the
+ * Returns `'handled'` when it has already written an error response: the caller
+ * MUST `return` without writing any further response. Returns `'ok'` when the
  * accreditation op is on chain (freshly broadcast or found by the HAF probe)
  * and the seed succeeded; the caller proceeds to issue the session JWT.
  *
@@ -177,8 +176,16 @@ async function broadcastAccreditationAndSeed(
 
   // Ever-sanctioned guard (fresh AND resume paths). A self-service re-accreditation
   // must NOT lift a moderation sanction; only a deliberate admin accredit lifts it.
-  // Refuse before broadcasting, without leaking the moderation reason.
-  if (await hasUnliftedSanction(username)) {
+  // Refuse before broadcasting, without leaking the moderation reason. A read
+  // that could not be made answers a retriable 503 instead, leaving the account
+  // finalized and recoverable through the stuck-resume lookup.
+  const sanction = await readSanctionState(username);
+  if (sanction === 'haf_unavailable') {
+    res.set('Retry-After', '30');
+    sendError(res, 503, 'SERVICE_UNAVAILABLE', SANCTION_READ_UNAVAILABLE_MESSAGE, { retriable: true });
+    return 'handled';
+  }
+  if (sanction === 'sanctioned') {
     sendError(res, 403, 'ACCREDITATION_SANCTIONED', SANCTIONED_ACCREDIT_MESSAGE);
     return 'handled';
   }

@@ -843,7 +843,7 @@ async function handleAccredit(
   if (await refuseUnverifiedEmailRow(res, username)) return;
 
   // Check if already accredited
-  const { getAccreditedSet, hasUnliftedSanction, SANCTIONED_ACCREDIT_MESSAGE } = await import('../accreditation.js');
+  const { getAccreditedSet, readSanctionState, SANCTIONED_ACCREDIT_MESSAGE, SANCTION_READ_UNAVAILABLE_MESSAGE } = await import('../accreditation.js');
   const accreditedSet = await getAccreditedSet([username]);
   if (accreditedSet.has(username)) {
     sendError(res, 422, 'VALIDATION_ERROR', 'Account is already accredited');
@@ -854,7 +854,15 @@ async function handleAccredit(
   // moderation sanction (only a deliberate admin accredit lifts it). A sanctioned
   // account is absent from getAccreditedSet, so the already-accredited check above
   // does not catch it; refuse here before the works-count probe and broadcast.
-  if (await hasUnliftedSanction(username)) {
+  // A sanction read that could not be made answers a retriable 503 instead; the
+  // OAuth state is already spent, so the retry is a new ORCID flow.
+  const sanction = await readSanctionState(username);
+  if (sanction === 'haf_unavailable') {
+    res.set('Retry-After', '30');
+    sendError(res, 503, 'SERVICE_UNAVAILABLE', SANCTION_READ_UNAVAILABLE_MESSAGE, { retriable: true });
+    return;
+  }
+  if (sanction === 'sanctioned') {
     logger.info({ username }, 'orcid accreditation refused — account has an un-lifted sanction');
     sendError(res, 403, 'ACCREDITATION_SANCTIONED', SANCTIONED_ACCREDIT_MESSAGE);
     return;

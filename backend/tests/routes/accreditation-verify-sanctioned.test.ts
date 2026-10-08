@@ -6,14 +6,14 @@
  * admin broadcast, without leaking the moderation reason. The 403 also
  * consumes a slot of the `/verify` limiter.
  *
- * Carve-out (root CLAUDE.md "Running Tests"): `hasUnliftedSanction` is mocked to
- * true because the read-only public HAF has no sanctioned `pevotest` account to
- * seed against; the rest of accreditation.js (the existing-accreditation gate
+ * Carve-out (root CLAUDE.md "Running Tests"): `readSanctionState` is mocked to
+ * `'sanctioned'` because the read-only public HAF has no sanctioned `pevotest`
+ * account to seed against; the rest of accreditation.js (the existing-accreditation gate
  * via the real HAF pool) runs real, and `broadcastAdminCustomJson` is mocked so
  * the no-broadcast invariant is asserted deterministically. `verifyHiveSignature`
  * is not mocked. The shared guard logic
- * itself (`hasUnliftedSanction` SQL) is covered against real Postgres in
- * `accreditation-membership-cte.test.ts`.
+ * itself (`readSanctionState` SQL) is covered against real Postgres in
+ * `sanction-read-real-postgres.test.ts`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
@@ -21,9 +21,9 @@ import crypto from 'node:crypto';
 import { PrivateKey } from '@hiveio/dhive';
 import jwt from 'jsonwebtoken';
 
-const { broadcastJsonMock, hasUnliftedSanctionMock } = vi.hoisted(() => ({
+const { broadcastJsonMock, readSanctionStateMock } = vi.hoisted(() => ({
   broadcastJsonMock: vi.fn().mockResolvedValue({ id: 'mock-accred-tx' }),
-  hasUnliftedSanctionMock: vi.fn().mockResolvedValue(true),
+  readSanctionStateMock: vi.fn().mockResolvedValue('sanctioned'),
 }));
 
 vi.mock('../../src/hive.js', async () => {
@@ -39,7 +39,7 @@ vi.mock('../../src/accreditation.js', async () => {
   const actual = await vi.importActual<typeof import('../../src/accreditation.js')>('../../src/accreditation.js');
   return {
     ...actual,
-    hasUnliftedSanction: hasUnliftedSanctionMock,
+    readSanctionState: readSanctionStateMock,
   };
 });
 
@@ -87,7 +87,7 @@ function postVerify(token: string, username: string) {
 describe('POST /api/accreditation/verify — ever-sanctioned guard', () => {
   beforeEach(() => {
     broadcastJsonMock.mockReset().mockResolvedValue({ id: 'mock-accred-tx' });
-    hasUnliftedSanctionMock.mockReset().mockResolvedValue(true);
+    readSanctionStateMock.mockReset().mockResolvedValue('sanctioned');
   });
 
   it('refuses a sanctioned account with 403 ACCREDITATION_SANCTIONED and does not broadcast', async ({ skip }) => {

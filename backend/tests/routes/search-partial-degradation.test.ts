@@ -63,8 +63,9 @@ vi.mock('../../src/accreditation.js', async () => {
   const actual = await vi.importActual<typeof import('../../src/accreditation.js')>('../../src/accreditation.js');
   return {
     getAccreditedSet: async (_usernames: string[]) => new Set<string>(),
-    hasUnliftedSanction: async (_account: string) => false,
+    readSanctionState: async (_account: string) => 'not_sanctioned',
     SANCTIONED_ACCREDIT_MESSAGE: actual.SANCTIONED_ACCREDIT_MESSAGE,
+    SANCTION_READ_UNAVAILABLE_MESSAGE: actual.SANCTION_READ_UNAVAILABLE_MESSAGE,
   };
 });
 

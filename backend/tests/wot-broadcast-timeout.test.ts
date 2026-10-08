@@ -8,7 +8,7 @@
  * the enrollment op this function emits.
  *
  * Carve-out (root CLAUDE.md "Running Tests"): `getPool()`, Redis (null, so
- * `hafCache` runs in memory), `hasUnliftedSanction`, the reputation seed, and
+ * `hafCache` runs in memory), `readSanctionState`, the reputation seed, and
  * the Hive broadcast are mocked so the broadcast-outcome surface can be driven
  * deterministically — a real broadcast landing or timing out cannot be
  * produced reliably against a live Hive node, and this is a service-level unit
@@ -17,18 +17,19 @@
  * against the mocked pool, which returns the `vouchStatusSelect` single-row
  * `{ self_method, self_pinned, vouches }` shape.
  * Real-path companion: `backend/tests/wot-vouch-status-select-real-postgres.test.ts` [self_pinned]
+ * Real-path companion: `backend/tests/sanction-read-real-postgres.test.ts` [readSanctionState]
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const {
   hafQueryMock,
   broadcastJsonMock,
-  hasUnliftedSanctionMock,
+  readSanctionStateMock,
   seedAccreditationBonusMock,
 } = vi.hoisted(() => ({
   hafQueryMock: vi.fn(),
   broadcastJsonMock: vi.fn(),
-  hasUnliftedSanctionMock: vi.fn(),
+  readSanctionStateMock: vi.fn(),
   seedAccreditationBonusMock: vi.fn(),
 }));
 
@@ -66,7 +67,7 @@ vi.mock('../src/hive.js', async () => {
 
 vi.mock('../src/accreditation.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/accreditation.js')>()),
-  hasUnliftedSanction: hasUnliftedSanctionMock,
+  readSanctionState: readSanctionStateMock,
 }));
 
 vi.mock('../src/reputation.js', async () => {
@@ -124,10 +125,10 @@ beforeEach(async () => {
   (config as { pevoAdminPostingKey: string }).pevoAdminPostingKey = TEST_WIF;
   hafQueryMock.mockReset();
   broadcastJsonMock.mockReset();
-  hasUnliftedSanctionMock.mockReset();
+  readSanctionStateMock.mockReset();
   seedAccreditationBonusMock.mockReset();
   // Defaults: not sanctioned, reputation seed no-ops.
-  hasUnliftedSanctionMock.mockResolvedValue(false);
+  readSanctionStateMock.mockResolvedValue('not_sanctioned');
   seedAccreditationBonusMock.mockResolvedValue(undefined);
 });
 
@@ -221,10 +222,27 @@ describe('broadcastWotAccreditation tagged union', () => {
     // check; only the ever-sanctioned guard distinguishes it from a
     // never-enrolled account.
     mockEligibleVouchStatus();
-    hasUnliftedSanctionMock.mockResolvedValue(true);
+    readSanctionStateMock.mockResolvedValue('sanctioned');
 
     const result = await broadcastWotAccreditation('alice');
     expect(result).toEqual({ ok: false, reason: 'sanctioned' });
+    expect(broadcastJsonMock).not.toHaveBeenCalled();
+    expect(seedAccreditationBonusMock).not.toHaveBeenCalled();
+  });
+
+  it('skips (no broadcast) when the sanction read cannot be made', async () => {
+    const { readSanctionState } = await vi.importActual<typeof import('../src/accreditation.js')>('../src/accreditation.js');
+    readSanctionStateMock.mockImplementation(readSanctionState);
+    mockEligibleVouchStatus();
+    const eligibleRead = hafQueryMock.getMockImplementation()!;
+    hafQueryMock.mockImplementation(async (sql: string, ...rest: unknown[]) => {
+      if (sql.includes('acct_ops')) throw new Error('HAF connection terminated');
+      return eligibleRead(sql, ...rest);
+    });
+
+    const result = await broadcastWotAccreditation('alice');
+    expect(result).toEqual({ ok: false, reason: 'skipped' });
+    expect(readSanctionStateMock).toHaveBeenCalledWith('alice');
     expect(broadcastJsonMock).not.toHaveBeenCalled();
     expect(seedAccreditationBonusMock).not.toHaveBeenCalled();
   });
