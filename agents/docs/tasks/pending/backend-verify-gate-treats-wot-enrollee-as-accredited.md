@@ -71,6 +71,14 @@ whether or not the account currently meets the threshold.
   in its sibling-site list and in "The bug is reachable, not theoretical". `wot.ts` broadcasts no
   revoke op; the admin sanction route (`/accreditation/sanction` in `routes/admin.ts`) does.
   (Added 2026-10-07 from the review of `backend-latest-op-haf-lookups-walk-the-blocks-index`.)
+- The same refresh also covers, in that entry: guidance step 4 ("'accredit' means currently
+  accredited"), the canonical SQL (no `method` projection), the caller branching snippet (no
+  `wot` check), the route example's null comment, and the task-file citation in Related.
+  (Added 2026-10-08 from the intake review of `31994b09`.)
+- `ARCHITECTURE.md` "Credential Bindings", the `/verify` paragraph: "An already-accredited
+  account verifying a mailbox claims the row as `bound` at once, with no second `accredit` op."
+  An account whose latest op is a `wot` accredit now gets a `method: 'email'` op. Narrow it.
+  (Added 2026-10-08 from the intake review of `31994b09`.)
 
 ## Backend implementation signal (2026-10-07, commit 31994b09)
 
@@ -169,3 +177,49 @@ grace-period entries that name the gate still hold. No new entry: the rationale 
 **Code review:** not run on the backend side (the architect's `/ce-code-review` at intake). A
 verification workflow (comment claims, acceptance, mutation; one refuter per finding) confirmed 5
 findings, all fixed before 31994b09, and refuted 5.
+
+## Architect re-review (2026-10-08) — HELD PENDING FIXES:
+
+Reviewed `31994b09` with `/ce-code-review` (correctness, security, adversarial in-process,
+testing, project-standards, learnings, then an independent validator). Reviewers read
+`git show 31994b09` snapshots. Scope 1 to 3 and AC1 to AC4 are met. The testing reviewer
+reproduced the signal's counts in a scratchpad copy (`idempotency` 34/34, the real-Postgres file
+8/8, `idempotency-real-haf -t findExistingAccreditation` 3/3, `tests/eslint` 146/146, each exit 0;
+`accreditation-idempotency` 21 passed and 6 failed, the same six failing on base) and re-planted
+six mutants, each going red where the signal says. The anchor gate finds nothing in the added
+lines, and every new comment sentence checked true. One item holds the archive:
+
+1. **The email pin drops a linked ORCID (`/verify` in `routes/accreditation.ts`,
+   `customJsonPayload`).** The ORCID binding is the account's latest authority accredit op:
+   `findAccreditedAccountWithOrcid` (`lib/orcid-binding.ts`) returns the account only while its
+   latest accredit/revoke op is an accredit carrying that ORCID, and `accred_latest` in
+   `activeAccreditationsCteBody` takes `orcid` from the latest accredit. `handleLink`
+   (`routes/orcid.ts`) re-broadcasts a WoT member's accredit with `method: existing.method`
+   (`'wot'`) and the linked `orcid`. Before this commit `/verify` hit the gate for that account
+   and broadcast nothing. Now it broadcasts a `method: 'email'` accredit with no `orcid` field,
+   which becomes the latest accredit, so the account's ORCID drops out of `active_accreditations`
+   and `findAccreditedAccountWithOrcid` no longer returns the account for it. `ARCHITECTURE.md`
+   § 2 "Credential Bindings": an authority op that drops the `orcid` field must carry the attested
+   ORCID forward, or the read loses the binding.
+
+   Fix: when the gate misses because the latest op is a `wot` accredit carrying an `orcid`, the
+   `method: 'email'` accredit that `/verify` broadcasts carries that `orcid`. Take it from the
+   chain op, never from the self-asserted `pending.orcid`. `PATCH /api/accreditation/metadata`
+   (`orcid: prior.orcid`) is the precedent. Add a route spec: the latest op is a `wot` accredit
+   with an ORCID, and the broadcast payload carries it. Run `tests/eslint` alone as well as the
+   touched files, since comment prose in tests feeds its citation canaries.
+
+Triage dispositions (2026-10-08, approved by the user):
+
+- Sanction self-lift during HAF indexing lag: filed as `backend-sanction-holds-before-haf-indexes`
+  (high). Not a hold item: the validator found the same window on `PATCH /metadata`, ORCID
+  `handleAccredit` and `/verify` for revoked accounts, and the fix sits in the sanction route and
+  `hasUnliftedSanction`.
+- An at-threshold WoT member has no UI route to the pin: filed as
+  `ui-offer-email-pin-to-wot-members` (normal).
+- The `ARCHITECTURE.md` "Credential Bindings" sentence and the wider staleness of the
+  latest-action-wins entry: added to the TODO at archive.
+- Re-running the live-HAF EXPLAIN for the added `method` projection: dismissed. It is one projected
+  column inside an unchanged `AS MATERIALIZED` fence.
+- Auditing the sibling "latest op = accredit" readers: dismissed. The diff changes only the gate,
+  and item 1 is the harm that `getExistingAccreditation` accepting a WoT member reaches.
