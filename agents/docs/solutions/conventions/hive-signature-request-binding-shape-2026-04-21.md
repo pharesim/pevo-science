@@ -39,7 +39,7 @@ Required headers: `X-Hive-Username`, `X-Hive-Signature`, `X-Hive-Timestamp`. A m
 
 Server-side guardrails (all live in the `verifyHiveSignature` middleware; anchor on the symbol names, not line numbers):
 - **Past-biased timestamp window.** The accepted range is `[Date.now() - MAX_SIGNATURE_AGE_MS, Date.now() + SIGNATURE_FUTURE_SKEW_MS]` — 60 seconds into the past plus a small (5-second) forward-skew tolerance for client clock drift, mirroring the custody upgrade-proof form. The earlier absolute-value form (`Math.abs(now - ts) > 60s`) also accepted timestamps up to 60s in the *future*, doubling a signature's effective usable life to ~120s; the past-biased form closes that.
-- **Replay cache with an unconditional in-memory backstop.** A `SEEN_SIGNATURES_TTL_SEC` (5-minute) Redis cache keyed `${config.appTag}:replay:${signature}` via SETNX is the primary guard. After every successful verification the signature is ALSO written to the in-memory `seenSignatures` map (`recordSignatureInMemory`) — unconditionally, not only when Redis is down. `isReplaySignature` reads the in-memory hit upfront and OR-s it with the SETNX result (`result === null || seenInMemory`). This closes two Redis-flap windows: SETNX throwing on a `ready` connection (ready-but-throwing), and the throw-then-recover ordering where request 1's SETNX never wrote the key but request 2's SETNX then succeeds against the now-absent key. The in-memory map is pruned by a `cleanupInterval` at the same TTL.
+- **Replay cache with an unconditional in-memory backstop.** A `SEEN_SIGNATURES_TTL_SEC` (5-minute) Redis cache keyed on the raw header text (`${config.appTag}:replay:${signature}`) via SETNX is the primary guard. After every successful verification the signature is ALSO written to the in-memory `seenSignatures` map (`recordSignatureInMemory`) — unconditionally, not only when Redis is down. `isReplaySignature` OR-s the SETNX result with the in-memory hit (`result === null || seenSignatures.has(signature)`). This closes two Redis-flap windows: SETNX throwing on a `ready` connection (ready-but-throwing), and the throw-then-recover ordering where request 1's SETNX never wrote the key but request 2's SETNX then succeeds against the now-absent key. The in-memory map is pruned by a `cleanupInterval` at the same TTL.
 - **Timing-safe public-key comparison** against the account's on-chain posting `key_auths`.
 - **The JWT Bearer path runs first and is separate.** This convention only touches the Hive-signature branch.
 - CORS `allowedHeaders` in `backend/src/app.ts` lists exactly `Content-Type, Authorization, X-Hive-Username, X-Hive-Signature, X-Hive-Timestamp`. No `X-Hive-Message`.
@@ -57,7 +57,7 @@ Drift prevention is mechanical, not by discipline. The single canonical builder 
 | Cross-endpoint reuse on PEvO | `METHOD` and `path` in the signed string. |
 | Body-tamper | `sha256_hex(body)` in the signed string. |
 | Time-shift / stale replay | Required `X-Hive-Timestamp`, past-biased window (60s past + 5s forward skew). |
-| In-window replay (same signature) | Redis SETNX replay cache plus an unconditional in-memory backstop (detects replays even across a Redis flap). |
+| In-window replay (same signature header text) | Redis SETNX replay cache plus an unconditional in-memory backstop (detects replays even across a Redis flap). |
 
 ### Why request-binding rather than the auditor's separate-challenge design
 
@@ -80,7 +80,7 @@ Express body-parser has two different "empty" states and they hash differently:
 - `POST` with `Content-Type: application/json` and an empty body: `req.body = {}`, `JSON.stringify` yields `'{}'`.
 - `POST` without the `Content-Type` header: `req.body = undefined`, `JSON.stringify(undefined)` yields the literal string `"undefined"` (or `'""'` if coerced). Either way, not `'{}'`.
 
-If the hash is method-branched (hash only on POST/PUT/PATCH, skip on GET/DELETE, special-case empty), the failure modes multiply. Client-side code, server-side code, and Express's Content-Type behavior all have to agree on the branching, and drift hides in the conditional. A single rule (`sha256(JSON.stringify(body ?? {}))` on both sides, client always sends `Content-Type: application/json` and at least `{}` for POSTs, GET/DELETE hash `'{}'`) collapses to one failure mode: the client forgot to send `{}`, which fails loudly and locally on first request. Method-based branching is exactly where client/server auth drift hides. Avoid it.
+If the hash is method-branched (hash only on POST/PUT/PATCH, skip on GET/DELETE, special-case empty), the failure modes multiply. Client-side code, server-side code, and Express's Content-Type behavior all have to agree on the branching, and drift hides in the conditional. A single rule (`sha256(JSON.stringify(body ?? {}))` on both sides, client always sends `Content-Type: application/json` and at least `{}` for POSTs, a bodyless request hashes `'{}'`) collapses to one failure mode: the client forgot to send `{}`, which fails loudly and locally on first request. Method-based branching is exactly where client/server auth drift hides. Avoid it.
 
 ## When to Apply
 
@@ -94,7 +94,7 @@ If the hash is method-branched (hash only on POST/PUT/PATCH, skip on GET/DELETE,
 Live code:
 
 - [backend/src/lib/authMessage.ts](../../../../backend/src/lib/authMessage.ts) single canonical builder.
-- [backend/src/middleware/verifyHiveSignature.ts](../../../../backend/src/middleware/verifyHiveSignature.ts) verifier. Path is extracted from `req.originalUrl` with the query string stripped; the required-timestamp check, the past-biased window, and the replay guard (`isReplaySignature` / `recordSignatureInMemory`) all live in this one function.
+- [backend/src/middleware/verifyHiveSignature.ts](../../../../backend/src/middleware/verifyHiveSignature.ts) verifier. Path is extracted from `req.originalUrl` with the query string stripped; the required-timestamp check, the past-biased window, and the replay guard (`isReplaySignature` / `recordSignatureInMemory`) all live in this file.
 - [frontend/src/sign-request.js](../../../../frontend/src/sign-request.js) the client helper. Returns `{ headers, body }` ready to spread into `fetch`. GET/HEAD get `body: undefined` on the wire but still hash `'{}'`.
 - [frontend/src/auth.js](../../../../frontend/src/auth.js) `connect()` live caller signing `POST /api/auth/session` with body `{}`.
 - [frontend/src/api.js](../../../../frontend/src/api.js) `linkExistingAccount()` live caller signing `POST /api/auth/link` with an `{ auth_token }` body.
