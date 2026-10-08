@@ -1,250 +1,250 @@
-## The email-change link rewrites other users' digest addresses (archived 2026-10-08): clean review of the username-scoped digest move
+## Review, comment and vouch surfaces navigate a passwordless account away from work they do not keep (archived 2026-10-09): one P3 folded into an open task, two follow-ups filed
 
-### Architect archive note (2026-10-08)
+### Architect archive note (2026-10-09)
 
-- **Review:** `/ce-code-review` full path on `f96090c4` (branch-remote, base `e72a99b8`): correctness, security, adversarial (in-process, no cross-model peer), testing, project-standards, learnings. Zero findings. The testing reviewer reproduced 26 passed with 0 skipped and killed 6 of 6 mutants: the four in AC2, plus `RETURNING email` without the username and `$3` bound to `oldEmail`. The orchestrator re-ran `npm run typecheck`, eslint on both files and `tests/eslint` (146 passed), all exit 0.
-- **Noted, no action:** the pending `backend-email-change-hold-and-owner-notice` moves this swap and the prefs move into its apply function, which its sweep also runs. The moved statement carries both predicates, and the V/X route spec catches a dropped username predicate on the route path. A sweep-path spec for it would be preemptive hardening.
-- **Pre-existing, left as recorded in the Notes and signal block:** the swap and the move are two statements with no transaction; a mixed-case own prefs row does not move; both recovery paths leave the prefs email alone.
-- **Learnings checkpoint:** a grep of `agents/docs/solutions/` for `notification_preferences` finds no entry, and `mailed-credential-token-dies-with-its-address-and-credential.md` stays accurate (the swap's SET list and key are unchanged). No new `/ce-compound`: the username predicate and the commit message carry the lesson.
+- **Review:** `/ce-code-review` full path on `1a6d3ea9..82dbb128`, branch-remote over a synthetic head holding only the task's 38 frontend files. Reviewers: correctness, security, adversarial (in-process, no cross-model peer), julik-frontend-races, testing, project-standards, maintainability, learnings. One finding, P3, validator confirmed. The orchestrator ran the full frontend unit suite on a `git archive` of `82dbb128`: 104 files, 2459 tests, exit 0, matching the signal. The testing reviewer killed 12 of 12 mutants (the 11 briefed plus one of its own); each mutant copy was diffed against the probe base and matched its brief. AC 1-9 met. Playwright not run.
+- **Triage (user, 2026-10-09, "as recommended"):**
+  - Two raw-result tally comments the new `acquire` closure made incomplete (the `ensureSessionWindow` guard comment, `acquireSessionProof`'s "Every consumer refuses either"): folded into `ui-fresh-auth-and-upload-comments-that-overclaim` (`34d00ff1`).
+  - A stash-less session-auth navigation removes a waiting record: dismissed. It is the Scope's one-slot bridge, written at the navigating moment, not draft persistence.
+  - The callee-graph learnings entry claimed the redirect helper "unwinds the flow keys on every failing exit": narrowed in place (`a23cce7a`).
+  - A callback with no usable ORCID code returns before reading the mode marker, so "Try again" goes to `/`: filed `ui-orcid-callback-missing-params-try-again-goes-home` (normal).
+  - Signal residual 1 (restored reply lost on a comment-tree re-render): dismissed, typed replies behave the same.
+  - Signal residual 2 (review ops built from live router getters after the confirm): dismissed, no in-app link goes from one `/review/` page to another.
+  - Signal residual 3 (same-route navigation keeps the page instance): confirmed from the code and filed `ui-same-route-navigation-keeps-the-old-page` (normal).
+  - Signal residual 4 (the authorship ORCID navigation carries no stash): dismissed, unsubmitted text on a navigation the user chose; the Scope bars draft persistence.
+  - Signal residual 5 (architect docs): ARCHITECTURE § 6.4.1 and § 8 and CONCEPTS "Acquire-before-commit" updated (`f7cde410`); § 6.4 rule 3 checked and left, it describes the assumed-factor fallback, not every source of `FRESH_AUTH_REAUTH_REQUIRED`.
+- **Learnings checkpoint:** `/ce-compound-refresh` on `fresh-auth-guard-coverage-must-sweep-the-callee-graph-2026-09-01.md` (Update, `a23cce7a`). The other three entries refreshed in `c191efda` and the new `alpine-nested-nexttick-runs-before-x-show-reveals-wait-two-frames.md` were checked against `82dbb128` and hold. No new `/ce-compound`: the per-flight stash rule is carried by the `fresh-auth.js` comments and CONCEPTS "Navigation Stash".
 
-**Owner:** backend
-**Created:** 2026-10-06
-**Priority:** high
-
-Filed at the user's request from the pre-existing findings in the signal block of
-`backend-settings-verify-clears-any-row-token` (its items 1 and 3), after a scoping pass that
-measured both on 02c66d99 through the real routes.
-
-## Why
-
-After the swap, the change branch of `GET /api/settings/email/verify/:token` (`routes/settings.ts`)
-moves the digest address with
-
-```
-UPDATE notification_preferences SET email = $1 WHERE email = $2
-```
-
-The new address comes from the swap's `RETURNING email`, and the old one from the change-branch
-lookup. There is no username predicate. Every other writer of `notification_preferences` is keyed
-on username: the `PUT /api/profile/:username/notification-preferences` upsert, the unsubscribe
-route, `digest.ts` `updateLastDigestBlock`, and the `DELETE /api/settings/email` erasure.
-
-`notification_preferences.email` is an address the user sets, not a mirror of `accounts.email`.
-The table is keyed `username TEXT PRIMARY KEY`, and `email` is nullable with no UNIQUE.
-`PUT /api/profile/:username/notification-preferences` stores any syntactically valid address
-without verifying it. Any Hive account holder can write their own row on the signature path,
-with no `accounts` row.
-
-**Disclosure (measured).** X sets its prefs email to V's current account address A0. V verifies
-an email change to A. X's row now holds A, and `GET /api/profile/X/notification-preferences`
-returns it to X. So anyone who knows a user's address learns every new address that user
-verifies, including a user who changes address to get away from someone. It also works as a slow
-membership check: a guessed address in your own prefs row changes only if it was an account
-email whose owner changed it.
-
-**Misdirected digest (code reading).** `digest.ts` `getDigestUsers` mails each row's `email`. A
-third user whose digest address equalled V's old address therefore gets their digest sent to V's
-new mailbox. That needs the digest scheduler running (it starts only when SMTP is configured),
-`email_digest` true, and a prefs row written by a direct API call, since no frontend code calls
-the prefs endpoints today.
-
-**Nothing pins the move.** Feeding it `[oldEmail, oldEmail]`, or deleting it, keeps every spec
-that hits the route green: `tests/routes/settings.test.ts` and
-`tests/routes/settings-state-g-unverified-email.test.ts` (measured).
-`frontend/tests/e2e/settings.spec.js` follows the link but asserts only `accounts` columns.
-
-## Scope
-
-1. Add `username` to the swap's `RETURNING` and scope the move to that account:
-   `UPDATE notification_preferences SET email = $1 WHERE email = $2 AND username = $3`, bound to
-   the swapped row. Keep `email = $2`: the verifying account's own digest address moves only when
-   it was the old account address, and a digest address set separately stays.
-2. Narrow the comment above the move to what the code does. No new response, status or error
-   code.
-3. Specs in `tests/routes/settings.test.ts`, next to "verify token - change flow". Seed by INSERT
-   against real Postgres. The route has no auth middleware, so no mock is needed.
-   - V has a pending change. Prefs rows: V holds V's old account address, and X (no `accounts`
-     row) holds the same address. After the 200, V's prefs email is the new address and X's is
-     unchanged.
-   - A second account W with a pending change, whose prefs email differs from its old account
-     address, keeps that prefs email after its link verifies. This case pins `email = $2`.
-
-## Acceptance criteria
-
-1. The move carries a username predicate bound to the swapped row.
-2. The specs above. The signal block carries mutation evidence from a scratch copy:
-   - fails on HEAD's unscoped UPDATE (X's row moves);
-   - fails with the move fed `[oldEmail, oldEmail]` or deleted (V's row stays);
-   - fails with `email = $2` dropped (W's row is overwritten);
-   - passes with the fix.
-3. The diff changes no `sendOk` or `sendError` call and no status in the handler.
-4. `tests/routes/settings.test.ts` and `tests/routes/settings-state-g-unverified-email.test.ts`
-   are green by exit code and the Errors line. tsc and eslint are clean.
-
-## Notes
-
-- Account-state check: the change branch reaches only rows that carry a `pending_email_token`.
-  Only `POST /api/settings/email` writes one, on a row it found by username (states A, B, C, D
-  and G per ARCHITECTURE.md § 6.1). The swapped row always has a username, so the new predicate
-  defends no fictional state.
-- Overlap: the same swap UPDATE is edited by `backend-reset-tokens-outlive-email-changes-and-recovery`
-  (Scope item 2, the `reset_token` clear) and by `backend-email-change-swap-500s-on-a-taken-address`.
-  These are adjacent edits, and whichever lands second merges onto the other. This task builds on
-  the token-keyed swap from 02c66d99, which is in review: if that review reshapes the swap,
-  re-anchor the username source.
-- Out of scope, reported as fact: both recovery paths (`POST /api/auth/recover`,
-  `POST /api/auth/recover/verify`) move `accounts.email` but leave the prefs email alone. After a
-  recovery away from a compromised mailbox, a digest address equal to it keeps mailing it. That is
-  not this defect (no cross-account write). File it separately only if the user wants recovery to
-  carry the digest address.
-- `PUT /api/profile/:username/notification-preferences` accepting an unverified address is a
-  separate property, covered by `architect-audit-admin-profile-search-routes`.
-- Rows already rewritten on a deployment cannot be told apart from addresses users set
-  deliberately. No repair is proposed.
-- The prefs email is stored as typed and the account email is lowercased, so a mixed-case own row
-  does not move on a change. This is pre-existing and not proposed for change.
-
-## Architect note (2026-10-08): the swap moves into an exported apply function
-
-`backend-email-change-hold-and-owner-notice` (high, filed 2026-10-08) splits the change branch of
-`GET /api/settings/email/verify/:token` into an exported apply function that is the one site
-swapping the address, and `backend-email-changed-at-stamp-and-displaced-address-notice` (high)
-adds `email_changed_at = NOW()` to the same UPDATE. Land this task first if you can; otherwise
-merge the username-scoped `notification_preferences` move into the apply function, after the
-swap and before the displaced-address mail.
-
-## Backend implementation signal (2026-10-08, commit f96090c4)
-
-- Landed in `f96090c4` (`backend(settings): an email change moves only the verifying account's
-  digest address`), ahead of the hold and `email_changed_at` tasks, so nothing needed merging into
-  an apply function. Self-verified: `git merge-base --is-ancestor f96090c4 main` exits 0, and
-  `git show --name-status f96090c4` lists `M backend/src/routes/settings.ts` and
-  `M backend/tests/routes/settings.test.ts`.
-- Scope 1: the swap returns `email, username`, and the move is
-  `UPDATE notification_preferences SET email = $1 WHERE email = $2 AND username = $3`, where `$3`
-  is the swapped row's username. `email = $2` is kept.
-- Scope 2: the comment above the move now reads "This account's digest address follows the change
-  when it equals the old account address." No `sendOk` or `sendError` call and no status changed
-  (AC3).
-- Scope 3: two specs in `tests/routes/settings.test.ts` after "verify token - change flow":
-  "verify token - change flow moves only the verifying account's digest address" (V, plus X with
-  no `accounts` row) and "verify token - change flow keeps a digest address set apart from the
-  account email" (W). Both seed by INSERT against real Postgres and delete their rows in `finally`.
-- AC2 mutation evidence, from a `git archive f96090c4` copy on Redis DB 6, whole
-  `settings.test.ts` per variant:
-  - parent's unscoped UPDATE: exit 1, the V/X spec fails, X's row received
-    `settings_digest_v_new_*` (it moved);
-  - move fed `[oldEmail, oldEmail, username]`: exit 1, the V/X spec fails, V's row stays
-    `settings_digest_v_old_*`;
-  - move deleted: exit 1, the V/X spec fails, V's row stays `settings_digest_v_old_*`;
-  - `email = $2` dropped (`WHERE username = $2`, params renumbered so the SQL stays valid): exit 1,
-    the W spec fails, expected `settings_digest_w_own_*`, received `settings_digest_w_new_*`;
-  - the fix: exit 0, 26 passed.
-  The V/X spec was also red in the live checkout before the fix (X's row moved).
-- AC4: `tests/routes/settings.test.ts` with `tests/routes/settings-state-g-unverified-email.test.ts`
-  gives Test Files 2 passed, Tests 39 passed, exit 0, no Errors line. `npm run typecheck` exits 0,
-  eslint on both changed files exits 0, and `tests/eslint` gives 9 files, 146 passed, exit 0. The
-  other two files that drive the route (`recovery-and-reset-drop-queued-email-change.test.ts`,
-  `reset-token-cleared-by-account-writes.test.ts`) give 12 passed, exit 0. Full backend suite not
-  run: the change is confined to one handler, and the suite has a standing red bar.
-- Supplementary adversarial review (two lenses on `f96090c4`, correctness/conventions and spec
-  quality, each re-running the mutations in its own copy): zero findings. The backend does not run
-  `/ce-code-review`; that is the architect's at intake.
-- Out of scope, reported as fact (pre-existing, not touched): the swap and the digest move are two
-  statements with no transaction around them. If the move throws after the swap commits, the client
-  gets a 500, a re-click gets `INVALID_TOKEN`, and the digest address stays on the old address. If
-  this should close, the apply function from `backend-email-change-hold-and-owner-notice` is where
-  both statements will sit.
-- No `[TODO Architect]` contract change: no response shape, status or error code changed.
-- Learnings checkpoint: a grep of `agents/docs/solutions/` for `notification_preferences`,
-  `getDigestUsers` and "digest address" found no entry, so nothing to refresh. Nothing new
-  qualified, since the username predicate and the commit message carry the lesson.
-
-## /verify tells a WoT enrollee below the threshold that they are accredited (archived 2026-10-08): clean re-review of the ORCID-carry fix; docs and the latest-action-wins entry updated, five residuals dismissed
-
-### Architect archive note (2026-10-08)
-
-- **Review:** `/ce-code-review` full path on `925024f7` and `851fe922` (branch-remote, base `5184c970`): correctness, security, adversarial (in-process, no cross-model peer), testing, project-standards, learnings. Zero findings. Hold item 1 is fixed: the email op carries the latest `wot` op's ORCID from the chain, never `pending.orcid`. The testing reviewer reproduced the signal's counts and killed 7 of 7 mutants; an orchestrator mutant dropping the gate's authority filter fails only the unit SQL-shape spec.
-- **Done at archive:** `eed87d44` (ARCHITECTURE.md section 2 email-pin paragraph; the "Released" and "Credential Bindings" `/verify` sentences narrowed; `api-contracts/accreditation.md` `already_accredited` paragraph and PATCH `/metadata` intro); `31503ef1` (latest-action-wins entry rewritten in place, user-approved; CONCEPTS.md "Accreditation Method"); the real-HAF discovery task's quoted spec name now ends "misses".
-- **Recorded with the accepted residual:** a `handleLink` rebind that lands between the `/verify` gate read and the email op is overwritten by the email op's older ORCID; a re-link repairs it.
-- **Dismissed (user, as recommended):** the WoT auto-accredit broadcasting over a first authority accredit HAF has not indexed (pre-existing, limited to HAF lag, already stated under ARCHITECTURE.md "WoT auto-accreditation"); `handleLink` or PATCH `/metadata` re-writing `method: 'wot'` before the pin is indexed; a typeless revoke after an ORCID-holding accredit (no writer emits one, none under `pevotest`); the authority filter pinned only by the SQL-shape spec; the pre-existing `Round-1 hold item N` and slug labels in the test files.
-- **Learnings checkpoint:** `/ce-compound-refresh` on `accreditation-state-read-latest-action-wins-2026-05-15.md` (rewritten); no new `/ce-compound`, since the ORCID carry-forward rule is in ARCHITECTURE.md "Credential Bindings".
-
-**Owner:** backend
-**Created:** 2026-10-05
-**Priority:** high
-
-Filed from the accreditation and Web of Trust audit (finding 1). Seven reviewers reported it and
-the validator confirmed it from the code. Incidence was not measured.
-
-**Sequencing:** `backend-latest-op-haf-lookups-walk-the-blocks-index` rewrites the same query.
-Take that task first. If it is not archived when you pick this one up, stop and say so.
+**Owner:** ui
+**Created:** 2026-09-21
+**Priority:** normal
 
 ## Why
 
-`POST /api/accreditation/verify` calls `findExistingAccreditation`
-(`backend/src/lib/idempotency.ts`) before anything else that reads the chain. That helper returns
-a hit whenever the account's latest authority-signed op among `accredit` and `revoke` is an
-`accredit`, whatever its `method`. On a hit the route writes the completion record, which deletes
-the pending token, and answers 200 "Accreditation confirmed" with `outcome: 'already_accredited'`.
-It broadcasts nothing.
+A passwordless (ORCID-only, ARCHITECTURE § 6.1 state C) light account acquires its
+re-auth window by full-page navigation. The publish and edit pages were taught to
+handle that: acquisition happens before anything costly, the text fields are
+drafted, and no gate navigates over a held file. Four other call sites were left as
+they were. Each calls `broadcastWithFreshAuth` with the permissive default, at
+submit time, on a surface that keeps no draft:
 
-For an account in the "Below-threshold (WoT)" state of `ARCHITECTURE.md` § 2, the latest op is a
-`method: 'wot'` accredit and the account is not accredited: `active_accreditations` drops a `wot`
-row that does not meet the live vouch threshold. A user in that state who verifies an
-institutional email is told they are accredited, loses the token, and stays unaccredited.
-`POST /api/wot/retract` broadcasts no revoke, so ordinary retractions lead there.
+- `frontend/src/pages/review.js`, the review submit: `reviewBody`, the four
+  `ratings`, and `isAnonymous`.
+- `frontend/src/components/comment-composer.js`: the comment `body`, bound to a
+  parent.
+- `frontend/src/components/vouch-section.js`, `handleVouch` and `handleRetract`:
+  whatever each composes, the retraction reason at minimum.
 
-**Decision (user, 2026-10-05):** an email verification makes any WoT enrollee authority-pinned,
-whether or not the account currently meets the threshold.
+So the first write of a window on any of them sends a passwordless account to ORCID
+and returns it to the same page (the redirect records `window.location.pathname` and
+the callback navigates back to it) with the composed work gone. The review page is
+the worst case on the platform: a full structured review, which is the thing PEvO
+exists to collect, is lost to a click on Submit. Every later action in the same
+window is free, which is why this reads as intermittent.
+
+Known since the first review round of the light-account re-auth window work, carried
+as a residual through six rounds, and unchanged by any of them. Filed now because
+with the re-auth window task's confirm affordance landing, publish and edit become
+the only surfaces that handle this, and the gap stops being defensible as "not yet".
+
+The two `vote-buttons.js` call sites are the same shape and are NOT in scope: a vote
+holds no composed work, so the round-trip costs a click.
 
 ## Scope
 
-1. The gate short-circuits only when the latest op is an `accredit` whose method is not `wot`.
-   Use `IS DISTINCT FROM 'wot'`, the test `auth_accredit` applies in `activeAccreditationsCteBody`
-   (`backend/src/hafsql.ts`). When the latest op is a `wot` accredit, `/verify` goes on to the
-   sanction guard, the per-token lookup and the broadcast, so the `method: 'email'` op becomes the
-   account's latest accredit op.
+Keep the composed work across the round-trip. Recommended default, implement unless
+you see a reason to deviate, in which case flag before landing:
 
-   What stays as it is: a latest `revoke` is still a miss, and `hasUnliftedSanction` still refuses
-   a sanctioned account after the gate. Once the email op is indexed, a second pending token for
-   the same account sees an `email` accredit as the latest op and hits the gate.
-2. Two comments in the `/verify` handler equate a gate hit with "currently accredited": the one
-   at the gate ("is this account already accredited?") and the opening of the "Ever-sanctioned
-   guard" comment ("reaching here means the account is NOT currently accredited (latest op is a
-   revoke or there is no accredit)"). Cut each to what the gate checks.
-3. The `findExistingAccreditation` docblock says "The WoT cleanup path in routes/wot.ts is a live
-   producer of revoke ops" and "Scope per the filing task". No WoT path broadcasts a revoke, and
-   the second is a task redirect. Delete both while you are in that docblock.
+**Stash immediately before a navigating acquisition, restore on return.** The
+helper is the only thing that knows a navigation is about to happen, so it owns the
+moment: a `broadcastWithFreshAuth` option (threaded to the acquisition the way
+`allowRedirect` is) that the helper invokes right before it assigns the ORCID
+navigation. The call site supplies what to stash; it does not decide when. This is
+the same seam the re-auth window task's held item on flushing the draft before a
+navigating acquisition needs, so build it once: whichever task lands second reuses
+the first one's seam. Writing only at that moment is also what keeps stale stashes
+from accumulating, since a dismissed password modal or an ordinary failure never
+writes one.
 
-## Out of scope
+Constraints:
 
-- The per-token idempotency branch (`already_landed`). It stays.
-- The limiters, the session requirement and the mail text. Each has its own task.
+- **One fixed storage key, one slot.** Only one navigation can be in flight per
+  tab. A fixed `sessionStorage` key holding `{ surface, target, subject, payload,
+  savedAt }` fits the existing scrub, which loops a fixed key list. Register the key
+  in `SUBJECT_BOUND_STORAGE_KEYS` so `auth.disconnect()` and a subject change drop
+  it with everything else subject-bound. A review body, possibly one the user
+  marked anonymous, must never be restored into a tab that now represents someone
+  else.
+- **Restore is bound three ways.** Same surface, same target (paper author and
+  permlink; for a comment also the parent), same subject. Any mismatch discards the
+  stash silently instead of restoring it. Consume on read: a restore removes the
+  slot.
+- **Clear on success.** A broadcast that succeeds leaves nothing behind.
+- **`sessionStorage`, not `localStorage`.** This is a bridge across one round-trip
+  in one tab, not a draft feature. Do not grow it into general draft persistence
+  for these surfaces; that is a separate product decision.
+- **A failed stash write must not navigate silently.** Storage can be blocked or
+  full. If the write fails, the navigation would lose the work, so do not fire it
+  unasked. The work stays on screen, and the next constraint governs what the user
+  is offered.
+- **Every refusal needs a way through.** If any path here ends in a refusal for a
+  passwordless account, the same change must give that account an in-page next
+  step, because nothing else in the tab can open a window for it. Reuse the
+  cost-stating confirm from the re-auth window task rather than inventing a second
+  one: the user is told the work will not survive, and on confirm the navigation
+  proceeds. This constraint exists because a refusal prescribed without one, on
+  that task, produced a dead end. If that task's confirm has not landed at pickup,
+  sequence this task after it rather than building a parallel affordance.
+- **The password factor is untouched.** It prompts inline; nothing navigates, so
+  nothing is stashed.
+- **No per-surface re-auth logic.** Call sites pass what to stash and handle
+  `FRESH_AUTH_REDIRECT_PENDING` as the clean-abort sentinel, as they do today.
+- Check the review page's anonymous-submit path for the same class. If it reaches a
+  navigating acquisition by another route, it is in scope; if it does not, say so
+  in the signal.
+
+Alternative considered and not preferred: acquiring when the user starts composing.
+A full-page navigation fired by focusing a text area is more surprising than the
+loss it prevents, and it spends a round-trip on every abandoned comment.
 
 ## Acceptance criteria
 
-1. A `/verify` spec for an account whose latest op is a `wot` accredit below the live threshold:
-   the route broadcasts an accredit op with `method: 'email'` and answers 200 with no `outcome`.
-2. An account whose latest op is an `email`, `orcid` or `manual` accredit still answers
-   `already_accredited` and broadcasts nothing.
-3. A sanctioned account whose latest op is a `wot` accredit is refused with 403
-   `ACCREDITATION_SANCTIONED`.
-4. Comments follow root `CLAUDE.md` "Comment anchors".
+1. A passwordless account that writes a review (body, ratings, anonymous flag),
+   submits with no window open, and returns from ORCID finds all of it restored and
+   submits successfully inside the new window.
+2. The same for a comment, restored into the composer for the same parent and no
+   other.
+3. The same for the vouch and retract handlers, for whatever each composes.
+4. A stash is never restored on a different paper, a different parent, or under a
+   different subject, and `auth.disconnect()` removes it.
+5. A successful broadcast, and a consumed restore, leave the slot empty.
+6. A failed stash write does not navigate and does not strand the user: the work
+   stays on screen and the account has an in-page way to proceed.
+7. A password-factor account sees no behavior change on any of the four call sites.
+8. Unit coverage per call site, each assertion probed by reverting its own site
+   (four sites, and the two vouch handlers do not mask each other). Cover: stash
+   written only on the navigating path, restore on return, the three binding
+   mismatches, clear on success, the failed-write path.
+9. New comments cite no task slug, round number, or line number (root `CLAUDE.md`
+   "Comment anchors").
 
-## [TODO Architect] at archive
+## [BLOCKED by Architect] (2026-09-22) — sequenced behind the re-auth window confirm, and AC 3 is unreachable
 
-- Update the `already_accredited` paragraph of `api-contracts/accreditation.md`, and say in
-  `ARCHITECTURE.md` § 2 that an email verification pins a WoT enrollee.
-- `/ce-compound-refresh` on `accreditation-state-read-latest-action-wins-2026-05-15.md`.
-  The same refresh deletes the entry's claim that `backend/src/wot.ts:347` produces revoke ops,
-  in its sibling-site list and in "The bug is reachable, not theoretical". `wot.ts` broadcasts no
-  revoke op; the admin sanction route (`/accreditation/sanction` in `routes/admin.ts`) does.
-  (Added 2026-10-07 from the review of `backend-latest-op-haf-lookups-walk-the-blocks-index`.)
-- The same refresh also covers, in that entry: guidance step 4 ("'accredit' means currently
-  accredited"), the canonical SQL (no `method` projection), the caller branching snippet (no
-  `wot` check), the route example's null comment, and the task-file citation in Related.
-  (Added 2026-10-08 from the intake review of `31994b09`.)
-- `ARCHITECTURE.md` "Credential Bindings", the `/verify` paragraph: "An already-accredited
-  account verifying a mailbox claims the row as `bound` at once, with no second `accredit` op."
-  An account whose latest op is a `wot` accredit now gets a `method: 'email'` op. Narrow it.
+Picked up 2026-09-22. Two premises in this file do not hold against main. Both
+were checked by independent readers, and each verdict survived an adversarial
+refuter that re-read the cited files rather than trusting the evidence.
+
+### 1. Sequencing: the confirm this task is told to reuse has not landed
+
+The Scope constraint "Every refusal needs a way through" says to reuse the
+cost-stating confirm from `ui-light-account-reauth-window`, and: "If that
+task's confirm has not landed at pickup, sequence this task after it rather
+than building a parallel affordance."
+
+It has not landed. That task sits in `tasks/pending/` under its round-6 hold,
+whose item 1 is the prescription for exactly that confirm. On main:
+
+- `publish.js`'s `_windowReady` is still the bare
+  `freshAuthWindowReady({ allowRedirect: !this.holdsAttachedFiles, ...opts })`
+  with no branch on the refusal, and every gate treats `false` as a terminal
+  abort. `edit.js`'s wrapper is the same shape, and that page references
+  `broadcastConfirm` nowhere at all.
+- `FRESH_AUTH_REAUTH_REQUIRED` still dispatches to a toast only
+  (`WINDOW_OUTCOME_TOASTS` -> `common.reauthRequired`). No consumer re-enters
+  acquisition on that outcome, and the literal `allowRedirect: true` appears at
+  no call site in `frontend/src`; every explicit pass is `false` or the
+  `!holdsAttachedFiles` predicate.
+- Round-6 item 2's revert target (the PDF re-pick carve-out in
+  `handlePdfChange`, and the sentence describing it in `_windowReady`'s
+  docblock) is still present verbatim. The hold states items 1 to 3 are one
+  fix, so the survival of item 2's target is independent structural proof that
+  item 1 did not land.
+- `en.json` holds no copy naming a navigation cost for this class. The only
+  leaving-cost string in the bundle is `upgrade.navigationGuardConfirm`, a
+  `window.confirm` in the settings upgrade guard, on a different surface with a
+  different trigger.
+
+The five existing `broadcastConfirm` call sites (`publish.js`, `review.js`,
+`comment-composer.js`, and two in `vote-buttons.js`) are all
+intent-to-broadcast dialogs placed after a successful gate, never on a refusal,
+and none states a cost of leaving.
+
+Per the user's triage on 2026-09-22: the re-auth window task's round-6 fixes go
+first, and this task picks up afterwards, reusing both that task's confirm and
+its pre-navigation flush seam.
+
+### 2. AC 3 is unreachable: a light account cannot reach either vouch handler
+
+`vouch-section.js`'s `canVouch` and `canRetract` both carry
+`!this.isLightAccount`, and `profile.js` gates both forms behind
+`<template x-if>` on those getters, so for `custody === 'light'` the buttons
+are not in the DOM; that branch renders `wot.keychainRequiredToVouch` instead.
+`broadcastWithFreshAuth` acquires a window only for `custody === 'light'` and
+otherwise returns `broadcastOps` before any acquisition. So neither handler can
+fire a navigating acquisition, AC 3 cannot be demonstrated, and AC 8's probe
+("the two vouch handlers do not mask each other") has no real path to probe
+against. `components-vouch-section.test.js` pins the gate with two specs, so it
+is a deliberate invariant rather than an accident.
+
+Reachability was attacked from both ends and holds. `profile.js` is the only
+mount of `vouchSection` repo-wide. The gates are `x-if` (node removed), not
+`x-show` or `:disabled`; the `:disabled` on the buttons is only a re-entry
+guard. The page carries no keydown, keypress or `@submit` handlers, and the
+retract confirm block is a div, not a form, so there is no implicit Enter
+submit. The `comment-posted` event bus reaches no vouch handler. On the
+custody side: `loginFromResponse` assigns custody BEFORE `isConnected`, and
+`_restoreSession` assigns both in one synchronous block, so no first-paint
+window exists; the gate, `broadcastWithFreshAuth` and `broadcastOps` all read
+the identical `custody === 'light'` test, so a store that under-reports custody
+sends all three down the non-light branch together and nothing navigates.
+
+**What is needed from the architect:** a product decision on whether a light
+account should be able to vouch at all. Web of Trust vouching being
+Keychain-only may be deliberate, or it may predate light accounts being able to
+broadcast. The answer decides whether this task covers two surfaces or four:
+
+- if the gate stays, drop the two vouch handlers from Scope, from AC 3 and from
+  AC 8, and this task covers `review.js` and `comment-composer.js` only;
+- if the gate is the bug, lifting it is its own task and this one sequences
+  after that one, with AC 3 intact.
+
+### Settled while here, so it need not be re-derived
+
+The Scope bullet asking about the review page's anonymous-submit path: it does
+NOT reach a navigating acquisition, so it is out of scope. `submitAnonymousReview`
+is a plain `authenticatedRequest` POST to `/reviews/anonymous`; the shared
+request helper has no 401 interceptor, no retry gate and no redirect, nothing
+monkey-patches `fetch`, and the backend route carries no fresh-auth
+requirement. The only full-page ORCID navigation reachable from a broadcast is
+the one in `beginOrcidFreshAuthRedirect`, and the anonymous arm never reaches
+it. The stash must still carry `isAnonymous` per Scope, but the anonymous path
+itself never triggers a write.
+
+### Three implementation findings worth keeping
+
+- **The write has exactly one safe home:** between the redirect-host allowlist
+  check and the `window.location.href` assignment in
+  `beginOrcidFreshAuthRedirect`, with nothing awaited in between. Every earlier
+  position leaves a stash behind on an exit that does not navigate (a
+  `startOrcid` throw, the stale-flight cancel, an invalid redirect URL), and
+  the stale-flight cancel is the one exit that deliberately must not clean up
+  its own flow keys. A failed write must also unwind those flow keys before it
+  refuses, or the tab keeps a mode marker with no navigation behind it.
+- **The coalescing hazard runs the opposite way from the Scope note.** The
+  sharp case is a callback-LESS caller installing the flight and a
+  callback-bearing one joining: a vote button (out of scope, so no callback)
+  installs the permissive flight, a comment submit joins it within the
+  `startOrcid` round-trip, and the navigation fires with no stash written at
+  all. Any design that runs only the installer's callback leaves the bug intact
+  and makes it click-order dependent.
+- **`broadcastWithFreshAuth` acquires TWICE**, at its entry and again on the
+  remintable-401 retry. Threading the option into only the first reproduces the
+  bug on every closed-window 401, which is the case these surfaces meet most
+  often.
+
+### Architect note (2026-09-30) — the confirm has landed, and one more site shares the draft-key exposure
+
+Blocker 1 in the block this note follows is satisfied: the re-auth window task is
+archived clean, so the cost-stating confirm (`_confirmNavigationCost` on the publish
+and edit pages, asked through the `broadcastConfirm` store) and the pre-navigation
+flush are on main and reusable. Blocker 2, the product decision on light-account
