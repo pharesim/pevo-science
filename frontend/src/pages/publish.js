@@ -637,13 +637,16 @@ export function initPublishPage() {
     },
 
     // The accreditation prefill as it applies to a form that is already
-    // loaded: the author fields the user left empty take it, and the baseline
-    // moves with them, since a prefill is not the user's work.
+    // loaded: the author fields the user left empty take it. The baseline of
+    // every author field that then holds the accreditation's value moves to
+    // it, filled here or not, since a value the prefill gives is not the
+    // user's work.
     _prefillEmptyAuthorFields() {
-      for (const field of this._applyAccreditationPrefill()) {
-        this._baselineFields[field] = JSON.stringify(this[field]);
-        this._prefilledFields.push(field);
-      }
+      this._prefilledFields.push(...this._applyAccreditationPrefill());
+      const acc = this.accreditation;
+      if (!acc) return;
+      if (acc.name && this.authorName === acc.name) this._baselineFields.authorName = JSON.stringify(acc.name);
+      if (acc.institution && this.authorAffiliation === acc.institution) this._baselineFields.authorAffiliation = JSON.stringify(acc.institution);
     },
 
     // The accreditation can arrive after the username: an email sign-in
@@ -709,7 +712,8 @@ export function initPublishPage() {
 
     // The draft replaces the form. An author field the draft holds empty
     // takes the accreditation prefill, as a load does, never what the form
-    // held before, and the baseline moves with it: the prefill is not work,
+    // held before, and the baseline moves with it, as it does for an author
+    // field the draft holds at the accreditation's value: neither is work,
     // even when the accreditation arrived after the baseline was taken or the
     // field held typed text then. The form as restored is stored at once
     // under the draft's own time: what the restore itself fills in (the
