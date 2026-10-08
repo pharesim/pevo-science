@@ -333,14 +333,9 @@ describe('POST /api/wot/vouch — broadcastWotAccreditation tagged-union arms', 
     expect(broadcastWotAccreditationMock).not.toHaveBeenCalled();
   });
 
-  // Each value is a string of at most 50 characters that is not a Hive account
-  // name. Sent by a separate signer so these requests do not share VOUCHER's
-  // wot-write bucket.
   it.each(['Bob', 'a..b', 'ab', 'abcdefghijklmnopq', 'bob-'])(
     'rejects vouchee %j, which is not a Hive account name, with 400 and no broadcast',
     async (vouchee) => {
-      getAccreditedSetMock.mockResolvedValue(new Set(['carol']));
-
       const res = await request(app)
         .post('/api/wot/vouch')
         .set('Authorization', `Bearer ${jwtFor('carol')}`)

@@ -177,9 +177,6 @@ describe('POST /api/wot/retract — live-threshold self-heal (no revoke broadcas
     expect(broadcastAdminMock).not.toHaveBeenCalled();
   });
 
-  // Each value is a string of at most 50 characters that is not a Hive account
-  // name. Sent by a separate signer so these requests do not share VOUCHER's
-  // wot-write bucket.
   it.each(['Bob', 'a..b', 'ab', 'abcdefghijklmnopq', 'bob-'])(
     'rejects vouchee %j, which is not a Hive account name, with 400',
     async (vouchee) => {

@@ -15,6 +15,7 @@ import { logger } from '../logger.js';
 import { isHafConfigured } from '../db.js';
 import { hafCache } from '../cache.js';
 import { HIVE_ACCOUNT_NAME_REGEX } from '../lib/hive-account-name.js';
+import { assertBodyRecord } from '../lib/body-record.js';
 
 const router = Router();
 
@@ -105,7 +106,7 @@ const wotWriteLimiter = rateLimit({ name: 'wot-write', windowMs: 60_000, max: 10
 
 // Mounted before wotWriteLimiter so a malformed vouchee takes no wot-write slot.
 function validateVouchee(req: Request, res: Response, next: NextFunction): void {
-  const vouchee = req.body?.vouchee;
+  const { vouchee } = assertBodyRecord(req);
   if (typeof vouchee !== 'string' || !HIVE_ACCOUNT_NAME_REGEX.test(vouchee)) {
     sendError(res, 400, 'BAD_REQUEST', 'vouchee is required and must be a valid Hive username');
     return;

@@ -13,8 +13,8 @@
  * deterministically — a real broadcast landing or timing out cannot be
  * produced reliably against a live Hive node, and this is a service-level unit
  * with no route (cryptographic verification is out of scope; there is no
- * `verifyHiveSignature` here). `getVouchStatus` is NOT mocked: it runs against
- * the mocked pool, which returns the `vouchStatusSelect` single-row
+ * `verifyHiveSignature` here). The vouch-status read is NOT mocked: it runs
+ * against the mocked pool, which returns the `vouchStatusSelect` single-row
  * `{ self_method, self_pinned, vouches }` shape.
  * Real-path companion: `backend/tests/wot-vouch-status-select-real-postgres.test.ts` [self_pinned]
  */
@@ -89,7 +89,13 @@ const { PrivateKey } = await import('@hiveio/dhive');
 const originalAdminKey = config.pevoAdminPostingKey;
 const TEST_WIF = PrivateKey.fromSeed('pevo-wot-broadcast-timeout-test-seed').toString();
 
-// Drive getVouchStatus to "eligible" (3 vouches >= default threshold 3). The
+const ELIGIBLE_VOUCHES = [
+  { voucher: 'a', relationship: 'colleague', timestamp: '2026-01-01' },
+  { voucher: 'b', relationship: 'colleague', timestamp: '2026-01-02' },
+  { voucher: 'c', relationship: 'colleague', timestamp: '2026-01-03' },
+];
+
+// Drive the vouch-status read to "eligible" (3 vouches >= default threshold 3). The
 // real vouchStatusSelect returns ONE row: { self_method, self_pinned, vouches }.
 // The default row is a vouchee with no accred_pinned row.
 function mockEligibleVouchStatus(self: Record<string, unknown> = { self_method: null, self_pinned: false }) {
@@ -99,11 +105,7 @@ function mockEligibleVouchStatus(self: Record<string, unknown> = { self_method: 
         rows: [
           {
             ...self,
-            vouches: [
-              { voucher: 'a', relationship: 'colleague', timestamp: '2026-01-01' },
-              { voucher: 'b', relationship: 'colleague', timestamp: '2026-01-02' },
-              { voucher: 'c', relationship: 'colleague', timestamp: '2026-01-03' },
-            ],
+            vouches: ELIGIBLE_VOUCHES,
           },
         ],
       };
@@ -197,16 +199,13 @@ describe('broadcastWotAccreditation tagged union', () => {
   });
 
   it('skips (no broadcast) when the cached vouch status carries no self_pinned field', async () => {
-    hafQueryMock.mockResolvedValue({ rows: [] });
+    // A cache miss would read this row and broadcast.
+    mockEligibleVouchStatus();
     await hafCache.set(vouchStatusCacheKey('alice'), {
       username: 'alice',
       vouch_count: 3,
       threshold: 3,
-      vouches: [
-        { voucher: 'a', relationship: 'colleague', timestamp: '2026-01-01' },
-        { voucher: 'b', relationship: 'colleague', timestamp: '2026-01-02' },
-        { voucher: 'c', relationship: 'colleague', timestamp: '2026-01-03' },
-      ],
+      vouches: ELIGIBLE_VOUCHES,
       eligible: true,
       accreditation_method: null,
     }, 60_000);
