@@ -27,7 +27,7 @@ tags:
 
 ## Context
 
-HAF is a PostgreSQL mirror of the entire Hive blockchain. PEvO reads accreditation and vouch state from it through CTE-based queries (`activeAccreditationsCteBody`, `activeVouchesCteBody`, `cascadeDiscoverySelect`, and siblings). The corpus is append-only chain data — there is no API to seed synthetic rows into the live HAF view at test time. Getting a controlled row into the mirror means broadcasting a real `vouch`/`accredit` custom_json to the chain and waiting out HAF indexing lag. For selection-logic tests that need a precise, contrived graph shape (e.g. a WoT-accredited vouchee whose only accredited voucher is the account being revoked), seeding the live corpus per test is not feasible.
+HAF is a PostgreSQL mirror of the entire Hive blockchain. PEvO reads accreditation and vouch state from it through CTE-based queries (`activeAccreditationsCteBody`, `activeVouchesCteBody`, `vouchStatusSelect`, and siblings). The corpus is append-only chain data — there is no API to seed synthetic rows into the live HAF view at test time. Getting a controlled row into the mirror means broadcasting a real `vouch`/`accredit` custom_json to the chain and waiting out HAF indexing lag. For selection-logic tests that need a precise, contrived graph shape (e.g. a WoT-accredited vouchee whose only accredited voucher is the account being revoked), seeding the live corpus per test is not feasible.
 
 The natural fallback is to mock `pool.query` and return fixture rows directly. That is fine for downstream concerns (response envelope, call counts, budget/timeout accounting), but it is structurally blind to the SQL logic itself: the mock bypasses the Postgres planner, so the JOIN type, HAVING predicate, and FILTER expression are never executed.
 
@@ -39,18 +39,14 @@ The FROM-redirect technique runs the production SQL verbatim against controlled 
 
 ```ts
 // wot.ts — exported so the regression test runs the production SQL verbatim
-export function cascadeDiscoverySelect(revokedParam: string, thresholdParam: string): string {
-  return `SELECT av_target.vouchee
-       FROM active_vouches av_target
-       JOIN active_accreditations aa_target
-         ON aa_target.account = av_target.vouchee AND aa_target.method = 'wot'
-       LEFT JOIN active_vouches av_all ON av_all.vouchee = av_target.vouchee
-       LEFT JOIN active_accreditations aa_voucher ON aa_voucher.account = av_all.voucher
-       WHERE av_target.voucher = ${revokedParam}
-       GROUP BY av_target.vouchee
-       HAVING COUNT(DISTINCT av_all.voucher) FILTER (
-         WHERE aa_voucher.account IS NOT NULL AND av_all.voucher != ${revokedParam}
-       ) < ${thresholdParam}`;
+export function vouchStatusSelect(usernameParam: string): string {
+  return `SELECT
+           (SELECT method FROM accred_pinned WHERE account = ${usernameParam}) AS self_method,
+           EXISTS (SELECT 1 FROM accred_pinned WHERE account = ${usernameParam}) AS self_pinned,
+           COALESCE(json_agg(...) FILTER (WHERE av.voucher IS NOT NULL), '[]') AS vouches
+         FROM active_vouches av
+         JOIN accred_pinned aa ON aa.account = av.voucher
+         WHERE av.vouchee = ${usernameParam}`;
 }
 ```
 
@@ -65,9 +61,9 @@ const sql = `
   WITH synthetic_cj(id, custom_id, json, required_posting_auths, block_num) AS (
     VALUES ${valueLines.join(',\n')}
   ),${redirectedCte}
-  ${cascadeDiscoverySelect(revokedParam, thresholdParam)}`;
+  ${vouchStatusSelect(usernameParam)}`;
 
-const result = await discoveryPool!.query<{ vouchee: string }>(sql, params);
+const result = await pool!.query<VouchRow>(sql, params);
 ```
 
 **3. Add a redirect no-op guard immediately after computing the redirect.** If the view-reference string drifts (a CTE alias change, whitespace normalization, a rename of the view), the `split(...).join(...)` becomes a no-op, the test silently runs against the LIVE corpus instead of the synthetic set, and a behavioral assertion can pass vacuously (the live corpus does not contain the contrived graph). Guard it:
@@ -78,13 +74,15 @@ expect(redirectedCte).not.toContain(T.customJson);
 
 If the redirect was a no-op, the view literal still appears, the assertion fires at the guard, and the test reports the configuration failure instead of a false-positive behavioral pass.
 
-**4. Gate on a real pool and set a generous timeout.** The connection is available only when `APP_DATABASE_URL` (or the HAF equivalent) is configured. Use `it.skipIf(!discoveryPool)` so a DB-less CI stays green, with a ~30s timeout to match the cold-connection planning cost the sibling tests already allow.
+`redirectHafViews` in `backend/tests/support/haf-query.ts` does the replacement and runs this guard once for each view literal its mapping names.
+
+**4. Gate on a real pool and set a generous timeout.** The connection is available only when `APP_DATABASE_URL` (or the HAF equivalent) is configured. Use `it.skipIf(!pool)` so a DB-less CI stays green, with a ~30s timeout to match the cold-connection planning cost the sibling tests already allow.
 
 **5. Document the test-mock carve-out clauses in the file header.** Clause (a): why seeding the live corpus is impractical for this case. Clause (b): no auth middleware is involved — the CTE sits below the route layer, so cryptographic verification is not applicable (this is a SQL-shape-focused test, not an auth-focused one). Clause (c): the real-path companion — the FROM-redirect block is itself the real-path companion for the SQL-shape risk class, while the mocked-pool specs cover the call-count/budget/accounting risk classes.
 
 ## Why This Matters
 
-Any mutation to the JOIN type (INNER vs LEFT), the HAVING predicate, or the FILTER inside COUNT is invisible to a result-mocked test — those constructs are dead code from its perspective, so the mutation ships green. The concrete cost: the WoT cascade-discovery query is meant to catch the cascade-terminal vouchee — an account WoT-accredited whose only accredited voucher is the one being revoked, so removing that voucher drops its surviving accredited-voucher count to zero. An INNER JOIN on the surviving-voucher tables silently drops that account: with no surviving voucher row, no group forms, and the vouchee falls out of the result set, left WoT-accredited with zero accredited vouchers. The mocked-pool discovery tests passed under the INNER-join form because they returned the expected to-be-revoked set directly, bypassing the broken SQL entirely. The regression was caught only by hand-tracing the SQL during architect re-review — by no test. A FROM-redirect test on a real pool catches the same mutation immediately: the cascade-terminal account is absent from the INNER-join result and the assertion fails, naming the missing account.
+Any mutation to the JOIN type (INNER vs LEFT), the HAVING predicate, or the FILTER inside COUNT is invisible to a result-mocked test — those constructs are dead code from its perspective, so the mutation ships green. The concrete cost: the WoT cascade-discovery query (removed since, with the revocation cascade) was meant to catch the cascade-terminal vouchee — an account WoT-accredited whose only accredited voucher is the one being revoked, so removing that voucher drops its surviving accredited-voucher count to zero. An INNER JOIN on the surviving-voucher tables silently dropped that account: with no surviving voucher row, no group formed, and the vouchee fell out of the result set, left WoT-accredited with zero accredited vouchers. The mocked-pool discovery tests passed under the INNER-join form because they returned the expected to-be-revoked set directly, bypassing the broken SQL entirely. The regression was caught only by hand-tracing the SQL during architect re-review — by no test. A FROM-redirect test on a real pool catches the same mutation immediately: the cascade-terminal account is absent from the INNER-join result and the assertion fails, naming the missing account.
 
 This is the core correctness argument for HAF queries. The chain is the system of record; a HAF query's selection logic is part of that correctness contract. Mocking the result treats the query as a trusted oracle whose output you supply, which defeats the point of having the query at all.
 
@@ -118,7 +116,7 @@ const redirected = body.sql.replace(T.customJson, 'synthetic_cj');
 expect(redirected).not.toContain(T.customJson);
 ```
 
-**The full redirect + synthetic VALUES assembly (from the `runDiscovery` helper in `wot-broadcast-timeout.test.ts`):**
+**The full redirect + synthetic VALUES assembly (from the `runVouchStatus` helper in `wot-vouch-status-select-real-postgres.test.ts`):**
 
 ```ts
 const cte = buildWith(1, activeAccreditationsCteBody, activeVouchesCteBody);
@@ -133,10 +131,10 @@ const sql = `
     VALUES
       ${valueLines.join(',\n        ')}
   ),${redirectedCte}
-  ${cascadeDiscoverySelect(revokedParam, thresholdParam)}`;
+  ${vouchStatusSelect(usernameParam)}`;
 
-const result = await discoveryPool!.query<{ vouchee: string }>(sql, params);
-return result.rows.map((r) => r.vouchee).sort();
+const result = await pool!.query<VouchRow>(sql, params);
+return result.rows[0] ?? null;
 ```
 
 The `synthetic_cj` VALUES set carries the same column names and types the production CTE bodies expect (`custom_id`, `json`, `required_posting_auths`, `block_num`, `id`). The appTag bind is reused as the `custom_id` value for every synthetic row so the `WHERE custom_id = $1` gate admits them; distinct `block_num` values per row keep the ROW_NUMBER ranking deterministic.

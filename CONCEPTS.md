@@ -293,7 +293,7 @@ It is the mechanism for peer-attested accreditation, complementing authority-pin
 An on-chain endorsement broadcast by one accredited researcher attesting to another researcher's credentials, forming an edge in the web of trust.
 *Avoid:* endorsement.
 
-A voucher must currently be accredited and cannot vouch for themselves; only vouches from currently accredited researchers count, validated against the live membership view rather than against the accreditation authority whitelist. A vouch can be retracted, and accumulating enough distinct accredited vouches triggers an automatic vouch-derived accreditation grant.
+A voucher must currently be accredited and cannot vouch for themselves; only vouches from currently accredited researchers count, validated against the live membership view rather than against the accreditation authority whitelist. A vouch can be retracted, and accumulating enough distinct accredited vouches triggers an automatic vouch-derived accreditation grant for an account that holds no current grant of its own and is not sanctioned.
 
 ### Retract Vouch
 
@@ -307,7 +307,7 @@ Retracting a vouch that drops a vouch-derived account below the threshold broadc
 The minimum number of distinct accredited vouches an account must currently hold to qualify for and retain vouch-derived accreditation.
 *Avoid:* WoT threshold.
 
-Crossing it auto-grants a vouch-derived accreditation, and falling below it drops standing live with no revocation. The threshold is checked continuously against the live vouch graph, never frozen at grant time.
+Crossing it auto-grants a vouch-derived accreditation to an account holding no current grant, and falling below it drops standing live with no revocation. The threshold is checked continuously against the live vouch graph, never frozen at grant time.
 
 ### Live-Threshold Membership
 
