@@ -40,3 +40,25 @@ broadcast result anyway, for example to record what landed.
    no failure message.
 3. Light-account behaviour and the existing fresh-auth and page suites are unchanged and
    green; each new case is observed red at base.
+
+## Architect note (2026-10-08): the settings self-custody branch folded in
+
+Folded in at the architect review of `ui-state-d-session-settings-critical-actions`. User
+triage: "as recommended".
+
+`withSettingsFreshAuth` in `frontend/src/lib/settings-fresh-auth.js` returns `run(undefined)`
+for a non-light session on every action but `set_password`, before it opens
+`subjectTeardownGuard`. A self-custody session's change-email, delete-account and accreditation
+metadata requests now sign with Keychain (`settingsActionRequest` in `frontend/src/api.js`), so
+that `run` waits on a Keychain prompt, as the `broadcastWithFreshAuth` branch does. The signed
+request acts for the username read before the prompt; the page then handles the result for
+whatever subject the tab holds when the prompt resolves. Two callers also write to the auth
+store at that point:
+
+- `handleMetadataSubmit` calls `applyAccreditationMetadata`, which merges the submitted name,
+  institution and field into the store's current accreditation.
+- `handleEmailDelete` calls `disconnect()`, stops notifications and shows the account-deleted
+  toast. Its `removeAccountDrafts` call already uses the account read before the first await.
+
+Scope addition: apply this task's rule and acceptance criteria to that branch and its callers in
+`frontend/src/pages/settings.js`.

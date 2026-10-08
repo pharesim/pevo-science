@@ -160,3 +160,15 @@ mismatch teardown after a cross-tab sign-in is filed separately
 (`ui-upload-mismatch-teardown-after-subject-change`); the expired-JWT mint answer is an
 open architect decision; the same-subject window race and the failed consent-op cache
 write were dismissed.
+
+## Architect note (2026-10-08): one more sentence, in `pages/settings.js`
+
+Folded in at the architect review of `ui-state-d-session-settings-critical-actions`. User
+triage: "as recommended".
+
+The `isKeychainInstalled()` race comment at the top of `_performKeychainImport` says the
+extension was installed at `executeUpgrade()` entry, "proven by the account_update sign in
+_performUpgradeKeyRotation". That `account_update` is signed by dhive with an owner key the page
+holds (`client.broadcast.sendOperations([['account_update', op]], ownerKey)`), not by Keychain, so
+it proves nothing about the extension. Repair the parenthetical under this task's rules. The
+Scope's file list gains `frontend/src/pages/settings.js` for this one comment.

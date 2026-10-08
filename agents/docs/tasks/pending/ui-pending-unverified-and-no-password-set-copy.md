@@ -42,3 +42,28 @@ See `agents/docs/api-contracts/settings.md`, `orcid.md` and `auth.md` for the cu
 1. Each of the three answers renders specific, localized copy, pinned by a unit test per
    surface.
 2. No surface claims the account has a particular sign-in method or factor.
+
+## Architect note (2026-10-08): scope 1 narrowed to the gate; stale delete lines folded in
+
+Folded in at the architect review of `ui-state-d-session-settings-critical-actions`. User
+triage: "as recommended".
+
+1. **Scope 1 is now the gate only.** Offer set-password only when the status says the email is
+   verified. The "or map the 409" alternative no longer reaches the user. Every JWT minted for a
+   G row carries the `'self'` claim (ARCHITECTURE.md § 6.2 State G), and `withSettingsFreshAuth`
+   now resolves a `'self'` session's `set_password` proof before the request goes out. An
+   unverified G row holds no ORCID, so no cached proof can exist and the resolution is an ORCID
+   round-trip, which the callback refuses for a row without an ORCID. The set-password request,
+   and its 409, is never sent. Add a settings-page test that no ORCID round-trip starts for a
+   status with an unverified email and no password.
+2. **Stale email-section lines on delete.** `handleEmailDelete` in `frontend/src/pages/settings.js`
+   clears neither `emailMessage` nor `emailError`; `handleEmailSubmit` and `handleEmailResend`
+   both clear them. Since the verified-email state's message lines moved out of the change form,
+   a "verification sent" line from an earlier change-email stays on screen beside a later delete
+   failure. Clear both lines when a delete starts, and pin it with a test that runs a failed
+   delete after a successful change-email.
+
+Not part of this task: set-password is also offered, and also starts a round-trip the callback
+refuses, for a caller with no row and for a verified G row with no ORCID. Hiding it there needs
+the status to report the ORCID; filed as `backend-settings-email-status-reports-orcid`, whose
+UI half the architect routes when it is archived.
