@@ -1,3 +1,210 @@
+## Other accredit-op writers accept line breaks and control characters (archived 2026-10-08): clean backend review; one ui follow-up filed, contract docs updated in place, three residuals dismissed
+
+### Architect archive note (2026-10-08)
+
+- **Review:** `/ce-code-review` full path on `706cb11c`, `36d54084` and `fd7f0fab` (branch-remote, a synthetic head of the task's 8 files on base `9084f619`): correctness, security, adversarial (in-process, no cross-model peer), testing, project-standards, api-contract, learnings. Verdict "Ready with fixes" on one UI-side finding; the backend change meets every scope item and AC. Testing re-ran the four spec files alone at `fd7f0fab` (124/124, 51/51, 113/113, auth 35/36 with the known JWT timeout) and killed 11 of 11 mutants. Security, on PostgreSQL 16.13: of the 2,124 code points the rules reject, the jsonb input refuses exactly U+0000 and the 2,048 surrogates, and every accepted code point survives `JSON.stringify` plus `::jsonb`. No body-parser bypass, and no transform between validation and broadcast recreates a refused value.
+- **Filed:** `ui-signup-character-rule-refusal-shows-institutional-message` (normal): the signup page shows `signup.orcidOrInstitutional` for the new 400 (validator confirmed).
+- **In place:** `acb140b3` updates the contract and architecture docs (the signal's four TODOs, a new `POST /api/admin/accreditation/grant` section, a `hive-schemas.md` field note, and the `/signup` non-institutional refusal corrected to 422 `VALIDATION_ERROR`). `f31ebaec` adds `field:` 400s to `ui-accreditation-metadata-edit-sends-only-changed-fields` and replaces the read-side task's claim that this task closes PEvO's own write paths with a pointer to `backend-platform-signed-ops-carry-unchecked-client-text`.
+- **Dismissed:** the author retract reason in an admin-signed op (owned by `backend-platform-signed-ops-carry-unchecked-client-text`, filed during the review); a truthy non-string ORCID name throwing before the mode switch (theoretical: ORCID returns a string or null); the new solutions entry's process narrative (none of the classes root CLAUDE.md bans).
+- **Learnings checkpoint:** the learnings reviewer found no entry the change contradicts or that now overclaims. The new entry `conventions/tightened-validator-misses-values-stored-before-the-deploy.md` was checked against `fd7f0fab` by two reviewers and holds. No refresh or new entry ran.
+
+**Owner:** backend
+**Created:** 2026-10-06
+**Priority:** high
+
+Filed from the review of `backend-accreditation-mail-names-the-account` (the implementer's
+out-of-scope follow-up, extended by the security reviewer; triage: user, "as recommended").
+
+## Why
+
+`accreditationRequestSchema` in `backend/src/validation.ts` now rejects, in `full_name` and
+`institution`, the Unicode Cc characters, U+2028, U+2029, U+202A to U+202E and U+2066 to U+2069
+(`NO_CONTROL_CHARACTERS`), because those values are printed in the verification mail and broadcast
+in the `accredit` op. Other paths put a name, institution or field into an `accredit` op without
+that rule:
+
+- `SignupBodySchema` in `backend/src/routes/auth.ts`: `full_name`, `institution` and `field` are
+  bare `z.string().optional()`. The pending row's values become the op's `name`, `institution`
+  and `field` in `backend/src/routes/signup-verify.ts`.
+- `adminAccreditationGrantSchema` in `backend/src/validation.ts`: `full_name`, `institution` and
+  `field` carry length bounds only.
+- `accreditationRequestSchema.field`: broadcast as `field: pending.field` by `/verify`.
+- The ORCID profile name: `handleAccredit` in `backend/src/routes/orcid.ts` broadcasts
+  `name: orcidName || username`, and the ORCID signup path takes the name from it too.
+
+A value written through one of these paths is also refused later by the settings metadata edit
+when the SPA re-sends it (`ui-accreditation-metadata-edit-sends-only-changed-fields`).
+
+## Scope
+
+1. Export `NO_CONTROL_CHARACTERS` and its message from `backend/src/validation.ts` and apply the
+   rule to `full_name`, `institution` and `field` in `SignupBodySchema` and
+   `adminAccreditationGrantSchema`, and to `field` in `accreditationRequestSchema` (the metadata
+   edit inherits it through `.pick()`).
+2. The ORCID name is not typed into a PEvO form, so refusing it leaves the user no fix inside
+   PEvO. Decide how it is handled before broadcast and state the choice in the signal block.
+
+Out of scope: values already on chain that a later op carries forward unchanged.
+
+## Acceptance criteria
+
+1. Specs pin a 400 for a line break in each newly covered field on each schema, and acceptance of
+   an ordinary non-Latin value.
+2. A spec pins the ORCID-name handling chosen in Scope 2.
+3. No emdash in new response strings. Comments follow root `CLAUDE.md` "Comment anchors".
+
+## Architect note (2026-10-07): raised to high
+
+From the review of `backend-latest-op-haf-lookups-walk-the-blocks-index` (triage: user). The
+character rule also protects the HAF reads:
+
+- PostgreSQL's jsonb input rejects the escape `\u0000` and a lone surrogate escape such as
+  `\ud800` (checked on PostgreSQL 16; the HAF node runs 17.9). `::json ->> 'action'` also throws
+  when another key holds `\u0000`.
+- `hafsql.operation_custom_json_view.json` is `text` (`body_value ->> 'json'`), so the
+  `cj.json::jsonb` casts in PEvO's queries parse it.
+- `JSON.stringify` writes U+0000 as `\u0000` and a lone surrogate as its `\uXXXX` escape. An
+  authority-signed accredit op carrying one makes every query that casts that row throw, and the
+  op cannot be removed from the chain. `/verify`, the metadata edit and the ORCID flows would fail
+  for every user.
+
+Scope addition: also reject a lone surrogate (a value that is not well-formed UTF-16) in every
+field Scope 1 covers and in `full_name` and `institution` of `accreditationRequestSchema`.
+`NO_CONTROL_CHARACTERS` rejects U+0000, which is Cc, but not a lone surrogate. Scope 2's handling
+of the ORCID name covers both.
+
+AC addition: specs pin a 400 for U+0000 in each newly covered field, and for a lone surrogate in
+every field the scope addition names.
+
+The read side, for ops any Hive account can broadcast, is
+`backend-custom-json-unicode-escape-breaks-jsonb-casts`.
+
+## Backend implementation signal (2026-10-08, commits 706cb11c, 36d54084; learnings fd7f0fab)
+
+Each SHA self-verified with `git merge-base --is-ancestor <sha> main`.
+
+**What landed, per scope item**
+
+1. Scope 1. `validation.ts` exports `accreditOpText(schema)`, which adds both character rules to
+   a string schema: `NO_CONTROL_CHARACTERS` (unchanged) and the new `NO_LONE_SURROGATES`
+   (message `must be well-formed Unicode text`). It is applied to `full_name`, `institution` and
+   `field` in `accreditationRequestSchema` (`field` is new; the metadata edit inherits all three
+   through `.pick()`), `adminAccreditationGrantSchema` and `SignupBodySchema` (`routes/auth.ts`).
+   **Deviation from the literal wording** ("Export `NO_CONTROL_CHARACTERS` and its message"): every
+   covered field now takes two rules, so the shared export is the helper and the regexes and
+   messages stay module-private. No caller outside `validation.ts` needs the constants.
+   Wire behavior: `/request`, `/metadata` and the admin grant answer 400 `BAD_REQUEST`
+   `<field>: must not contain line breaks or control characters` or `<field>: must be well-formed
+   Unicode text` through `validate()`. `/signup` answers its existing 400 `VALIDATION_ERROR`
+   `Invalid request body` (that route does not echo zod issues).
+2. Scope 2, decision: **the ORCID profile name is rewritten, not refused.** `toAccreditOpText`
+   (`validation.ts`) turns each run of Cc / U+2028 / U+2029 characters into one space, drops
+   U+202A to U+202E, U+2066 to U+2069 and unpaired surrogates, and trims. The `/callback` applies it
+   once before dispatch, so `handleSignup`'s response `name`, the `orcid_verified` stored name
+   (the `/signup` fallback `full_name`) and `handleAccredit`'s op `name` all carry the rewritten
+   value. A name with nothing left falls back to the username (`orcidName || username` in
+   `handleAccredit`; `account.full_name || username` at signup-verify). Why: the name is not typed
+   into a PEvO form, so a refusal leaves the user no fix inside PEvO, and dropping the whole name
+   for one stray character loses a correct name. Fuzzed: 200,000 random strings built from the
+   rules' edge code points; every output passes `accreditOpText(z.string())`, and an already-valid
+   input changes only by trimming.
+3. Scope addition (lone surrogate). `NO_LONE_SURROGATES = /^[^<U+D800>-<U+DFFF>]*$/u` (written with
+   `\u` escapes in source): under the `u` flag a pair reads as one astral code point, so only an
+   unpaired half is rejected. Checked read-only on the local PostgreSQL 16: the jsonb casts of
+   `"\ud800"`, `"\udc00"` and `"\u0000"` error, and a surrogate pair parses.
+
+**Acceptance evidence**
+
+- AC1 and the AC addition. Signup, route level (`auth.test.ts`, "POST /api/auth/signup: character
+  rules on full_name, institution and field"): a line break, U+0000 and a lone surrogate in each of
+  the three fields answer 400 `Invalid request body`; Arabic, Japanese and Spanish values pass the
+  body parse (they reach `Email is required`, so no DB write). Admin grant, route level
+  (`admin-endpoints.test.ts`): the same 9 cases answer 400 with a `<field>:` message and no
+  broadcast; non-Latin values are broadcast unchanged. Request schema, schema level
+  (`validation-accreditation-text-fields.test.ts`): the full rejected set, now including both
+  surrogate halves, on all three fields, plus the metadata edit's inheritance. ACCEPTED adds a
+  surrogate pair, Hangul (below the surrogate block) and fullwidth punctuation (above it).
+- AC2: `orcid.test.ts` "ORCID profile name rewritten to pass the accredit-op character rules".
+  A name carrying RLI/PDI, CRLF and an unpaired surrogate comes back as `Jane Smith` in the signup
+  response and in the stored `orcid_verified` value, and as the accredit op's `name`; a name with
+  nothing left gives `alice` (the username).
+- AC3: the one new response string, `must be well-formed Unicode text`, has no emdash. The
+  pre-commit anchor gate passed on all three commits; `tests/eslint` 146/146.
+
+**Verification**
+
+- Red first: every new spec failed against the pre-change code for the expected reason (signup 9,
+  admin 9, validation 56, orcid 3).
+- Touched files: validation 116/116, admin-endpoints 51/51, orcid 113/113 at 706cb11c; auth 36/36
+  alone. Its "accepts valid Bearer JWT" spec times out intermittently on
+  `GET /api/notifications?since_block=1`: item 3 of
+  `backend-route-test-isolation-and-a-notifications-timeout`, untouched here. At 36d54084:
+  validation 124/124 plus `tests/eslint` 146/146. Typecheck (src and tests) and eslint on the
+  touched files are clean.
+- Full suite at 706cb11c, run while the verification workflow's probes loaded the same stack: exit 1,
+  13 files / 22 specs red. Standing red bar: `idempotency-real-haf` 2, `accreditation-idempotency` 6,
+  `papers-enrichment-parity-gate` 1, `profile-auth-bypass` 3, `reviews` 2,
+  `cast-hardening-author-index-weight` 1. Green when re-run alone: `notifications`, `profile`,
+  `signup-verify-orcid-binding-guard`, `signup-verify-concurrent-activation`, `auth`. Red alone and
+  identically on a `706cb11c~1` copy, so not this change: `lib/bridge-queue` 1 (`leaseNextEntry`
+  reads leftover queue rows in the shared database), `lib/cache` 1 (a different single-flight spec
+  each run).
+- Verification workflow (path completeness, comment truth, spec mutation kill; one refuter per
+  finding; probes on `git archive` copies): 22 mutants, 21 killed. The survivor, a widened
+  surrogate range, is killed by the 36d54084 ACCEPTED entries. All seven accredit-op builders were
+  traced (`/verify`, `PATCH /metadata`, admin grant, `broadcastAccreditationAndSeed`,
+  `handleAccredit`, `handleLink`, `broadcastWotAccreditation`); every request- and ORCID-sourced
+  value now passes a rule. `handleLink` and the metadata edit's `prior.*` carry chain values forward
+  (out of scope), and WoT uses the validated vouchee name and constants. One comment defect was
+  fixed in 36d54084 (the `NO_LONE_SURROGATES` comment said the negated class "matches only an
+  unpaired half"). A "dropped mail rationale" finding was refuted: `accreditation.test.ts` "POST
+  /api/accreditation/request — verification mail and character gate" pins it.
+- Simplify: skipped, under the 30-line threshold (about 25 substantive code lines in three src files).
+- Code review: left to the architect's intake review, per the backend protocol.
+
+**Decision (user, 2026-10-08): values stored before the deploy.** `/verify` broadcasts the pending
+fields from a Redis token (24h) written under the old rule, and that token can hold a U+0000 or
+lone-surrogate escape. Signup `/confirm` and `/link` broadcast from pending `accounts` rows (up to
+30 days), and `orcid_verified` nonces last 30 minutes. Those Postgres-stored values cannot hold NUL
+or a lone surrogate, so they carry no jsonb risk. A read-only check on this stack before deciding
+found 0 `pending_accred` keys, 0 `orcid_verified` keys, 0 pending signup rows, and 0 `accounts`
+rows with a rule-violating character. The user chose: **accept the window and redeploy soon**,
+with no broadcast-time re-check.
+
+**[TODO Architect] contract and architecture notes** (outside the backend zone):
+
+- `api-contracts/accreditation.md`: the `/request` `BAD_REQUEST` bullet, the `/metadata` bounds
+  paragraph and its `BAD_REQUEST` bullet name only `full_name`/`institution` and only the
+  control-character message. `field` is covered too now, and all three also refuse an unpaired
+  surrogate with `<field>: must be well-formed Unicode text`.
+- `ARCHITECTURE.md` § 6.4, the `PATCH /api/accreditation/metadata` row: same correction.
+- `api-contracts/auth.md`, `/signup` `VALIDATION_ERROR`: add the character rules on
+  `full_name`/`institution`/`field` (message `Invalid request body`).
+- `api-contracts/orcid.md`, `/callback`: the profile name is rewritten (rule in item 2) before it is
+  returned, stored and broadcast; an empty result makes the accredit op use the username.
+
+**Out-of-scope observations, for filing**
+
+- Other admin-key-signed ops carry client text with no character rule.
+  `POST /api/papers/:author/:permlink/retract` takes `reason` as `(req.body.reason as string) || ''`
+  from the paper's author and broadcasts it through `broadcastAdminCustomJson`. The admin sanction,
+  retract and authorship-revoke `reason` fields have only `max(500)`. The admin grant's `account`
+  (`hiveAccount`) has no Hive-name format check. Each can put a U+0000 or lone-surrogate escape into
+  an authority-signed custom_json; only the read-side task covers that today.
+- Light-account custody `custom_json`: the server signs the client's json text as given (read-side
+  task).
+- `SignupBodySchema` `full_name`/`institution`/`field` have no length bounds (the request and grant
+  schemas allow 200/200/100), and the ORCID name is unbounded. That is a length rule, outside this
+  task.
+- `toAccreditOpText(tokenData.name || '')` throws (a generic 500) if ORCID ever returns a truthy
+  non-string name. ORCID's API returns a string.
+
+**Learnings checkpoint:** existing entries naming the touched symbols
+(`account-keyed-limiter-after-auth-validator-before-limiter.md`,
+`postgres-e-string-backslash-v-not-recognized-2026-05-20.md`) still hold, so no refresh ran.
+`/ce-compound` wrote `conventions/tightened-validator-misses-values-stored-before-the-deploy.md`
+(fd7f0fab).
+
 ## Port the after-close brace rule into the frontend enclosingSymbol walk, and correct its docblock (archived 2026-10-08): clean review; three residuals dismissed, the backend twin list folded into the open backend docblock task, one low ui follow-up filed
 
 ### Architect archive note (2026-10-08)
@@ -41,210 +248,3 @@ User decision 2026-10-05: port the rule rather than decline it.
    docblock's OUTWARD bullet names it ("a `}` after a read close ends the declaration even
    where it really closes an inner block"). No line in `frontend/src` or `backend/src`
    has a line-leading comment close followed by code today, so the exposure is latent.
-
-2. **Three frontend docblock statements are false or one-directional.**
-   - "The ordinary single-boundary form of that second shape, a close sharing its line
-     with the real closing brace, IS handled: the walk reads the code after the close."
-     Today this holds only when the close's line sits at or left of the declaration's
-     indentation and the comment opened at a line start (rows 1 and 2 above are not
-     handled).
-   - The SET-EQUALITY bullet says set-equality assertions "fail closed: a wrong symbol is
-     a new member and therefore a red bar, never a silent pass." That contradicts the
-     same docblock's INWARD bullet, which says the multi-boundary miss "resolves INWARD,
-     which is the direction a licensed key can absorb." An INWARD answer that names a
-     licensed declaration is absorbed. The backend copy's SET-EQUALITY bullet was
-     rewritten to say so.
-   - The frontend file names its sibling only as "the backend's declaration shapes" and
-     "the backend port", with no path. The backend file docblock carries a path pointer
-     to this file and a two-way obligation; this file has no pointer back, so a change made
-     only here never prompts a reader to check the backend copy. (Held out of scope for the
-     backend task at its 2026-09-08 review as ui-zone; picked up here because this task
-     edits the same docblock.)
-
-## Scope
-
-1. Port the backend's line-leading close read and after-close brace arm into the frontend
-   `enclosingSymbol`, keeping the frontend's own dialect machinery (the template-literal
-   declaration branch and the rest). Pin rows 1 to 3 as planted probes in the suite that
-   pins the walk, row 3 as the accepted OUTWARD residual.
-2. Update the frontend file docblock: the statement(s) of which brace the walk sees,
-   including the OUTWARD cost the port takes on; the "IS handled" sentence; the
-   SET-EQUALITY bullet; and a reciprocal pointer naming
-   `backend/tests/support/enclosing-symbol.ts` by path with the obligation that a change
-   to the walk, the region pass, or the comment predicate in either file is a prompt to
-   read the other.
-
-## Acceptance criteria
-
-1. The four shapes in the table resolve the same in both copies.
-2. Every frontend docblock sentence about which brace the walk sees is true against the
-   code at the HEAD you land on.
-3. The SET-EQUALITY bullet no longer claims a wrong symbol can never be a silent pass.
-4. The frontend file docblock names `backend/tests/support/enclosing-symbol.ts` by path
-   and states the two-way obligation.
-5. The frontend unit suite passes, including every canary built on this module, with no
-   change to an allowlist (the port must not newly absorb an existing occurrence).
-   No anchor-rot form in added lines; the `.githooks/pre-commit` gate passes.
-
-## Notes
-
-- Do not add a "which copy is ahead" claim to the frontend docblock. The backend paragraph
-  sends the reader to the sibling for that on purpose, because the direction has flipped
-  twice already.
-- A backend task (`backend-enclosing-symbol-brace-gloss-and-suite-citation`) corrects the
-  backend docblock's description of the shared brace test. The two can land in either
-  order. Do not cite either task, or any slug or SHA, in the docblock.
-- Do not edit `backend/`.
-
-UI implementation signal (2026-10-05, commits `78abead8`, `a2085733`):
-
-- `78abead8`: the port (line-leading close read, `afterClose`, brace condition
-  `afterClose || indentOf(line) <= declIndent`, textually the backend walk apart from the
-  template-literal branch), the docblock rewrite, and the suite probes. `a2085733`: the canary
-  header narrowing below (user-approved fold-in). Both verified on main
-  (`git merge-base --is-ancestor`), file lists match.
-- AC1: the four table rows give module/module/module/module on both copies (HEAD frontend gave
-  f/f/f/module). A differential over about 12M generated files (37M + 25M targets) found 0 walk
-  divergences between the copies outside dialect-only declaration shapes; a mixed-dialect corpus
-  attributes every divergence to a declaration only one dialect recognizes.
-- AC2: one rule statement (WHICH BRACE THE WALK SEES) with OUTWARD/INWARD bullets replaces the
-  two-boundary paragraph and the "IS handled" sentence; the OUTWARD bullet carries the port's
-  inner-block cost. Three adversarial verification rounds planted every shape the bullets name.
-  Sentences the port or the new bullet made false were narrowed or deleted beyond the three the
-  task names: the walk comment (tracking, re-entry, after-close brace, "fails closed" now per
-  allowed key, "silent" dropped from the inward label); the region-pass docblock's "Openers are
-  recognized at line start only, which is the same boundary the rest of this module draws"
-  (deleted: the walk now also reads after an untracked line-leading close); the rule summary
-  ("demonstrably" dropped, "a close the walk reads"); "two shapes the backend copy does not"; the
-  isCommentLine cross-reference; sourcesUnder "a deliberate divergence"; in the suite, the
-  header's false "both resolve outward to module scope" rationale and "and no other", plus three
-  probe comments (width-pin "absorbs", "The residual resolves outward", "every declaration the
-  walk tests") and the region-pass OPENER comment's "same boundary the brace walk draws".
-- AC3: the SET-EQUALITY bullet now says set-equality fails closed when the wrong key is not
-  allowed, that keys alone absorb an allowed wrong key, and that a per-key count pin turns an
-  absorbed addition into a moved count.
-- AC4: a "Hand-ported sibling." paragraph names `backend/tests/support/enclosing-symbol.ts` and
-  the two-way obligation; no which-copy-is-ahead claim, no slug or SHA.
-- AC5: eslint dir 2 files / 18 tests green; full frontend unit suite 91 files / 2135 tests green
-  (two-level scratch copy; later edits were comment-only); no allowlist change; A/B of the HEAD
-  and ported walk over all 88 `frontend/src` files gives symbolDiff=0; zero line-leading closes
-  followed by code in `frontend/src` or `backend/src`; the anchor gate on added lines is clean
-  (control line fires); babel parse shows the block-comment count unchanged (no escaped close
-  ended a docblock early).
-- User decisions (2026-10-05): (1) four surviving mutants of the new arm (close read widened to
-  `includes`, `afterClose` hoisted out of the per-line loop, the opener test skipped after an
-  untracked close, `lastIndexOf` in the slice) are DISMISSED as preemptive hardening; the backend
-  suite has the same gaps. (2) The canary header's "an unresolvable or wrongly resolved symbol
-  fails closed as an unexpected member" overclaim was folded in (`a2085733`, "or wrongly
-  resolved" deleted).
-- Code review: not run here; agents/ui/CLAUDE.md assigns it to the architect at intake.
-- Out of scope, for follow-up filing (backend twins of sentences narrowed here, all in
-  `backend/tests/support/`): `blockCommentInterior`'s "Openers are recognized at line start only,
-  which is the same boundary the rest of this module draws" (false there since the backend walk
-  reads after an untracked line-leading close); the WHICH BRACE tracking sentence lacks
-  "multi-line" (a self-contained `/* note */ }` reads as tracked); the walk comment's "A `}`
-  leading the code after a close ends the declaration WHATEVER the line's indentation" lacks
-  "the walk reads"; the rule summary's "demonstrably" and its unqualified "after a comment
-  close"; the INWARD item "the close of a comment opened mid-line" and the walk comment's "does
-  not see a comment opened mid-line" lack "after other code"; the INWARD item "a `}` indented
-  right of its own declaration" (a `}` after a read close is taken at any indentation); the suite
-  comment "OPENER, line start only: the same boundary the brace walk draws". The frontend twin of
-  the backend sibling task's item 2 also stands: the file docblock's "in the canary that consumes
-  it" omits the module's own suite (incomplete, not false).
-
-## The WoT auto-accredit decides "already accredited" from a stale cache (archived 2026-10-08): clean review; one P3 contract-doc line fixed in place, five follow-ups folded into open tasks, three items already covered
-
-### Architect archive note (2026-10-08)
-
-- **Review:** `/ce-code-review` full path on `dc14b5e6`, `72e96c3a`, `e07c3716`, `4f47b955` and the learnings commit `cc3c3498` (branch-remote, base `905a3d7d`): correctness, security, adversarial (in-process, no cross-model peer), testing, project-standards, api-contract, reliability, learnings. Verdict "Ready with fixes", no code defect; every scope item and AC met. Adversarial reproduced AC1 (base src with the head spec broadcasts for the email, wot and method-less cases; head skips). Testing killed all nine planted mutants; the orchestrator checked the mutation script against the brief. Security found the regex equivalent to hived's account-name rule and linear on a 1M-char input; `self_pinned` never leaves the process.
-- **Fixed in place (`545e02e9`):** the `/vouch` and `/retract` `BAD_REQUEST` lines and the `accreditation_method` null clause in `api-contracts/accreditation.md`; ARCHITECTURE § 2 gains "WoT auto-accreditation" in the implementer's narrower wording (the skip misses an op not yet indexed), and the whitelist paragraph plus CONCEPTS "Vouch", "Accreditation Authority Whitelist", "Active Accreditations" and "Accreditation Method" now say vouches count against `accred_pinned` holders, not the live membership view.
-- **Folded into open tasks:** the `VouchStatus.accreditation_method` docblock (item 21 of `backend-accreditation-wot-comment-and-dead-code-pass`); line-number anchors in `wot-vouch-broadcast-outcomes.test.ts` and two inaccurate comments in `wot-broadcast-timeout.test.ts` (`backend-wot-comments-cite-deleted-retract-suite`); the clause (c) companion for the `hasUnliftedSanction` mock (note on `backend-failed-sanction-read-is-not-a-sanction`); release must leave `accred_pinned` (note on `backend-accreditation-release-op`). `backend-wot-enrollment-has-a-single-trigger` moved to `pending/` with a name-check and fresh-read note.
-- **Dismissed as covered:** the dead `wot-retract-cascaderevocation` citation (`backend-wot-comments-cite-deleted-retract-suite`), the same-block sanction tie in `hasUnliftedSanction` (`backend-accreditation-release-op` Scope 2 and item 14 of the comment pass), the SHA and slug in the vouch-three-senses entry (`architect-solutions-entries-carry-coordination-context`). Dismissed: the "Vouch Threshold" symmetry edit, listing `routes/wot.ts` in the limiter-convention entry, a `/vouch` twin of the limiter-slot spec (declined in the implementer's triage).
-- **Learnings checkpoint:** no solutions entry is contradicted by the change; the implementer's `cc3c3498` refresh of two entries holds against the code. Nothing new for `/ce-compound`.
-
-**Owner:** backend
-**Created:** 2026-10-05
-**Priority:** high
-
-Filed from the accreditation and Web of Trust audit (finding 5, with finding 20 and one item from
-its residual list). Five reviewers reported it independently and the validator confirmed it from
-the code. It was read from code, not exercised against a chain.
-
-## Why
-
-`broadcastWotAccreditation` (`backend/src/wot.ts`) skips the broadcast when
-`getAccreditedSet([vouchee])` contains the vouchee. `getAccreditedSet`
-(`backend/src/accreditation.ts`) answers from the `accredited_accounts_all` cache entry whenever
-that entry is present. The entry is in the stable tier with a 10-minute TTL: `clearVolatile` does
-not flush it, and no `hafCache.invalidate` call in `backend/src` names it. So for up to 10 minutes
-after an account's accredit op is indexed, the cached set can still lack that account.
-
-Inside that window, for a vouchee at or above the vouch threshold:
-
-1. Every `POST /api/wot/vouch` that names the vouchee, from any accredited caller, broadcasts
-   another admin-signed `method: 'wot'` accredit op. The route calls `broadcastWotAccreditation`
-   whether or not the caller's own vouch surfaced in the poll, and `wotWriteLimiter` admits 10
-   calls per minute per account.
-2. If the vouchee's current accredit op is authority-pinned (`email`, `orcid` or `manual`), the new
-   `wot` op becomes the account's latest accredit op. `accred_latest` in
-   `activeAccreditationsCteBody` (`backend/src/hafsql.ts`) takes method and metadata from the
-   latest accredit op, so the account becomes a WoT member: its name is its username, its
-   institution is "Web of Trust", its field is empty, and its membership follows the live vouch
-   count. When those vouches are retracted the account is no longer accredited.
-
-## Scope
-
-1. `broadcastWotAccreditation` broadcasts only when the vouchee has no row in `accred_pinned`,
-   that is, no current, not-sanctioned accredit op of any method. Take that from HAF in the same
-   read that decides eligibility, not from `getAccreditedSet`. `getVouchStatus` already reads
-   `accred_pinned` for the vouchee (the `self_method` subquery in `vouchStatusSelect`), and
-   `pollForVouch` busts that cache entry before the route calls `broadcastWotAccreditation`.
-
-   Carry row presence, not the method value. `self_method` is the op's `method`, which is SQL
-   NULL for an accredit op that carries no method, while `accred_pinned` still holds that account
-   (`activeAccreditationsCteBody` treats an absent method as an authority op). A check on
-   `accreditation_method !== null` alone would broadcast over such an op.
-
-   Why a row means "do not broadcast": an authority-pinned row is accredited, and a `wot` row is
-   already enrolled, with its standing recomputed from the vouch graph on every membership read.
-2. Keep the `hasUnliftedSanction` refusal. A sanctioned account has no `accred_pinned` row, so it
-   still reaches that guard.
-3. Delete the `getPool()` fetch and its `skipped` return that sit between the sanction guard and
-   the `try` block. Nothing reads `pool` there.
-4. `POST /api/wot/vouch` and `POST /api/wot/retract` check `vouchee` for type and length (at most
-   50 characters) only, and their 400 message says it "must be a valid Hive username". Given
-   threshold vouches on chain from accredited accounts that name an arbitrary string, the admin
-   key signs an accredit op whose `account` is that string. Validate `vouchee` with `HIVE_ACCOUNT_NAME_REGEX`
-   (`backend/src/lib/hive-account-name.ts`) in both handlers.
-5. The docblock on `broadcastWotAccreditation` says the broadcast "only fires on the FIRST
-   threshold crossing". Cut that sentence down to what the new guard does. Delete rather than
-   extend.
-
-## Out of scope
-
-- The seconds between a broadcast and HAF indexing it. A second call in that gap can still
-  broadcast. Do not add an in-process guard for it, and do not write a comment that says the gap
-  is closed.
-- `getAccreditedSet` itself and its other callers. The voucher gate on `/vouch` and `/retract`
-  keeps its cached read. `handleAccredit` in `routes/orcid.ts` and the resume probe in
-  `routes/signup-verify.ts` read the same set for the caller's own account and stay as they are.
-- A periodic enrollment sweep. That is `backend-wot-enrollment-has-a-single-trigger`, sequenced
-  behind this task.
-- `VouchStatus.accreditation_method` stays in the response.
-
-## Acceptance criteria
-
-1. With `accredited_accounts_all` warm and lacking the vouchee, an eligible vouchee that holds
-   (a) an authority-pinned accredit op, (b) a `wot` accredit op gets no broadcast. The spec runs
-   the real `getAccreditedSet`, not a mock of it. State in the signal block that the same spec
-   broadcasts in both cases against the code before this change.
-2. An eligible vouchee with no accredit op and no sanction gets exactly one broadcast. A
-   sanctioned vouchee still gets `reason: 'sanctioned'`.
-3. `/vouch` and `/retract` answer 400 for a `vouchee` that fails `HIVE_ACCOUNT_NAME_REGEX`.
-4. Comments follow root `CLAUDE.md` "Comment anchors".
-
-## [TODO Architect] at archive
-
-- State in `ARCHITECTURE.md` § 2 that the WoT auto-accreditation never broadcasts over an
-  existing accredit op.
-- Move `backend-wot-enrollment-has-a-single-trigger` from `blocked/` to `pending/`.
