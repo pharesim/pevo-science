@@ -299,3 +299,88 @@ custody, the profile page's Keychain-only branch is gone, and `wot.keychainRequi
 every locale file. A light account now reaches both vouch handlers, so AC 3 and AC 8's
 vouch-handler probe can be demonstrated. Section "2. AC 3 is unreachable" in the 2026-09-22 block
 describes the gate as it stood then. Blocker 1 cleared on 2026-09-30. Moved to `pending/`.
+
+## UI implementation signal (2026-10-08, commits 1a6d3ea9, e72a99b8, 8391dad8, 82dbb128)
+
+Landed on main, each SHA checked with `git merge-base --is-ancestor <sha> HEAD`:
+
+- `1a6d3ea9` implementation: `lib/navigation-stash.js` (new), the stash seam in `lib/fresh-auth.js`, the four call sites, the paper-page reveal, the i18n key, and narrowed docblocks.
+- `e72a99b8` tests (six new suites plus spec additions in `auth.test.js`, `pages-paper-detail.test.js`, `components-threaded-comments.test.js`).
+- `8391dad8` fixes from a real-browser check and an adversarial review: scroll a restored reply once x-show shows it, clear on an anonymous submit, no second password prompt after "Continue to ORCID", and nine narrowed comments.
+- `82dbb128` narrows the raw-result tally docblock in `evictUnnamedAcquisition`.
+
+**User decision, recorded before landing (2026-10-08).** The Scope asked to flag deviations before landing. The user approved all six "as recommended", and they are what landed:
+
+- A. A reader whose surface or target does not match leaves the record for its own reader; only a record naming another account is removed. On the paper page the discussion composer mounts before the reply composers, so a literal "any mismatch discards" would delete a reply's record before its composer exists (AC 2).
+- B. A successful broadcast removes only its own record. A vote, or another composer's post, leaves a waiting record alone.
+- C. With no signed-in subject (a session that expired during the round-trip) the record is left for the same account to sign back in to. A sign-in as anyone else still scrubs it.
+- D. A comment binds thread root plus parent (root = the paper, or the review for a review thread) rather than paper plus parent. A Hive author/permlink pair is unique, so it cannot restore on another paper (AC 4). The root is what lets the right review card open.
+- E. One record, as specified. Two stash-bearing callers on one flight are refused as an unkept write and get the cost-stating confirm.
+- F. `savedAt` is stored and never read: no expiry. An expiry would lose a review after a slow ORCID detour followed by "Try again".
+
+**What landed.**
+
+- `broadcastWithFreshAuth(username, ops, { stash: { surface, target, payload } })`. Both acquisitions, entry and remintable-401 retry, go through one `acquire` and register the stash on the coalesced flight, joiners included. So a vote installing the flight with a comment joining it still writes the comment.
+- The write sits in `beginOrcidFreshAuthRedirect`'s new `beforeNavigate` hook, between the redirect-host allowlist check and the `window.location.href` assignment, with nothing awaited between. Every session_auth navigation replaces the slot: no stash removes it, one is written, two are refused.
+- A refused write unwinds the flow keys and returns `FRESH_AUTH_REAUTH_REQUIRED`. On the permissive posture the stash-bearing caller then gets the cost-stating confirm: the existing `confirm.reauthNavigateTitle` / `confirm.reauthNavigate`, plus the new `confirm.reauthNavigateUnkeptMessage` saying the work will not survive. It is asked only while the tab is still on the page the broadcast started on and the account is still light. A teardown during the dialog wins. A yes navigates straight into the ORCID leg without the stash; a no is silent. A stash-less caller on that flight stays silent.
+- The key `pevo_navigation_stash` is in `SUBJECT_BOUND_STORAGE_KEYS`.
+- Restores:
+  - `review.js` `init()` restores the body, the four ratings and the anonymous flag. Its target is captured at `handleSubmit` entry.
+  - `comment-composer.js` gets an `init()` that restores the body, then dispatches `comment-restored` on the next tick and scrolls two frames later.
+  - `vouch-section.js` restores the relationship at init, and the retract reason plus `showRetract` once the status confirms the vouch.
+  - On `paper-detail.js` a review card opens when a comment record is rooted at it, and a reply box opens on `comment-restored`.
+- Docblocks the permissive refusal made false are narrowed: the REAUTH_REQUIRED sentinel, the toast row, `ensureSessionWindow`'s returns, `_acquireInFlight`, `freshAuthWindowReady`, the redirect helper, `broadcast-confirm.js`, the subject-bound key header and the auth scrub comments.
+
+**AC walk.**
+
+1. Review: written at the navigation, restored from the record that navigation wrote, and submitted in the new window with no second navigation. Covered by `pages-review-navigation-stash.test.js` and a real Chromium round-trip.
+2. Comment: restored only into the composer for the same root and parent. A non-matching composer mounting first leaves the record. The reply box opens and scrolls. Covered by `components-comment-composer-navigation-stash.test.js`, the real-Alpine paper-page suite and Chromium.
+3. Vouch and retract: each handler pins its own surface, target and payload. Covered by `components-vouch-section-navigation-stash.test.js`.
+4. Not restored on another paper, another parent or another subject (the subject case is seeded directly, so the scrub cannot absorb it). `auth.disconnect()` removes the key, pinned by a spec that names the key literally.
+5. A successful broadcast clears its own record (seeded after `init()`, so the restore's consume cannot absorb it). A consumed restore leaves the slot empty. An anonymous submit clears an earlier signed record.
+6. A failed write (key-selective `setItem` throw) does not navigate, unwinds the flow keys, and asks the confirm. No keeps the work; yes navigates. A later attempt with working storage navigates normally.
+7. Password factor: inline mint, no stash write (a recording spy confirms), no confirm, broadcast proceeds.
+8. Per-site mutation probes, each reverting its own site in a scratchpad copy:
+   - lib and template pins: 37 mutants;
+   - the fresh-auth seam: 30;
+   - review: 34;
+   - comment and vouch: 37, where vouch-handler mutants fail only vouch specs and retract-handler mutants only retract specs;
+   - real-Alpine paper page: 15;
+   - the three later fixes: 4.
+   All are killed except three:
+   - an equivalent mutant: dropping only vouch init's `_mounted` check;
+   - a deliberately unpinned one: storing the trimmed comment body;
+   - `hasRestorableComment` matching on `rootPermlink` alone. It cannot be rendered, because the review `x-for` keys on `rev.permlink`.
+9. No task slugs, round numbers or line numbers in new comments; the pre-commit anchor gate passed on every commit.
+
+**Anonymous-submit path:** it does not reach a navigating acquisition. `submitAnonymousReview` is a plain POST. Its success now also removes an earlier signed record of the same review.
+
+**Seam reuse:** the re-auth window task left no helper-level seam. Its flush is eager page code (`_flushDraftSave` in publish/edit `_windowReady` and `_confirmNavigationCost`). This change adds `beforeNavigate` to the redirect helper. Publish and edit are deliberately not moved onto it, since their flush already lands before any navigation.
+
+**Callee graph** (`beginOrcidFreshAuthRedirect`): only the session leg passes `beforeNavigate`. `beginSettingsActionOrcidFreshAuth` and `beginAuthorshipOrcidFreshAuth` pass none.
+
+**Verification.**
+
+- Full frontend unit suite: 104 files, 2459 tests, exit 0.
+- Real-browser round-trip in Chromium: vite dev, every `/api` call and orcid.org mocked, a light passwordless session. The review round-trip, the paper-page reply round-trip, the review-thread restores and the failed-write confirm (Cancel and Continue) all pass. The one failure found there, the scroll, is fixed in `8391dad8`.
+- The Playwright E2E suite was not run: it needs the test-mode stack swap of the shared Docker backend.
+
+**Residuals and out-of-scope findings, for follow-up filing:**
+
+1. A restored reply sits inside the comment tree's `x-html`. Any later re-render of that tree (a `comment-posted` anywhere on the page, Retry, a locale change) re-creates the composer and loses the text. Typed replies already behave this way.
+2. `review.js` `handleSubmit` builds its ops from the live router getters after the intent-confirm await. A history jump from `/review/a/b` to `/review/c/d` while the confirm is open posts the review written for a/b onto c/d. The stash target is captured at entry; the ops were deliberately left as they are.
+3. A same-route navigation keeps the page instance: a citation link on the paper page, or a voucher chip on a profile. The page then shows one entity while the return path names another, and a record bound to the shown entity is not restored on return.
+4. `beginAuthorshipOrcidFreshAuth`, the consent-op ORCID navigation from the paper page, carries no stash. A comment being typed is lost if the user claims or approves authorship mid-composition.
+5. Architect zone:
+   - ARCHITECTURE.md § 6.4.1 "acquiring it mid-submit discards the user's work" no longer holds for the review, comment, vouch and retract surfaces.
+   - § 6.4 rule 3 does not list every source of `FRESH_AUTH_REAUTH_REQUIRED`: a permissive refused stash write is now one.
+   - § 8 and CONCEPTS.md "Acquire-before-commit" ("never acquired partway through it") name only the composer draft as the text-saving mechanism.
+   - CONCEPTS.md now has a "Navigation Stash" entry, added by `/ce-compound`.
+
+**Learnings checkpoint:**
+
+- `/ce-compound-refresh` updated four entries the seam made stale or incomplete (`c191efda`): guard-report-dedupes-per-event-not-per-holder, fresh-auth-guard-coverage-must-sweep-the-callee-graph, optional-predicate-gate-needs-live-false-case-not-just-absent and sibling-docblock-tallies-must-each-state-precisely-what-they-count.
+- `/ce-compound` added `conventions/alpine-nested-nexttick-runs-before-x-show-reveals-wait-two-frames.md` and the CONCEPTS.md "Navigation Stash" term (`b528d77c`; the CONCEPTS entry first reached main inside the architect's `31503ef1`, which staged the whole file).
+- Checked and unaffected: await-is-not-a-teardown-boundary-unless-it-yields-to-a-macrotask and fail-closed-guard-must-replace-the-recovery-a-round-trip-provided.
+
+**Priority:** unchanged (normal).
