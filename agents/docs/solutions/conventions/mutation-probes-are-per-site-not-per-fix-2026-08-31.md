@@ -1,7 +1,7 @@
 ---
 title: "Mutation probes and discriminating tests are per site, not per fix: a fixture's incidental posture silently selects which twin branch a probe proves"
 date: 2026-08-31
-last_updated: 2026-09-30
+last_updated: 2026-10-08
 category: conventions
 module: frontend/tests + architect re-review intake
 problem_type: convention
@@ -53,8 +53,8 @@ The procedural shape of the miss (session history): the implementers' probe pass
 
 **Posture axes that decide branch selection in this codebase** (check each against the site's routing code):
 
-- **Custody kind.** `ensureSessionWindow` returns a ready-with-no-proof outcome before consulting any option when the auth store's custody is not `'light'` (the `Alpine.store('auth')?.custody !== 'light'` first line of `ensureSessionWindow`, frontend/src/lib/fresh-auth.js), and `withAuthorshipFreshAuth` runs the broadcast with no proof at all for self-custody (its `ctx.custody !== 'light'` early return, frontend/src/lib/authorship-consent.js). A fixture that never sets `custody = 'light'` short-circuits every downstream fresh-auth site.
-- **Branch-selecting getters.** The `isContinuation` getter routes on `username` vs `paper.author`, the `versions[]` chain walk, and the `head_author`/`head_permlink` pointers (frontend/src/pages/edit.js:459-484). A fixture's paper shape silently picks the submit branch.
+- **Custody kind.** `ensureSessionWindow` returns a ready-with-no-proof outcome before consulting any option when the auth store's custody is not `'light'` (the `Alpine.store('auth')?.custody !== 'light'` first line of `ensureSessionWindow`, frontend/src/lib/fresh-auth.js), and `withAuthorshipFreshAuth` runs the broadcast with no proof at all for self-custody (its `ctx.custody !== 'light'` early return, frontend/src/lib/authorship-consent.js). A fixture that never sets `custody = 'light'` short-circuits both.
+- **Branch-selecting getters.** The `isContinuation` getter routes on `username` vs `paper.author`, the `versions[]` chain walk, and the `head_author`/`head_permlink` pointers (frontend/src/pages/edit.js). A fixture's paper shape silently picks the submit branch.
 - **Memoized state.** The password-factor answer is memoized per username per tab; a prior test's observation decides a later test's factor unless cleared (see the `clearPasswordFactorMemo()` call and its comment in the `beforeEach` of frontend/tests/unit/pages-edit.test.js). The retry gate deliberately reuses the memo ("the 401 retry gate reuses the memoized factor instead of a second status read", frontend/tests/unit/lib-authorship-consent.test.js), so the memo's content is itself a branch selector.
 - **Stored session state.** Whether a live window proof sits in sessionStorage decides whether acquisition (and hence any of its option handling) runs at all.
 - **Assertion confinement.** An assertion that a mocked collaborator was never invoked (`expect(run).not.toHaveBeenCalled()`) structurally restricts the test to the code that executes before that collaborator; no retry-path or post-commit site can be under such a test, whatever its title says.
