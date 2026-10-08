@@ -276,7 +276,7 @@ Accreditation status is computed live from authority-signed attestation and revo
 
 ### Accreditation Method
 
-The provenance tag on an accreditation grant recording how trust was established, splitting grants into authority-pinned (a deliberate platform attestation such as email, ORCID, or manual verification) versus vouch-derived (granted automatically once the vouch threshold is crossed).
+The provenance tag on an accreditation grant recording how trust was established, splitting grants into authority-pinned (a deliberate platform attestation such as email, ORCID, or manual verification) versus vouch-derived (granted automatically when an account that holds no current grant and is not sanctioned crosses the vouch threshold).
 *Avoid:* verification method.
 
 Authority-pinned grants hold status on their own and keep it unless the account is sanctioned or releases; the vouch-derived method makes status conditional on continuing to meet the live vouch threshold, so the method determines whether an account's standing can silently lapse. A vouch-derived account drops out of membership the instant it falls below the threshold, with no revocation operation, and re-enters automatically when support returns.
@@ -293,7 +293,7 @@ It is the mechanism for peer-attested accreditation, complementing authority-pin
 An on-chain endorsement broadcast by one accredited researcher attesting to another researcher's credentials, forming an edge in the web of trust.
 *Avoid:* endorsement.
 
-A voucher must currently be accredited and cannot vouch for themselves; only vouches from currently accredited researchers count, validated against the live membership view rather than against the accreditation authority whitelist. A vouch can be retracted, and accumulating enough distinct accredited vouches triggers an automatic vouch-derived accreditation grant for an account that holds no current grant of its own and is not sanctioned.
+A voucher must currently be accredited and cannot vouch for themselves; a vouch counts toward the threshold while its voucher holds a current grant that is not sanctioned, including a vouch-derived voucher below the threshold, and vouches are not checked against the accreditation authority whitelist. A vouch can be retracted, and accumulating enough distinct accredited vouches triggers an automatic vouch-derived accreditation grant for an account that holds no current grant of its own and is not sanctioned.
 
 ### Retract Vouch
 
@@ -349,14 +349,14 @@ A legacy-revoked account reverts to ordinary evaluation: a vouch-derived account
 The set of Hive accounts whose accreditation and revocation operations the platform trusts at read time, so that anyone broadcasting a fake attestation under the app's identifier is ignored.
 *Avoid:* accreditation authorities, signer whitelist.
 
-The whitelist gates authority operations (grants and revocations) by signer and always implicitly includes the signer account. Vouches are not filtered by this whitelist; they are validated against the live membership view instead. So the whitelist governs who can attest, not who can vouch.
+The whitelist gates authority operations (grants and revocations) by signer and always implicitly includes the signer account. Vouches are not filtered by this whitelist; a vouch counts while its voucher holds a current grant that is not sanctioned (see Vouch). So the whitelist governs who can attest, not who can vouch.
 
 ### Active Accreditations
 
 The computed live-membership view of currently accredited accounts that encodes the full membership rule: sanction stickiness, release, live vouch-threshold gating, and legacy revokes reclassified as non-sanctions.
 *Avoid:* live-membership view, sanction-aware membership view.
 
-A non-member (sanctioned, released, or vouch-derived below threshold) is absent from the view entirely; this is the authoritative reference for deciding whether an account is accredited right now, including vouch eligibility and authorship and ORCID resolution.
+A non-member (sanctioned, released, or vouch-derived below threshold) is absent from the view entirely; this is the authoritative reference for deciding whether an account is accredited right now, including authorship and ORCID resolution.
 
 ### Tenure Anchor
 

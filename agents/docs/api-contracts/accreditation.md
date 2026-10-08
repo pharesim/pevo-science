@@ -314,7 +314,7 @@ Vouch status for a user in the Web of Trust system. Returns the number of vouche
 }
 ```
 
-`accreditation_method` is the method (`wot`, `email`, `orcid`, or `manual`) of the account's latest `accredit` op in the op-pinned (not-sanctioned) set, or `null` when the account has no current `accredit` op or is sanctioned. It is independent of `eligible` (which reflects only the live vouch count against the threshold): a WoT account below threshold still reports `accreditation_method: "wot"` with `eligible: false`.
+`accreditation_method` is the method (`wot`, `email`, `orcid`, or `manual`) of the account's latest `accredit` op in the op-pinned (not-sanctioned) set, or `null` when the account has no current `accredit` op, is sanctioned, or its latest `accredit` op carries no `method`. It is independent of `eligible` (which reflects only the live vouch count against the threshold): a WoT account below threshold still reports `accreditation_method: "wot"` with `eligible: false`.
 
 **Errors:**
 - `INTERNAL_ERROR`: HAF database unavailable (required for WoT queries)
@@ -349,7 +349,7 @@ Notify the backend that a vouch `custom_json` has been broadcast. The backend ch
 When the vouchee has not yet reached the threshold, the message format is `"Vouch recorded. scientist4 has N/M vouches."` and `accredited` is `false`.
 
 **Errors:**
-- `BAD_REQUEST`: missing `vouchee`
+- `BAD_REQUEST`: `vouchee` missing or not a valid Hive account name
 - `VALIDATION_ERROR` (422): voucher is the same as vouchee
 - `FORBIDDEN`: voucher is not accredited
 
@@ -383,6 +383,6 @@ Notify the backend that a `retract_vouch` custom_json has been broadcast. WoT me
 `revocation_outcome` is always `none` and `revocations` is always `[]`. A WoT threshold drop no longer triggers a `revoke` op; membership self-heals from the live vouch graph on the next read. (The five former outcome values, `revoked`, `skipped`, `unverified`, `timeout`, and `chain_error`, were removed when the threshold-drop cascade was retired.) `vouch_status` may be `null` when HAF is unavailable during the post-retraction status poll.
 
 **Errors:**
-- `BAD_REQUEST` (400): missing `vouchee`
+- `BAD_REQUEST` (400): `vouchee` missing or not a valid Hive account name
 - `VALIDATION_ERROR` (422): the signer is the same as the vouchee (cannot retract a vouch for yourself)
 - `FORBIDDEN` (403): the signer is not an accredited researcher

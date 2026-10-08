@@ -572,7 +572,7 @@ AND cj.required_posting_auths ?| $N::text[]
 ```
 where `$N` is the whitelist array. The `?|` operator checks if the jsonb array contains any of the given text values.
 
-**WoT vouches** are not filtered by `?|` on posting authorities. Instead, vouches are validated by joining on `active_accreditations`, so only currently accredited users' vouches count.
+**WoT vouches** are not filtered by `?|` on posting authorities. A vouch counts toward the threshold while its voucher holds a current `accredit` op of any method that is neither sanctioned nor released (`accred_pinned` in `activeAccreditationsCteBody`), so a WoT voucher below the threshold still counts.
 
 ### Accreditation Lifecycle & Sanctions
 
@@ -589,6 +589,8 @@ Accreditation status is an on-chain dimension **orthogonal to the § 6.1 `accoun
 **Release is ordinary.** A `type: "release"` revoke ends the account's standing without stigma: its vouches stop counting, it can no longer publish, review, comment or vote, and every mailbox binding it holds moves to released (see "Credential Bindings"). It is not sticky: any accreditation path re-admits the account, and no admin decision is needed. It is broadcast on the holder's request (`POST /api/accreditation/release`, a § 6.4 critical action) or on an admin's request for a holder who lost their keys (`POST /api/admin/accreditation/release`).
 
 **WoT standing is live, not pinned.** A WoT member that falls below the vouch threshold loses standing immediately, with **no `revoke` op** — losing vouch support is ordinary, not a sanction. Recovering vouches restores standing automatically (self-healing). This is the chosen representation; an implementer may fall back to a neutral "demote" op if live evaluation proves too costly on HAF, but the *semantics* above (non-sanction, self-healing) are fixed. This reverses the earlier op-pinned, non-self-healing behavior in which a threshold-drop broadcast a `revoke`; see "Legacy revokes" under § 2 Revocation.
+
+**WoT auto-accreditation.** When a processed vouch (`POST /api/wot/vouch`) leaves the vouchee at or above the threshold, the admin key broadcasts a `method: "wot"` `accredit` op for it. It skips any vouchee that HAF shows holding a current `accredit` op of any method that is neither sanctioned nor released, and refuses a vouchee with an un-lifted sanction, so a `wot` op never replaces a current `accredit` op that HAF has indexed. The check reads HAF, so it misses an `accredit` op broadcast seconds earlier and not yet indexed.
 
 **Sanctions are sticky.** A `revoke` with `type: "sanction"` suppresses accreditation regardless of vouch support. Only a **deliberate admin** `accredit` (the admin grant endpoint) lifts a sanction; every other accreditation path MUST refuse a sanctioned account — both the WoT auto-accreditation path (vouches cannot re-admit a sanctioned account) and the scientist-triggered self-service accredit paths (email/ORCID/signup), which are admin-key-signed but scientist-initiated and so cannot self-lift a moderation sanction. The membership SQL itself lifts on any later authority-pinned `accredit`, so this rule lives in those refusals; every other accredit-broadcasting route needs one. A sanction also keeps every credential binding of the account held (see "Credential Bindings"), so the credentials it holds cannot back another account while the sanction stands. Issuing a sanction is an **authorized-admin action** (the admin-set that may sign authority ops is administered separately from these semantics).
 
