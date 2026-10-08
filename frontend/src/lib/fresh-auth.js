@@ -1089,8 +1089,8 @@ export function abandonInFlightAcquisitions() {
 
 // Evict the window slot when an acquisition resolves a value the outcome
 // vocabulary does not name, so every reading of that one slot inherits the drop
-// instead of each consumer carrying its own. TWO sites read the raw acquisition
-// result, and both already REFUSE such a value — the fail-closed guard in
+// instead of each consumer carrying its own. TWO sites REFUSE such a value in
+// the raw acquisition result — the fail-closed guard in
 // `ensureSessionWindow` and the broadcast unwinder `acquisitionAborted` — but
 // only the guard ever cleared, so a truthy non-string reaching the broadcast
 // surface was refused and left where it was, to be re-read and re-refused on
