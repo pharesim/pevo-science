@@ -592,14 +592,15 @@ export function initPublishPage() {
     // and a fresh instance would drop the form the card is holding, attached
     // files included. The account that signs in before the user picks takes
     // the instance over instead. The author fields the first account's prefill
-    // filled are emptied first, value and baseline, so they take the new
-    // account's prefill and not the first account's name.
+    // filled are emptied first, so they take the new account's prefill and not
+    // the first account's name, and both author baselines go back to the empty
+    // ones the signed-out load took, so only the new account's accreditation
+    // decides which author values are not work.
     _readoptAccount(account) {
       this._clearDraftChoice();
-      for (const field of this._prefilledFields) {
-        this[field] = '';
-        this._baselineFields[field] = JSON.stringify('');
-      }
+      for (const field of this._prefilledFields) this[field] = '';
+      this._baselineFields.authorName = JSON.stringify('');
+      this._baselineFields.authorAffiliation = JSON.stringify('');
       this._adoptAccount(account);
     },
 
@@ -638,9 +639,9 @@ export function initPublishPage() {
 
     // The accreditation prefill as it applies to a form that is already
     // loaded: the author fields the user left empty take it. The baseline of
-    // every author field that then holds the accreditation's value moves to
-    // it, filled here or not, since a value the prefill gives is not the
-    // user's work.
+    // every author field that then holds the prefill's value moves to it,
+    // filled here or not, since a value the prefill gives is not the user's
+    // work.
     _prefillEmptyAuthorFields() {
       this._prefilledFields.push(...this._applyAccreditationPrefill());
       const acc = this.accreditation;
@@ -713,7 +714,7 @@ export function initPublishPage() {
     // The draft replaces the form. An author field the draft holds empty
     // takes the accreditation prefill, as a load does, never what the form
     // held before, and the baseline moves with it, as it does for an author
-    // field the draft holds at the accreditation's value: neither is work,
+    // field the draft holds at the prefill's value: neither is work,
     // even when the accreditation arrived after the baseline was taken or the
     // field held typed text then. The form as restored is stored at once
     // under the draft's own time: what the restore itself fills in (the

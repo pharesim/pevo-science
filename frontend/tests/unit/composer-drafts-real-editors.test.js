@@ -549,6 +549,31 @@ describe('composer drafts in the real app', () => {
       });
     });
 
+    it("a takeover of a provisional adoption keeps an author value the user typed at the first account's accreditation, as the next account's work", async () => {
+      localStorage.setItem('pevo-draft-publish:eve', JSON.stringify({ title: 'Stored earlier', abstract: '', body: '', savedAt: Date.now() - 60_000 }));
+      const comp = await visit('/publish', 'publishPage');
+      await editorsReady('publishPage');
+      type('#paper-title', 'Signed-out work');
+      type('#author-name', 'Eve E');
+      await settle();
+      signIn('eve');
+      await settle();
+      expect(comp.draftChoice).toBe('saved');
+
+      signIn('dave', { accredited: false });
+      await settle();
+      expect(comp._draftAccount).toBe('dave');
+      expect(comp.authorName).toBe('Eve E');
+
+      // With the title gone, the typed name is still dave's work.
+      type('#paper-title', '');
+      await pastDebounce();
+      expect(drafts()).toEqual({
+        'pevo-draft-publish:eve': expect.objectContaining({ title: 'Stored earlier' }),
+        'pevo-draft-publish:dave': expect.objectContaining({ title: '', authorName: 'Eve E' }),
+      });
+    });
+
     it("the choice card's Discard keeps what was typed and drafts it", async () => {
       localStorage.setItem('pevo-draft-publish:eve', JSON.stringify({ title: 'Stored earlier', abstract: '', body: '', savedAt: Date.now() - 60_000 }));
       const comp = await visit('/publish', 'publishPage');
@@ -667,8 +692,7 @@ describe('composer drafts in the real app', () => {
       }));
       const comp = await visit('/publish', 'publishPage');
       await editorsReady('publishPage');
-      // The polling finds no accreditation at the sign-in, so the restore
-      // runs before it arrives.
+      // The check at the sign-in finds no accreditation.
       const accreditation = ACCREDITATIONS.eve;
       delete ACCREDITATIONS.eve;
       try {
