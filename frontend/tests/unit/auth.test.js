@@ -68,7 +68,7 @@ import {
 // auth store, pinned against the real store by the parity test below, which
 // also seeds every key in the shared subject-bound list.
 import { mockLoginFromResponse } from './fixtures/mock-auth.js';
-import { SUBJECT_BOUND_STORAGE_KEYS } from '../../src/lib/subject-bound-keys.js';
+import { SUBJECT_BOUND_STORAGE_KEYS, NAVIGATION_STASH_KEY } from '../../src/lib/subject-bound-keys.js';
 
 describe('auth store', () => {
   let localStorageData;
@@ -386,6 +386,23 @@ describe('auth store', () => {
       store.disconnect();
       expect(sessionStorageData['pevo_orcid_return_to']).toBeUndefined();
       expect(sessionStorage.removeItem).toHaveBeenCalledWith('pevo_orcid_return_to');
+    });
+
+    it('removes the navigation stash on disconnect', () => {
+      // Seeded by name rather than through the shared key list, so this fails
+      // when the stash key is dropped from SUBJECT_BOUND_STORAGE_KEYS: the
+      // parity pin loops that list and cannot see a missing member. A review
+      // body, possibly marked anonymous, must not outlive the session.
+      sessionStorageData[NAVIGATION_STASH_KEY] = JSON.stringify({
+        surface: 'review',
+        target: { author: 'alice', permlink: 'paper-1' },
+        subject: 'bob',
+        payload: { reviewBody: 'draft', isAnonymous: true },
+        savedAt: Date.now(),
+      });
+      store.disconnect();
+      expect(sessionStorageData[NAVIGATION_STASH_KEY]).toBeUndefined();
+      expect(sessionStorage.removeItem).toHaveBeenCalledWith(NAVIGATION_STASH_KEY);
     });
 
     it('drops the password-factor memo on disconnect', () => {

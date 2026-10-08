@@ -96,7 +96,7 @@ export function takeNavigationStash(surface, target, subject) {
 }
 
 // Whether the slot holds a record for this surface and subject whose target
-// carries every field of `partialTarget`. Removes nothing.
+// carries every field of `partialTarget`. The record stays in the slot.
 export function hasNavigationStash(surface, partialTarget, subject) {
   if (!subject) return false;
   const record = readRecord();

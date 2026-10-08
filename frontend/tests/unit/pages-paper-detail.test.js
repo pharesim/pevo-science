@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../src/api.js', () => ({
   fetchPaper: vi.fn(),
@@ -48,7 +48,8 @@ vi.mock('alpinejs', () => ({
 }));
 
 import Alpine from 'alpinejs';
-import { initPaperDetailPage } from '../../src/pages/paper-detail.js';
+import { initPaperDetailPage, paperDetailPageTemplate } from '../../src/pages/paper-detail.js';
+import { NAVIGATION_STASH_KEY } from '../../src/lib/subject-bound-keys.js';
 import {
   fetchPaper,
   fetchPaperEnrichment,
@@ -1070,6 +1071,124 @@ describe('paperDetailPage', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  // A comment kept across the ORCID round-trip can belong to a review's
+  // thread, whose composer mounts only once that review card's comments are
+  // open. hasRestorableComment decides the card's initial showComments, so it
+  // reads the real stash (jsdom sessionStorage) for a 'comment' record rooted
+  // at the review, under the signed-in account, without taking it: the
+  // composer that mounts afterwards is the one that takes it.
+  describe('hasRestorableComment', () => {
+    const REV = { author: 'bob', permlink: 'review-1' };
+
+    function seedStash(overrides = {}) {
+      sessionStorage.setItem(NAVIGATION_STASH_KEY, JSON.stringify({
+        surface: 'comment',
+        // A reply nested in the review's thread: its parent is a comment, its
+        // root is the review.
+        target: { rootAuthor: 'bob', rootPermlink: 'review-1', parentAuthor: 'carol', parentPermlink: 'c1' },
+        subject: 'alice',
+        payload: { body: 'kept reply' },
+        savedAt: Date.now(),
+        ...overrides,
+      }));
+    }
+
+    beforeEach(() => {
+      sessionStorage.clear();
+    });
+
+    afterEach(() => {
+      sessionStorage.clear();
+    });
+
+    it('is true for a comment record rooted at this review under the signed-in account', () => {
+      seedStash();
+      const comp = createComponent();
+      expect(comp.hasRestorableComment(REV)).toBe(true);
+    });
+
+    it('is true for a comment on the review itself', () => {
+      seedStash({ target: { rootAuthor: 'bob', rootPermlink: 'review-1', parentAuthor: 'bob', parentPermlink: 'review-1' } });
+      const comp = createComponent();
+      expect(comp.hasRestorableComment(REV)).toBe(true);
+    });
+
+    it('reads the subject from the auth store', () => {
+      seedStash({ subject: 'dave' });
+      const comp = createComponent();
+      expect(comp.hasRestorableComment(REV)).toBe(false);
+      mockStores.auth.username = 'dave';
+      expect(comp.hasRestorableComment(REV)).toBe(true);
+    });
+
+    it('is false for another review by the same author', () => {
+      seedStash();
+      const comp = createComponent();
+      expect(comp.hasRestorableComment({ author: 'bob', permlink: 'review-2' })).toBe(false);
+    });
+
+    it('is false for a review by another author with the same permlink', () => {
+      seedStash();
+      const comp = createComponent();
+      expect(comp.hasRestorableComment({ author: 'erin', permlink: 'review-1' })).toBe(false);
+    });
+
+    it('is false for a record written by another account', () => {
+      seedStash({ subject: 'mallory' });
+      const comp = createComponent();
+      expect(comp.hasRestorableComment(REV)).toBe(false);
+    });
+
+    it('is false with no account signed in', () => {
+      seedStash();
+      mockStores.auth.username = null;
+      const comp = createComponent();
+      expect(comp.hasRestorableComment(REV)).toBe(false);
+    });
+
+    it('is false for a record of another surface with the same target fields', () => {
+      seedStash({ surface: 'review' });
+      const comp = createComponent();
+      expect(comp.hasRestorableComment(REV)).toBe(false);
+    });
+
+    it('is false for an empty slot', () => {
+      const comp = createComponent();
+      expect(comp.hasRestorableComment(REV)).toBe(false);
+    });
+
+    it('leaves the record in the slot', () => {
+      seedStash();
+      const before = sessionStorage.getItem(NAVIGATION_STASH_KEY);
+      const comp = createComponent();
+      expect(comp.hasRestorableComment(REV)).toBe(true);
+      expect(comp.hasRestorableComment(REV)).toBe(true);
+      expect(sessionStorage.getItem(NAVIGATION_STASH_KEY)).toBe(before);
+    });
+  });
+
+  // Template wiring the factory tests cannot reach: the stash target a
+  // composer binds to comes from its x-data opts, and a review card opens its
+  // comments from hasRestorableComment at creation.
+  describe('template wiring for restored comments', () => {
+    it('starts each review card with its comments open when a comment for it was kept', () => {
+      expect(paperDetailPageTemplate).toContain('x-data="{ showComments: hasRestorableComment(rev) }"');
+      expect(paperDetailPageTemplate).not.toContain('showComments: false');
+    });
+
+    it('binds the review-card composer to the review as both parent and thread root', () => {
+      expect(paperDetailPageTemplate).toContain(
+        'x-data="commentComposer({ parentAuthor: rev.author, parentPermlink: rev.permlink, rootAuthor: rev.author, rootPermlink: rev.permlink })"',
+      );
+    });
+
+    it('binds the discussion composer to the paper as both parent and thread root', () => {
+      expect(paperDetailPageTemplate).toContain(
+        'x-data="commentComposer({ parentAuthor: paper.author, parentPermlink: paper.permlink, rootAuthor: paper.author, rootPermlink: paper.permlink })"',
+      );
     });
   });
 });

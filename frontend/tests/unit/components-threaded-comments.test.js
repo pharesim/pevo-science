@@ -177,4 +177,52 @@ describe('threadedComments', () => {
       expect(comp.replyOpen['comment-a-p1']).toBe(false);
     });
   });
+
+  // A reply kept across the ORCID round-trip is bound to its thread root as
+  // well as its parent, and a reply composer that takes one back announces it
+  // with a comment-restored event from its own element so the hidden reply
+  // box opens. Both live only in the rendered tree string, so they are pinned
+  // on the composer elements parsed out of commentsHtml.
+  describe('reply composers in the rendered tree', () => {
+    async function renderedComposers() {
+      mockFetchPaperComments.mockResolvedValue({
+        data: [
+          {
+            author: 'bob', permlink: 'c1', body: 'top', created: new Date().toISOString(),
+            replies: [
+              { author: 'carol', permlink: 'c2', body: 'nested', created: new Date().toISOString() },
+            ],
+          },
+        ],
+      });
+      const comp = createComponent({ paperAuthor: 'alice', paperPermlink: 'paper-1' });
+      await comp.loadComments();
+      const host = document.createElement('div');
+      host.innerHTML = comp.commentsHtml;
+      return [...host.querySelectorAll('[x-data]')]
+        .filter((el) => el.getAttribute('x-data').startsWith('commentComposer('));
+    }
+
+    it('renders one reply composer per comment', async () => {
+      const composers = await renderedComposers();
+      expect(composers.map((el) => el.closest('[id^="comment-"]').id))
+        .toEqual(['comment-bob-c1', 'comment-carol-c2']);
+    });
+
+    it('binds each reply composer to the enclosing thread root as well as its parent', async () => {
+      const [top, nested] = await renderedComposers();
+      expect(top.getAttribute('x-data')).toBe(
+        "commentComposer({ parentAuthor: 'bob', parentPermlink: 'c1', rootAuthor: paperAuthor, rootPermlink: paperPermlink })",
+      );
+      expect(nested.getAttribute('x-data')).toBe(
+        "commentComposer({ parentAuthor: 'carol', parentPermlink: 'c2', rootAuthor: paperAuthor, rootPermlink: paperPermlink })",
+      );
+    });
+
+    it('opens the reply box of the comment whose composer announces a restore, from that composer element only', async () => {
+      const [top, nested] = await renderedComposers();
+      expect(top.getAttribute('x-on:comment-restored.self')).toBe("replyOpen['comment-bob-c1'] = true");
+      expect(nested.getAttribute('x-on:comment-restored.self')).toBe("replyOpen['comment-carol-c2'] = true");
+    });
+  });
 });
