@@ -495,17 +495,17 @@ A light account is created on-chain by the platform using claimed-account tokens
 
 ### Self-custody Account
 
-A user who holds all of their own Hive keys and signs every request through Hive Keychain, so the platform never holds broadcasting keys for them, in contrast to a light account where the platform signs on the user's behalf.
+A user who holds all of their own Hive keys and signs on-chain operations and most critical actions through Hive Keychain, so the platform never holds broadcasting keys for them, in contrast to a light account where the platform signs on the user's behalf.
 *Avoid:* Keychain account, full-custody account.
 
 Server-side broadcasting is permanently unavailable; useful actions require the user's own Keychain. Self-custody is reached two ways: the no-row case (a user who brings an existing Hive account and never signs up) and the upgraded case (a former light account that completed the upgrade path). See No-row Case and Light-to-self Upgrade.
 
 ### No-row Case
 
-A self-custody user who brought their own Hive account, never went through PEvO signup, and therefore has no platform account record at all, authenticating purely by on-chain Hive signature on every request.
+A self-custody user who brought their own Hive account, never went through PEvO signup, and therefore has no platform account record at all.
 *Avoid:* pure self-custody, bring-your-own-account user.
 
-These users never enter the account state machine; their identity is on-chain only and there is no platform-side session. Deleting any signup-originated account returns the user to this same no-row case (their on-chain Hive account survives through the seed phrase even though all platform data is erased).
+These users never enter the account state machine; their identity is on-chain only. Signing in with Keychain still gives them a platform session, but the session carries no factor a fresh-auth proof could match, so their critical actions, adding a first email among them, are accepted only on a per-request signature. Deleting any signup-originated account returns the user to this same no-row case (their on-chain Hive account survives through the seed phrase even though all platform data is erased).
 
 ### Custody Mode
 
@@ -614,7 +614,9 @@ The pre-flight authenticates like any critical action and records what the calle
 The authentication path for self-custody users in which every request carries a Hive signature verified against the account's on-chain key, rather than a platform-minted session token.
 *Avoid:* Hive-signature path, signed-request auth.
 
-Because every request is independently signed by a key the user controls, this path is inherently fresh per request, so Keychain callers satisfy the fresh-auth requirement at the authentication layer and need not supply a separate proof for critical actions. It is the only auth path for no-row users.
+Because every request is independently signed by a key the user controls, this path is inherently fresh per request, so Keychain callers satisfy the fresh-auth requirement at the authentication layer and need not supply a separate proof for most critical actions. Setting a password where there was none is the exception: it demands a proof by ORCID on every path, signed or not.
+
+A self-custody user usually also holds a session token. A request that carries a valid session token is read as a session request even when it is also signed, so a critical action meant to be proven by its signature must be sent without the session token.
 
 ### Session Invalidation
 
