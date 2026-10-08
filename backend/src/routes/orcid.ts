@@ -50,6 +50,7 @@ import {
   HAF_INDEXING_LAG_CEILING_SECONDS,
 } from '../lib/orcid-binding.js';
 import { custodyClaimFor } from '../lib/custody-claim.js';
+import { toAccreditOpText } from '../validation.js';
 
 // Per-route Zod body schema for POST /api/orcid/callback.
 // Narrows req.body to typed fields so
@@ -603,7 +604,11 @@ router.post('/callback', callbackLimiter, async (req: Request, res: Response) =>
       return sendError(res, 400, 'BAD_REQUEST', 'Invalid ORCID iD format');
     }
 
-    const orcidName = tokenData.name || '';
+    // The profile name becomes an accredit op's `name`: handleAccredit
+    // broadcasts it, and the signup path stores it as the fallback full_name.
+    // It is not typed into a PEvO form, so it is rewritten to pass the
+    // character rules rather than refused.
+    const orcidName = toAccreditOpText(tokenData.name || '');
 
     // Dispatch to mode handler
     switch (storedMode) {

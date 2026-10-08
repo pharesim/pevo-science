@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type pg from 'pg';
 import { verifyHiveSignature } from '../middleware/verifyHiveSignature.js';
 import { sendOk, sendError } from '../response.js';
+import { accreditOpText } from '../validation.js';
 import { config } from '../config.js';
 import { rateLimit, byIp, byAccount } from '../middleware/rateLimit.js';
 import { isInstitutionalEmail } from '../email-validator.js';
@@ -73,9 +74,11 @@ const SignupBodySchema = z.object({
   // No `.min(1)`: the schema never had one, and adding it would newly 400 a
   // previously-accepted empty-string password. Mirrors recover.ts `new_password`.
   password: z.string().optional().nullable(),
-  full_name: z.string().optional(),
-  institution: z.string().optional(),
-  field: z.string().optional(),
+  // The pending row's values become the accredit op's name, institution and
+  // field.
+  full_name: accreditOpText(z.string()).optional(),
+  institution: accreditOpText(z.string()).optional(),
+  field: accreditOpText(z.string()).optional(),
   orcid_token: z.string().optional(),
 });
 

@@ -13,7 +13,7 @@
 //     signup specs that go through the same code path. Per root CLAUDE.md
 //     carve-out clause (a) (observability surface, clause-(c) sibling
 //     coverage in the broader signup suite).
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import { readFileSync } from 'node:fs';
@@ -338,6 +338,39 @@ describe('BE-REQUEST-BODY-TYPING-ZOD: 400 VALIDATION_ERROR does not leak Zod sch
     expect(src).toMatch(
       /sendError\(\s*res\s*,\s*400\s*,\s*['"]VALIDATION_ERROR['"]\s*,\s*['"]Invalid request body['"]\s*\)/,
     );
+  });
+});
+
+// The signup body's full_name, institution and field become the accredit op's
+// name, institution and field. None of these requests sends an email, so a
+// body that parses gets the handler's 'Email is required' answer and never
+// reaches the database.
+describe('POST /api/auth/signup: character rules on full_name, institution and field', () => {
+  beforeEach(async () => {
+    await clearRateLimitKeys(['auth-signup']);
+  });
+
+  describe.each(['full_name', 'institution', 'field'] as const)('%s', (fieldName) => {
+    it.each([
+      ['a line break', 'Line one\nLine two'],
+      ['U+0000', 'Nul\u0000Here'],
+      ['a lone surrogate', 'Half\ud800Pair'],
+    ])('400s a value containing %s', async (_label, value) => {
+      const res = await request(app)
+        .post('/api/auth/signup')
+        .send({ full_name: 'Jane Smith', institution: 'MIT', field: 'physics', [fieldName]: value });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+      expect(res.body.error.message).toBe('Invalid request body');
+    });
+  });
+
+  it('accepts non-Latin values', async () => {
+    const res = await request(app)
+      .post('/api/auth/signup')
+      .send({ full_name: 'محمد علي', institution: '東京大学', field: 'Física' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.message).toBe('Email is required');
   });
 });
 

@@ -7,15 +7,45 @@ import { sendError } from './response.js';
 // Rejects the C0 and C1 control characters (line feed, carriage return, tab,
 // NEL and the rest), the line and paragraph separators, and the bidi
 // embedding, override and isolate characters. The left-to-right and
-// right-to-left marks stay allowed. Applied to full_name and institution,
-// which the verification mail prints and the accredit op broadcasts.
+// right-to-left marks stay allowed.
 const NO_CONTROL_CHARACTERS = /^[^\p{Cc}\u2028\u2029\u202a-\u202e\u2066-\u2069]*$/u;
 const NO_CONTROL_CHARACTERS_MESSAGE = 'must not contain line breaks or control characters';
 
+// Rejects an unpaired surrogate. Under the `u` flag a surrogate pair reads as
+// one code point above U+FFFF, so this class matches only an unpaired half.
+// JSON.stringify writes one as a `\uXXXX` escape, which PostgreSQL's jsonb
+// input refuses.
+const NO_LONE_SURROGATES = /^[^\ud800-\udfff]*$/u;
+const NO_LONE_SURROGATES_MESSAGE = 'must be well-formed Unicode text';
+
+/**
+ * Adds the character rules to a string schema whose value an `accredit` op
+ * carries as its `name`, `institution` or `field`.
+ */
+export function accreditOpText(schema: z.ZodString): z.ZodString {
+  return schema
+    .regex(NO_CONTROL_CHARACTERS, NO_CONTROL_CHARACTERS_MESSAGE)
+    .regex(NO_LONE_SURROGATES, NO_LONE_SURROGATES_MESSAGE);
+}
+
+/**
+ * Rewrites text that did not come through a PEvO form, such as an ORCID
+ * profile name, so it passes the `accreditOpText` rules: each run of control
+ * characters and line or paragraph separators becomes one space, the bidi
+ * embedding, override and isolate characters and any unpaired surrogate are
+ * dropped, and the result is trimmed.
+ */
+export function toAccreditOpText(value: string): string {
+  return value
+    .replace(/[\p{Cc}\u2028\u2029]+/gu, ' ')
+    .replace(/[\u202a-\u202e\u2066-\u2069\ud800-\udfff]/gu, '')
+    .trim();
+}
+
 export const accreditationRequestSchema = z.object({
-  full_name: z.string().min(1).max(200).regex(NO_CONTROL_CHARACTERS, NO_CONTROL_CHARACTERS_MESSAGE),
-  institution: z.string().min(1).max(200).regex(NO_CONTROL_CHARACTERS, NO_CONTROL_CHARACTERS_MESSAGE),
-  field: z.string().min(1).max(100),
+  full_name: accreditOpText(z.string().min(1).max(200)),
+  institution: accreditOpText(z.string().min(1).max(200)),
+  field: accreditOpText(z.string().min(1).max(100)),
   email: z.string().email().max(254),
   orcid: z.string().max(50).optional().default(''),
 });
@@ -90,9 +120,9 @@ export const adminRosterRevokeSchema = z.object({
 
 export const adminAccreditationGrantSchema = z.object({
   account: hiveAccount,
-  full_name: z.string().min(1).max(200),
-  institution: z.string().max(200).optional().default(''),
-  field: z.string().max(100).optional().default(''),
+  full_name: accreditOpText(z.string().min(1).max(200)),
+  institution: accreditOpText(z.string().max(200)).optional().default(''),
+  field: accreditOpText(z.string().max(100)).optional().default(''),
   method: z.enum(['manual', 'email', 'orcid']).optional().default('manual'),
   fresh_auth_proof: adminFreshAuthProof,
 });

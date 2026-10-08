@@ -763,6 +763,54 @@ describe('POST /api/orcid/callback — ever-sanctioned guard', () => {
   });
 });
 
+// The ORCID profile name reaches the accredit op through two paths: handleAccredit
+// broadcasts it, and handleSignup stores it under the orcid_verified nonce that
+// POST /api/auth/signup reads as the fallback full_name. The callback rewrites it
+// with toAccreditOpText before either handler sees it.
+describe('POST /api/orcid/callback: ORCID profile name rewritten to pass the accredit-op character rules', () => {
+  const RAW_NAME = '\u2067Jane\r\nSmith\u2069\ud800';
+
+  it('signup: the response and the stored verification carry the rewritten name', async () => {
+    const redis = getRedis();
+    expect(redis).not.toBeNull();
+    installOrcidFetchStub({ orcid: '0000-0001-7300-0001', name: RAW_NAME, works: 3 });
+    const state = await startUnauthed('signup');
+    const res = await request(app).post('/api/orcid/callback').send({ code: 'fake', state });
+    expect(res.status).toBe(200);
+    expect(res.body.data.name).toBe('Jane Smith');
+    const stored = await redis!.get(`${config.appTag}:orcid_verified:${res.body.data.orcid_token}`);
+    expect(JSON.parse(stored!).name).toBe('Jane Smith');
+  });
+
+  it.each([
+    ['the rewritten name', RAW_NAME, 'Jane Smith'],
+    ['the username when nothing is left after the rewrite', '\r\n\u202e\udc00', 'alice'],
+  ])('accredit: the broadcast op carries %s', async (_label, orcidName, expectedName) => {
+    const redis = getRedis();
+    expect(redis).not.toBeNull();
+    const orcidId = '0000-0001-7300-0002';
+    const bindingKeys = [
+      `${config.appTag}:orcid_binding_lock:${orcidId}`,
+      `${config.appTag}:orcid_binding:${orcidId}`,
+    ];
+    await redis!.del(...bindingKeys);
+    try {
+      installOrcidFetchStub({ orcid: orcidId, name: orcidName, works: 3 });
+      const state = await startAuthed('accredit', 'alice');
+      const res = await request(app)
+        .post('/api/orcid/callback')
+        .set('Authorization', `Bearer ${jwtFor('alice')}`)
+        .send({ code: 'fake', state });
+      expect(res.status).toBe(200);
+      expect(broadcastJsonMock).toHaveBeenCalledTimes(1);
+      const op = JSON.parse((broadcastJsonMock.mock.calls[0][0] as { json: string }).json);
+      expect(op).toMatchObject({ action: 'accredit', account: 'alice', name: expectedName });
+    } finally {
+      await redis!.del(...bindingKeys);
+    }
+  });
+});
+
 describe('POST /api/orcid/callback — hardening (SEC-002-HARDENING)', () => {
   // Item 1: state-consume lives inside the outer try/catch. A Redis flap on
   // the stateKey DEL must surface as a clean 500 INTERNAL_ERROR rather than

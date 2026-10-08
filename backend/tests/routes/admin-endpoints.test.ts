@@ -471,6 +471,40 @@ describe('POST /api/admin/accreditation/grant', () => {
     expect(res.status).toBe(403);
     expect(broadcastAdminMock).not.toHaveBeenCalled();
   });
+
+  describe.each(['full_name', 'institution', 'field'] as const)('%s character rules', (fieldName) => {
+    it.each([
+      ['a line break', 'Line one\nLine two'],
+      ['U+0000', 'Nul\u0000Here'],
+      ['a lone surrogate', 'Half\ud800Pair'],
+    ])('400s a value containing %s, with no broadcast', async (_label, value) => {
+      stubDefaultRoster();
+      const res = await asSignature(request(app).post('/api/admin/accreditation/grant'), ADMIN).send({
+        account: 'scientist1',
+        full_name: 'Dr Jane Doe',
+        [fieldName]: value,
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain(`${fieldName}:`);
+      expect(broadcastAdminMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('broadcasts non-Latin full_name, institution and field values unchanged', async () => {
+    stubDefaultRoster();
+    const res = await asSignature(request(app).post('/api/admin/accreditation/grant'), ADMIN).send({
+      account: 'scientist1',
+      full_name: 'محمد علي',
+      institution: '東京大学',
+      field: 'Física',
+    });
+    expect(res.status).toBe(200);
+    expect(broadcastAdminMock.mock.calls[0][0]).toMatchObject({
+      name: 'محمد علي',
+      institution: '東京大学',
+      field: 'Física',
+    });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────
