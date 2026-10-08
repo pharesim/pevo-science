@@ -61,11 +61,11 @@ A teardown or staleness guard protects exactly the code that holds it. "Check af
 
 4. **Pass the guard down as a value; do not let each layer capture its own.** The existing rationale in the `subjectTeardownGuard` docblock already says why: a guard opened inside a callee, after the caller's earlier awaits, captures a generation the teardown may already have moved and never fires. The consent-op starters are exactly such a callee, so the predicate must originate at the orchestrator's guard and travel through the starter, as it already does through `mintViaPassword` and the retry gate's `guard` hook.
 
-The helper carries the seam and every caller now reaches it through the orchestrator's own guard. The landed shape, abridged to the seam (the real helper also stashes the return path, unwinds its throw exits, and validates the redirect host):
+The helper carries the seam and every caller now reaches it through the orchestrator's own guard. The landed shape, abridged to the seam (the real helper also stashes the return path, validates the redirect host, runs an optional `beforeNavigate` that can refuse the navigation, and unwinds the flow keys on every failing exit):
 
 ```js
 // fresh-auth.js: the re-check between the round-trip and the navigation
-async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault, isStale) {
+async function beginOrcidFreshAuthRedirect(mode, extra, returnPathDefault, isStale, beforeNavigate) {
   sessionStorage.setItem(ORCID_MODE_KEY, mode);
   const data = await startOrcid(mode, extra);          // teardown can land here
   if (isStale?.()) return FRESH_AUTH_CANCELLED;         // re-check before the effect

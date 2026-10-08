@@ -126,7 +126,10 @@ const orcidOrRefuse = () =>
 if (guard.tornDown()) return guard.cancel();
 const orcidOrRefuse = async () => {
   if (!allowRedirect) return FRESH_AUTH_REAUTH_REQUIRED;
-  const started = await beginSessionAuthOrcidRedirect(guard.tornDown);
+  const started = await beginSessionAuthOrcidRedirect(
+    guard.tornDown,
+    () => stashBeforeNavigating(stashes),
+  );
   return started === FRESH_AUTH_CANCELLED ? guard.cancel() : started;
 };
 ```

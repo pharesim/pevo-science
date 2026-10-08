@@ -27,11 +27,11 @@ tags:
 
 ## Context
 
-`frontend/src/lib/fresh-auth.js` carries two hand-maintained tallies of "how many sites consume an acquisition result", in two docblocks about 130 lines apart.
+`frontend/src/lib/fresh-auth.js` carried two hand-maintained tallies of "how many sites consume an acquisition result", in two docblocks far apart.
 
-`evictUnnamedAcquisition`'s docblock enumerated the readers of the raw result returned by the module-private `acquireSessionProof`. It said THREE, and it was wrong: there are two, the fail-closed guard inside `ensureSessionWindow` and the broadcast unwinder `acquisitionAborted`. `freshAuthWindowReady` and `windowProof` (`frontend/src/lib/ipfs-upload.js`) both call `ensureSessionWindow` and only ever see the outcome object it derives; neither touches the raw value.
+`evictUnnamedAcquisition`'s docblock enumerated the readers of the raw result returned by the module-private `acquireSessionProof`. It said THREE, and it was wrong: there were two, the fail-closed guard inside `ensureSessionWindow` and the broadcast unwinder `acquisitionAborted`. `freshAuthWindowReady` and `windowProof` (`frontend/src/lib/ipfs-upload.js`) both call `ensureSessionWindow` and only ever see the outcome object it derives; neither touches the raw value.
 
-`WINDOW_OUTCOME_BY_SENTINEL`'s docblock says `acquireSessionProof` "resolves to a proof string or to one of the sentinels below, and three independently owned sites consume the result", then names `freshAuthWindowReady`, `acquisitionAborted` and `windowProof`. Read literally, "consume the result" binds all three to the raw result. Only `acquisitionAborted` is a genuine member of both tallies.
+`WINDOW_OUTCOME_BY_SENTINEL`'s docblock said `acquireSessionProof` "resolves to a proof string or to one of the sentinels below, and three independently owned sites consume the result", then named `freshAuthWindowReady`, `acquisitionAborted` and `windowProof`. Read literally, "consume the result" binds all three to the raw result. Only `acquisitionAborted` was a genuine member of both tallies.
 
 The fix corrected the count at `evictUnnamedAcquisition`, corrected a matching miscount in `ensureSessionWindow`'s own docblock, and then added a clause at the corrected site asserting that the sibling tally "is a different and equally correct count: it tallies who acts on an outcome ... not who reads the raw result." That clause reconciles from a distance. It asserts a reading of the sibling sentence rather than amending it, and the sibling sentence does not carry that reading: nothing in its wording signals that two of its three names are being counted for a downstream thing and the third for the raw value.
 
@@ -71,7 +71,7 @@ The abstract shape, independent of module:
 - Why it does not hold: B never signalled that "consume the result" meant the derived outcome for two of its three names. Read cold, B still says all three touch the thing A now carefully distinguishes. The reader has to take A's word about B.
 - The durable repair: edit B to say what it means. "R resolves to V or one of these sentinels; three sites act on the resulting outcome once it is known: X and Y through the wrapper's outcome object, and Z, which reads R directly." Now each site is correct read alone, and there is nothing left to reconcile.
 
-In this module: `evictUnnamedAcquisition` and `ensureSessionWindow` now correctly name the two raw-result readers. `WINDOW_OUTCOME_BY_SENTINEL`'s sentence is still unedited and still reads as though `freshAuthWindowReady`, `acquisitionAborted` and `windowProof` all consume `acquireSessionProof`'s result in the same sense. Editing that sentence directly, and shrinking or dropping the reconciling clause once it is precise, is the move this entry recommends.
+In this module the move was made: `WINDOW_OUTCOME_BY_SENTINEL`'s header now says `acquisitionAborted` reads the raw result while `freshAuthWindowReady` and `windowProof` act on the outcome object `ensureSessionWindow` derives, and the reconciling clause is gone.
 
 ## Related
 

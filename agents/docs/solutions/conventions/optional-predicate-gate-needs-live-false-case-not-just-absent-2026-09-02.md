@@ -120,8 +120,8 @@ produces.
 This one was caught by review before it shipped, and the fix landed with the change it reviewed
 (commits `07c07fd1` and `39363364`). The honest statement of the cost is narrow. Had the weakened
 guard shipped, cleanup would never have run for any production caller, because all of them pass a
-live function: a start that rejects, an unparseable redirect URL, or a disallowed redirect host
-would each leave the mode marker and the return path behind. That is precisely the orphan the
+live function: a start that rejects, an unparseable redirect URL, a disallowed redirect host, or a
+navigation its `beforeNavigate` refuses would each leave the mode marker and the return path behind. That is precisely the orphan the
 neighbouring cases exist to prevent, and its cost is a stale per-tab marker and a stale return
 path, a wrong back-destination or a callback dispatching on an abandoned flow's mode. It is not an
 authentication weakness: the OAuth state is verified and consumed server-side, and no proof is
