@@ -45,3 +45,10 @@ name (`backend-accreditation-character-rule-on-other-chain-writes`).
 1. A spec pins that a `field`-only edit sends `field` alone.
 2. A spec pins the field-specific message for a `full_name:` 400 on each of the two forms.
 3. No emdash in new UI copy. Comments follow root `CLAUDE.md` "Comment anchors".
+
+## Architect note (2026-10-08): `field:` 400s
+
+From the review of `backend-accreditation-character-rule-on-other-chain-writes` (triage: user).
+Scope 2 also covers a 400 whose message starts with `field:`. The rule now covers `field`, and an
+unpaired surrogate answers `<field>: must be well-formed Unicode text`. Signup and the admin grant
+refuse such values, and the ORCID name is rewritten to pass.

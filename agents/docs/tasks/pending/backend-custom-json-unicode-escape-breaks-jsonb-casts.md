@@ -21,8 +21,9 @@ Filed from the review of `backend-latest-op-haf-lookups-walk-the-blocks-index` (
   row either: PostgreSQL does not fix the order in which `WHERE` conditions are evaluated.
 - Not yet verified: that hived accepts a custom_json whose `json` holds such an escape.
 
-`backend-accreditation-character-rule-on-other-chain-writes` closes the platform's own write
-paths. This task covers ops PEvO does not write.
+The write side is `backend-platform-signed-ops-carry-unchecked-client-text`. That task records
+that hived accepts both escapes (hived master `45044109`), which answers Scope 1; re-check at
+pickup.
 
 ## Scope
 
