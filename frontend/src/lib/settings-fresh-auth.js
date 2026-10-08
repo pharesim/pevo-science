@@ -141,9 +141,9 @@ async function resolveProof(action, { username }, guard) {
 }
 
 /**
- * Run a settings critical action with the fresh-auth proof its JWT path
- * requires. `run(proof)` performs the API call (proof is `undefined` for
- * self-custody on every action but `set_password`). Returns an outcome object:
+ * Run a settings critical action with the fresh-auth proof it requires.
+ * `run(proof)` performs the API call (proof is `undefined` for self-custody on
+ * every action but `set_password`). Returns an outcome object:
  *
  *   { ok: <apiResult> }       request succeeded
  *   { redirect: true }        ORCID round-trip in flight; abort cleanly

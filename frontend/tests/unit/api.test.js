@@ -579,8 +579,8 @@ describe('verifyEmail', () => {
 
 // The three settings critical actions (change_email / set_password /
 // delete_account) carry a single-use `fresh_auth_proof` in the request body on
-// the JWT path and omit it on the Keychain path. These pin that the field is
-// threaded through (and only when present), plus the password-factor mint shape.
+// the JWT path. These pin that the field is threaded through (and only when
+// present), plus the password-factor mint shape.
 describe('settings critical-action proof threading', () => {
   let fetchSpy;
 
