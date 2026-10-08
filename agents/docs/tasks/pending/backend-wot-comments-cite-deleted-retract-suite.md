@@ -73,3 +73,26 @@ voucher broadcasts the vouch custom_json "via Hive Keychain".
 3. Delete "via Hive Keychain" from that comment. Change nothing else in it.
 
 Acceptance: a grep of `backend/src/routes/wot.ts` for "via Hive Keychain" returns nothing.
+
+## Architect note (2026-10-08): line-number anchors and two inaccurate comments, folded in
+
+Filed from the architect review of `backend-wot-auto-accredit-reads-stale-membership`.
+
+4. **`backend/tests/routes/wot-vouch-broadcast-outcomes.test.ts` cites line numbers.** The file
+   header cites `wot.ts:57-60`, `backend/src/routes/wot.ts:79-95` and
+   `backend/src/routes/wot.ts:97-109`, and the title of the spec
+   "returns 403 FORBIDDEN when the voucher is not accredited (gate at wot.ts:57-60)" carries one
+   too. Root `CLAUDE.md` "Comment anchors" bans line-number anchors, and the routes file has
+   changed since they were written. Replace each with the name of what it points at (the
+   accredited-voucher gate in the `POST /vouch` handler, the handler's timeout arm, its
+   `chain_error` arm), or delete it.
+5. **Two comments in `backend/tests/wot-broadcast-timeout.test.ts`.**
+   - Above `TEST_WIF`: delete the clause ", but PrivateKey.fromString(...) runs first and needs a
+     valid-checksum WIF". The file's `hive.js` mock replaces `broadcastAdminCustomJson`, so the
+     real one, which calls `PrivateKey.fromString`, never runs.
+   - In `mockEligibleVouchStatus`: delete the comment "Threshold params query (update_params): no
+     rows => default 3." `loadWotThreshold` reads through `pool.connect()`, which the file's
+     `db.js` mock rejects, so the default comes from its `catch`, not from this branch.
+
+Acceptance: a grep of `wot-vouch-broadcast-outcomes.test.ts` for `wot.ts:` returns nothing, and
+`tests/eslint` run alone stays green.

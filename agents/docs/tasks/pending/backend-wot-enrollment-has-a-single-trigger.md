@@ -62,3 +62,21 @@ Waits for `backend-wot-auto-accredit-reads-stale-membership` to be archived. Bot
 `backend/src/wot.ts`, and that task replaces the already-accredited check inside
 `broadcastWotAccreditation`, which this job calls for every candidate. The architect moves this
 file to `pending/` when that task is archived.
+
+## Architect note (2026-10-08): unblocked
+
+`backend-wot-auto-accredit-reads-stale-membership` is archived. `broadcastWotAccreditation` now
+reads eligibility and `self_pinned` (whether the vouchee has an `accred_pinned` row) from one
+cached snapshot (`getVouchSnapshot`, key `vouchStatusCacheKey(vouchee)`), and broadcasts only when
+`self_pinned` is `false`. The sweep needs two things the `POST /vouch` route already does:
+
+1. **A name check.** The route's `validateVouchee` checks `HIVE_ACCOUNT_NAME_REGEX`
+   (`backend/src/lib/hive-account-name.ts`); `broadcastWotAccreditation` does not, and the admin
+   key signs an accredit op whose `account` is the vouchee. A vouch on chain can name any string,
+   so check each candidate with that regex before the call.
+2. **A fresh read.** `pollForVouch` busts `vouchStatusCacheKey(vouchee)` before it reads. Bust it
+   before each candidate's call too, so the guard reads HAF rather than a snapshot cached up to
+   60 s earlier.
+
+Acceptance, added: a candidate that fails `HIVE_ACCOUNT_NAME_REGEX` is not passed to
+`broadcastWotAccreditation`.

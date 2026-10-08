@@ -90,3 +90,18 @@ which edit the same CTE bodies.
 - `ARCHITECTURE.md` § 6.4 row "Release own accreditation" marked implemented.
 - `api-contracts/custody.md`: `release_accreditation` joins the fresh-auth `action` list on both
   issuance paths (password and ORCID).
+
+## Architect note (2026-10-08): release must also leave `accred_pinned`
+
+From the architect review of `backend-wot-auto-accredit-reads-stale-membership`.
+`broadcastWotAccreditation` (`backend/src/wot.ts`) now skips any vouchee with an `accred_pinned`
+row (the `self_pinned` column of `vouchStatusSelect`), and a vouch counts only when its voucher has
+an `accred_pinned` row (`aa_wot_counts` in `activeAccreditationsCteBody`). If Scope 2's release
+exclusion lands in `active_accreditations` only, a released account keeps its `accred_pinned` row,
+which breaks two ARCHITECTURE § 2 sentences:
+
+- "Credential Bindings": "the WoT path re-enrols it when the next vouch for it is processed". The
+  guard would skip the account.
+- "Release is ordinary": "its vouches stop counting". They would keep counting.
+
+Apply the release exclusion inside `accred_pinned`, and cover both in the membership SQL tests.

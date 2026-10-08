@@ -171,3 +171,14 @@ result in the signal block.
     focus permits it, and the real-path companion (clause (c)). For the `/verify` specs the
     companion is `accreditation-idempotency.test.ts`. Intent only: write the header against the
     specs the file runs.
+
+## Architect addition (2026-10-08): the `accreditation_method` docblock
+
+Filed from the architect review of `backend-wot-auto-accredit-reads-stale-membership`.
+
+21. **`VouchStatus.accreditation_method` docblock (`backend/src/wot.ts`).** It says the field is
+    "`null` if the account has no current, not-sanctioned `accredit` op". The field is also null
+    when that op carries no `method`: it is the `method` column of the `accred_pinned` row, as the
+    `VouchSnapshot` docblock and the method-less spec in
+    `backend/tests/wot-vouch-status-select-real-postgres.test.ts` show. Add "or that op carries no
+    `method`" to the end of that clause. Change nothing else in the docblock.

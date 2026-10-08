@@ -66,3 +66,13 @@ retry in the signal block, for a ui task.
 
 - The 503 on each endpoint in `api-contracts/auth.md`, `api-contracts/accreditation.md` and
   `api-contracts/orcid.md`, and in `common.md`'s list of `details.retriable` emitters.
+
+## Architect note (2026-10-08): a clause (c) companion for the WoT sanction mock
+
+From the architect review of `backend-wot-auto-accredit-reads-stale-membership`.
+`backend/tests/wot-broadcast-timeout.test.ts` mocks `hasUnliftedSanction`, and no test runs that
+function's query unmocked. Root `CLAUDE.md` "Running Tests" clause (c) asks for a real-path test of
+the same risk class, or a filed task. The real-sanction spec AC2 and AC5 ask for is that test if it
+reaches `hasUnliftedSanction` unmocked. When it lands, add a second `Real-path companion:` line
+naming it to the header of `wot-broadcast-timeout.test.ts`, in the form of the line already there,
+and run `tests/eslint` alone.
