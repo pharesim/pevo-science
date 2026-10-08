@@ -105,3 +105,50 @@ swapping the address, and `backend-email-changed-at-stamp-and-displaced-address-
 adds `email_changed_at = NOW()` to the same UPDATE. Land this task first if you can; otherwise
 merge the username-scoped `notification_preferences` move into the apply function, after the
 swap and before the displaced-address mail.
+
+## Backend implementation signal (2026-10-08, commit f96090c4)
+
+- Landed in `f96090c4` (`backend(settings): an email change moves only the verifying account's
+  digest address`), ahead of the hold and `email_changed_at` tasks, so nothing needed merging into
+  an apply function. Self-verified: `git merge-base --is-ancestor f96090c4 main` exits 0, and
+  `git show --name-status f96090c4` lists `M backend/src/routes/settings.ts` and
+  `M backend/tests/routes/settings.test.ts`.
+- Scope 1: the swap returns `email, username`, and the move is
+  `UPDATE notification_preferences SET email = $1 WHERE email = $2 AND username = $3`, where `$3`
+  is the swapped row's username. `email = $2` is kept.
+- Scope 2: the comment above the move now reads "This account's digest address follows the change
+  when it equals the old account address." No `sendOk` or `sendError` call and no status changed
+  (AC3).
+- Scope 3: two specs in `tests/routes/settings.test.ts` after "verify token - change flow":
+  "verify token - change flow moves only the verifying account's digest address" (V, plus X with
+  no `accounts` row) and "verify token - change flow keeps a digest address set apart from the
+  account email" (W). Both seed by INSERT against real Postgres and delete their rows in `finally`.
+- AC2 mutation evidence, from a `git archive f96090c4` copy on Redis DB 6, whole
+  `settings.test.ts` per variant:
+  - parent's unscoped UPDATE: exit 1, the V/X spec fails, X's row received
+    `settings_digest_v_new_*` (it moved);
+  - move fed `[oldEmail, oldEmail, username]`: exit 1, the V/X spec fails, V's row stays
+    `settings_digest_v_old_*`;
+  - move deleted: exit 1, the V/X spec fails, V's row stays `settings_digest_v_old_*`;
+  - `email = $2` dropped (`WHERE username = $2`, params renumbered so the SQL stays valid): exit 1,
+    the W spec fails, expected `settings_digest_w_own_*`, received `settings_digest_w_new_*`;
+  - the fix: exit 0, 26 passed.
+  The V/X spec was also red in the live checkout before the fix (X's row moved).
+- AC4: `tests/routes/settings.test.ts` with `tests/routes/settings-state-g-unverified-email.test.ts`
+  gives Test Files 2 passed, Tests 39 passed, exit 0, no Errors line. `npm run typecheck` exits 0,
+  eslint on both changed files exits 0, and `tests/eslint` gives 9 files, 146 passed, exit 0. The
+  other two files that drive the route (`recovery-and-reset-drop-queued-email-change.test.ts`,
+  `reset-token-cleared-by-account-writes.test.ts`) give 12 passed, exit 0. Full backend suite not
+  run: the change is confined to one handler, and the suite has a standing red bar.
+- Supplementary adversarial review (two lenses on `f96090c4`, correctness/conventions and spec
+  quality, each re-running the mutations in its own copy): zero findings. The backend does not run
+  `/ce-code-review`; that is the architect's at intake.
+- Out of scope, reported as fact (pre-existing, not touched): the swap and the digest move are two
+  statements with no transaction around them. If the move throws after the swap commits, the client
+  gets a 500, a re-click gets `INVALID_TOKEN`, and the digest address stays on the old address. If
+  this should close, the apply function from `backend-email-change-hold-and-owner-notice` is where
+  both statements will sit.
+- No `[TODO Architect]` contract change: no response shape, status or error code changed.
+- Learnings checkpoint: a grep of `agents/docs/solutions/` for `notification_preferences`,
+  `getDigestUsers` and "digest address" found no entry, so nothing to refresh. Nothing new
+  qualified, since the username predicate and the commit message carry the lesson.
