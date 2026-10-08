@@ -25,6 +25,7 @@
 // `signer.js#broadcastOps` carries the operations out of the tab; it is mocked
 // so a successful broadcast can be observed with the window proof it carried.
 // Alpine is mocked so the component factory runs without a DOM mount.
+// `config.js` is mocked to pin the app tag.
 //
 // Auth-focus carve-out (clause-b): no auth middleware is mocked and no
 // cryptographic verification is bypassed. These tests assert what the client

@@ -293,6 +293,10 @@ export function initReviewPage() {
             body: this.reviewBody,
             rating: this.ratings,
           });
+          // This arm never reaches the broadcast's success clear, so a record
+          // an earlier non-anonymous submit of this review left is removed
+          // here: restored later, it would go out under the reviewer's name.
+          takeNavigationStash('review', stashTarget, username);
           if (!this._mounted) return;
         } else {
           const reviewPermlink = `re-${slugify(this.author)}-${slugify(this.permlink)}-${Date.now().toString(36)}`;

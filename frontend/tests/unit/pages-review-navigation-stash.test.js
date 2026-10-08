@@ -488,6 +488,24 @@ describe('reviewPage clears its own record when the review broadcasts', () => {
     expect(stashSlot()).toBe(raw);
     comp.destroy();
   });
+
+  it('an anonymous submit removes the record an earlier signed submit of the same review left', async () => {
+    // The signed submit navigated and wrote its record, and the page is still
+    // on screen (the ORCID page was left with Back).
+    const comp = createComponent(composedReview());
+    await comp.handleSubmit();
+    expect(navigations).toHaveLength(1);
+    expect(stashSlot()).not.toBeNull();
+    mockSubmitAnonymousReview.mockResolvedValue({ data: {} });
+
+    comp.isAnonymous = true;
+    await comp.handleSubmit();
+
+    expect(mockSubmitAnonymousReview).toHaveBeenCalledTimes(1);
+    expect(comp.step).toBe('success');
+    expect(stashSlot()).toBeNull();
+    comp.destroy();
+  });
 });
 
 describe('reviewPage when the stash write fails', () => {

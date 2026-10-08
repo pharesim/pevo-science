@@ -114,7 +114,7 @@ export const REMINTABLE_REASONS = Object.freeze(['missing', 'expired', 'malforme
 //                         own decision to stop).
 //   FRESH_AUTH_REAUTH_REQUIRED  a window was needed and none was open, and the
 //                         full-page ORCID round-trip that is the account's
-//                         only factor was refused before it started.
+//                         only factor was refused.
 //   FRESH_AUTH_ORCID_FALLBACK  the password factor was ASSUMED (the account
 //                         status was unavailable) and the backend rejected the
 //                         mint: the account most likely has no password, so
@@ -1023,7 +1023,9 @@ export async function beginSessionAuthOrcidRedirect(isStale, beforeNavigate) {
 // installs the flight or joins it, so a caller that joins a flight another
 // caller started still has its work written before the navigation fires. A
 // write that fails refuses the navigation: the flight resolves
-// FRESH_AUTH_REAUTH_REQUIRED.
+// FRESH_AUTH_REAUTH_REQUIRED. `orcidOnly` starts a flight at the ORCID leg,
+// with no factor read: the way through that refusal, which only the ORCID leg
+// can have produced, asks for no password.
 //
 // Concurrent callers — a submit and a vote button racing in the same tick, or a
 // page batch and an inline editor image — are coalesced through the
@@ -1131,7 +1133,7 @@ function evictUnnamedAcquisition(proof) {
 
 async function acquireSessionProof(
   minRemainingMs = 0,
-  { allowRedirect = true, stash = null } = {},
+  { allowRedirect = true, stash = null, orcidOnly = false } = {},
 ) {
   const cached = getCachedSessionProof(minRemainingMs);
   if (cached) return evictUnnamedAcquisition(cached);
@@ -1180,6 +1182,7 @@ async function acquireSessionProof(
       return started === FRESH_AUTH_CANCELLED ? guard.cancel() : started;
     };
 
+    if (orcidOnly) return orcidOrRefuse();
     const factor = await resolvePasswordFactor();
     // The status read is a real round-trip, and a negative or assumed answer
     // is never memoized, so every cold acquisition awaits it — this is the
@@ -1307,8 +1310,8 @@ function stashBeforeNavigating(stashes) {
 // test rather than a silent fall-through discovered in review.
 //
 // FRESH_AUTH_ORCID_FALLBACK is deliberately absent: acquisition resolves it
-// internally (to the ORCID redirect or the suppressed refusal) before any
-// window consumer sees it, and the exhaustiveness suite pins that exclusion.
+// internally before any window consumer sees it, and the exhaustiveness suite
+// pins that exclusion.
 const WINDOW_OUTCOME_BY_SENTINEL = new Map([
   [FRESH_AUTH_REDIRECT_PENDING, 'redirect'],
   [FRESH_AUTH_CANCELLED, 'cancelled'],
@@ -1896,10 +1899,8 @@ const UNKEPT_NAVIGATION_FALLBACK =
   'Confirming your identity with ORCID means leaving this page. What you have entered here could not be kept, so it will be lost.';
 
 // The way through a navigation the stash write refused, offered by the
-// broadcast whose work could not be kept. Nothing else in the tab can open a
-// window for a passwordless account, so the refusal alone would be a dead end:
-// the user is told the work will not survive the round-trip, and a yes sends
-// them to ORCID without it. It asks through the same confirm, title and
+// broadcast whose work could not be kept: the user is told the work will not
+// survive the round-trip, and a yes sends them to ORCID without it. It asks through the same confirm, title and
 // button the publish and edit pages use for their navigation cost.
 //
 // Asked, and a yes honoured, only while the tab still shows the page the
@@ -1921,7 +1922,7 @@ async function navigateWithoutStash(guard, startPath) {
   });
   if (guard.tornDown()) return guard.cancel();
   if (!confirmed || !onStartPage()) return FRESH_AUTH_CANCELLED;
-  return acquireSessionProof(0, { allowRedirect: true });
+  return acquireSessionProof(0, { allowRedirect: true, orcidOnly: true });
 }
 
 // High-level wrapper around `broadcastOps`: acquires a session window if one is
@@ -1954,7 +1955,7 @@ async function navigateWithoutStash(guard, startPath) {
 //
 // `opts.stash` (optional) is consumed here too: the work on screen behind this
 // broadcast, as `{ surface, target, payload }`, where `payload()` is read at
-// the moment a navigation fires. Both acquisitions register it, so a
+// the moment a navigation fires. Both acquisitions pass it on, so a
 // passwordless account's round-trip writes it to the navigation stash
 // (lib/navigation-stash.js) for the composer to take back on return, and a
 // broadcast that succeeds removes its own record.
@@ -1985,12 +1986,12 @@ export async function broadcastWithFreshAuth(username, operations, opts = {}) {
     savedAt: Date.now(),
   }));
 
-  // Both acquisitions, the first and the 401 retry's, go through here, so the
-  // stash reaches every navigation this broadcast can fire. On the permissive
-  // posture a reauthRequired refusal can only come from the flight's stash
-  // write. A caller with no work in it joined a flight whose write was
-  // refused; the caller whose work it was is the one asked, so this one stays
-  // silent rather than be told to try again over that work.
+  // Both acquisitions, the first and the 401 retry's, go through here, so
+  // each passes the stash to `acquireSessionProof`. On the permissive posture
+  // a reauthRequired refusal can only come from the flight's stash write. A
+  // caller with no work in it is on a flight whose write was refused; the
+  // caller whose work it was is the one asked, so this one stays silent
+  // rather than be told to try again over that work.
   const acquire = async () => {
     const acquired = await acquireSessionProof(0, { allowRedirect, stash: stashRecord });
     if (acquired !== FRESH_AUTH_REAUTH_REQUIRED || !allowRedirect) return acquired;

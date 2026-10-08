@@ -44,16 +44,19 @@ export function initCommentComposer() {
     },
 
     // A comment this composer's account submitted just before its ORCID
-    // round-trip comes back into the box. The event and the scroll wait a
-    // tick: a listener on this element is bound only after init returns, and
-    // a reply box the event opens is still hidden until Alpine shows it.
+    // round-trip comes back into the box. The event waits a tick: a listener
+    // on this element is bound only after init returns. The scroll waits two
+    // frames: x-show displays the reply box the event opens in a frame of its
+    // own, and a hidden box has no position to scroll to.
     init() {
       const stashed = takeNavigationStash('comment', this._stashTarget, this.username);
       if (typeof stashed?.body !== 'string') return;
       this.body = stashed.body;
       this.$nextTick(() => {
         this.$dispatch('comment-restored');
-        this.$nextTick(() => this.$el.scrollIntoView?.({ block: 'center' }));
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          this.$el.scrollIntoView?.({ block: 'center' });
+        }));
       });
     },
 

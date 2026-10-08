@@ -123,7 +123,8 @@ async function fakeFetch(input) {
 
 let router;
 let auth;
-// The elements Element#scrollIntoView was called on.
+// The elements Element#scrollIntoView was called on, each with whether it was
+// displayed at that moment: a hidden element has no position to scroll to.
 let scrolled = [];
 
 // Let effects, $nextTick callbacks and resolved fetches run.
@@ -212,7 +213,9 @@ describe('a comment kept across the ORCID round-trip on the paper page (real Alp
     window.__PEVO_CONFIG__ = { appTag: 'pevotest' };
     window.scrollTo = () => {};
     // jsdom has no scrollIntoView; record the restored composer's scroll.
-    Element.prototype.scrollIntoView = function scrollIntoView() { scrolled.push(this); };
+    Element.prototype.scrollIntoView = function scrollIntoView() {
+      scrolled.push({ el: this, displayed: isDisplayed(this) });
+    };
     window.history.replaceState(null, '', '/en/about');
     document.body.innerHTML = BODY_HTML;
     await import('../../src/main.js');
@@ -224,12 +227,15 @@ describe('a comment kept across the ORCID round-trip on the paper page (real Alp
 
   beforeEach(async () => {
     commentFetches = [];
-    scrolled = [];
     router.navigate('/about');
     await ticks();
     if (auth.isConnected) auth.disconnect();
     await ticks();
     sessionStorage.removeItem(NAVIGATION_STASH_KEY);
+    // A restored composer scrolls two frames after it mounts, so the previous
+    // case's scroll can still be pending here.
+    await new Promise((resolve) => { requestAnimationFrame(() => requestAnimationFrame(resolve)); });
+    scrolled = [];
   });
 
   afterAll(() => {
@@ -266,7 +272,7 @@ describe('a comment kept across the ORCID round-trip on the paper page (real Alp
     expect(topComposer.value).toBe('');
 
     expect(sessionStorage.getItem(NAVIGATION_STASH_KEY)).toBeNull();
-    await vi.waitFor(() => expect(scrolled).toContain(restored.wrapper.firstElementChild), WAIT);
+    await vi.waitFor(() => expect(scrolled).toContainEqual({ el: restored.wrapper.firstElementChild, displayed: true }), WAIT);
 
     // A record whose root is the paper opens no review card.
     await vi.waitFor(() => expect(reviewCard('bob', 'rb')).not.toBeNull(), WAIT);

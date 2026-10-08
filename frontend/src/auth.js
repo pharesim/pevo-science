@@ -471,8 +471,7 @@ export function initAuth() {
       dismissOpenReauthPrompt();
       // The shared key list is the storage-removal truth: the proof-cache
       // clears above already removed their own keys (plus module state the
-      // list cannot carry), so for those this loop is an idempotent re-remove,
-      // and for every other key it is the removal itself.
+      // list cannot carry), so for those this loop is an idempotent re-remove.
       try {
         for (const key of SUBJECT_BOUND_STORAGE_KEYS) sessionStorage.removeItem(key);
       } catch {

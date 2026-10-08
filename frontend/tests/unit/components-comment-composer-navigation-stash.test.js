@@ -19,8 +19,9 @@
 // `signer.js#broadcastOps` carries the operations out of the tab; it is mocked
 // so a successful submit can be observed with the window proof it carried.
 // Alpine is mocked so the component factory runs without a DOM mount, with
-// `$nextTick` recorded rather than run, so the deferral of the restore event
-// and of the scroll can be asserted.
+// `$nextTick` and animation frames recorded rather than run, so the deferral
+// of the restore event and of the scroll can be asserted. `config.js` is
+// mocked to pin the app tag.
 //
 // Auth-focus carve-out (clause-b): no auth middleware is mocked and no
 // cryptographic verification is bypassed. These tests assert what the client
@@ -139,6 +140,15 @@ function flushTick(comp) {
   for (const fn of queued) fn();
 }
 
+// Animation frame callbacks, run only by flushFrame, one frame at a time: a
+// callback requested while a frame runs waits for the next frame.
+let frameQueue = [];
+
+function flushFrame() {
+  const queued = frameQueue.splice(0);
+  for (const fn of queued) fn();
+}
+
 function createComposer(opts) {
   initCommentComposer();
   const factory = Alpine.data.mock.calls[Alpine.data.mock.calls.length - 1][1];
@@ -214,6 +224,8 @@ beforeEach(() => {
   mockBroadcastOps.mockResolvedValue({ tx_id: 'tx' });
   mockBroadcastConfirm.request.mockResolvedValue(true);
   stubWindow();
+  frameQueue = [];
+  vi.stubGlobal('requestAnimationFrame', (fn) => { frameQueue.push(fn); });
 });
 
 afterEach(() => {
@@ -247,7 +259,7 @@ describe('commentComposer keeps a comment across the passwordless ORCID round-tr
     expect(mockToastStore.show).not.toHaveBeenCalled();
   });
 
-  it('a fresh composer for the same root and parent takes the comment back at init, then announces it and scrolls on later ticks', async () => {
+  it('a fresh composer for the same root and parent takes the comment back at init, announces it a tick later, and scrolls two frames after that', async () => {
     await submitAndNavigate(REPLY, 'A reply worth keeping');
 
     const returned = createComposer(REPLY);
@@ -256,8 +268,8 @@ describe('commentComposer keeps a comment across the passwordless ORCID round-tr
     expect(returned.body).toBe('A reply worth keeping');
     expect(storedStash()).toBeNull();
     // A listener on the composer's own element is bound only after init
-    // returns, so the event waits a tick, and the scroll waits one more for
-    // the reply box the event opens.
+    // returns, so the event waits a tick. The reply box the event opens is
+    // displayed by x-show in a frame of its own, so the scroll waits two.
     expect(returned.$dispatch).not.toHaveBeenCalled();
     expect(returned.$el.scrollIntoView).not.toHaveBeenCalled();
 
@@ -266,7 +278,10 @@ describe('commentComposer keeps a comment across the passwordless ORCID round-tr
     expect(returned.$dispatch).toHaveBeenCalledWith('comment-restored');
     expect(returned.$el.scrollIntoView).not.toHaveBeenCalled();
 
-    flushTick(returned);
+    flushFrame();
+    expect(returned.$el.scrollIntoView).not.toHaveBeenCalled();
+
+    flushFrame();
     expect(returned.$el.scrollIntoView).toHaveBeenCalledTimes(1);
     expect(returned.$el.scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
   });

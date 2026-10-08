@@ -391,8 +391,7 @@ describe('auth store', () => {
     it('removes the navigation stash on disconnect', () => {
       // Seeded by name rather than through the shared key list, so this fails
       // when the stash key is dropped from SUBJECT_BOUND_STORAGE_KEYS: the
-      // parity pin loops that list and cannot see a missing member. A review
-      // body, possibly marked anonymous, must not outlive the session.
+      // parity pin loops that list and cannot see a missing member.
       sessionStorageData[NAVIGATION_STASH_KEY] = JSON.stringify({
         surface: 'review',
         target: { author: 'alice', permlink: 'paper-1' },

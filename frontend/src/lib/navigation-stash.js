@@ -41,7 +41,7 @@ function readRecord() {
       return record;
     }
   } catch {
-    /* unreadable: removed below */
+    /* unreadable */
   }
   clearNavigationStash();
   return null;

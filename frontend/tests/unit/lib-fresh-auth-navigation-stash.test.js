@@ -24,6 +24,8 @@
 // assignment records the target and what the slot held at that instant.
 // `signer.js#broadcastOps` is what carries the operations out of the tab; it is
 // mocked so the cases that broadcast can observe each call and its options.
+// Alpine is mocked so its stores are plain objects each case sets: the
+// custody, and the answers to the re-auth and confirm dialogs.
 //
 // Auth-focus carve-out (clause-b): no auth middleware is mocked and no
 // cryptographic verification is bypassed. The proof is minted and verified
@@ -641,6 +643,31 @@ describe('a stash write that fails refuses the navigation and offers a way throu
       { href: ORCID_URL, mode: 'session_auth', returnPath: START_PATH, stash: null },
     ]);
     expect(mockBroadcastOps).not.toHaveBeenCalled();
+    expect(mockToastStore.show).not.toHaveBeenCalled();
+  });
+
+  it('a yes after an assumed password fell back to ORCID asks for no second password', async () => {
+    // Status unreachable, so the factor is assumed and the mint's 401 hands
+    // the flight to ORCID, where the write is refused. The yes answers a
+    // refusal only the ORCID leg can produce.
+    mockFetchEmailStatus.mockRejectedValue(new Error('status unavailable'));
+    mockReauthModal.request.mockResolvedValue('typed-password');
+    mockMintSessionAuthProof.mockRejectedValue(
+      Object.assign(new Error('Unauthorized'), { code: 'UNAUTHORIZED' }),
+    );
+    failStashWrites();
+    answerDialogWith(true);
+
+    const result = await broadcastWithFreshAuth('alice', COMMENT_OPS, {
+      stash: commentStash('could not be kept'),
+    });
+
+    expect(result).toBe(FRESH_AUTH_REDIRECT_PENDING);
+    expect(mockBroadcastConfirm.request).toHaveBeenCalledTimes(1);
+    expect(mockReauthModal.request).toHaveBeenCalledTimes(1);
+    expect(mockFetchEmailStatus).toHaveBeenCalledTimes(1);
+    expect(mockMintSessionAuthProof).toHaveBeenCalledTimes(1);
+    expect(navigations.map((n) => n.href)).toEqual([ORCID_URL]);
     expect(mockToastStore.show).not.toHaveBeenCalled();
   });
 
