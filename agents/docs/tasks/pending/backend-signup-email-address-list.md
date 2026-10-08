@@ -46,3 +46,9 @@ bypassed with a space.
 - `api-contracts/auth.md`: `POST /api/auth/signup` gains the 400 for a malformed e-mail, and the
   `ACCREDITATION_NOT_FOUND` entry (the handler answers 422 `VALIDATION_ERROR` for a non-institutional
   address) is corrected.
+
+## Architect note (2026-10-08)
+
+`backend-recovery-dispute-only-for-a-settled-address` (high) edits `POST /api/auth/recover`'s
+memo-key branch in the same file (it reads `email_changed_at` with the account row and gates the
+dispute mail). Whichever lands second merges.

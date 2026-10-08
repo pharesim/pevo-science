@@ -30,3 +30,10 @@ user chose the backend fix on 2026-10-06.
 1. The link in the reset mail opens `/reset-password` with the token in the
    query, and the page shows the new-password form.
 2. A test fails if the mailed path stops matching the SPA's reset route.
+
+## Architect note (2026-10-08)
+
+This task is a prerequisite of `backend-email-change-hold-and-owner-notice` (high): the notice
+that task mails tells the owner to reset the password from the sign-in page's Forgot password
+option, and the reset is the veto of the held change, so the mailed link must open the reset
+page. The hold task is picked after this one is archived.

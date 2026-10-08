@@ -96,3 +96,12 @@ that hits the route green: `tests/routes/settings.test.ts` and
   deliberately. No repair is proposed.
 - The prefs email is stored as typed and the account email is lowercased, so a mixed-case own row
   does not move on a change. This is pre-existing and not proposed for change.
+
+## Architect note (2026-10-08): the swap moves into an exported apply function
+
+`backend-email-change-hold-and-owner-notice` (high, filed 2026-10-08) splits the change branch of
+`GET /api/settings/email/verify/:token` into an exported apply function that is the one site
+swapping the address, and `backend-email-changed-at-stamp-and-displaced-address-notice` (high)
+adds `email_changed_at = NOW()` to the same UPDATE. Land this task first if you can; otherwise
+merge the username-scoped `notification_preferences` move into the apply function, after the
+swap and before the displaced-address mail.

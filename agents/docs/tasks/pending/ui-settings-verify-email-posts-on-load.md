@@ -31,3 +31,11 @@ Surfaced in the review of `ui-seed-recovery-confirm-and-dispute-pages`.
 1. Rendering `/settings/verify-email/<token>` without a click leaves the
    token unspent.
 2. The click applies the change as today.
+
+## Architect note (2026-10-08)
+
+`ui-settings-shows-held-email-change-with-cancel` (blocked behind the backend hold task) gives
+the same verify page a second outcome: the response gains `applied`, and `applied: false` means
+the new address is confirmed and the change takes effect after the waiting period
+(`api-contracts/settings.md`). Whichever lands second merges; the confirm button this task adds
+sends the token once in both outcomes.

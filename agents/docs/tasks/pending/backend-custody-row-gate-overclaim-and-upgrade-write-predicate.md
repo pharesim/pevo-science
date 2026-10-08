@@ -64,3 +64,12 @@ finding threshold; the gate itself is archived.
    session proof and reissues no token.
 3. A/B/C and D answers on all four routes are unchanged (same statuses, codes and messages).
 4. Comment-anchor conventions hold (root CLAUDE.md "Comment anchors").
+
+## Architect note (2026-10-08)
+
+User decision 2026-10-08 (ARCHITECTURE.md § 6.3 "Evictions", the decided sentence): the custody
+upgrade's UPDATE also sets `pending_email`, `pending_email_token`, `pending_email_expires_at`,
+`pending_email_hold_until`, `pending_email_confirmed_at` and `pending_delete_at` to NULL.
+`backend-email-change-hold-and-owner-notice` and
+`backend-password-proven-deletion-is-held-and-announced` write those lines; this task edits the
+same statement's WHERE. Whichever lands second merges.

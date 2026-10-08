@@ -34,3 +34,11 @@ Surfaced in the review of `ui-seed-recovery-confirm-and-dispute-pages`.
 
 1. One staging row applies at most once, however many confirmations race.
 2. A dispute recorded before the consume commits stops the swap.
+
+## Architect note (2026-10-08)
+
+The apply UPDATE in `POST /api/auth/recover/verify` gains `email_changed_at = NOW()`
+(`backend-email-changed-at-stamp-and-displaced-address-notice`) and NULLs for
+`pending_email_hold_until`, `pending_email_confirmed_at` and `pending_delete_at`
+(`backend-email-change-hold-and-owner-notice`, `backend-password-proven-deletion-is-held-and-announced`).
+Whichever lands second merges the SET-list lines; this task's acceptance stands.

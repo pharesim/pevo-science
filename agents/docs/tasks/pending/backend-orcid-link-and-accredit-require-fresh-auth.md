@@ -57,3 +57,12 @@ ORCID recovery answers `ORCID does not match account`.
 4. The signal block lists the per-state outcomes and the API shape for
    `agents/docs/api-contracts/orcid.md` and `api-contracts/custody.md` (the new fresh-auth
    actions). [TODO Architect] at archive: update both contract files.
+
+## Architect note (2026-10-08): record the consumed proof's mechanism at /orcid/start
+
+`backend-password-proven-orcid-link-completes-from-current-mailbox` (high, blocked behind this
+task) makes a password-proven link or accreditation complete only from a confirm link mailed to
+the settled current address (ARCHITECTURE.md § 6.3 and § 6.4 "Link ORCID", decided 2026-10-08).
+It branches on the mechanism of the proof this task consumes at `/orcid/start`, so store that
+mechanism and the request's auth method in the OAuth state entry alongside the username. Nothing
+else in this task's scope changes. The architect unblocks that task at this task's archive.

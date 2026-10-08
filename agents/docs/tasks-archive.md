@@ -1,3 +1,50 @@
+## Decide how an owner learns of an email change, and who wins the seed-phrase dispute race (archived 2026-10-08): decided "as recommended" from a grounded brief; twelve tasks filed, fifteen open tasks noted
+
+### Architect archive note (2026-10-08)
+
+- **Grounding:** a 31-agent workflow mapped six areas from the code (291 facts, each re-read by a refuter and a gap finder: 0 refuted, 52 corrected, 189 added), ran four designers with distinct priors, three judges, a synthesizer, three attackers (32 non-blocked attacks before revision) and a completeness critic, then a reviser. The architect spot-checked the load-bearing claims in `orcid.ts`, `auth.ts`, `recover.ts` and `settings-verify-email.js`.
+- **Findings that reshaped the options:** a mailed cancel link without a delay is useless (the verify link applies on page open and a script redeems it on arrival); the password reset already drops a queued change and revokes every session, so it is the veto and no new mailed token is needed; the hold is bypassed on accredited state A rows by a password holder linking an ORCID of their own, which no eviction removes and which mints an unheld ORCID change proof and one-step ORCID recovery; the dispute mail goes to the row's current address and nothing records when the address changed.
+- **Decisions (user: "as recommended"):** (1) a password-proven email change on a row with an email is held 72 hours, the current address gets a linkless notice, the owner cancels in settings, the reset is the veto; (2) `accounts.email_changed_at` stamps the three writers that install an address, the displaced address is mailed at apply, and the seed-phrase dispute link goes only to an address held 30 days or more; (3) a password-proven ORCID link or accreditation completes only from a confirm link mailed to the settled current address, fail closed because a planted ORCID is permanent; (4) a password-proven deletion is held the same way; (5) reset re-mails a live token and refuses the current password; (6) the custody upgrade clears the queued change and deletion; (7) signup refuses an address another row holds as a confirmed pending change; (8) settings offers the ORCID factor beside the password for the four held actions; (9) the recover page offers ORCID whenever the public record carries one; (10) 72-hour hold, 30-day settling; (11) the hold is not sequenced behind the ORCID link task, and the A-row bypass is an interim residual. "Holding the password is holding the account" is not adopted as the rule; what the password still buys is recorded in the hold task's notes.
+- **Dropped from the brief:** its § 6.5 invariant 6 rewrite, which would let a light row's posting-key signature stand as a re-auth proof; the user decided the opposite the same day in `backend-light-row-keychain-session-and-signature-proof`, so a light row's exits after a lapsed hold are seed-phrase recovery, ORCID recovery on B, and the custody upgrade.
+- **Recorded:** ARCHITECTURE.md § 6.1, § 6.3, § 6.4, `api-contracts/settings.md`, `auth.md`, `orcid.md` and CONCEPTS.md (six terms) at `d55d4146`. **Filed:** `backend-email-changed-at-stamp-and-displaced-address-notice` (high), `backend-recovery-dispute-only-for-a-settled-address` (high), `backend-email-change-hold-and-owner-notice` (high), `backend-password-proven-orcid-link-completes-from-current-mailbox` (high, blocked behind the ORCID gate task and the settled-address task), `backend-password-proven-deletion-is-held-and-announced` (normal), `backend-reset-link-survives-re-requests-and-refuses-the-current-password` (normal), `ui-recover-offers-orcid-when-the-record-carries-one` (normal), `architect-record-email-change-hold-and-settled-address-decisions` (normal), and, blocked behind their backend halves, `ui-settings-shows-held-email-change-with-cancel`, `ui-settings-shows-held-deletion-with-cancel`, `ui-orcid-link-confirm-page` and `ui-settings-offers-the-orcid-factor-beside-the-password` (normal). Notes appended to fifteen open tasks that co-edit the same statements.
+- **Learnings checkpoint:** no code landed, so no entry is contradicted yet. `recovery-defenses-vs-seed-phrase-holder-non-load-bearing-2026-05-25.md` holds (its password-only carve-out is what makes these defences load-bearing) and is scheduled with `mailed-credential-token-dies-with-its-address-and-credential.md` for `/ce-compound-refresh` at the hold task's archive; `/ce-compound` on the fail-open hold with the credential reset as the veto is deferred to that archive, when the code carries it (tracked in the architect follow-up task).
+
+**Owner:** architect
+**Created:** 2026-10-07
+**Priority:** high
+
+Filed from the architect review of `backend-recovery-and-reset-keep-a-queued-email-change` (its
+adversarial lens). That task makes the evictions drop a queued change; this one covers an attacker
+who completes the change before any eviction. Design task: brainstorm with the user, then file
+implementer tasks.
+
+## Why
+
+Someone holding only the password can log in, take a `change_email` fresh-auth proof with that
+password, queue a change to their own address through `POST /api/settings/email`, and click the
+link at once. The change mail goes only to the new address, so the owner is not told.
+`accounts.email` is now the attacker's.
+
+- Password reset mails the attacker.
+- A B owner gets the account back through ORCID recovery, which overwrites the email
+  (`backend-orcid-link-and-accredit-require-fresh-auth` stops the attacker replacing that ORCID).
+- An A owner has only seed-phrase recovery. Phase 1 (`POST /api/auth/recover`) mails the dispute
+  link to the row's current email, which is the attacker's. `POST /api/auth/recover/verify`
+  refuses a staging row the attacker disputed. There is no waiting period, so the owner wins only
+  by clicking the verify link before the attacker clicks the dispute link. A dispute after the
+  apply only marks the staging row. A script that clicks the dispute link as soon as the mail
+  arrives can beat the owner.
+
+## To decide
+
+1. Whether to mail the current address when a change is queued, with a cancel link, and whether
+   the swap waits before it applies.
+2. Who the dispute link goes to after a recent email change, or whether a dispute can void a
+   seed-phrase recovery at all when the current address is that recent.
+3. Or accept: holding the password is holding the account.
+
+Record the decision in ARCHITECTURE.md § 6.3/§ 6.4 and file the implementer tasks.
+
 ## Check that a `'self'`-claim session can complete settings critical actions (archived 2026-10-08): ui fix reviewed Ready with fixes; both findings and two follow-ups folded into open tasks, five tasks filed, two dismissed
 
 ### Architect archive note (2026-10-08)
@@ -201,50 +248,3 @@ Out of scope: values already on chain that a later op carries forward unchanged.
 From the review of `backend-latest-op-haf-lookups-walk-the-blocks-index` (triage: user). The
 character rule also protects the HAF reads:
 
-- PostgreSQL's jsonb input rejects the escape `\u0000` and a lone surrogate escape such as
-  `\ud800` (checked on PostgreSQL 16; the HAF node runs 17.9). `::json ->> 'action'` also throws
-  when another key holds `\u0000`.
-- `hafsql.operation_custom_json_view.json` is `text` (`body_value ->> 'json'`), so the
-  `cj.json::jsonb` casts in PEvO's queries parse it.
-- `JSON.stringify` writes U+0000 as `\u0000` and a lone surrogate as its `\uXXXX` escape. An
-  authority-signed accredit op carrying one makes every query that casts that row throw, and the
-  op cannot be removed from the chain. `/verify`, the metadata edit and the ORCID flows would fail
-  for every user.
-
-Scope addition: also reject a lone surrogate (a value that is not well-formed UTF-16) in every
-field Scope 1 covers and in `full_name` and `institution` of `accreditationRequestSchema`.
-`NO_CONTROL_CHARACTERS` rejects U+0000, which is Cc, but not a lone surrogate. Scope 2's handling
-of the ORCID name covers both.
-
-AC addition: specs pin a 400 for U+0000 in each newly covered field, and for a lone surrogate in
-every field the scope addition names.
-
-The read side, for ops any Hive account can broadcast, is
-`backend-custom-json-unicode-escape-breaks-jsonb-casts`.
-
-## Backend implementation signal (2026-10-08, commits 706cb11c, 36d54084; learnings fd7f0fab)
-
-Each SHA self-verified with `git merge-base --is-ancestor <sha> main`.
-
-**What landed, per scope item**
-
-1. Scope 1. `validation.ts` exports `accreditOpText(schema)`, which adds both character rules to
-   a string schema: `NO_CONTROL_CHARACTERS` (unchanged) and the new `NO_LONE_SURROGATES`
-   (message `must be well-formed Unicode text`). It is applied to `full_name`, `institution` and
-   `field` in `accreditationRequestSchema` (`field` is new; the metadata edit inherits all three
-   through `.pick()`), `adminAccreditationGrantSchema` and `SignupBodySchema` (`routes/auth.ts`).
-   **Deviation from the literal wording** ("Export `NO_CONTROL_CHARACTERS` and its message"): every
-   covered field now takes two rules, so the shared export is the helper and the regexes and
-   messages stay module-private. No caller outside `validation.ts` needs the constants.
-   Wire behavior: `/request`, `/metadata` and the admin grant answer 400 `BAD_REQUEST`
-   `<field>: must not contain line breaks or control characters` or `<field>: must be well-formed
-   Unicode text` through `validate()`. `/signup` answers its existing 400 `VALIDATION_ERROR`
-   `Invalid request body` (that route does not echo zod issues).
-2. Scope 2, decision: **the ORCID profile name is rewritten, not refused.** `toAccreditOpText`
-   (`validation.ts`) turns each run of Cc / U+2028 / U+2029 characters into one space, drops
-   U+202A to U+202E, U+2066 to U+2069 and unpaired surrogates, and trims. The `/callback` applies it
-   once before dispatch, so `handleSignup`'s response `name`, the `orcid_verified` stored name
-   (the `/signup` fallback `full_name`) and `handleAccredit`'s op `name` all carry the rewritten
-   value. A name with nothing left falls back to the username (`orcidName || username` in
-   `handleAccredit`; `account.full_name || username` at signup-verify). Why: the name is not typed
-   into a PEvO form, so a refusal leaves the user no fix inside PEvO, and dropping the whole name

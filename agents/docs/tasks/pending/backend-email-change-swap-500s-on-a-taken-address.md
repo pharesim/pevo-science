@@ -117,3 +117,20 @@ got the 500.
   `GET /api/settings/email` keeps reporting `pendingChange: true`. The stale triple also blocks
   other accounts' settings add or change to X (409, measured) until R changes again. Signup is
   unaffected.
+
+## Architect note (2026-10-08): the clear moves into the apply function; signup refuses a confirmed pending address
+
+User decisions 2026-10-08 (from `architect-email-change-owner-notice-and-dispute-race`):
+
+1. Open decision 1 stays (b). `backend-email-change-hold-and-owner-notice` (high) moves the swap
+   into an exported apply function that handles the 23505 on `accounts_email_key` by clearing the
+   pending columns with the same key and returning a collided outcome; the verify route maps it to
+   this task's 409, and the sweep that applies held changes treats it as done and never retries.
+   Whichever task lands second merges. Acceptance 1 here holds for changes that carry no hold; a
+   sweep spec in the hold task covers the held case.
+2. New scope item, after the hold task lands: `POST /api/auth/signup`'s duplicate check also
+   counts an address another row holds as `pending_email` with `pending_email_confirmed_at` set.
+   A confirmed pending address has mailbox proof (its holder opened the link), so the 2026-10-05
+   decision against holding an address without mailbox proof does not apply; without this check a
+   held change can be pre-empted during its 72 hours and is then cleared silently. The signup
+   answer is the existing `DUPLICATE` 409.

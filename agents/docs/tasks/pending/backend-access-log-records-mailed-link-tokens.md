@@ -40,3 +40,9 @@ Surfaced in the review of `ui-seed-recovery-confirm-and-dispute-pages`
 
 1. Opening any link listed above writes no raw token to the access log.
 2. Method, path and the other query parameters stay in the log line.
+
+## Architect note (2026-10-08)
+
+`backend-password-proven-orcid-link-completes-from-current-mailbox` adds one more mailed
+query-string token, the ORCID confirm link `/settings/orcid-link?token=`; it falls under this
+task's query-parameter scope.

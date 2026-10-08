@@ -76,3 +76,12 @@ row E (password and profile) through the upsert's `DO UPDATE` and mails a new li
 - Learnings checkpoint at archive: a candidate `/ce-compound` entry. The 2026-10-05 gate tested a
   column that usually goes with the property it meant (a password present, for "the address was
   proven"), and missed the rows where the two differ.
+
+## Architect note (2026-10-08)
+
+Two tasks filed 2026-10-08 edit the same handlers:
+`backend-reset-link-survives-re-requests-and-refuses-the-current-password` (re-mails a live token
+at `/reset-request`; refuses the current password at `/reset`) and
+`backend-email-change-hold-and-owner-notice` (the `/reset` UPDATE also NULLs
+`pending_email_hold_until`, `pending_email_confirmed_at` and, with the held-deletion task,
+`pending_delete_at`). Whichever lands second merges.

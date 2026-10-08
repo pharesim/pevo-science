@@ -30,3 +30,9 @@ no way to delete the account from settings.
 
 1. Every row state without an email shows the control; a caller with no row does not.
 2. Frontend unit suite green; `npm run build` clean.
+
+## Architect note (2026-10-08)
+
+`ui-settings-shows-held-deletion-with-cancel` (blocked behind the backend held-deletion task)
+changes the same delete handler to treat `{ deleted: false, effectiveAt }` as a queued deletion.
+Whichever lands second merges.

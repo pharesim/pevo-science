@@ -37,3 +37,11 @@ accreditation page (`frontend/src/pages/accreditation.js`, mode `accredit`) star
 Waits for `backend-orcid-link-and-accredit-require-fresh-auth` to be archived: until then the
 issuers refuse the two new actions. The architect moves this file to `pending/` when that task is
 archived.
+
+## Architect note (2026-10-08)
+
+Once `backend-password-proven-orcid-link-completes-from-current-mailbox` lands, a password-proven
+link or accreditation answers `{ pending_confirmation: true, orcid, message }` from the callback
+instead of the linked body, and `/orcid/start` can answer a 422 for an address held less than
+30 days (`api-contracts/orcid.md`). `ui-orcid-link-confirm-page` (blocked) owns that outcome and
+the confirm page; whichever lands second merges.

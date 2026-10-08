@@ -32,3 +32,10 @@ verified-email gate `ui-pending-unverified-and-no-password-set-copy` adds.
 
 1. `hasOrcid` is present on every branch of the response, each pinned by a test.
 2. Backend suite green apart from the standing pre-existing failures.
+
+## Architect note (2026-10-08)
+
+`backend-email-change-hold-and-owner-notice` adds `pendingEmailChange` and changes
+`pendingChange`'s predicate on the same response, and
+`backend-password-proven-deletion-is-held-and-announced` adds `pendingDeletion`
+(`api-contracts/settings.md`). Whichever lands second merges.

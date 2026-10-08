@@ -41,3 +41,11 @@ was never proven. Nothing says such an address may keep its owner out.
 
 - `backend-reset-refuses-orcid-path-and-unverified-signup-rows` closes the takeover through
   reset. This task is about the address block and the mail that goes to an address nobody proved.
+
+## Architect note (2026-10-08)
+
+ARCHITECTURE.md § 6.3 (decided 2026-10-08) defines a settled address by recency alone:
+`email_changed_at` NULL or at least 30 days old, so an address an ORCID-path signup installed
+without mailing it is settled at finalize and receives the seed-phrase dispute link. If this task
+adds a proof marker, conjoin it in `isAddressSettled` (`backend/src/lib/address-settling.ts`,
+from `backend-recovery-dispute-only-for-a-settled-address`), the one place the rule lives.

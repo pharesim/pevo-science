@@ -137,3 +137,11 @@ lets an address owner finish a signup someone else started.
 pending row that carries an ORCID and from row E. This task is deferred until that one is
 archived. Then write § 6.3, § 6.4, § 6.5 and the contract against its outcome, under which the
 only pending row reset still serves is an email-path row F.
+
+## Architect note (2026-10-08)
+
+Two more reset rules to record when this task is picked
+(`backend-reset-link-survives-re-requests-and-refuses-the-current-password`, normal):
+`/reset-request` re-mails a live token instead of replacing it, and `/reset` refuses a password
+equal to the current one. `/reset` also clears the hold columns and `pending_delete_at` with the
+triple once the hold tasks land (§ 6.3 "Evictions").
