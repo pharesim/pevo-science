@@ -976,9 +976,8 @@ export function initSettingsPage() {
       }
     },
 
-    // Context for the settings fresh-auth orchestrator. `custody` gates whether
-    // a body proof is sent at all (light → proof required on the JWT path;
-    // self-custody → the per-request Keychain signature is already fresh).
+    // Context for the settings fresh-auth orchestrator. `custody` decides
+    // whether a body proof is sent; `withSettingsFreshAuth` holds the rule.
     // Password-vs-ORCID factor selection is NOT passed in: it lives in
     // `resolvePasswordFactor` (lib/fresh-auth.js), so a failed status fetch
     // on this page cannot route the user to a different factor than the same
@@ -1116,10 +1115,10 @@ export function initSettingsPage() {
       this.passwordSubmitting = true;
       this.passwordError = null;
       // Snapshot the password as a primitive so the orchestrator's run callback
-      // captures it by value. set-password is ORCID-only (a passwordless State-C
-      // account has no password to base a password proof on), so on a light
-      // account this always routes through the ORCID round-trip; after the user
-      // returns and re-submits, the cached proof is consumed.
+      // captures it by value. set-password is ORCID-only (the target account
+      // has no password to base a password proof on), so this always routes
+      // through the ORCID round-trip; after the user returns and re-submits, the
+      // cached proof is consumed.
       const password = this.newPasswordInput;
       try {
         const outcome = await withSettingsFreshAuth(

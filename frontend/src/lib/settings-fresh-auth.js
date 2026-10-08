@@ -24,8 +24,9 @@ import {
  * target-bound `fresh_auth_proof` in the request body of each action (see
  * `agents/docs/api-contracts/settings.md` and ARCHITECTURE.md § 6.4/§ 6.5).
  * Self-custody (Keychain) requests are fresh at the middleware and carry no body
- * proof. This module mints/looks up the proof for the JWT path via the factor
- * the account supports and threads it into the action call.
+ * proof, except `set_password`, whose proof the backend requires on every auth
+ * path. This module mints/looks up the proof via the factor the account
+ * supports and threads it into the action call.
  *
  * Two factors, selected by account state:
  *   - PASSWORD: prompt via the global reauth modal, then mint at
@@ -111,7 +112,7 @@ async function passwordFactorFor(action) {
   return resolvePasswordFactor();
 }
 
-// Resolve a fresh-auth proof for `action` on a light account. Returns the proof
+// Resolve a fresh-auth proof for `action`. Returns the proof
 // string, FRESH_AUTH_REDIRECT_PENDING (ORCID round-trip started), CANCELLED
 // (password modal dismissed), or MINT_FAILED (password re-auth exhausted).
 // Factor selection: a freshly-returned ORCID proof in the consent-op cache
@@ -142,7 +143,7 @@ async function resolveProof(action, { username }, guard) {
 /**
  * Run a settings critical action with the fresh-auth proof its JWT path
  * requires. `run(proof)` performs the API call (proof is `undefined` for
- * self-custody). Returns an outcome object:
+ * self-custody on every action but `set_password`). Returns an outcome object:
  *
  *   { ok: <apiResult> }       request succeeded
  *   { redirect: true }        ORCID round-trip in flight; abort cleanly
@@ -173,8 +174,10 @@ async function resolveProof(action, { username }, guard) {
  */
 export async function withSettingsFreshAuth(action, ctx, run) {
   // Keychain / self-custody: the per-request signature is itself the fresh
-  // proof, so no body proof is sent. Mirrors broadcastWithFreshAuth's gate.
-  if (ctx.custody !== 'light') {
+  // proof, so no body proof is sent. `set_password` is the exception: its
+  // handler consumes an ORCID proof on every auth path, so a self-custody
+  // session takes the ORCID factor like any other account.
+  if (ctx.custody !== 'light' && action !== 'set_password') {
     return { ok: await run(undefined) };
   }
 

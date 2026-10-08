@@ -36,6 +36,7 @@ import {
   setPassword,
   submitEmail,
   deleteEmail,
+  submitAccreditationMetadata,
   mintSettingsActionProof,
   isRetriable503,
   resumeSignup,
@@ -624,6 +625,83 @@ describe('settings critical-action proof threading', () => {
     expect(JSON.parse(init.body)).toEqual({ confirm: true, fresh_auth_proof: 'proof-3' });
     await deleteEmail(true);
     expect(JSON.parse(fetchSpy.mock.calls[1][1].body)).toEqual({ confirm: true });
+  });
+});
+
+// The backend tries a bearer before signature headers, and a self-custody
+// session has no factor that mints a body proof for these actions on the
+// bearer path, so its requests must go out signed with no Authorization.
+describe('settings critical actions: custody dispatch', () => {
+  let fetchSpy;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      mockJsonResponse(200, { status: 'ok', data: {} }),
+    );
+    signRequest.mockClear();
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+    authStore = null;
+  });
+
+  // The signed path is the one the request goes to: the backend verifies the
+  // signature against the full `/api/...` path it received.
+  function expectSigned(method, path, body) {
+    expect(signRequest).toHaveBeenCalledWith('alice', method, path, body);
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe(path);
+    expect(init.method).toBe(method);
+    expect(init.headers.Authorization).toBeUndefined();
+    expect(init.headers['X-Hive-Signature']).toBe('stub-sig');
+    expect(init.headers['Content-Type']).toBe('application/json');
+    expect(JSON.parse(init.body)).toEqual(body);
+  }
+
+  it('self-custody submitEmail signs the POST and sends no bearer', async () => {
+    authStore = { token: 'jwt-self-1', custody: 'self', username: 'alice' };
+    await submitEmail('e@x.com');
+    expectSigned('POST', '/api/settings/email', { email: 'e@x.com' });
+  });
+
+  it('self-custody deleteEmail signs the DELETE with its confirm body', async () => {
+    authStore = { token: 'jwt-self-1', custody: 'self', username: 'alice' };
+    await deleteEmail(true);
+    expectSigned('DELETE', '/api/settings/email', { confirm: true });
+  });
+
+  it('self-custody submitAccreditationMetadata signs the PATCH', async () => {
+    authStore = { token: 'jwt-self-1', custody: 'self', username: 'alice' };
+    await submitAccreditationMetadata({ full_name: 'Alice A', institution: 'Uni', field: 'Physics' });
+    expectSigned('PATCH', '/api/accreditation/metadata', { full_name: 'Alice A', institution: 'Uni', field: 'Physics' });
+  });
+
+  it('self-custody setPassword stays on the bearer path with its ORCID proof', async () => {
+    // The set-password handler consumes the proof on every auth path, so a
+    // signature would add nothing the proof does not already supply.
+    authStore = { token: 'jwt-self-1', custody: 'self', username: 'alice' };
+    await setPassword('Abcdefgh1x', 'orcid-proof');
+    expect(signRequest).not.toHaveBeenCalled();
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe('/api/settings/set-password');
+    expect(init.headers).toMatchObject({ Authorization: 'Bearer jwt-self-1' });
+    expect(JSON.parse(init.body)).toEqual({ password: 'Abcdefgh1x', fresh_auth_proof: 'orcid-proof' });
+  });
+
+  it('light account sends all three on the bearer path with the proof in the body', async () => {
+    authStore = { token: 'jwt-light-1', custody: 'light', username: 'alice' };
+    await submitEmail('e@x.com', 'p1');
+    await deleteEmail(true, 'p2');
+    await submitAccreditationMetadata({ full_name: 'Alice A', institution: 'Uni', field: 'Physics' }, 'p3');
+    expect(signRequest).not.toHaveBeenCalled();
+    const calls = fetchSpy.mock.calls.map(([url, init]) => [url, init.method, init.headers.Authorization, JSON.parse(init.body)]);
+    expect(calls).toEqual([
+      ['/api/settings/email', 'POST', 'Bearer jwt-light-1', { email: 'e@x.com', fresh_auth_proof: 'p1' }],
+      ['/api/settings/email', 'DELETE', 'Bearer jwt-light-1', { confirm: true, fresh_auth_proof: 'p2' }],
+      ['/api/accreditation/metadata', 'PATCH', 'Bearer jwt-light-1',
+        { full_name: 'Alice A', institution: 'Uni', field: 'Physics', fresh_auth_proof: 'p3' }],
+    ]);
   });
 });
 

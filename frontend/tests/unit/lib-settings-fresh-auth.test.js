@@ -236,6 +236,27 @@ describe('withSettingsFreshAuth', () => {
     expect(mockBeginOrcid).not.toHaveBeenCalled();
   });
 
+  // set-password consumes an ORCID proof on every auth path, a signed request
+  // included, so a self-custody session gets no exemption from the factor.
+  it('self-custody set_password still starts the ORCID round-trip', async () => {
+    const out = await withSettingsFreshAuth('set_password', { custody: 'self', username: 'alice' }, run);
+    expect(out).toEqual({ redirect: true });
+    expect(mockBeginOrcid).toHaveBeenCalledWith('set_password', expect.any(Function));
+    expect(reauthRequest).not.toHaveBeenCalled();
+    expect(mockMintSettingsActionProof).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('self-custody set_password runs with the ORCID proof the round-trip cached', async () => {
+    mockGetCachedConsentOpProof.mockReturnValue('cached-orcid-proof');
+    const out = await withSettingsFreshAuth('set_password', { custody: 'self', username: 'alice' }, run);
+    expect(out).toEqual({ ok: { data: { ok: true } } });
+    expect(mockGetCachedConsentOpProof).toHaveBeenCalledWith('set_password', 'alice', '');
+    expect(run).toHaveBeenCalledWith('cached-orcid-proof');
+    expect(mockBeginOrcid).not.toHaveBeenCalled();
+    expect(mockClearCachedConsentOpProof).toHaveBeenCalled();
+  });
+
   it('light account reuses a cached consent-op proof without prompting', async () => {
     mockGetCachedConsentOpProof.mockReturnValue('cached-proof');
     const out = await withSettingsFreshAuth('change_email', LIGHT, run);

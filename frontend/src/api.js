@@ -766,6 +766,28 @@ export async function searchAccounts(q) {
 
 // ─── Password Settings ──────────────────────────────────────
 
+// Send a settings critical action on the auth path that carries its re-auth. A
+// self-custody session signs the request with Keychain, and the signature is
+// the proof. It sends no bearer: the backend tries a bearer first and would
+// then refuse the request for lacking a body proof. Every other session sends
+// its bearer, with the caller's `fresh_auth_proof` in `body`.
+async function settingsActionRequest(path, method, body) {
+  const auth = Alpine.store('auth');
+  if (auth?.custody === 'self') {
+    const signed = await signRequest(auth.username, method, `${BASE_URL}${path}`, body);
+    return request(path, {
+      method,
+      headers: { 'Content-Type': 'application/json', ...signed.headers },
+      body: signed.body,
+    });
+  }
+  return authenticatedRequest(path, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
 // Mint a single-use fresh-auth proof for a settings critical action via the
 // PASSWORD factor, bound to (<action>, <username>, ''). Used for `change_email`
 // and `delete_account` on accounts that have a password (State A/B). NOT for
@@ -779,9 +801,9 @@ export function mintSettingsActionProof(action, password) {
 
 // Set a password on an account that has none (ORCID-verified signup and
 // recover flows leave `password_hash = NULL`; this lets the user opt
-// into password login later from Settings). On the JWT (light-account) path
-// the backend requires an ORCID-mechanism `fresh_auth_proof` bound to
-// (set_password, <username>, ''); the Keychain path needs none.
+// into password login later from Settings). The backend requires an
+// ORCID-mechanism `fresh_auth_proof` bound to (set_password, <username>, '')
+// on every auth path.
 export function setPassword(password, freshAuthProof) {
   return authenticatedRequest('/settings/set-password', {
     method: 'POST',
@@ -800,15 +822,11 @@ export function setPassword(password, freshAuthProof) {
 // `fresh_auth_proof` bound to (edit_accreditation_metadata, <username>, '');
 // the Keychain (self-custody) path is fresh at the middleware and omits it.
 export function submitAccreditationMetadata(values, freshAuthProof) {
-  return authenticatedRequest('/accreditation/metadata', {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      full_name: values.full_name,
-      institution: values.institution,
-      field: values.field,
-      ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}),
-    }),
+  return settingsActionRequest('/accreditation/metadata', 'PATCH', {
+    full_name: values.full_name,
+    institution: values.institution,
+    field: values.field,
+    ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}),
   });
 }
 
@@ -823,10 +841,9 @@ export function fetchEmailStatus() {
 // `fresh_auth_proof` bound to (change_email, <username>, '') in the body; the
 // Keychain path needs none. `freshAuthProof` is omitted by self-custody callers.
 export function submitEmail(email, freshAuthProof) {
-  return authenticatedRequest('/settings/email', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}) }),
+  return settingsActionRequest('/settings/email', 'POST', {
+    email,
+    ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}),
   });
 }
 
@@ -839,10 +856,9 @@ export function verifyEmailToken(token) {
 // (delete_account, <username>, '') alongside `confirm: true`; the Keychain path
 // needs only `confirm`. `freshAuthProof` is omitted by self-custody callers.
 export function deleteEmail(confirm, freshAuthProof) {
-  return authenticatedRequest('/settings/email', {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ confirm, ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}) }),
+  return settingsActionRequest('/settings/email', 'DELETE', {
+    confirm,
+    ...(freshAuthProof ? { fresh_auth_proof: freshAuthProof } : {}),
   });
 }
 
