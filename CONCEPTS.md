@@ -636,6 +636,48 @@ A teardown clears the departed subject's cached fresh-auth proofs, remembered au
 
 A teardown is narrated to the user exactly once, however many stretches of work it abandons. One teardown can abandon several at once, each carrying its own marker, so the narration is claimed against the teardown itself rather than raised by each abandoned stretch; and a teardown path that already shows a message of its own claims that narration before speaking, so the work it abandoned stays quiet instead of talking over it with vaguer copy. The bound matters because the interface keeps only the most recent few messages: past that, duplicates evict the very narration they duplicate. When subject changes arrive faster than the work they abandon unwinds, one narration covers the run of them rather than one per change: the claim is held against the tab's current subject marker, not against the individual change, so a stretch parked across two changes finds the later one already narrated and stays quiet. The earlier change gets no message of its own, deliberately, since the user has just been told the session changed and a second message about the change before it would only stack.
 
+### Queued Email Change
+
+The `pending_email` overlay on an account row between an email change request and its apply, cancel, eviction or expiry, during which the account's email is unchanged and the new address holds a verify link.
+*Avoid:* pending email, email change in flight.
+
+A queued change is written by the change branch of the settings email route and mailed to the new address only. One proven by the password alone also carries a Password-action Hold and is announced to the current address; one proven by an ORCID proof or on the Keychain path applies when the new address opens its link. A password reset, a recovery and the custody upgrade drop a queued change; a signed-in owner cancels it with the proof the change itself needs. A password-proven request can neither replace nor cancel a queued change that carries no hold.
+
+### Queued Deletion
+
+The state of an account row between a password-proven deletion request and the delete transaction that a sweep runs once its Password-action Hold has ended, unless the deletion is cancelled or dropped first.
+*Avoid:* pending deletion, soft delete.
+
+Only a deletion proven by the password on a row that holds an email is queued; any other accepted proof, and a row with no email, deletes at once. The current address is told, without a link, and the password reset drops the queued deletion along with every session.
+
+### Password-action Hold
+
+The 72 hours a password-proven email change or deletion waits before it applies, during which the current address has been told and can stop it by resetting the password.
+*Avoid:* cooling-off period, waiting period, grace period.
+
+The hold exists because the password is both the login factor and the re-auth factor on password-bearing light accounts, so the fresh-auth gate adds no second factor against a party who knows it. The hold gives the mailbox that factor's role without a mailed cancel link: the veto is the password reset, which already drops queued changes and revokes every session. The hold is fail-open, because an owner must be able to leave a mailbox they are losing; a change proven by an ORCID proof or on the Keychain path carries no hold. Its length covers a request made on a Friday evening and read on Monday morning.
+
+### Settled Address
+
+An account email that has been on the row for at least 30 days, or since the account was finalized, measured by the `email_changed_at` stamp that the settings change apply and both recoveries write.
+*Avoid:* old address, established email, verified-for-long address.
+
+Settled is a recency rule, not a mailbox proof: an address an ORCID-path signup installed without mailing it is settled at finalize. Two rights belong only to a settled address: receiving the Recovery Dispute link, and confirming a password-proven ORCID link. The owner's own actions (reset, change, recovery) are never gated by settling. The window outlasts the Password-action Hold plus an absence, so a party who moved the mailbox regains neither right until the move has gone unnoticed for 30 days.
+
+### Recovery Dispute
+
+The mailed link that lets the holder of an account's settled current email void a staged seed-phrase recovery before it applies.
+*Avoid:* stop link, recovery veto, objection.
+
+Seed-phrase recovery is two-phase: phase 1 stages the swap and mails a confirm link to the new address and, when the current address is settled, a dispute link to it. A dispute before the apply voids the staged swap; a dispute after the apply only records the row as contested. An unsettled current address receives nothing and cannot dispute, so a party who installed an address with the password alone cannot use it to stop the seed-phrase holder's recovery for 30 days. The dispute mail names only the domain of the new address.
+
+### Mailbox-confirmed ORCID Link
+
+A password-proven ORCID link or accreditation that writes nothing and broadcasts nothing until a token mailed to the account's settled current address is presented back from a button.
+*Avoid:* pending ORCID, held link.
+
+It fails closed, unlike the Password-action Hold, because a linked ORCID would be permanent: no eviction writes the `orcid` column and the accredit op that carries it is on chain, so a planted ORCID is prevented rather than undone. A link proven by an ORCID proof, on the Keychain path, or on a row with no email completes in the callback as before. While the current address is unsettled the request is refused before the OAuth round trip.
+
 ## Admin Authority
 
 ### Signer

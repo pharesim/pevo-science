@@ -312,6 +312,44 @@ Submit it as the `fresh_auth_proof` field on a subsequent `POST /api/custody/bro
 
 ---
 
+### Password-proven link and accredit complete from the current mailbox
+
+Decided 2026-10-08 (ARCHITECTURE.md § 6.3 and § 6.4 "Link ORCID"); lands with the mailbox-confirmed-link task, after the task that adds the fresh-auth proof to `/orcid/start` for modes `link` and `accredit`.
+
+When the proof consumed at `/orcid/start` for mode `link` or `accredit` has mechanism `password` and the account's row holds an email:
+
+- `/orcid/start` and `/callback` refuse the request while the current address is unsettled (installed by a settings change or a recovery within the last 30 days): `VALIDATION_ERROR` (422), message `An ORCID can be linked with the account password only once the email address has been on the account for 30 days.`
+- Otherwise `/callback` verifies the ORCID and runs the mode's gates, but writes no `orcid` and broadcasts nothing. It stores a pending record for 24 hours, mails the current address a confirm link (`${APP_URL}/settings/orcid-link?token=...`) naming the ORCID iD and saying that someone who did not request the link should not open it and should reset their password, and answers:
+
+```json
+{
+  "mode": "link",
+  "pending_confirmation": true,
+  "orcid": "0000-0001-2345-6789",
+  "message": "Confirm the link from your email address."
+}
+```
+
+A new request for the same account replaces the pending record. The confirm mail is sent at most 3 times per account per hour. A link proven by an ORCID proof, on the Keychain path, or on a row with no email completes in the callback as documented above.
+
+### POST /api/orcid/link/confirm
+
+Decided 2026-10-08, lands with the mailbox-confirmed-link task. Completes a pending password-proven link or accreditation.
+
+**Auth:** none; the token is the proof. The page that opens the mailed link sends the token only from a button.
+
+**Body:** `{ "token": "<token from the confirm link>" }`
+
+**Behavior:** consumes the pending record once, re-runs the mode's gates and the settled-address check, then performs the broadcast, the binding-cache write and the `accounts.orcid` write exactly as the callback does for that mode.
+
+**Response `data`:** the callback's success body for the mode (`link` or `accredit`).
+
+**Rate limit:** 10 requests per IP per hour, every request counted.
+
+**Errors:**
+- `INVALID_TOKEN` (400): unknown, expired or already used token, one message for all three.
+- The mode's own callback errors (`ORCID_ALREADY_LINKED`, `ORCID_ALREADY_SET`, `PENDING_UNVERIFIED`, the 422 for an unsettled address, the broadcast errors) when a gate refuses at confirm time.
+
 ### Changes to POST /api/auth/signup
 
 When `orcid_token` is provided:

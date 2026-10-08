@@ -352,6 +352,8 @@ Request a password reset email.
 
 Always returns success to prevent email enumeration.
 
+Decided 2026-10-08 (lands with the reset-hardening task): when the row already holds a reset token that has not expired, that token is mailed again and nothing is written, so the link an owner holds stays valid for its full hour however many requests follow for the address. Otherwise a new token is minted as before. The response is the same in both cases.
+
 **Rate limit:** 5 requests per IP per hour.
 
 **Errors:**
@@ -391,7 +393,7 @@ Invalidates all existing sessions for the account.
 
 **Errors:**
 - `INVALID_TOKEN`: token not found, expired, or already used. A token redeems once, so a concurrent second redemption gets this error.
-- `VALIDATION_ERROR` — password does not meet requirements
+- `VALIDATION_ERROR` — password does not meet requirements. Decided 2026-10-08 (lands with the reset-hardening task): also a password that verifies against the account's current one, message `Choose a password that differs from your current one.`; the token is not spent by this refusal.
 - `SERVICE_UNAVAILABLE` (503) — argon2 capacity exhausted or backend draining. See [common.md](common.md).
 
 ---
@@ -440,7 +442,7 @@ For ORCID recovery, obtain `orcid_token` via `POST /api/orcid/start` (mode: `sig
 }
 ```
 
-Phase 1 verifies the memo key, then stages the requested swap (new email plus the pre-hashed new password) in a server-side staging row. It mails a verification link to the **new** email (proof of control, which gates phase 2) and a dispute link to the **old** email so the prior owner can void the swap. The `message` names a masked form of the new email. The swap applies only when the new mailbox confirms via `POST /api/auth/recover/verify`. A repeated phase-1 request for the same username supersedes any earlier un-confirmed staging row.
+Phase 1 verifies the memo key, then stages the requested swap (new email plus the pre-hashed new password) in a server-side staging row. It mails a verification link to the **new** email (proof of control, which gates phase 2) and a dispute link to the **old** email so the prior owner can void the swap. Decided 2026-10-08 (lands with the settled-address task; ARCHITECTURE.md § 6.3): the dispute link is mailed only when the old address is settled, that is, when it has been on the account for 30 days or since the account was finalized; an address installed more recently receives nothing and cannot dispute the swap. The response is the same either way. The `message` names a masked form of the new email. The swap applies only when the new mailbox confirms via `POST /api/auth/recover/verify`. A repeated phase-1 request for the same username supersedes any earlier un-confirmed staging row.
 
 **ORCID path, success (200):** applies immediately. Updates email, sets or drops the password per `new_password`, invalidates all existing sessions, and returns a new JWT (same envelope as `POST /api/auth/login`).
 
@@ -502,7 +504,7 @@ The verify token expires 24 hours after phase 1.
 
 ### POST /api/auth/recover/dispute
 
-Lets the holder of the **old** email void a staged memo-key recovery. The dispute link is mailed to the old address in phase 1. Clicking it within the dispute window stops a not-yet-confirmed swap from ever applying.
+Lets the holder of the **old** email void a staged memo-key recovery. The dispute link is mailed to the old address in phase 1 (decided 2026-10-08, landing with the settled-address task: only when that address is settled, see `POST /api/auth/recover`). Clicking it within the dispute window stops a not-yet-confirmed swap from ever applying.
 
 **Body:**
 
