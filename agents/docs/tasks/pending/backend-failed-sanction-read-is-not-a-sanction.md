@@ -213,3 +213,55 @@ stay true; nothing for `/ce-compound-refresh`. No new entry: the sentinel lesson
   follows a 503 at the sanction read, where no broadcast was attempted; the per-token limiter
   refunds 503.
 - `api-contracts/orcid.md`, callback: the 503's retry is a new ORCID flow.
+
+## Architect re-review (2026-10-09) — HELD PENDING FIXES:
+
+`/ce-code-review` of 4ccf730e, 74c796e8 and f227f2e5 (eight reviewers; 13 of 14 mutants killed,
+the survivor is the known same-block `>=` gap). Triaged with the user 2026-10-09.
+
+1. **The per-IP signup limiters refund 503 too.** `confirmLimiter` and `linkLimiter`
+   (`backend/src/routes/signup-verify.ts`, 10 per hour per IP) count the sanction-read 503. A user
+   retrying through a HAF outage from one IP, or several signups behind one campus NAT, reach the
+   cap; each counted request re-arms the hour, so the 429 lasts past `STUCK_RECOVERY_WINDOW`,
+   after which `/confirm` and `/link` answer 400 and the finalized account stays unaccredited.
+   Decided with the user 2026-10-09, replacing "the per-IP limiters keep counting": both refund
+   503, as `confirmTokenLimiter` and `linkTokenLimiter` do. Add one spec per route: from one IP,
+   more than ten sanction-read 503s, then the retry once HAF answers issues the session. Architect
+   plant test on `/confirm` at f227f2e5: after ten 503s from one IP, the retry answered 429 with
+   `Retry-After` >= 3590; with `refundStatusCodes: [503]` on both IP limiters it answered 200 with
+   a session. Specs in one file share the per-IP bucket unless they set `X-Forwarded-For`, as
+   `signup-verify-resume-argon-error-translation.test.ts` does. Keep the limiter comments true
+   against the resulting code (intent only: write them against the code). Run `tests/eslint`
+   alone.
+2. **`backend/tests/sanction-read-real-postgres.test.ts` header, clause (a).** Delete "the
+   function's SQL runs verbatim and". The wrapper prepends a `synthetic_cj` CTE and replaces the
+   custom_json view name before forwarding the query, so the text does not run verbatim; the
+   sentence left ("... forwards the query to a real Postgres on APP_DATABASE_URL, so only the op
+   rows are synthetic.") is true. Run `tests/eslint` alone.
+
+Dispositions of the rest of the review (no action on this task):
+- Dismissed: the `wot-broadcast-timeout.test.ts` header listing `readSanctionState` as mocked
+  (true: the module export is mocked, and one spec points the mock at the real function); no
+  `assertNever` at the five callers; the per-token refund invariant held only by its comment; an
+  outage longer than `STUCK_RECOVERY_WINDOW` (the same trap as after a 502/504 on base); the
+  surviving `>=` mutant (owned by `backend-accreditation-release-op`); no live-HAF sanctioned case.
+- Filed: `ui-sanction-read-503-copy-and-retry` (the three SPA spots this signal block names).
+- Noted on other tasks: `architect-haf-outage-sweep` (the 500 when `findAccreditedAccountWithOrcid`
+  throws at signup finalize; custody's broadcast with HAF unconfigured);
+  `backend-password-proven-orcid-link-completes-from-current-mailbox` (its sanction gate branches
+  on all three `SanctionState` values).
+
+### [TODO Architect] at archive, additions from the 2026-10-09 review
+
+- `api-contracts/accreditation.md`, `/verify`: the `ACCREDITATION_GATE_UNAVAILABLE` entry's "both
+  retriable 503 branches on /verify share one floor" and its contrast with `SERVICE_UNAVAILABLE`;
+  `SERVICE_UNAVAILABLE` on `/verify` now has three causes (Redis counter, failed sanction read, no
+  HAF pool).
+- `api-contracts/common.md`: the `details.retriable` emitter list gains the metadata PATCH,
+  `/confirm`, `/link` and the ORCID callback; the 503 row's retriable-HAF class.
+- `api-contracts/auth.md`: the per-auth_token and per-IP limiters on `/confirm` and `/link` refund
+  503 (no line documents the per-token limiter yet); the 403 `ACCREDITATION_SANCTIONED` on both
+  routes is undocumented (pre-existing). `api-contracts/orcid.md`: the same 403 on the callback.
+- `CONCEPTS.md` "HAF SQL": "fail closed or return empty" contradicts the Data Source Policy.
+- Learnings checkpoint: `/ce-compound` on a status refunded at one limiter layer while a sibling
+  limiter on the same route still counts it (no entry covers it).
