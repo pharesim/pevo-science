@@ -1,250 +1,250 @@
-## Review, comment and vouch surfaces navigate a passwordless account away from work they do not keep (archived 2026-10-09): one P3 folded into an open task, two follow-ups filed
+## A citation merge saves at once, and the publish choice card's Discard applies the prefill it held back (archived 2026-10-09): clean re-review of the hold fix, one follow-up filed, § 8 updated, two signal items dismissed
 
 ### Architect archive note (2026-10-09)
 
-- **Review:** `/ce-code-review` full path on `1a6d3ea9..82dbb128`, branch-remote over a synthetic head holding only the task's 38 frontend files. Reviewers: correctness, security, adversarial (in-process, no cross-model peer), julik-frontend-races, testing, project-standards, maintainability, learnings. One finding, P3, validator confirmed. The orchestrator ran the full frontend unit suite on a `git archive` of `82dbb128`: 104 files, 2459 tests, exit 0, matching the signal. The testing reviewer killed 12 of 12 mutants (the 11 briefed plus one of its own); each mutant copy was diffed against the probe base and matched its brief. AC 1-9 met. Playwright not run.
-- **Triage (user, 2026-10-09, "as recommended"):**
-  - Two raw-result tally comments the new `acquire` closure made incomplete (the `ensureSessionWindow` guard comment, `acquireSessionProof`'s "Every consumer refuses either"): folded into `ui-fresh-auth-and-upload-comments-that-overclaim` (`34d00ff1`).
-  - A stash-less session-auth navigation removes a waiting record: dismissed. It is the Scope's one-slot bridge, written at the navigating moment, not draft persistence.
-  - The callee-graph learnings entry claimed the redirect helper "unwinds the flow keys on every failing exit": narrowed in place (`a23cce7a`).
-  - A callback with no usable ORCID code returns before reading the mode marker, so "Try again" goes to `/`: filed `ui-orcid-callback-missing-params-try-again-goes-home` (normal).
-  - Signal residual 1 (restored reply lost on a comment-tree re-render): dismissed, typed replies behave the same.
-  - Signal residual 2 (review ops built from live router getters after the confirm): dismissed, no in-app link goes from one `/review/` page to another.
-  - Signal residual 3 (same-route navigation keeps the page instance): confirmed from the code and filed `ui-same-route-navigation-keeps-the-old-page` (normal).
-  - Signal residual 4 (the authorship ORCID navigation carries no stash): dismissed, unsubmitted text on a navigation the user chose; the Scope bars draft persistence.
-  - Signal residual 5 (architect docs): ARCHITECTURE § 6.4.1 and § 8 and CONCEPTS "Acquire-before-commit" updated (`f7cde410`); § 6.4 rule 3 checked and left, it describes the assumed-factor fallback, not every source of `FRESH_AUTH_REAUTH_REQUIRED`.
-- **Learnings checkpoint:** `/ce-compound-refresh` on `fresh-auth-guard-coverage-must-sweep-the-callee-graph-2026-09-01.md` (Update, `a23cce7a`). The other three entries refreshed in `c191efda` and the new `alpine-nested-nexttick-runs-before-x-show-reveals-wait-two-frames.md` were checked against `82dbb128` and hold. No new `/ce-compound`: the per-flight stash rule is carried by the `fresh-auth.js` comments and CONCEPTS "Navigation Stash".
+- **Review:** `/ce-code-review` full path on the hold fixes (`2ced4011..23b67acb`: e8ee1de0, 23b67acb), branch-remote. Reviewers: correctness, project-standards, testing, julik-frontend-races, adversarial (in-process), learnings-researcher. Zero findings at any severity. All five hold requirements met. The testing lens re-measured the signal's seven-row mutant table and each red set matched; adversarial probes T2, T4 and T5 are red at 2ced4011 and green at 23b67acb.
+- **Triage (user, 2026-10-09, "approved"):**
+  - In-flight-submit cite loss (open since the 2026-10-05 hold): filed `ui-composer-cite-from-another-tab-during-submit-is-lost` (normal). The merge is held while a submit is in flight; a landed submit leaves the collection for the next form.
+  - Signal "For the architect" item 1 (a late accreditation moves the author baselines without writing, so an author-only draft stored earlier stays): dismissed. It costs a "draft restored" card over a form equal to a fresh load, with no typed text lost; the obvious fix also runs on a cross-tab session restore and can delete the other tab's newer draft.
+  - Item 2 (ARCHITECTURE § 8 drift): § 8 updated in place (`501caaf4`): the author-prefill baseline rule, "no user work yet" for the silent restore at adoption, the takeover's reset of both author baselines.
+  - Item 3 (an author value typed equal to the accreditation after the prefill ran counts as work): dismissed. The baseline moves only when the prefill is applied, never on typing; the restore's own save on the next load deletes the leftover draft.
+- **Learnings checkpoint:** no `solutions/` entry names `_prefillEmptyAuthorFields`, `_readoptAccount`, `_onAccreditationChange`, `draftHasText` or `_pollingGeneration`, and the at-value rule lives in the docblocks and § 8. Nothing qualified for a new or refreshed entry.
 
 **Owner:** ui
-**Created:** 2026-09-21
+**Created:** 2026-10-05
 **Priority:** normal
+
+Two gaps in the composer drafts (`agents/docs/ARCHITECTURE.md` § 8, "Composer Drafts"), both older than the
+draft binding and both found while reviewing it. Verify each against the code first; neither reproduction below
+was run by the architect.
 
 ## Why
 
-A passwordless (ORCID-only, ARCHITECTURE § 6.1 state C) light account acquires its
-re-auth window by full-page navigation. The publish and edit pages were taught to
-handle that: acquisition happens before anything costly, the text fields are
-drafted, and no gate navigates over a held file. Four other call sites were left as
-they were. Each calls `broadcastWithFreshAuth` with the permissive default, at
-submit time, on a surface that keeps no draft:
-
-- `frontend/src/pages/review.js`, the review submit: `reviewBody`, the four
-  `ratings`, and `isAnonymous`.
-- `frontend/src/components/comment-composer.js`: the comment `body`, bound to a
-  parent.
-- `frontend/src/components/vouch-section.js`, `handleVouch` and `handleRetract`:
-  whatever each composes, the retraction reason at minimum.
-
-So the first write of a window on any of them sends a passwordless account to ORCID
-and returns it to the same page (the redirect records `window.location.pathname` and
-the callback navigates back to it) with the composed work gone. The review page is
-the worst case on the platform: a full structured review, which is the thing PEvO
-exists to collect, is lost to a click on Submit. Every later action in the same
-window is free, which is why this reads as intermittent.
-
-Known since the first review round of the light-account re-auth window work, carried
-as a residual through six rounds, and unchanged by any of them. Filed now because
-with the re-auth window task's confirm affordance landing, publish and edit become
-the only surfaces that handle this, and the gap stops being defensible as "not yet".
-
-The two `vote-buttons.js` call sites are the same shape and are NOT in scope: a vote
-holds no composed work, so the round-trip costs a click.
+1. **A merge leaves the collection's entries in memory only.** `_mergeCitationCollection` (both pages) appends
+   the entries of `pevo-citation-collection` to `citations` and removes the collection from storage. The entries
+   then reach storage only through the 2 s draft debounce, and `destroy()` clears `_draftTimer` without writing.
+   An instance destroyed inside that window (a navigation away, a remount) loses them for good, and a closed or
+   reloaded tab loses them the same way. The merge runs from `_onEditorsMounted`, `restorePendingDraft`,
+   `discardPendingDraft` and the storage listener on /publish, and the matching sites on /edit, so the window
+   opens on every load that finds a collection and on every cite made in another tab. The restored card's
+   Discard already writes at once after re-appending the merged entries; the other sites do not. Reported by the
+   correctness review of the draft-binding task; the remove-then-debounce shape is already in `2b1603ec`.
+2. **The /publish choice card's Discard leaves the author fields empty after an email sign-in.** An email
+   sign-in stores no accreditation (`sign-in-modal.js` passes `accreditation: null`), and the store's polling
+   fills it in later. When that happens while the adoption choice card stands, `_onAccreditationChange` returns
+   (the card holds the form as it is), and `discardPendingDraft` applies no prefill, so the empty author fields
+   stay empty until the accreditation changes again. A direct adoption from signed out reaches the same state.
+   Reported by the implementer's self-verification of the draft-binding task (2026-10-05).
 
 ## Scope
 
-Keep the composed work across the round-trip. Recommended default, implement unless
-you see a reason to deviate, in which case flag before landing:
-
-**Stash immediately before a navigating acquisition, restore on return.** The
-helper is the only thing that knows a navigation is about to happen, so it owns the
-moment: a `broadcastWithFreshAuth` option (threaded to the acquisition the way
-`allowRedirect` is) that the helper invokes right before it assigns the ORCID
-navigation. The call site supplies what to stash; it does not decide when. This is
-the same seam the re-auth window task's held item on flushing the draft before a
-navigating acquisition needs, so build it once: whichever task lands second reuses
-the first one's seam. Writing only at that moment is also what keeps stale stashes
-from accumulating, since a dismissed password modal or an ordinary failure never
-writes one.
-
-Constraints:
-
-- **One fixed storage key, one slot.** Only one navigation can be in flight per
-  tab. A fixed `sessionStorage` key holding `{ surface, target, subject, payload,
-  savedAt }` fits the existing scrub, which loops a fixed key list. Register the key
-  in `SUBJECT_BOUND_STORAGE_KEYS` so `auth.disconnect()` and a subject change drop
-  it with everything else subject-bound. A review body, possibly one the user
-  marked anonymous, must never be restored into a tab that now represents someone
-  else.
-- **Restore is bound three ways.** Same surface, same target (paper author and
-  permlink; for a comment also the parent), same subject. Any mismatch discards the
-  stash silently instead of restoring it. Consume on read: a restore removes the
-  slot.
-- **Clear on success.** A broadcast that succeeds leaves nothing behind.
-- **`sessionStorage`, not `localStorage`.** This is a bridge across one round-trip
-  in one tab, not a draft feature. Do not grow it into general draft persistence
-  for these surfaces; that is a separate product decision.
-- **A failed stash write must not navigate silently.** Storage can be blocked or
-  full. If the write fails, the navigation would lose the work, so do not fire it
-  unasked. The work stays on screen, and the next constraint governs what the user
-  is offered.
-- **Every refusal needs a way through.** If any path here ends in a refusal for a
-  passwordless account, the same change must give that account an in-page next
-  step, because nothing else in the tab can open a window for it. Reuse the
-  cost-stating confirm from the re-auth window task rather than inventing a second
-  one: the user is told the work will not survive, and on confirm the navigation
-  proceeds. This constraint exists because a refusal prescribed without one, on
-  that task, produced a dead end. If that task's confirm has not landed at pickup,
-  sequence this task after it rather than building a parallel affordance.
-- **The password factor is untouched.** It prompts inline; nothing navigates, so
-  nothing is stashed.
-- **No per-surface re-auth logic.** Call sites pass what to stash and handle
-  `FRESH_AUTH_REDIRECT_PENDING` as the clean-abort sentinel, as they do today.
-- Check the review page's anonymous-submit path for the same class. If it reaches a
-  navigating acquisition by another route, it is in scope; if it does not, say so
-  in the signal.
-
-Alternative considered and not preferred: acquiring when the user starts composing.
-A full-page navigation fired by focusing a text area is more surprising than the
-loss it prevents, and it spends a round-trip on every abandoned comment.
+1. On both pages, the entries a merge takes out of the collection are in storage, under the captured key, by
+   the time the merge returns, at every merge site. One candidate is a `_writeDraft()` at the end of
+   `_mergeCitationCollection`; it was not plant-tested. Check what a cross-tab merge does on a landed instance:
+   `_writeDraft` refuses once landed, so a merge there still removes the collection with nothing written.
+2. On /publish, the choice card's Discard applies the accreditation prefill to the author fields the form
+   leaves empty, with the baseline moving with them as `_prefillEmptyAuthorFields` already does, so the prefill
+   alone drafts nothing. One candidate is `_prefillEmptyAuthorFields()` in `discardPendingDraft` after
+   `_clearDraftChoice()`; it was not plant-tested.
 
 ## Acceptance criteria
 
-1. A passwordless account that writes a review (body, ratings, anonymous flag),
-   submits with no window open, and returns from ORCID finds all of it restored and
-   submits successfully inside the new window.
-2. The same for a comment, restored into the composer for the same parent and no
-   other.
-3. The same for the vouch and retract handlers, for whatever each composes.
-4. A stash is never restored on a different paper, a different parent, or under a
-   different subject, and `auth.disconnect()` removes it.
-5. A successful broadcast, and a consumed restore, leave the slot empty.
-6. A failed stash write does not navigate and does not strand the user: the work
-   stays on screen and the account has an in-page way to proceed.
-7. A password-factor account sees no behavior change on any of the four call sites.
-8. Unit coverage per call site, each assertion probed by reverting its own site
-   (four sites, and the two vouch handlers do not mask each other). Cover: stash
-   written only on the navigating path, restore on return, the three binding
-   mismatches, clear on success, the failed-write path.
-9. New comments cite no task slug, round number, or line number (root `CLAUDE.md`
-   "Comment anchors").
+1. A merge followed at once by the instance's `destroy()` leaves the merged entries in the stored draft, on
+   both pages, for a merge at load and for a merge from the storage listener.
+2. On /publish: type while signed out, sign in to an account with a stored draft and no accreditation yet, let
+   the accreditation arrive while the choice card stands, pick Discard. The empty author fields show the
+   accreditation's name and affiliation, and with nothing else typed no draft holds them.
+3. Each fix has a pin in `frontend/tests/unit/composer-drafts-real-editors.test.js` that goes red when its own
+   site is reverted; list probe and spec in the signal block.
+4. New comments follow root `CLAUDE.md` "Comment anchors".
 
-## [BLOCKED by Architect] (2026-09-22) — sequenced behind the re-auth window confirm, and AC 3 is unreachable
+## UI implementation signal (2026-10-05, commits 642db679, bdae812c, f9f661a5)
 
-Picked up 2026-09-22. Two premises in this file do not hold against main. Both
-were checked by independent readers, and each verdict survived an adversarial
-refuter that re-read the cited files rather than trusting the evidence.
+**Scope 1 / AC1: a merge drafts what it adds at once, on both pages.** `_mergeCitationCollection`
+(publish.js, edit.js) writes the draft before it removes the collection, and only when the merge
+appended an entry (`_appendMissingCitations` now returns whether it did). Every merge site goes
+through that function, so the write covers them all: on /publish the storage listener,
+`_adoptAccount`, `_onEditorsMounted`, `restorePendingDraft` and `discardPendingDraft`; on /edit the
+storage listener, `_onEditorsMounted`, `restorePendingDraft` and `discardPendingDraft`. The merge's
+guard is now the same list as `_writeDraft`'s refusals (landed, no key, no baseline, a standing
+choice card), so nothing it adds goes unstored. **The landed instance, which Scope 1 asked about:**
+a cross-tab merge there used to append to a finished form and remove the collection with nothing
+written. The merge now refuses once landed, and the cite stays in the collection for the next form.
+On /edit the `!this._draftKey` term is new. No /edit state has a baseline without a key (the form's
+x-if needs `isAuthorized`, which is what sets the key), so it only mirrors `_writeDraft` and has no
+pin.
 
-### 1. Sequencing: the confirm this task is told to reuse has not landed
+**Scope 2 / AC2.** `discardPendingDraft` runs `_prefillEmptyAuthorFields()` right after
+`_clearDraftChoice()`, before the stored draft is removed and the form is written. The pin reads AC2's
+last clause as "the prefill alone is not work": after Discard the draft holds the typed title with the
+prefilled fields, and once the typed title is cleared, `drafts()` is `{}`.
 
-The Scope constraint "Every refusal needs a way through" says to reuse the
-cost-stating confirm from `ui-light-account-reauth-window`, and: "If that
-task's confirm has not landed at pickup, sequence this task after it rather
-than building a parallel affordance."
+**Added after my own verification pass, by the user's triage (2026-10-05):**
+- bdae812c. The first version (642db679) wrote on every merge, including one that added nothing
+  because every entry was already cited. In a second tab of the same account, that write put an
+  unchanged form over the other tab's stored draft on /publish, and on /edit (form at baseline) it
+  removed that draft. The parent commit wrote nothing there. The merge now writes only when it
+  appended something. The merge describe's name also no longer claims the write-before-remove
+  order: that order only matters on a write that throws, and no test pins it.
+- f9f661a5, outside this task's Scope. The choice card's **Restore** had the same baseline gap as
+  Discard. `_applyDraft` filled the draft's empty author fields from the accreditation without moving
+  the baseline. So after an accreditation arrived under the card, or after an author name was typed
+  before sign-in, clearing the restored text stored a draft holding only the author fields, and the
+  next load restored it over an empty form. `_applyDraft` now sets the draft's author fields and runs
+  `_prefillEmptyAuthorFields()`, the one prefill path that moves the baseline.
 
-It has not landed. That task sits in `tasks/pending/` under its round-6 hold,
-whose item 1 is the prescription for exactly that confirm. On main:
+**AC3, probes.** Run in scratchpad copies of `git archive <sha> frontend`, never in the checkout. Each
+mutant was applied by an exactly-once string replace, and each run is
+`tests/unit/composer-drafts-real-editors.test.js`. Final round at f9f661a5 (unmutated base 60/60):
 
-- `publish.js`'s `_windowReady` is still the bare
-  `freshAuthWindowReady({ allowRedirect: !this.holdsAttachedFiles, ...opts })`
-  with no branch on the refusal, and every gate treats `false` as a terminal
-  abort. `edit.js`'s wrapper is the same shape, and that page references
-  `broadcastConfirm` nowhere at all.
-- `FRESH_AUTH_REAUTH_REQUIRED` still dispatches to a toast only
-  (`WINDOW_OUTCOME_TOASTS` -> `common.reauthRequired`). No consumer re-enters
-  acquisition on that outcome, and the literal `allowRedirect: true` appears at
-  no call site in `frontend/src`; every explicit pass is `false` or the
-  `!holdsAttachedFiles` predicate.
-- Round-6 item 2's revert target (the PDF re-pick carve-out in
-  `handlePdfChange`, and the sentence describing it in `_windowReady`'s
-  docblock) is still present verbatim. The hold states items 1 to 3 are one
-  fix, so the survival of item 2's target is independent structural proof that
-  item 1 did not land.
-- `en.json` holds no copy naming a navigation cost for this class. The only
-  leaving-cost string in the bundle is `upgrade.navigationGuardConfirm`, a
-  `window.confirm` in the settings upgrade guard, on a different surface with a
-  different trigger.
+| Mutant | Red, and nothing else |
+|---|---|
+| publish merge without the write | "on the publish page, for a merge at load", "... for a merge from another tab" |
+| edit merge without the write | "on the edit page, for a merge at load", "... for a merge from another tab" |
+| publish merge guard without `this._landed` | "a landed publish page leaves a cite from another tab in the collection" |
+| edit merge guard without `this._landed` | "a landed edit page leaves a cite from another tab in the collection" |
+| publish Discard without the prefill call | "the choice card's Discard gives the empty author fields the prefill ..." (at `authorName` '' instead of 'Eve E') |
+| publish Discard prefilling via `_applyAccreditationPrefill` (no baseline move) | the same Discard test, at its final `drafts()` `{}` |
+| publish merge writing unconditionally | "on the publish page, a cite the form already holds writes nothing over a draft another tab stored" |
+| edit merge writing unconditionally | "on the edit page, a cite the paper already holds writes nothing over a draft another tab stored" |
+| publish `_applyDraft` back to its old prefill | "the choice card's Restore moves the baseline with the prefill ..." |
 
-The five existing `broadcastConfirm` call sites (`publish.js`, `review.js`,
-`comment-composer.js`, and two in `vote-buttons.js`) are all
-intent-to-broadcast dialogs placed after a successful gate, never on a refusal,
-and none states a cost of leaving.
+Two mutants survive, as expected: dropping /edit's `!this._draftKey` term (unreachable, see the AC1
+paragraph), and moving the write after the collection's removal.
 
-Per the user's triage on 2026-09-22: the re-auth window task's round-6 fixes go
-first, and this task picks up afterwards, reusing both that task's confirm and
-its pre-navigation flush seam.
+**Test note.** The merge pins leave the page with `leaveAtOnce`, which lets the merge's save arm
+before navigating and asserts that `destroy()` cleared it. Alpine's `$watch` callback runs in a
+microtask after the effect flush. A navigation in the same tick as the merge therefore lets the
+callback arm a save on the already-destroyed instance, and that save fired 2 s later inside a later
+test. A verification lens checked every remount and navigate path and found none in the real app that
+does a watched mutation and an instance replacement in the same tick.
 
-### 2. AC 3 is unreachable: a light account cannot reach either vouch handler
+**For the architect to triage. Not built, by the user's decision (2026-10-05).** A cite from another
+tab while a submit is in flight is merged and drafted but left out of the broadcast, and the landing
+then removes it with the draft. On /publish the metadata reads `this.citations` after the uploads;
+/edit copies them before the first await. The parent commit loses the cite the same way. A fix needs a
+design call: hold the merge while `isSubmitting`, and merge again when the submit settles without
+landing. On /publish, a cite made during the uploads would then wait for the next form instead of
+riding this broadcast.
 
-`vouch-section.js`'s `canVouch` and `canRetract` both carry
-`!this.isLightAccount`, and `profile.js` gates both forms behind
-`<template x-if>` on those getters, so for `custody === 'light'` the buttons
-are not in the DOM; that branch renders `wot.keychainRequiredToVouch` instead.
-`broadcastWithFreshAuth` acquires a window only for `custody === 'light'` and
-otherwise returns `broadcastOps` before any acquisition. So neither handler can
-fire a navigating acquisition, AC 3 cannot be demonstrated, and AC 8's probe
-("the two vouch handlers do not mask each other") has no real path to probe
-against. `components-vouch-section.test.js` pins the gate with two specs, so it
-is a deliberate invariant rather than an accident.
+**Verification.** All three SHAs were checked as ancestors of main. The full frontend unit suite at
+f9f661a5 passes: 91 files, 2135 tests, exit 0. The three composer suites (real-editors, pages-publish,
+pages-edit) pass 288/288. The verification workflow ran six lenses (merge sites, landed guard, Discard
+prefill, tests and comments, post-destroy arming, completeness), each finding checked by a refuter:
+7 confirmed, 1 refuted (an ARCHITECTURE § 8 sentence that was already incomplete before this work,
+dismissed). Simplify was skipped because the code change is under the 30-line threshold. Code review
+is the architect's at intake.
 
-Reachability was attacked from both ends and holds. `profile.js` is the only
-mount of `vouchSection` repo-wide. The gates are `x-if` (node removed), not
-`x-show` or `:disabled`; the `:disabled` on the buttons is only a re-entry
-guard. The page carries no keydown, keypress or `@submit` handlers, and the
-retract confirm block is a div, not a form, so there is no implicit Enter
-submit. The `comment-posted` event bus reaches no vouch handler. On the
-custody side: `loginFromResponse` assigns custody BEFORE `isConnected`, and
-`_restoreSession` assigns both in one synchronous block, so no first-paint
-window exists; the gate, `broadcastWithFreshAuth` and `broadcastOps` all read
-the identical `custody === 'light'` test, so a store that under-reports custody
-sends all three down the non-light branch together and nothing navigates.
+## Architect re-review (2026-10-05) — HELD PENDING FIXES:
 
-**What is needed from the architect:** a product decision on whether a light
-account should be able to vouch at all. Web of Trust vouching being
-Keychain-only may be deliberate, or it may predate light accounts being able to
-broadcast. The answer decides whether this task covers two surfaces or four:
+Reviewed 642db679, bdae812c and f9f661a5 with /ce-code-review (correctness, adversarial, testing, frontend
+races, project standards, learnings, then an independent validator). Scope 1, Scope 2, AC1, AC2 and AC4 are
+met. For AC3 the testing reviewer re-planted the nine mutants in the signal block, and each went red on the
+test the table names. One item:
 
-- if the gate stays, drop the two vouch handlers from Scope, from AC 3 and from
-  AC 8, and this task covers `review.js` and `comment-composer.js` only;
-- if the gate is the bug, lifting it is its own task and this one sequences
-  after that one, with AC 3 intact.
+1. **Restoring a draft that already holds the accreditation's author values drafts the prefill as work
+   (publish.js, `_applyDraft` and `_prefillEmptyAuthorFields`).** f9f661a5 moves the baseline only for the
+   author fields the prefill fills, and `_applyAccreditationPrefill` fills only empty fields. A draft an
+   accredited session stored normally holds the prefilled name and affiliation, so a restored author field
+   the prefill did not fill keeps the baseline taken before the accreditation was known (`''`). Clearing the
+   restored text then stores a draft whose only text is the author fields, and the next /publish load
+   restores it with the "draft restored" card over an empty form. Reproduced in copies of f9f661a5:
+   (a) choice-card Restore after an email sign-in, the accreditation arriving while the card stands;
+   (b) silent restore after an email sign-in, the accreditation arriving after the restore; (c) Restore
+   after a name was typed before a Keychain sign-in. The user approved the assumption the fix rests on: an
+   author value equal to the drafting account's accreditation is not user work, since a fresh signed-in load
+   shows the same value.
+   - Required: once the accreditation is known, an author field whose value equals the accreditation's has
+     its baseline at that value, at the choice card's Restore, at the silent restore, and when the
+     accreditation arrives after either. One candidate, probe-checked in review (composer-drafts-real-editors
+     and pages-publish, 162/162): in `_prefillEmptyAuthorFields`, after the fill loop, also set the baseline
+     of an author field that already equals the accreditation's value, and keep `_prefilledFields` fill-only
+     so `_readoptAccount` still empties only what the prefill filled.
+   - Pins in `frontend/tests/unit/composer-drafts-real-editors.test.js`, each red with the fix reverted:
+     (a) the Restore test's shape with a stored draft holding authorName 'Eve E' and authorAffiliation
+     'Uni E'; (b) the silent restore after an email sign-in with that draft, the accreditation arriving after
+     the restore. In both, once the restored text is cleared, `drafts()` is `{}`.
+   - The `_applyDraft` and `_prefillEmptyAuthorFields` docblocks must be true of the new code. Add only the
+     text the fix needs (root CLAUDE.md "Comment anchors").
 
-### Settled while here, so it need not be re-derived
+Dismissed at triage (no action): the testing reviewer's unpinned silent-restore call to `_applyDraft`. Wherever
+the silent restore runs with the accreditation known, an earlier prefill (at init, or in `_adoptAccount`) has
+already set each empty author field's baseline to the accreditation's value, so that call's baseline move
+changes nothing there and no pin can go red on it. Also dismissed: a localStorage quota error in the merge's
+write, which throws before the collection is removed, so the cites stay in it.
 
-The Scope bullet asking about the review page's anonymous-submit path: it does
-NOT reach a navigating acquisition, so it is out of scope. `submitAnonymousReview`
-is a plain `authenticatedRequest` POST to `/reviews/anonymous`; the shared
-request helper has no 401 interceptor, no retry gate and no redirect, nothing
-monkey-patches `fetch`, and the backend route carries no fresh-auth
-requirement. The only full-page ORCID navigation reachable from a broadcast is
-the one in `beginOrcidFreshAuthRedirect`, and the anonymous arm never reaches
-it. The stash must still carry `isAnonymous` per Scope, but the anonymous path
-itself never triggers a write.
+Architect-side, not part of this hold: the signal block's in-flight-submit cite loss is still open with the
+user (file a `ui-` task or dismiss).
 
-### Three implementation findings worth keeping
+## UI implementation signal, re-review round (2026-10-09, commits e8ee1de0, 23b67acb)
 
-- **The write has exactly one safe home:** between the redirect-host allowlist
-  check and the `window.location.href` assignment in
-  `beginOrcidFreshAuthRedirect`, with nothing awaited in between. Every earlier
-  position leaves a stash behind on an exit that does not navigate (a
-  `startOrcid` throw, the stale-flight cancel, an invalid redirect URL), and
-  the stale-flight cancel is the one exit that deliberately must not clean up
-  its own flow keys. A failed write must also unwind those flow keys before it
-  refuses, or the tab keeps a mode marker with no navigation behind it.
-- **The coalescing hazard runs the opposite way from the Scope note.** The
-  sharp case is a callback-LESS caller installing the flight and a
-  callback-bearing one joining: a vote button (out of scope, so no callback)
-  installs the permissive flight, a comment submit joins it within the
-  `startOrcid` round-trip, and the navigation fires with no stash written at
-  all. Any design that runs only the installer's callback leaves the bug intact
-  and makes it click-order dependent.
-- **`broadcastWithFreshAuth` acquires TWICE**, at its entry and again on the
-  remintable-401 retry. Threading the option into only the first reproduces the
-  bug on every closed-window 401, which is the case these surfaces meet most
-  often.
+**Hold item 1 (e8ee1de0).** `_prefillEmptyAuthorFields` fills the empty author fields as before, then moves
+the baseline of every author field that holds the prefill's value (`authorName === acc.name`,
+`authorAffiliation === acc.institution`), filled or not. `_prefilledFields` stays fill-only. One difference
+from the hold's candidate form: the fill loop no longer moves the baseline itself, because a filled field
+holds the prefill's value and the two at-value lines move it. The `_prefillEmptyAuthorFields` and `_applyDraft`
+docblocks now say so. The move covers the choice card's Restore and the silent restore (`_applyDraft`), and an
+accreditation that arrives after either (`_onAccreditationChange`).
 
-### Architect note (2026-09-30) — the confirm has landed, and one more site shares the draft-key exposure
+Pins in `composer-drafts-real-editors.test.js`, both ending on `drafts()` `{}` once the restored title is cleared:
+(a) "the choice card's Restore of a draft whose author fields hold the accreditation's values ...", the hold's
+Restore shape with a draft holding 'Eve E' / 'Uni E'; (b) "a silent restore after an email sign-in, of a draft
+whose author fields hold the accreditation's values ...". In (b), `ACCREDITATIONS.eve` is withheld (restored in
+`finally`), so the check at sign-in finds none. The pin asserts `auth.accreditation` is null right after the
+restore, and the 60 s poll then brings it. That fixes the order instead of leaving it to Alpine's scheduling.
 
-Blocker 1 in the block this note follows is satisfied: the re-auth window task is
-archived clean, so the cost-stating confirm (`_confirmNavigationCost` on the publish
-and edit pages, asked through the `broadcastConfirm` store) and the pre-navigation
-flush are on main and reusable. Blocker 2, the product decision on light-account
+**Added by the user's triage of my verification pass (2026-10-09), 23b67acb.**
+- A regression from e8ee1de0, now fixed. The at-value move also ran at the first adoption, and
+  `_readoptAccount` gave back only the fill-only `_prefilledFields` baselines. An author name typed signed out
+  at the first account's accreditation (choice card standing, then another account signs in) kept that
+  account's baseline. The next account's draft dropped the name once the rest of the form was cleared, which
+  the parent commit did not do. `_readoptAccount` now resets both author baselines to `""` and still empties
+  only the prefilled values. `""` is the signed-out load's baseline: only an instance with no captured account
+  adopts, and the store holds no accreditation without a username. Pin: "a takeover of a provisional adoption
+  keeps an author value the user typed at the first account's accreditation, as the next account's work".
+  It also fails if `_prefilledFields` records at-value fields; until now no test checked fill-only.
+- Comment narrowings. The docblocks say "the prefill's value", because the accreditation also carries an ORCID
+  the code does not move. The pin (b) setup comment no longer claims the withheld accreditation is what puts
+  the restore first. e8ee1de0's commit message still says "every author field holding the accreditation's
+  value"; read it as the narrowed form.
+
+**Probes.** Run in scratchpad copies of `git archive <sha> frontend`, never in the checkout. Mutants were
+applied by an exactly-once string replace, each run on composer-drafts-real-editors + pages-publish.
+
+| Mutant | Red |
+|---|---|
+| e8ee1de0's `_prefillEmptyAuthorFields` back to the pre-fix loop | pins (a) and (b) only |
+| drop the authorName at-value line / drop the affiliation one | (a), (b) and six older prefill tests each |
+| 23b67acb's `_readoptAccount` back to the e8ee1de0 loop | the takeover pin only |
+| drop the authorName baseline reset | the takeover pin only |
+| drop the affiliation baseline reset | "a provisional adoption gives back only the author fields its prefill filled, value and baseline" |
+| at-value fields also pushed onto `_prefilledFields` | the takeover pin (at the kept 'Eve E') |
+| drop the `acc.name &&` / `acc.institution &&` guards | survives; equivalent in reachable states (needs an accreditation value going non-empty to empty under one instance) |
+
+All three hold reproductions were planted, including (c), Restore after a name typed before a Keychain
+sign-in. So was the "accreditation arrives after the Restore click" variant. Each is red before e8ee1de0 and
+green after. (c) gets no pin of its own: no revert slips past (a) and (b), and the only mutant that does is a
+constructed gate, not a revert. The pins hold up across 3 whole-file runs, each pin alone, and two shuffled
+orders. Forcing a failure inside or after (b)'s `try` leaves later tests green. Without the `finally`, four
+later eve tests go red, so a leak would show.
+
+**For the architect, not built (user's triage).**
+1. `_onAccreditationChange` moves the baselines but writes nothing. When the accreditation arrives and the
+   prefill fills nothing (an accreditation with no institution, both author fields typed, or the email check
+   failing and retrying after 60 s), a draft stored earlier that holds only the author values stays. The next
+   load shows "draft restored" over a form equal to a fresh load. Behaviour is the same before e8ee1de0. One
+   rarer instance is new with 23b67acb: two accounts with identical accreditations, the second signing in by
+   email during a takeover while its first check fails. Before 23b67acb, the stale first-account baseline
+   covered that one by coincidence. The obvious fix (`_writeDraft()` after the prefill) also fires on a
+   cross-tab session restore, and a second tab's write could remove the other tab's newer draft. So any fix
+   needs a design call. File a `ui-` task or dismiss.
+2. ARCHITECTURE.md § 8. "is restored silently over a form that holds nothing typed yet" is no longer exact: a
+   form whose only typed text equals the signing-in account's author prefill now restores silently, per the
+   approved rule. "A draft holds user work only" does not record that rule, and the provisional-adoption
+   sentence does not record the takeover's reset of both author baselines.
+3. Same before and after: an author value the user types at the drafting account's accreditation after that
+   account's prefill already ran still counts as work. The baseline moves only at prefill events, not on typing.
+
+**Dismissed at triage.** Author-only drafts stored before this fix show "draft restored" once more, and the
+restore's own write then removes them. The `_onAccreditationChange` sentence "The card's Discard applies it
+instead." predates this round and was refuted as a finding.
