@@ -87,3 +87,10 @@ Waits for `backend-orcid-link-and-accredit-require-fresh-auth` (the proof consum
 `/orcid/start`, whose mechanism this task branches on) and
 `backend-recovery-dispute-only-for-a-settled-address` (the settling module) to be archived. The
 architect moves this file to `pending/` when both are.
+
+## Architect note (2026-10-09): the sanction gate is a tri-state read
+
+The sanction read is now `readSanctionState` (`backend/src/accreditation.ts`), answering
+`sanctioned`, `not_sanctioned` or `haf_unavailable`. The confirm route's accredit sanction gate
+branches on all three: 403 `ACCREDITATION_SANCTIONED` on `sanctioned`, a retriable 503 and no
+broadcast on `haf_unavailable`. A truthiness check on the returned string never refuses.

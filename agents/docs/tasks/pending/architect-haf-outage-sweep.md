@@ -43,3 +43,13 @@ inventory with it or after it, so the two do not file overlapping tasks.
 
 The inventory is recorded in this file, the accepted fixes are filed with a priority, the user has
 triaged them, and the file is archived.
+
+## Architect note (2026-10-09): two sites from the failed-sanction-read review
+
+For the scope 1 inventory:
+- `broadcastAccreditationAndSeed` (`backend/src/routes/signup-verify.ts`): on a signup carrying an
+  ORCID, the sanction read can succeed while `findAccreditedAccountWithOrcid` throws; the throw
+  reaches the activation-lock `onError` path, which answers 500, not a retriable 503.
+- `POST /api/custody/broadcast` (`backend/src/routes/custody.ts`, event
+  `custody.broadcast.idempotency_haf_unconfigured`): with HAF not configured it proceeds without
+  the idempotency read. `POST /api/accreditation/verify` now answers a retriable 503 in that case.
